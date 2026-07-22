@@ -1654,6 +1654,9 @@ def speak_tool_working_ack(call: ToolCall, reply_lang: str) -> None:
             "read_vault_memory": " ‌   .",
             "read_clipboard_context": " ‌  .",
             "run_terminal_command": "    .",
+            "shell_execute": "  .",
+            "file_editor": "  .",
+            "python_repl": "  .",
             "flush_memory": "  ‌   ‌.",
             "publish_tool_to_general": "      ‌.",
             "open_application": "    ‌.",
@@ -1671,6 +1674,9 @@ def speak_tool_working_ack(call: ToolCall, reply_lang: str) -> None:
             "read_vault_memory": "Let me check my memory.",
             "read_clipboard_context": "Let me check the clipboard.",
             "run_terminal_command": "Let me run that in the terminal.",
+            "shell_execute": "Running that in the local shell.",
+            "file_editor": "Working on that file.",
+            "python_repl": "Running that in the Python sandbox.",
             "flush_memory": "Okay — wiping short-term memory.",
             "publish_tool_to_general": "Okay — promoting that tool to general.",
             "open_application": "Okay — opening that now.",
@@ -4344,6 +4350,33 @@ def execute_tool_call(tc: ToolCall) -> str:
         trunc = " truncated=true" if result.get("truncated") else ""
         return f"OK: clipboard chars={len(text)}{trunc} text={text!r}"
 
+    def _handle_shell_execute(call: ToolCall) -> str:
+        from donna.tools.system_repl import shell_execute
+
+        command = call.arguments.get("command")
+        if command is None or not str(command).strip():
+            return "ERROR: missing command"
+        return shell_execute(str(command))
+
+    def _handle_file_editor(call: ToolCall) -> str:
+        from donna.tools.system_repl import file_editor
+
+        action = str(call.arguments.get("action") or "").strip()
+        filepath = call.arguments.get("filepath")
+        if filepath is None or not str(filepath).strip():
+            return "ERROR: missing filepath"
+        content = call.arguments.get("content")
+        content_s = None if content is None else str(content)
+        return file_editor(action, str(filepath), content_s)
+
+    def _handle_python_repl(call: ToolCall) -> str:
+        from donna.tools.system_repl import python_repl
+
+        code = call.arguments.get("code")
+        if code is None or not str(code).strip():
+            return "ERROR: missing code"
+        return python_repl(str(code))
+
     def _handle_run_terminal(call: ToolCall) -> str:
         from donna.os_automation import run_terminal_command
 
@@ -4711,6 +4744,9 @@ def execute_tool_call(tc: ToolCall) -> str:
         "inject_keystrokes": _handle_inject_keystrokes,
         "read_clipboard_context": _handle_read_clipboard,
         "run_terminal_command": _handle_run_terminal,
+        "shell_execute": _handle_shell_execute,
+        "file_editor": _handle_file_editor,
+        "python_repl": _handle_python_repl,
         "flush_memory": _handle_flush_memory,
         "publish_tool_to_general": _handle_publish_tool_to_general,
         "open_application": _handle_open_application,

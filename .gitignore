@@ -54,6 +54,7 @@ packages_Donna.*
 /generated_tools/
 /dashboard.md
 .donna_workspace_migrated
+.donna_sandbox.py
 /_archive/
 .shadow_state/
 
