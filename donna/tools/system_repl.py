@@ -4,12 +4,15 @@ Safeguards:
   - Hard 15s subprocess timeout (never hang the ReAct loop).
   - Aggressive 2000-char truncation on all returned text (context-window guard).
   - Workspace jail via ``Path.is_relative_to(PROJECT_ROOT)`` (no path traversal).
+  - Zero write/append access under ``donna/``, ``.git/``, ``.github/``.
+  - Destructive shell commands blocked before subprocess.
   - Agent Python never runs via ``exec()`` in-process — always ``python.exe`` subprocess.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +27,30 @@ SANDBOX_SCRIPT_NAME = ".donna_sandbox.py"
 _ROOT = Path(PROJECT_ROOT).resolve()
 _SANDBOX_PATH = _ROOT / SANDBOX_SCRIPT_NAME
 
+_PROTECTED_DIRS = ("donna", ".git", ".github")
+
+# Destructive / irreversible host commands — deny before subprocess.
+_DESTRUCTIVE_SHELL_RE = re.compile(
+    r"(?:"
+    r"\brm\s+-rf\b|"
+    r"\brm\s+-fr\b|"
+    r"\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\b|"
+    r"\brm\s+-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*\b|"
+    r"\bdel\s+/s\b|"
+    r"\berase\s+/s\b|"
+    r"\brd\s+/s\b|"
+    r"\brmdir\s+/s\b|"
+    r"\bgit\s+reset\s+--hard\b|"
+    r"\bgit\s+clean\s+-[^\s]*f|"
+    r"\bgit\s+checkout\s+--\s+\.|"
+    r"\bRemove-Item\b[\s\S]{0,80}?-Recurse|"
+    r"\bformat\s+[a-zA-Z]:|"
+    r"\bmkfs\b|"
+    r"\bdd\s+if="
+    r")",
+    re.IGNORECASE,
+)
+
 
 def _truncate_tail(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     raw = text if isinstance(text, str) else str(text or "")
@@ -33,7 +60,7 @@ def _truncate_tail(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
 
 
 def _truncate_file_body(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
-    """Keep first+last 1000 chars when over limit (else full text ≤2000)."""
+    """Keep first+last 1000 chars when over limit (else full text <=2000)."""
     raw = text if isinstance(text, str) else str(text or "")
     if len(raw) <= limit:
         return raw
@@ -148,6 +175,12 @@ def shell_execute(command: str) -> str:
     if not cmd:
         return "ERROR: empty command"
 
+    if _DESTRUCTIVE_SHELL_RE.search(cmd):
+        return (
+            "ERROR: Access denied — destructive shell command blocked by "
+            "safety protocols (e.g. rm -rf, del /s, git reset --hard)."
+        )
+
     result = _run_shell(cmd)
     if isinstance(result, str):
         return result
@@ -163,16 +196,43 @@ def shell_execute(command: str) -> str:
         parts.append(f"stderr:\n{stderr}")
     return "\n".join(parts)
 
+
 def file_editor(action: str, filepath: str, content: str | None = None) -> str:
     """Read/write files strictly inside PROJECT_ROOT (blocks ../ and abs escapes)."""
+    protected_dirs = ["donna", ".git", ".github"]
+    if action in ["write", "append"]:
+        # Resolve the path to check if it falls inside protected territories
+        raw_path = Path(str(filepath or "").strip()).expanduser()
+        if raw_path.is_absolute():
+            target = raw_path.resolve()
+        else:
+            target = (_ROOT / raw_path).resolve()
+        for p_dir in protected_dirs:
+            protected_path = (_ROOT / p_dir).resolve()
+            if target.is_relative_to(protected_path):
+                return (
+                    f"ERROR: Write access to {p_dir} core system files is "
+                    "denied by safety protocols."
+                )
+
     act = (action or "").strip().lower()
-    if act not in {"read", "write"}:
-        return "ERROR: action must be 'read' or 'write'"
+    if act not in {"read", "write", "append"}:
+        return "ERROR: action must be 'read', 'write', or 'append'"
 
     try:
         target = _resolve_jailed(filepath)
     except ValueError as exc:
         return f"ERROR: {exc}"
+
+    # Belt-and-suspenders: re-check after jail resolve (symlink / .. normalization).
+    if act in {"write", "append"}:
+        for p_dir in protected_dirs:
+            protected_path = (_ROOT / p_dir).resolve()
+            if target.is_relative_to(protected_path):
+                return (
+                    f"ERROR: Write access to {p_dir} core system files is "
+                    "denied by safety protocols."
+                )
 
     if act == "read":
         if not target.is_file():
@@ -186,16 +246,20 @@ def file_editor(action: str, filepath: str, content: str | None = None) -> str:
             f"({len(body)} chars)\n{_truncate_file_body(body)}"
         )
 
-    # write
+    # write / append
     if content is None:
-        return "ERROR: content is required for write"
+        return f"ERROR: content is required for {act}"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(str(content), encoding="utf-8")
+        if act == "append" and target.is_file():
+            with target.open("a", encoding="utf-8") as fh:
+                fh.write(str(content))
+        else:
+            target.write_text(str(content), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
-        return f"ERROR: write failed: {exc}"
+        return f"ERROR: {act} failed: {exc}"
     return (
-        f"OK: wrote {len(str(content))} chars to "
+        f"OK: {act} {len(str(content))} chars to "
         f"{target.relative_to(_ROOT).as_posix()}"
     )
 
