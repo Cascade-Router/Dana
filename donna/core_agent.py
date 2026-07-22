@@ -139,6 +139,7 @@ import soundfile as sf
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw
 from piper import PiperVoice
+from piper.config import SynthesisConfig
 
 from vision_tools import ScreenAgent, VideoAgent
 from donna.paths import (
@@ -299,6 +300,12 @@ _CANNED_UX_WAV_FILES: dict[str, str] = {
 # Runtime / conversation log paths live in donna.logging (re-exported above).
 PIPER_EN_ONNX = os.path.join(TTS_MODELS_DIR, "en_US-hfc_female-medium.onnx")
 PIPER_EN_JSON = os.path.join(TTS_MODELS_DIR, "en_US-hfc_female-medium.onnx.json")
+# length_scale > 1.0 slows speech (VITS). Default 1.25 keeps OCR/vision reads intelligible.
+try:
+    PIPER_LENGTH_SCALE = float(os.environ.get("DONNA_PIPER_LENGTH_SCALE", "1.25"))
+except ValueError:
+    PIPER_LENGTH_SCALE = 1.25
+PIPER_LENGTH_SCALE = max(0.8, min(2.0, PIPER_LENGTH_SCALE))
 # Incomplete localization voices are disabled for the public release.
 # Related local Piper assets remain gitignored under tts_models/.
 PIPER_MODEL_URLS: tuple[tuple[str, str], ...] = (
@@ -695,7 +702,7 @@ WHISPER_AMBIENT_SILENT = frozenset(
 
 _CODE_FENCE_TTS_RE = re.compile(r"```[\w+-]*\n?[\s\S]*?```", re.MULTILINE)
 _CODE_FENCE_TTS_UNCLOSED_RE = re.compile(r"```[\w+-]*\n?[\s\S]*$", re.MULTILINE)
-_TTS_MD_MARKERS_RE = re.compile(r"`+|[*_]{1,3}")
+_TTS_MD_MARKERS_RE = re.compile(r"`+|\*{1,3}|_{2,}")
 _PUNCT_OR_SPACE_ONLY_RE = re.compile(r"^[\s\W_]+$", re.UNICODE)
 
 
@@ -1378,10 +1385,16 @@ def sanitize_text_for_tts(text: str) -> str:
     """Strip markdown emphasis/code markers before Piper synthesis.
 
     Returns empty string when nothing speakable remains (caller must skip TTS).
+    Newlines become pause punctuation so OCR/vision dumps are not rushed.
     """
     out = strip_code_blocks_for_tts(text or "")
     out = _TTS_MD_MARKERS_RE.sub("", out)
+    # Florence / vision dumps often arrive as newline-joined tokens with no stops.
+    out = re.sub(r"[\r\n]+", ". ", out)
     out = re.sub(r"\s+", " ", out).strip()
+    # Soft-break very long comma-less runs so Piper inserts breath pauses.
+    if len(out) > 160 and not re.search(r"[.!?]", out):
+        out = re.sub(r"(.{40,80}?)\s+", r"\1. ", out)
     if not out or _PUNCT_OR_SPACE_ONLY_RE.match(out):
         return ""
     return out
@@ -5996,8 +6009,9 @@ def synthesize_to_file(voice: PiperVoice, text: str, path: str) -> bool:
     chunks: list[Any] = []
     piper_bytes = 0
     t_piper0 = time.perf_counter()
+    syn_config = SynthesisConfig(length_scale=float(PIPER_LENGTH_SCALE))
     try:
-        for chunk in voice.synthesize(utterance):
+        for chunk in voice.synthesize(utterance, syn_config=syn_config):
             if chunk is None:
                 continue
             try:
@@ -6022,7 +6036,7 @@ def synthesize_to_file(voice: PiperVoice, text: str, path: str) -> bool:
     log_debug(
         "Audio",
         f"Piper synthesize chunks={len(chunks)} bytes={piper_bytes} "
-        f"chars={len(utterance)} "
+        f"chars={len(utterance)} length_scale={PIPER_LENGTH_SCALE} "
         f"dt_ms={(time.perf_counter() - t_piper0) * 1000.0:.1f}",
     )
 
@@ -6070,6 +6084,35 @@ def synthesize_to_file(voice: PiperVoice, text: str, path: str) -> bool:
     return True
 
 
+def _device_output_samplerate(output_device: Optional[int]) -> Optional[int]:
+    """Host default output sample rate for ``output_device`` (if queryable)."""
+    try:
+        info = sd.query_devices(output_device if output_device is not None else None)
+        rate = int(float(info.get("default_samplerate") or 0))
+        return rate if rate > 0 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _resample_pcm(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+    """Linear-resample mono float32 PCM when host rate != Piper rate.
+
+    Playing 22050 Hz buffers on a 44100 Hz WASAPI path without resampling
+    can make speech sound ~2x too fast (common with virtual mixers like Sonar).
+    """
+    src = int(src_rate)
+    dst = int(dst_rate)
+    if src <= 0 or dst <= 0 or src == dst:
+        return np.asarray(audio, dtype=np.float32).reshape(-1)
+    samples = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if samples.size < 2:
+        return samples
+    n_out = max(1, int(round(samples.size * float(dst) / float(src))))
+    x_old = np.linspace(0.0, 1.0, num=samples.size, endpoint=False, dtype=np.float64)
+    x_new = np.linspace(0.0, 1.0, num=n_out, endpoint=False, dtype=np.float64)
+    return np.interp(x_new, x_old, samples).astype(np.float32)
+
+
 def _play_pcm_interruptible(
     audio_data: np.ndarray,
     samplerate: int,
@@ -6093,10 +6136,21 @@ def _play_pcm_interruptible(
     if audio.size == 0:
         return False
 
+    play_rate = int(samplerate)
+    host_rate = _device_output_samplerate(output_device)
+    if host_rate is not None and host_rate != play_rate:
+        log_debug(
+            "Audio",
+            f"resample PCM {play_rate} Hz -> {host_rate} Hz "
+            f"(device={output_device}) to prevent sped-up playback",
+        )
+        audio = _resample_pcm(audio, play_rate, host_rate)
+        play_rate = host_rate
+
     _bind_tts_barge_controller()
-    chunk = max(1, int(round(samplerate * (BARGE_IN_CHUNK_MS / 1000.0))))
+    chunk = max(1, int(round(play_rate * (BARGE_IN_CHUNK_MS / 1000.0))))
     stream_kwargs: dict[str, Any] = {
-        "samplerate": int(samplerate),
+        "samplerate": int(play_rate),
         "channels": 1,
         "dtype": "float32",
         "blocksize": chunk,
@@ -6111,7 +6165,7 @@ def _play_pcm_interruptible(
     bytes_written = 0
     log_debug(
         "Audio",
-        f"playback alloc samples={audio.size} sr={samplerate} "
+        f"playback alloc samples={audio.size} sr={play_rate} "
         f"chunk={chunk} ({BARGE_IN_CHUNK_MS:.0f}ms) device={output_device} "
         f"interruptible={interruptible}",
     )
@@ -6172,7 +6226,7 @@ def _play_pcm_interruptible(
                     )
                     try:
                         kwargs: dict[str, Any] = {
-                            "samplerate": int(samplerate),
+                            "samplerate": int(play_rate),
                             "blocking": False,
                         }
                         if output_device is not None:
@@ -6187,7 +6241,7 @@ def _play_pcm_interruptible(
                         raise
 
         if used_fallback and not interrupted:
-            duration = audio.size / float(max(1, samplerate))
+            duration = audio.size / float(max(1, play_rate))
             deadline = time.perf_counter() + duration + 0.5
             log_debug("Audio", f"playback fallback sd.play duration_s={duration:.2f}")
             while time.perf_counter() < deadline:
