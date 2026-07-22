@@ -263,6 +263,27 @@ _OCR_GROUND_HINT_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+# Multi-step local execution chains (write → run → read). Must bind the full
+# REPL suite so foresight cannot starve python_repl for a lone file_editor hit.
+_REPL_SUITE_HINT_RE = re.compile(
+    r"("
+    r"\b(?:python_repl|shell_execute|file_editor)\b|"
+    r"\b(?:write|create|generate)\s+(?:a\s+|some\s+)?(?:python\s+|py\s+)?"
+    r"(?:script|code|program|snippet)\b|"
+    r"\b(?:run|execute)\s+(?:the\s+|this\s+|it\b|them\b|(?:python\s+)?"
+    r"(?:script|code|program))\b|"
+    r"\b(?:then|and)\s+(?:read|open|check|inspect)\b|"
+    r"\bread\s+(?:the\s+)?(?:result|output|file|logfile)\b|"
+    r"\bwrite\b.+\b(?:run|execute)\b|\b(?:run|execute)\b.+\bread\b"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+_REPL_SUITE_TOOL_IDS: tuple[str, ...] = (
+    "python_repl",
+    "shell_execute",
+    "file_editor",
+    "run_terminal_command",
+)
 # Explicit project-directory listing requests must not drift into read_local_file
 # or describe_spatial_scene.
 _PROJECT_LIST_RE = re.compile(
@@ -417,6 +438,17 @@ def explicit_tool_ids_in_text(
     return list(dict.fromkeys(found))
 
 
+def repl_suite_tool_ids(user_text: str) -> list[str]:
+    """Return REPL/exec/file tools when the utterance is a multi-step local chain."""
+    if not _REPL_SUITE_HINT_RE.search(user_text or ""):
+        return []
+    try:
+        known = set(load_tool_registry().keys())
+    except Exception:  # noqa: BLE001
+        known = set(_REPL_SUITE_TOOL_IDS)
+    return [tid for tid in _REPL_SUITE_TOOL_IDS if tid in known]
+
+
 def merge_bound_tool_ids(
     *,
     user_text: str,
@@ -430,6 +462,8 @@ def merge_bound_tool_ids(
     any tool id spelled in the raw prompt is appended so mode overrides cannot
     starve an explicit request (e.g. ``draft_cursor_prompt``).
     OCR/grounding prompts also keep ``ocr_with_region`` (Florence-2) bound.
+    Multi-step write/run/read prompts bind the full local REPL suite so
+    ``file_editor`` foresight cannot starve ``python_repl`` / ``shell_execute``.
     """
     if known_ids is None:
         try:
@@ -451,6 +485,8 @@ def merge_bound_tool_ids(
         _add("analyze_visual_context")
         if _OCR_GROUND_HINT_RE.search(user_text or ""):
             _add("ocr_with_region")
+    for tid in repl_suite_tool_ids(user_text or ""):
+        _add(tid)
     for tid in explicit_tool_ids_in_text(user_text, known):
         _add(tid)
     return merged
@@ -803,8 +839,21 @@ class IntentBroker:
                 raw_text=raw,
                 confidence=0.96,
             )
+        # Multi-step write→run→read: force python_repl FIRST so foresight cannot
+        # jump straight to file_editor on a not-yet-written path.
+        repl_chain = bool(_REPL_SUITE_HINT_RE.search(raw))
+        if repl_chain and not mem_write_hit and not forge_hit:
+            _foresight_cascade(raw, "python_repl")
+            return ToolCall(
+                tool_id="python_repl",
+                arguments={},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.97,
+            )
         # Local project file reads beat OCR/vision — "read foo.py" is not on-screen OCR.
-        if file_hit and not mem_write_hit:
+        # Skip when this is a REPL chain (handled above).
+        if file_hit and not mem_write_hit and not repl_chain:
             path = ""
             m = re.search(
                 r"([\w./\\-]+\.(?:py|txt|md|json|log|csv|yml|yaml|toml|ini))",

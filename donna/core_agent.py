@@ -490,8 +490,11 @@ BARGE_IN_SILERO_CONSEC_FRAMES = 4
 STREAM_BARGE_RMS = 0.09
 MIC_AMBIENT_DEAD_RMS = 1e-4  # probe below this → soft gain / adaptive floors
 # TTS recovery: max wait for queue drain; hard cap per Piper utterance (synth+play).
+# Long vision/OCR summaries need headroom — 18s was aborting mid-sentence.
 TTS_IDLE_WAIT_TIMEOUT = 12.0
-TTS_UTTERANCE_MAX_SECONDS = TTS_IDLE_WAIT_TIMEOUT + 6.0
+TTS_UTTERANCE_MAX_SECONDS = 90.0
+# Soft-split long replies into independent spool items (~15–20s Piper each).
+TTS_CHUNK_MAX_CHARS = 280
 MIN_SPEECH_RMS = 0.01  # after peak-normalize; reject near-silence hallucinations
 WAKEWORD_MODELS = ["donna"]
 AUDIO_INPUT_DEVICE: Optional[int] = None  # resolved at startup
@@ -1370,7 +1373,7 @@ def yolo_device_arg(device) -> str | int:
 def strip_code_blocks_for_tts(text: str) -> str:
     """Replace markdown fenced code with a short spoken placeholder.
 
-    Prevents Piper from reading raw Python/JSON aloud (18s TTS ceiling crash).
+    Prevents Piper from reading raw Python/JSON aloud (long TTS ceiling crash).
     """
     raw = text or ""
     if "```" not in raw:
@@ -1427,51 +1430,99 @@ def _safe_sd_stop(*, where: str = "", blocking: bool = True) -> None:
             playback_lock.release()
 
 
+def chunk_text_for_tts(text: str, *, max_chars: int = TTS_CHUNK_MAX_CHARS) -> list[str]:
+    """Split long speakable text into sentence-sized chunks under ``max_chars``.
+
+    Keeps short UX phrases intact. Prevents the 90s watchdog from aborting a
+    single monolithic Piper render of OCR / multi-paragraph answers.
+    """
+    raw = sanitize_text_for_tts(text or "")
+    if not raw:
+        return []
+    limit = max(80, int(max_chars))
+    if len(raw) <= limit:
+        return [raw]
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", raw) if s.strip()]
+    if not sentences:
+        sentences = [raw]
+    chunks: list[str] = []
+    buf = ""
+    for sentence in sentences:
+        if not buf:
+            candidate = sentence
+        else:
+            candidate = f"{buf} {sentence}"
+        if len(candidate) <= limit:
+            buf = candidate
+            continue
+        if buf:
+            chunks.append(buf)
+        if len(sentence) <= limit:
+            buf = sentence
+        else:
+            # Hard-wrap oversized sentence on spaces.
+            words = sentence.split()
+            buf = ""
+            for word in words:
+                piece = word if not buf else f"{buf} {word}"
+                if len(piece) <= limit:
+                    buf = piece
+                else:
+                    if buf:
+                        chunks.append(buf)
+                    buf = word
+    if buf:
+        chunks.append(buf)
+    return chunks or [raw]
+
+
 def enqueue_speech(text: str, *, interruptible: bool | None = None) -> None:
     """Producer API: push text into the TTS spooler and return immediately.
 
     Never opens PortAudio or blocks on Piper — the ``tts_worker`` owns playback.
     Caps pending phrases while busy so stream handlers cannot hammer the device.
+    Long utterances are chunked into sequential spool items.
 
     ``interruptible=False`` marks UI acknowledgments (wake "Yes?", mode acks) so
     VAD/wake barge-in cannot cut them (Apple-style self-barge exemption).
     When omitted, canned UX cache hits default to uninterruptible.
     """
-    text = sanitize_text_for_tts(text or "")
+    pieces = chunk_text_for_tts(text or "")
+    if not pieces:
+        with _tts_enqueue_lock:
+            if tts_queue.empty() and not tts_busy.is_set():
+                speech_idle.set()
+        return
+
     with _tts_enqueue_lock:
-        if not text:
-            if tts_queue.empty() and not tts_busy.is_set():
-                speech_idle.set()
-            return
-        if interruptible is None:
-            # Canned UX WAVs (Yes?, mode active, …) are uninterruptible by default.
+        for piece in pieces:
+            if interruptible is None:
+                # Canned UX WAVs (Yes?, mode active, …) are uninterruptible by default.
+                try:
+                    piece_interruptible = canned_ux_cache_path(piece) is None
+                except Exception:  # noqa: BLE001
+                    piece_interruptible = True
+            else:
+                piece_interruptible = bool(interruptible)
+            speech_idle.clear()
+            pending = tts_queue.qsize()
+            if tts_busy.is_set() and pending >= _SPEECH_MAX_PENDING_WHILE_BUSY:
+                log_debug(
+                    "TTS",
+                    f"spool busy — drop overflow chars={len(piece)} pending={pending}",
+                )
+                break
             try:
-                interruptible = canned_ux_cache_path(text) is None
-            except Exception:  # noqa: BLE001
-                interruptible = True
-        speech_idle.clear()
-        pending = tts_queue.qsize()
-        if tts_busy.is_set() and pending >= _SPEECH_MAX_PENDING_WHILE_BUSY:
-            log_debug(
-                "TTS",
-                f"spool busy — drop overflow chars={len(text)} pending={pending}",
-            )
-            return
-        try:
-            tts_queue.put_nowait((text, bool(interruptible)))
-            log_debug(
-                "TTS",
-                f"spooled chars={len(text)} interruptible={bool(interruptible)} "
-                f"pending={tts_queue.qsize()} "
-                f"busy={tts_busy.is_set()} vad={vad_capture_active.is_set()}",
-            )
-        except queue.Full:
-            log(
-                "TTS",
-                f"WARNING: dropped TTS (queue full, newest): \"{text[:80]}\"",
-            )
-            if tts_queue.empty() and not tts_busy.is_set():
-                speech_idle.set()
+                tts_queue.put_nowait((piece, piece_interruptible))
+                log_debug(
+                    "TTS",
+                    f"spooled chars={len(piece)} interruptible={piece_interruptible} "
+                    f"pending={tts_queue.qsize()} "
+                    f"busy={tts_busy.is_set()} vad={vad_capture_active.is_set()}",
+                )
+            except queue.Full:
+                log_debug("TTS", f"spool full — drop chars={len(piece)}")
+                break
 
 
 def _parse_tts_spool_item(item: Any) -> tuple[str, bool]:
