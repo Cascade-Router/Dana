@@ -77,7 +77,10 @@ CHAT_MEMORY_CLEARED_ACK = "Memory cleared."
 _LIGHTWEIGHT_CHAT_SYSTEM = (
     "You are Donna, a warm, concise voice assistant. "
     "Have a natural conversation. Do not call tools, invent file edits, "
-    "or claim you modified code. Keep answers short for spoken TTS (1–3 sentences)."
+    "or claim you modified code. Keep answers short for spoken TTS (1–3 sentences). "
+    "CRITICAL: If the user asks you to interact with the system, read a file, "
+    "or write code, you MUST output the tool-graph route. Default to chat ONLY "
+    "for casual conversation or generic knowledge questions."
 )
 
 # Isolated Memory Buffer (strictly for lightweight chat). Never shared with ReAct.
@@ -107,6 +110,38 @@ _MODE_SWITCH_RESEARCH_RE = re.compile(
     r"|^\s*(?:please\s+)?research\s+mode\.?\s*$)",
     re.IGNORECASE,
 )
+
+# Aggressive chat→tool escalation: system / filesystem / coding intents must
+# never stay on the lightweight no-tools chat node.
+_TOOL_GRAPH_INTENT_RE = re.compile(
+    r"("
+    r"\b(?:file|files|filepath|filename)\b|"
+    r"\b(?:read|write|rewrite|overwrite)\b|"
+    r"\b(?:code|coding|codebase)\b|"
+    r"\b(?:terminal|shell|powershell|cmd)\b|"
+    r"\b(?:run|running|execute|execution|exec)\b|"
+    r"\b(?:system|subprocess)\b|"
+    r"\b(?:script|scripts)\b|"
+    r"\b(?:change|fix|update|patch|edit|modify)\b|"
+    r"\b(?:tool|tools)\b|"
+    r"\b(?:shell_execute|file_editor|python_repl|run_terminal_command|"
+    r"read_local_file)\b|"
+    r"\b[\w./\\-]+\.(?:py|json|md|txt|log|csv|yml|yaml|toml|ini)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def requires_tool_graph(text: str) -> bool:
+    """True when the utterance must use the tool-enabled MoA / ReAct graph.
+
+    Lightweight chat remains for greetings and generic Q&A; any local execution,
+    file, or coding intent forces the tool loop.
+    """
+    blob = (text or "").strip()
+    if not blob:
+        return False
+    return bool(_TOOL_GRAPH_INTENT_RE.search(blob))
 _MODE_WAKE_PREFIX_RE = re.compile(
     r"^\s*(?:hey\s+)?donna\b[\s,.\-!:]*",
     re.IGNORECASE,
@@ -285,6 +320,13 @@ _STRICT_TOOL_ENFORCEMENT_RULE = (
     "include that command INSIDE the 'context' argument of the `draft_cursor_prompt` "
     "tool, not as plain text in your response. If you do not call the tool, you have "
     "failed the task."
+)
+
+_EXPLICIT_TOOL_INVOCATION_RULE = (
+    "CRITICAL: If the user explicitly asks to use a tool (e.g., draft_cursor_prompt), "
+    "you MUST invoke that tool's JSON schema in your response before outputting a "
+    "final natural language answer. Do not claim a task or ticket has been logged "
+    "unless the tool execution trace confirms it."
 )
 
 _VOICE_SANITIZER_RULE = (

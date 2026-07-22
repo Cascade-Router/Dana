@@ -234,12 +234,12 @@ _PUBLISH_TOOL_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 # Explicit visual / spatial triggers required for describe_spatial_scene.
+# NOTE: never include empty ``\s*`` alternatives — they match every string.
 _VISUAL_HINT_RE = re.compile(
     r"("
     r"\bwhat am i looking at\b|\bwhat do you see\b|\bon my screen\b|"
     r"\bcheck what(?:'s|\s+is)\s+on\s+my\s+screen\b|"
-    r"\bdescribe the (?:screen|room|scene)\b|\blooking at\b|"
-    r"\s*|\s*|  |  "
+    r"\bdescribe the (?:screen|room|scene)\b|\blooking at\b"
     r")",
     re.IGNORECASE,
 )
@@ -282,7 +282,7 @@ _FILE_READ_RE = re.compile(
     r"what(?:'s|\s+is)\s+in\s+(?:the\s+)?(?:file|document)|"
     r"open\s+(?:this\s+)?(?:file|document)|"
     r"show\s+(?:me\s+)?(?:the\s+)?contents?\s+of|"
-    r"read\s+[\w./\\-]+\.(?:py|txt|md|json|log|csv)"
+    r"read\s+(?:(?:the|a|my|this|our)\s+)?[\w./\\-]+\.(?:py|txt|md|json|log|csv)"
     r")\b",
     re.IGNORECASE,
 )
@@ -803,6 +803,39 @@ class IntentBroker:
                 raw_text=raw,
                 confidence=0.96,
             )
+        # Local project file reads beat OCR/vision — "read foo.py" is not on-screen OCR.
+        if file_hit and not mem_write_hit:
+            path = ""
+            m = re.search(
+                r"([\w./\\-]+\.(?:py|txt|md|json|log|csv|yml|yaml|toml|ini))",
+                raw,
+                flags=re.I,
+            )
+            if m:
+                path = m.group(1).replace("\\", "/")
+                # Bare module filenames often live under donna/tools/.
+                if "/" not in path and path.lower().endswith(".py"):
+                    candidate = f"donna/tools/{path}"
+                    try:
+                        from donna.paths import PROJECT_ROOT
+
+                        if (PROJECT_ROOT / candidate).is_file():
+                            path = candidate
+                        elif (PROJECT_ROOT / "donna" / path).is_file():
+                            path = f"donna/{path}"
+                    except Exception:  # noqa: BLE001
+                        pass
+            _foresight_cascade(raw, "file_editor")
+            args: dict[str, str] = {"action": "read"}
+            if path:
+                args["filepath"] = path
+            return ToolCall(
+                tool_id="file_editor",
+                arguments=args,
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.96,
+            )
         # Florence-2 OCR / UI grounding before generic YOLO visual look/see.
         ocr_hit = bool(_OCR_GROUND_HINT_RE.search(raw))
         if ocr_hit and not mem_write_hit:
@@ -921,14 +954,6 @@ class IntentBroker:
                 source_lang=lang,
                 raw_text=raw,
                 confidence=0.98,
-            )
-        if file_hit and not visual_hit:
-            return ToolCall(
-                tool_id="read_local_file",
-                arguments={},
-                source_lang=lang,
-                raw_text=raw,
-                confidence=0.95,
             )
         if mem_read_hit and not visual_hit and not mem_write_hit and not forge_hit:
             return ToolCall(

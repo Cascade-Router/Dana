@@ -319,13 +319,26 @@ def decide_route(
     default_model: str | None = None,
 ) -> CascadeDecision:
     local = default_model or local_model_name()
-    # Chat mode: never escalate to MoA / DeepSeek — lightweight local llama only.
-    if _donna_mode_is_chat():
+    # Chat mode normally stays on lightweight llama — BUT system/file/code
+    # intents must escalate to the tool-enabled MoA / ReAct path.
+    try:
+        from donna.agentic import requires_tool_graph
+
+        tool_intent = requires_tool_graph(query or "")
+    except Exception:  # noqa: BLE001
+        tool_intent = False
+
+    if _donna_mode_is_chat() and not tool_intent:
         return CascadeDecision(
             complexity="low",
             backend="local",
             model=local,
             reason="chat mode → local llama, tools/MoA bypassed",
+        )
+    if _donna_mode_is_chat() and tool_intent:
+        _log_cascade(
+            "CRITICAL: system/file/code intent in chat mode → tool-graph "
+            "(MoA/ReAct); lightweight chat bypassed"
         )
     # Scaffolded modes: log intent; keep current MoA/local heuristics for now.
     try:

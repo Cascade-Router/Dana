@@ -172,6 +172,7 @@ from donna.agentic import (
     mode_switch_spoken_ack,
     parse_clear_chat_memory,
     parse_mode_switch,
+    requires_tool_graph,
     run_lightweight_chat,
     run_react_loop,
     set_donna_mode,
@@ -5156,13 +5157,27 @@ def conversation_worker(
             return True
 
         use_chat = (not isolated) and get_donna_mode() == "chat"
+        tool_force = requires_tool_graph(whisper_text or "")
+        if use_chat and tool_force:
+            # CRITICAL: never let system/file/code intents stay on lightweight chat.
+            use_chat = False
+            log(
+                "Conversation",
+                "Tool-graph escalation: system/file/code intent → ReAct/MoA "
+                "(lightweight chat bypassed)",
+            )
         routed_tool = None
         if not use_chat:
             whisper_text, routed_tool = tool_router(whisper_text)
+        route_tag = (
+            "chat"
+            if use_chat
+            else ("tool" if tool_force else "developer")
+        )
         log(
             "Conversation",
             f"User said: \"{whisper_text}\" "
-            f"[mode={'chat' if use_chat else 'developer'}"
+            f"[mode={route_tag}"
             f"{', isolated' if isolated else ''}]",
         )
         log_conversation("User", whisper_text)
@@ -5182,7 +5197,7 @@ def conversation_worker(
         else:
             with latest_frame_lock:
                 frame = None if latest_frame is None else latest_frame.copy()
-        if frame is None and not use_chat:
+        if frame is None and not use_chat and not tool_force:
             log("Conversation", "No vision frame available; skipping turn.")
             return False
 
