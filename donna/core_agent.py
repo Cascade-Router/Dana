@@ -5539,6 +5539,8 @@ def conversation_worker(
             def _isolated_handler(command: str) -> None:
                 preview = command if len(command) <= 160 else command[:157] + "..."
                 log("TaskQueue", f'Dispatching isolated ReAct: "{preview}"')
+                # Match voice-path logging so queue wakes show User said: …
+                log("Conversation", f'User said: "{command}"')
                 set_subtitle(f'User (Queue): "{command}"')
                 emit_live_transcript("User (TaskQueue)", command)
                 if is_standby_command(command):
@@ -5593,11 +5595,17 @@ def conversation_worker(
 
             # Structured task queue (execution_jail/task_queue.json) — replaces
             # legacy flat input.txt so batched commands never share one prompt.
+            # CRITICAL: text queue always beats Silero VAD / Whisper mic capture.
             queued_n = drain_structured_task_queue()
             if queued_n > 0:
-                follow_up = True
-                set_ui_state("followup")
-                continue
+                log(
+                    "Conversation",
+                    f"Text queue drained ({queued_n} task(s)); "
+                    "bypassing VAD/Whisper audio loop",
+                )
+                # Do NOT enter follow-up mic listen after a queue-only wake.
+                end_session_to_idle()
+                break
 
             if not follow_up:
                 injected = pop_injected_question()
@@ -5607,6 +5615,7 @@ def conversation_worker(
             if injected:
                 whisper_text = injected
                 set_subtitle(f'User: "{whisper_text}"')
+                log("Conversation", f'User said: "{whisper_text}"')
                 log("Conversation", f"Injected user question: \"{whisper_text}\"")
                 emit_live_transcript("User (Whisper)", whisper_text)
                 if is_standby_command(whisper_text):
@@ -5647,6 +5656,18 @@ def conversation_worker(
                     end_session_to_idle("I didn't catch that.")
                     break
             else:
+                # Re-check text queue immediately before opening the mic — InputIngest
+                # may have raced a .trigger_ask wake ahead of the first drain.
+                pre_vad_queued = drain_structured_task_queue()
+                if pre_vad_queued > 0:
+                    log(
+                        "Conversation",
+                        f"Text queue drained ({pre_vad_queued} task(s)) "
+                        "before VAD; bypassing audio loop",
+                    )
+                    end_session_to_idle()
+                    break
+
                 if follow_up:
                     # Follow-up: no wake word, no ack TTS.
                     log_debug("Conversation", "Follow-up: listening for next question...")
@@ -5688,6 +5709,16 @@ def conversation_worker(
                         f"(flush echo, max_timeout={VAD_MAX_SECONDS:.0f}s)",
                     )
                     time.sleep(POST_ACK_VAD_GRACE_SEC)
+                    # Text may have arrived during the post-ack grace window.
+                    grace_queued = drain_structured_task_queue()
+                    if grace_queued > 0:
+                        log(
+                            "Conversation",
+                            f"Text queue drained ({grace_queued} task(s)) "
+                            "during post-ack grace; bypassing VAD/Whisper",
+                        )
+                        end_session_to_idle()
+                        break
                     flush_input_buffer(POST_ACK_FLUSH_SEC)
                     try:
                         audio, rms_raw, stop_reason, speech_started = record_utterance(
@@ -5728,9 +5759,13 @@ def conversation_worker(
                 # Final queue drain immediately before Whisper GPU work.
                 late_queued = drain_structured_task_queue()
                 if late_queued > 0:
-                    follow_up = True
-                    set_ui_state("followup")
-                    continue
+                    log(
+                        "Conversation",
+                        f"Text queue drained ({late_queued} task(s)) "
+                        "before Whisper; discarding mic capture",
+                    )
+                    end_session_to_idle()
+                    break
                 try:
                     (
                         whisper_processor,
