@@ -3705,30 +3705,67 @@ def input_txt_ingest_worker() -> None:
     """Poll ``execution_jail/input.txt`` with silent empty back-off (0.75s).
 
     Only logs when non-empty content is successfully read and queued.
-    Chat mode: do not accept tool prompts into the ReAct jail.
+    Always ingests into the queue (chat mode no longer silently skips).
+    When tasks are queued while in chat mode, escalate to developer and
+    drop an empty ``.trigger_ask`` so the conversation loop drains the jail.
     """
-    log("Ingest", "input.txt watcher started (silent when empty)")
-    while not stop_event.is_set():
+    try:
+        # Exact stdout marker required for ops / Phase-N verification.
+        print("[Ingest] input.txt watcher started (silent when empty)", flush=True)
+        log("Ingest", "input.txt watcher started (silent when empty)")
         try:
-            try:
-                from donna.cascade_router import allows_react_task_jail
-
-                jail_ok = allows_react_task_jail()
-            except Exception:  # noqa: BLE001
-                jail_ok = get_donna_mode() != "chat"
-            if not jail_ok:
-                stop_event.wait(timeout=float(getattr(ingest, "EMPTY_POLL_SLEEP_S", 0.75)))
-                continue
-            n = ingest.ingest_text_to_queue(empty_sleep=0.0)
-            if n <= 0:
-                # Silent sleep — prevents continuous CPU polling churn.
-                stop_event.wait(timeout=float(getattr(ingest, "EMPTY_POLL_SLEEP_S", 0.75)))
-                continue
-            log("Ingest", f"Queued {n} task(s) from input.txt")
+            ingest.ensure_input_txt()
         except Exception as exc:  # noqa: BLE001
-            log("Ingest", f"WARNING: ingest poll failed: {exc}")
-            stop_event.wait(timeout=1.0)
-    log("Ingest", "input.txt watcher stopped.")
+            print(f"[Ingest] CRASH: {exc}", flush=True)
+            log("Ingest", f"WARNING: ensure_input_txt failed: {exc}")
+
+        while not stop_event.is_set():
+            try:
+                n = ingest.ingest_text_to_queue(empty_sleep=0.0)
+                if n <= 0:
+                    # Silent sleep — prevents continuous CPU polling churn.
+                    stop_event.wait(
+                        timeout=float(getattr(ingest, "EMPTY_POLL_SLEEP_S", 0.75))
+                    )
+                    continue
+                log("Ingest", f"Queued {n} task(s) from input.txt")
+                print(f"[Ingest] Queued {n} task(s) from input.txt", flush=True)
+                # Ensure the conversation loop can drain: chat previously blocked
+                # both ingest and allows_react_task_jail (silent no-op).
+                try:
+                    if get_donna_mode() == "chat":
+                        set_donna_mode("developer")
+                        print(
+                            "[Ingest] Escalated chat -> developer for queued tasks",
+                            flush=True,
+                        )
+                        log(
+                            "Ingest",
+                            "Escalated chat -> developer so task jail can drain",
+                        )
+                    # Empty trigger wakes Conversation when idle (no mic inject).
+                    if get_ui_state() == "idle" and not is_recording.is_set():
+                        trigger_path = Path(TRIGGER_FILE)
+                        trigger_path.write_text("", encoding="utf-8")
+                        print(
+                            "[Ingest] Wrote empty .trigger_ask to wake agent",
+                            flush=True,
+                        )
+                except Exception as wake_exc:  # noqa: BLE001
+                    print(f"[Ingest] CRASH: {wake_exc}", flush=True)
+                    log("Ingest", f"WARNING: post-queue wake failed: {wake_exc}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[Ingest] CRASH: {exc}", flush=True)
+                log("Ingest", f"WARNING: ingest poll failed: {exc}")
+                stop_event.wait(timeout=1.0)
+        log("Ingest", "input.txt watcher stopped.")
+        print("[Ingest] input.txt watcher stopped.", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[Ingest] CRASH: {exc}", flush=True)
+        import traceback
+
+        traceback.print_exc()
+        log("Ingest", f"FATAL: input.txt watcher crashed: {exc}")
 
 
 def mic_ingest_worker() -> None:
