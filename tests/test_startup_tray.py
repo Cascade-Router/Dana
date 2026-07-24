@@ -18,16 +18,17 @@ def test_write_start_bat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     venv_scripts.mkdir(parents=True)
     (venv_scripts / "python.exe").write_bytes(b"")
 
+    # GUI launcher prefers pythonw when present.
+    (venv_scripts / "pythonw.exe").write_bytes(b"")
     bat = setup_startup.write_start_bat()
     assert bat == tmp_path / "start_donna.bat"
     text = bat.read_text(encoding="utf-8")
     assert "run.py" in text
     assert "core_agent.py" not in text
-    assert "python.exe" in text
-    assert "--no-gui" in text
-    assert r"%TEMP%\donna_startup.log" in text or "%TEMP%\\donna_startup.log" in text
+    assert "pythonw.exe" in text
+    assert "--no-gui" not in text
     assert "cd /d" in text
-    assert "2>&1" in text
+    assert "start \"Donna\"" in text or 'start "Donna"' in text
     print(f"[PASS] start_donna.bat written: {bat}")
 
 

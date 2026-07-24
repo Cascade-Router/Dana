@@ -10,7 +10,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from donna.schema import AgenticResult
@@ -83,6 +83,18 @@ _LIGHTWEIGHT_CHAT_SYSTEM = (
     "for casual conversation or generic knowledge questions."
 )
 
+_CHAT_CAPABILITY_CARD = (
+    "Capability card (informational only — tools are NOT bound in chat mode):\n"
+    "- Modes: chat (current default for casual talk), developer (tools/code), "
+    "vision (camera/screen), research (research swarm). "
+    "Users may say 'switch to vision' / 'switch to developer' without the word 'mode'.\n"
+    "- Local Ollama brain: this chat path only runs when Ollama is reachable.\n"
+    "- Research store / filesystem / code edits / Ollama diagnostics escalate to "
+    "the tool-graph — do not invent those capabilities here.\n"
+    "- Short-term memory: prior user/assistant turns in this session are provided "
+    "as separate messages below the system prompt."
+)
+
 # Isolated Memory Buffer (strictly for lightweight chat). Never shared with ReAct.
 # Holds the last 5 conversational turns to prevent context window overflow.
 CHAT_MEMORY_WINDOW_K = 5
@@ -91,22 +103,22 @@ _CHAT_MEMORY_LOCK = threading.Lock()
 
 _MODE_SWITCH_DEVELOPER_RE = re.compile(
     r"(?:\b(?:switch\s+to|enter|enable|go\s+to|activate)\s+"
-    r"(?:developer|agent)\s+mode\b"
+    r"(?:developer|agent)(?:\s+mode)?\b"
     r"|^\s*(?:please\s+)?(?:developer|agent)\s+mode\.?\s*$)",
     re.IGNORECASE,
 )
 _MODE_SWITCH_CHAT_RE = re.compile(
-    r"(?:\b(?:switch\s+to|enter|enable|go\s+to|activate)\s+chat\s+mode\b"
+    r"(?:\b(?:switch\s+to|enter|enable|go\s+to|activate)\s+chat(?:\s+mode)?\b"
     r"|^\s*(?:please\s+)?chat\s+mode\.?\s*$)",
     re.IGNORECASE,
 )
 _MODE_SWITCH_VISION_RE = re.compile(
-    r"(?:\b(?:switch\s+to|enter|enable|go\s+to|activate)\s+vision\s+mode\b"
+    r"(?:\b(?:switch\s+to|enter|enable|go\s+to|activate)\s+vision(?:\s+mode)?\b"
     r"|^\s*(?:please\s+)?vision\s+mode\.?\s*$)",
     re.IGNORECASE,
 )
 _MODE_SWITCH_RESEARCH_RE = re.compile(
-    r"(?:\b(?:switch\s+to|enter|enable|go\s+to|activate)\s+research\s+mode\b"
+    r"(?:\b(?:switch\s+to|enter|enable|go\s+to|activate)\s+research(?:\s+mode)?\b"
     r"|^\s*(?:please\s+)?research\s+mode\.?\s*$)",
     re.IGNORECASE,
 )
@@ -124,6 +136,10 @@ _TOOL_GRAPH_INTENT_RE = re.compile(
     r"\b(?:script|scripts)\b|"
     r"\b(?:change|fix|update|patch|edit|modify)\b|"
     r"\b(?:tool|tools)\b|"
+    r"\b(?:research\s+store|research\s+swarm)\b|"
+    r"\b(?:ollama|olama|allama|olam)\b|"
+    r"\b(?:local\s+server|brain\s+server)\b.*\b(?:online|offline|status|up|down)\b|"
+    r"\b(?:online|offline|status)\b.*\b(?:ollama|olama|allama|local\s+server)\b|"
     r"\b(?:shell_execute|file_editor|python_repl|run_terminal_command|"
     r"read_local_file)\b|"
     r"\b[\w./\\-]+\.(?:py|json|md|txt|log|csv|yml|yaml|toml|ini)\b"
@@ -182,6 +198,15 @@ def set_donna_mode(mode: str) -> str:
 
 def parse_mode_switch(text: str) -> str | None:
     """Return a mode id when the utterance is a mode switch, else None."""
+    # Prefer Cascade's deterministic keyword map (covers "stretch to vision", etc.).
+    try:
+        from donna.cascade_router import match_state_toggle
+
+        hit = match_state_toggle(text)
+        if hit is not None:
+            return hit
+    except Exception:  # noqa: BLE001
+        pass
     blob = _normalize_mode_utterance(text)
     if not blob:
         return None
@@ -230,7 +255,7 @@ def parse_clear_chat_memory(text: str) -> bool:
 
 
 def _format_chat_memory_context() -> str:
-    """Blueprint-style history block for system-prompt injection."""
+    """Legacy flattened history block (debug / tests only). Prefer role messages."""
     with _CHAT_MEMORY_LOCK:
         turns = list(chat_memory_buffer)
     if not turns:
@@ -243,6 +268,21 @@ def _format_chat_memory_context() -> str:
     if not history_lines:
         return ""
     return "Recent Conversation History:\n" + "\n".join(history_lines) + "\n\n"
+
+
+def chat_memory_as_role_messages() -> list[dict[str, str]]:
+    """Role-separated rolling turns for the lightweight chat Ollama payload."""
+    with _CHAT_MEMORY_LOCK:
+        turns = list(chat_memory_buffer)
+    out: list[dict[str, str]] = []
+    for turn in turns:
+        user = (turn.get("user") or "").strip()
+        donna = (turn.get("donna") or "").strip()
+        if user:
+            out.append({"role": "user", "content": user})
+        if donna:
+            out.append({"role": "assistant", "content": donna})
+    return out
 
 
 def append_chat_memory_turn(user_text: str, assistant_text: str) -> None:
@@ -419,6 +459,19 @@ def sanitize_voice_intent(text: str) -> str:
     return _collapse_self_duplication(t)
 
 
+def _full_sentence_boundary(text: str) -> str:
+    """Keep the first complete sentence; never mid-word hard-cap."""
+    t = re.sub(r"\s+", " ", (text or "").strip())
+    if not t:
+        return ""
+    # Prefer first sentence ending; otherwise keep the full phrase.
+    m = re.match(r"(.+?[.!?])(?:\s|$)", t)
+    if m:
+        return m.group(1).strip()
+    # Single line without terminator — keep whole line (no char cap).
+    return t.split("\n", 1)[0].strip()
+
+
 def _looks_enriched_context(context: str) -> bool:
     return bool(_ENRICHED_CONTEXT_RE.search(context or ""))
 
@@ -523,8 +576,8 @@ def enrich_draft_cursor_args(
             objective
         )
         obj = sanitize_voice_intent(objective) or intent or "Self-improvement code change"
-        if len(obj) > 180:
-            obj = obj[:177].rstrip() + "..."
+        # Full sentence only — never hard-cap mid-word.
+        obj = _full_sentence_boundary(obj)
         targets_m = re.search(
             r"(?im)^\s*\*\*Target Files:\*\*\s*(.+?)\s*$",
             cleaned_ctx,
@@ -539,8 +592,7 @@ def enrich_draft_cursor_args(
     source = _primary_intent_source(raw_text, objective, context)
     intent = sanitize_voice_intent(source) or "Self-improvement code change"
     obj = sanitize_voice_intent(objective) or intent
-    if len(obj) > 180:
-        obj = obj[:177].rstrip() + "..."
+    obj = _full_sentence_boundary(obj)
 
     targets = map_voice_topics(source or intent)
     if not targets:
@@ -627,11 +679,76 @@ _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 
 
+@dataclass(frozen=True)
+class R1ThinkExtract:
+    """Separated DeepSeek-R1 reasoning vs clean downstream payload."""
+
+    think_text: str
+    clean_text: str
+
+
+def extract_r1_think_blocks(text: str) -> R1ThinkExtract:
+    """Split R1 ``<think>...</think>`` reasoning from the clean response.
+
+    Handles:
+    - multiple closed think blocks
+    - unclosed ``<think>`` (captures through end-of-string — early halt)
+    - optional attributes on the opening tag (``<think ...>``)
+    - empty extracts (no tags / empty bodies): ``clean_text`` is the full
+      usable string so Stage-3 Pydantic guards still receive a payload
+    """
+    if not text:
+        return R1ThinkExtract("", "")
+
+    raw = str(text)
+    lower = raw.lower()
+    thinks: list[str] = []
+    clean_parts: list[str] = []
+    pos = 0
+    n = len(raw)
+
+    while pos < n:
+        idx = lower.find("<think", pos)
+        if idx < 0:
+            clean_parts.append(raw[pos:])
+            break
+        # Only treat real tags: <think> or <think ...>
+        after = lower[idx + 6 : idx + 7] if idx + 6 < n else ""
+        if after not in {">", " ", "\t", "\n", "\r"}:
+            clean_parts.append(raw[pos : idx + 6])
+            pos = idx + 6
+            continue
+        clean_parts.append(raw[pos:idx])
+        gt = raw.find(">", idx)
+        if gt < 0:
+            # Malformed open tag — remainder is reasoning.
+            thinks.append(raw[idx:].strip())
+            break
+        body_start = gt + 1
+        close_idx = lower.find("</think>", body_start)
+        if close_idx < 0:
+            # Unclosed think — capture through EOF (generation halt).
+            thinks.append(raw[body_start:].strip())
+            break
+        thinks.append(raw[body_start:close_idx].strip())
+        pos = close_idx + len("</think>")
+
+    think_text = "\n\n".join(t for t in thinks if t)
+    clean = "".join(clean_parts)
+    clean = re.sub(r"</think\s*>", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    # Empty extract fallback: if no usable clean payload, forward full raw
+    # so downstream Pydantic guards can reject/retry.
+    if not clean and raw.strip():
+        clean = raw.strip()
+    return R1ThinkExtract(think_text=think_text, clean_text=clean)
+
+
 def strip_r1_think_blocks(text: str) -> str:
-    """Remove complete DeepSeek-R1 ``<think>...</think>`` blocks (tags included)."""
+    """Remove DeepSeek-R1 think blocks (closed or unclosed); return clean text only."""
     if not text:
         return ""
-    return _THINK_BLOCK_RE.sub("", text)
+    return extract_r1_think_blocks(text).clean_text
 
 
 class ThinkBlockTtsFilter:
@@ -2083,9 +2200,13 @@ def build_lightweight_chat_system_prompt(
     reply_lang: str = "en",
     visual_context: str | None = None,
 ) -> str:
-    """Persona-only system prompt for chat mode (no tool / TPM rules)."""
-    parts = [_LIGHTWEIGHT_CHAT_SYSTEM]
+    """Persona + capability card for chat mode (no tool / TPM rules)."""
+    parts = [_LIGHTWEIGHT_CHAT_SYSTEM, _CHAT_CAPABILITY_CARD]
     parts.append(_chat_situational_context())
+    try:
+        parts.append(f"Active Donna mode: {get_donna_mode()}.")
+    except Exception:  # noqa: BLE001
+        pass
     if reply_lang == "fa":
         parts.append("Reply in language (language) unless the user writes in English.")
     else:
@@ -2093,7 +2214,13 @@ def build_lightweight_chat_system_prompt(
     vision = (visual_context or "").strip()
     if vision:
         parts.append(f"Optional scene context (do not invent tools): {vision}")
-    return "\n".join(parts)
+    prompt = "\n".join(parts)
+    try:
+        from donna.memory.blackboard import append_persona_mixer_override
+
+        return append_persona_mixer_override(prompt)
+    except Exception:  # noqa: BLE001
+        return prompt
 
 
 def run_lightweight_chat(
@@ -2105,14 +2232,15 @@ def run_lightweight_chat(
     ask_fn: Callable[..., str] | None = None,
     visual_context: str | None = None,
     use_chat_memory: bool = True,
+    session_id: str = "",
 ) -> AgenticResult:
     """Bypasses ReAct/MoA and injects rolling memory for natural conversation.
 
-    History is injected into the system prompt (not as ReAct prior_messages).
-    ``prior_messages`` is ignored when ``use_chat_memory`` is True so casual
-    talk never pollutes the engineering context window.
+    History is passed as role-separated ``user`` / ``assistant`` messages.
+    ReAct ``prior_messages`` are never merged into chat (isolated durable
+    session state is ``chat_memory_buffer`` only).
     """
-    _ = prior_messages  # explicitly unused — ReAct history must not leak in
+    _ = prior_messages  # ReAct history must not leak into lightweight chat
     from donna.settings import resolve_reply_lang
 
     reply_lang = resolve_reply_lang(user_text or "")
@@ -2121,13 +2249,67 @@ def run_lightweight_chat(
         reply_lang=reply_lang,
         visual_context=visual_context,
     )
-    # Context injection: rolling turns live in the system prompt only.
-    history_context = _format_chat_memory_context() if use_chat_memory else ""
-    prompt = f"{base}\n\n{history_context}".rstrip()
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": prompt},
-        {"role": "user", "content": user_clean},
-    ]
+    # Stage 4.3 — conversational piggyback of unread actuator completions.
+    try:
+        from donna.memory.blackboard import (
+            format_background_system_alert,
+            get_and_clear_unread_notifications,
+        )
+
+        unread = get_and_clear_unread_notifications(session_id or None)
+        # Stage 6.5 — Chat-side Andon safety net for failed operators.
+        try:
+            from donna.management.jason_supervisor import (
+                OPERATOR_ANDON_TOOLS,
+                trigger_andon_cord,
+            )
+
+            for row in unread:
+                if str(row.get("status") or "").lower() != "failed":
+                    continue
+                tool = str(row.get("tool_name") or "").strip()
+                if tool not in OPERATOR_ANDON_TOOLS:
+                    continue
+                err = str(row.get("error_context") or row.get("result") or "").strip()
+                trigger_andon_cord(
+                    task_name=tool,
+                    error_context=err or "operator failed",
+                    failed_action_id=int(row.get("action_id") or 0),
+                    failed_arguments=dict(row.get("arguments") or {}),
+                    session_id=session_id or "",
+                    run_recovery=True,
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        alert = format_background_system_alert(unread)
+        if alert:
+            base = f"{base}\n\n{alert}"
+            try:
+                from donna.telemetry import log_notification_piggyback
+
+                log_notification_piggyback(
+                    alert,
+                    session_id=session_id or "",
+                    count=len(unread),
+                    payload={
+                        "action_ids": [int(r.get("action_id") or 0) for r in unread]
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    # Stage 6.4 — live Persona Mixer splice (always refresh from Blackboard).
+    try:
+        from donna.memory.blackboard import append_persona_mixer_override
+
+        base = append_persona_mixer_override(base)
+    except Exception:  # noqa: BLE001
+        pass
+    messages: list[dict[str, str]] = [{"role": "system", "content": base}]
+    if use_chat_memory:
+        messages.extend(chat_memory_as_role_messages())
+    messages.append({"role": "user", "content": user_clean})
 
     if ask_fn is None:
         raise RuntimeError("run_lightweight_chat requires ask_fn (Ollama chat callable)")

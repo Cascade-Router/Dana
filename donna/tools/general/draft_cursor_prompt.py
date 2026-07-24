@@ -23,14 +23,59 @@ _SUCCESS_MSG = "Ticket added to patch_ledger.md. Status is PENDING."
 _LEDGER_HEADER = "# Donna Patch Ledger\n"
 _WRITE_ERROR_MSG = "Error writing to ledger"
 _REJECT_AMBIGUOUS_MSG = (
-    "Error: Draft rejected. Context must be a detailed ticket (more than 50 characters)."
+    "Error: Draft rejected. Context must include concrete target files or symbols "
+    "plus step-by-step logic / acceptance criteria (not an intent-echo)."
 )
-_MIN_CONTEXT_CHARS = 50
+_MIN_CONTEXT_CHARS = 120
 
 
 def _context_is_sufficiently_specific(context: str) -> bool:
-    """Accept expanded TPM tickets; reject empty/broken payloads only."""
-    return len((context or "").strip()) > _MIN_CONTEXT_CHARS
+    """Accept expanded TPM tickets; reject empty, short, or intent-echo-only bodies."""
+    ctx = (context or "").strip()
+    if len(ctx) <= _MIN_CONTEXT_CHARS:
+        return False
+
+    # Intent-echo: only Technical intent + Target Files lines (no real body).
+    substantive = [
+        ln.strip()
+        for ln in ctx.splitlines()
+        if ln.strip()
+        and not re.match(r"(?i)^\*{0,2}\s*Technical intent:", ln.strip())
+        and not re.match(r"(?i)^\*{0,2}\s*Target Files:", ln.strip())
+    ]
+    if not substantive:
+        return False
+
+    body = "\n".join(substantive)
+    # Reject when the only "detail" restates the technical intent phrase.
+    intent_m = re.search(
+        r"(?im)^\s*\*{0,2}\s*Technical intent:\*{0,2}\s*(.+?)\s*$",
+        ctx,
+    )
+    if intent_m:
+        intent = re.sub(r"\s+", " ", intent_m.group(1)).strip().lower()
+        body_l = re.sub(r"\s+", " ", body).strip().lower()
+        if intent and (body_l == intent or body_l in intent or intent in body_l):
+            if len(body_l) < len(intent) + 40 and not re.search(
+                r"(?i)\b(root\s+cause|step[- ]?by[- ]?step|acceptance\s+criteria)\b",
+                body,
+            ):
+                return False
+
+    has_path_or_symbol = bool(
+        re.search(
+            r"(?i)\b(?:donna/|[\w.-]+\.(?:py|md|json|txt|yml|yaml)\b|[A-Za-z_][\w]*\()",
+            ctx,
+        )
+    )
+    has_steps = bool(
+        re.search(
+            r"(?is)\b(?:root\s+cause|step[- ]?by[- ]?step|acceptance\s+criteria|"
+            r"refactoring steps|\d+\.\s+\w+)",
+            ctx,
+        )
+    )
+    return bool(has_path_or_symbol and has_steps)
 
 
 class DraftCursorPromptArgs(BaseModel):
@@ -224,6 +269,16 @@ def draft_cursor_prompt(
         target_files = str(enriched.get("target_files") or "")
     except Exception:  # noqa: BLE001
         pass
+
+    # Module 4 strict guard — truncated / intent-echo / missing structure.
+    try:
+        from donna.tools.guards import DraftCursorTicketPayload, format_validation_bounce
+
+        DraftCursorTicketPayload.model_validate(
+            {"objective": args.objective, "context": args.context}
+        )
+    except ValidationError as exc:
+        return f"ERROR: {format_validation_bounce(exc)}"
 
     if not _context_is_sufficiently_specific(args.context):
         return _REJECT_AMBIGUOUS_MSG

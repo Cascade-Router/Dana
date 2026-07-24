@@ -4,6 +4,10 @@ Tools:
   capture_and_analyze_screen — mss screenshot → Cascade MoA vision summary
   execute_os_keystrokes      — hardware scan-code SendInput (no pyautogui/pynput)
 
+Closed-loop upgrade (Stage 6.1):
+  ``donna.operators.ghost_typist.GhostTypistOperator`` / ``type_stealth_text``
+  wraps this SendInput backend with chunked Sense-Evaluate-Act visual guards.
+
 Safety:
   - DONNA_OS_DRY_RUN=1 skips real input.
   - Keystroke bursts are rate-limited (chars/sec + cooldown).
@@ -55,10 +59,16 @@ _ALLOWED_HOTKEYS: frozenset[tuple[str, ...]] = frozenset(
 # ---------------------------------------------------------------------------
 
 INPUT_KEYBOARD = 1
+INPUT_MOUSE = 0
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
 KEYEVENTF_EXTENDEDKEY = 0x0001
 MAPVK_VK_TO_VSC = 0
+MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_ABSOLUTE = 0x8000
+MOUSEEVENTF_VIRTUALDESK = 0x4000
 
 # Virtual-key codes needed for MapVirtualKey → scan code.
 VK_SHIFT = 0x10
@@ -130,6 +140,64 @@ class INPUT(ctypes.Structure):
 
 def _user32():
     return ctypes.windll.user32
+
+
+def get_cursor_pos() -> tuple[int, int]:
+    """Return current cursor position in screen pixels."""
+    pt = wintypes.POINT()
+    if not _user32().GetCursorPos(ctypes.byref(pt)):
+        raise OSError(f"GetCursorPos failed: {ctypes.GetLastError()}")
+    return int(pt.x), int(pt.y)
+
+
+def get_screen_size() -> tuple[int, int]:
+    user32 = _user32()
+    return int(user32.GetSystemMetrics(0)), int(user32.GetSystemMetrics(1))
+
+
+def move_cursor_absolute(x: int, y: int) -> None:
+    """Move cursor via SendInput absolute coordinates (0..65535 mapped)."""
+    if os.name != "nt":
+        raise OSError("SendInput mouse move is Windows-only")
+    sw, sh = get_screen_size()
+    sw = max(1, sw)
+    sh = max(1, sh)
+    ax = int(max(0, min(sw - 1, int(x))) * 65535 / (sw - 1 if sw > 1 else 1))
+    ay = int(max(0, min(sh - 1, int(y))) * 65535 / (sh - 1 if sh > 1 else 1))
+    inp = INPUT()
+    inp.type = INPUT_MOUSE
+    inp.union.mi = MOUSEINPUT(
+        dx=ax,
+        dy=ay,
+        mouseData=0,
+        dwFlags=MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
+        time=0,
+        dwExtraInfo=None,
+    )
+    sent = _user32().SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+    if sent != 1:
+        raise OSError(f"SendInput mouse move failed (sent={sent})")
+
+
+def click_left_sendinput() -> None:
+    """Left-click at the current cursor via SendInput."""
+    if os.name != "nt":
+        raise OSError("SendInput mouse click is Windows-only")
+    for flags in (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP):
+        inp = INPUT()
+        inp.type = INPUT_MOUSE
+        inp.union.mi = MOUSEINPUT(
+            dx=0,
+            dy=0,
+            mouseData=0,
+            dwFlags=flags,
+            time=0,
+            dwExtraInfo=None,
+        )
+        sent = _user32().SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+        if sent != 1:
+            raise OSError(f"SendInput mouse click failed (sent={sent})")
+        time.sleep(random.uniform(0.02, 0.06))
 
 
 def _human_sleep() -> None:

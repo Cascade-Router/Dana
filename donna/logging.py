@@ -21,8 +21,11 @@ from typing import Any, Optional
 
 from donna.paths import LOGS_DIR, PROJECT_ROOT
 from donna.sanitize import sanitize_log_message
+from donna.stdio_boot import NullStdio, ensure_stdio, ensure_stdio_for_pythonw
 
 _PROJECT_DIR = str(PROJECT_ROOT)
+# Any import of donna.logging (hot path) hardens pythonw stdio immediately.
+ensure_stdio()
 RUNTIME_LOG_DIR = str(LOGS_DIR)
 RUNTIME_LOG_PATH = str(LOGS_DIR / "donna_runtime.log")
 CONVERSATION_LOG_PATH = str(LOGS_DIR / "donna_conversation.log")
@@ -86,6 +89,7 @@ def _trim_runtime_log_to_last_lines(
 
 
 def _print_line(line: str) -> None:
+    ensure_stdio()
     try:
         print(line, flush=True)
     except UnicodeEncodeError:
@@ -94,8 +98,10 @@ def _print_line(line: str) -> None:
         print(safe, flush=True)
     except Exception:
         try:
-            sys.stdout.buffer.write((line + "\n").encode("utf-8", errors="replace"))
-            sys.stdout.buffer.flush()
+            buf = getattr(sys.stdout, "buffer", None)
+            if buf is not None:
+                buf.write((line + "\n").encode("utf-8", errors="replace"))
+                buf.flush()
             append_runtime_log(line + "\n")
         except Exception:
             try:
@@ -154,11 +160,13 @@ def log_exception(
     _print_line(f"[{stamp}] [{thread}] EXCEPTION: {message}")
     # Write the full traceback as one append so trim keeps the whole block longer.
     append_runtime_log(block)
+    ensure_stdio()
     try:
-        sys.stderr.write(tb_text)
-        if not tb_text.endswith("\n"):
-            sys.stderr.write("\n")
-        sys.stderr.flush()
+        if sys.stderr is not None:
+            sys.stderr.write(tb_text)
+            if not tb_text.endswith("\n"):
+                sys.stderr.write("\n")
+            sys.stderr.flush()
     except Exception:
         pass
 
@@ -212,18 +220,23 @@ class _RuntimeLogTee:
     """Mirror writes to the original stream and the persistent runtime log."""
 
     def __init__(self, stream: Any) -> None:
-        self._stream = stream
+        self._stream = stream if stream is not None else NullStdio()
 
     def write(self, data: Any) -> int:
         text = data if isinstance(data, str) else str(data)
+        written = len(text)
         try:
-            written = self._stream.write(data)
+            result = self._stream.write(data)
+            if isinstance(result, int):
+                written = result
         except Exception:
-            written = len(text)
-            raise
-        finally:
+            # pythonw / broken console: never abort Whisper/mic on log writes.
+            pass
+        try:
             append_runtime_log(text)
-        return written if isinstance(written, int) else len(text)
+        except Exception:
+            pass
+        return written
 
     def flush(self) -> None:
         try:
@@ -237,6 +250,14 @@ class _RuntimeLogTee:
         except Exception:
             return False
 
+    def reconfigure(self, **kwargs: Any) -> None:
+        try:
+            reconf = getattr(self._stream, "reconfigure", None)
+            if callable(reconf):
+                reconf(**kwargs)
+        except Exception:
+            pass
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self._stream, name)
 
@@ -244,6 +265,7 @@ class _RuntimeLogTee:
 def enable_runtime_file_logging() -> str:
     """Install stdout/stderr tees; start a fresh conversation log for this run."""
     global _runtime_log_tee_installed
+    ensure_stdio()
     os.makedirs(RUNTIME_LOG_DIR, exist_ok=True)
     with _runtime_log_lock:
         _trim_runtime_log_to_last_lines(RUNTIME_LOG_PATH)

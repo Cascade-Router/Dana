@@ -2,6 +2,8 @@
 
 Donna is a **local-first agentic voice OS**: a multi-threaded perception plane, a mode-gated cognitive router, and a filesystem execution jail under a single-instance process lock. This document describes the production control paths relevant to operators and contributors.
 
+**Stage 3 (FSM Bureaucracy & Blackboard):** Donna is no longer a purely probabilistic LangGraph system. She is a **deterministic Finite State Machine (FSM) hybrid** — RapidFuzz mailroom routing, minimized graph state, SQLite Blackboard memory, DeepSeek `<think>` extraction, Pydantic tool guards, and structured `Handoff` capability switches. LLMs generate content; Python owns routing, validation, and state transitions.
+
 ---
 
 ## 1. Multi-Threaded Ingestion Pipeline
@@ -43,9 +45,21 @@ input.txt ──► InputIngest ──► task_queue.json ──► drain on ses
 
 ---
 
-## 2. Cascade Router & Mode Map
+## 2. Cascade Router, Mailroom & Mode Map
 
 The **Cascade Router** (`donna/cascade_router.py`) classifies complexity and selects local backends. Modes (`donna/agentic.py`) are a hard process-wide switch that changes which graph edges are legal.
+
+### 2.1 Mailroom (RapidFuzz — Stage 3 Module 2)
+
+**LLM routing is short-circuited** at the absolute top of `decide_route()`:
+
+1. Normalize Whisper ASR (strip wake wrappers / punctuation).
+2. Exact substring match against `COMMAND_DICTIONARY` / `STATE_TOGGLE_TRIGGERS`, else **RapidFuzz** similarity (ratio / partial / WRatio).
+3. If match **≥ 80%** (`FUZZY_MATCH_THRESHOLD`), set mode / action deterministically and return a `CascadeDecision` — **no MoA / Llama classification**.
+4. Known ASR garbles (e.g. `"vision mounts"` → vision) are immunized by fuzzy + dictionary aliases.
+5. Fall-through (< 80%) continues to semantic / MoA heuristics and emits `[VOICE_ASR]` forensic telemetry.
+
+Hits emit `[ROUTER]` with `raw_asr`, `matched_command`, `confidence`, and `target_node`.
 
 | Mode | Color (Live Trace) | Cognitive path | Tool jail |
 |------|--------------------|----------------|-----------|
@@ -56,17 +70,47 @@ The **Cascade Router** (`donna/cascade_router.py`) classifies complexity and sel
 
 ### Fast-paths (no LLM)
 
-Mode switches (`switch to chat/developer/vision/research mode`) and `clear chat memory` short-circuit in the conversation handler: set state, speak canned ack, emit telemetry — **zero** Ollama round-trip.
+Mode switches (mailroom ≥80% or exact phrase) and `clear chat memory` short-circuit in the conversation handler: set state, speak canned ack, emit telemetry — **zero** Ollama round-trip for the switch itself.
 
-### Developer / MoA path
+### Developer / MoA path (Stage 3 Modules 3–4)
 
 1. Intent Broker may force-route tools such as `draft_cursor_prompt`.
-2. Cascade foresight tags high-complexity → `route=moa` with DeepSeek-R1 as reasoner.
-3. Bound-tools ReAct iterations stay on the fast local chat model for reliable `bind_tools` on Ollama; R1 is reserved for MoA stages.
+2. Cascade foresight tags high-complexity → `route=moa` with DeepSeek-R1 as reasoner (**Stage-1**, no tools bound).
+3. **Think extractor** (`extract_r1_think_blocks` in `donna/agentic.py`): R1 `<think>...</think>` (including unclosed / multi-block) is filed to the Blackboard + `[REASONING_TRACE]`; **only sanitized text** reaches the Stage-2 Llama `bind_tools` formatter.
+4. Bound-tools ReAct iterations stay on the fast local chat model for reliable `bind_tools` on Ollama.
+5. **Pydantic guards** (`donna/tools/guards.py`) validate tool payloads before execution; `ValidationError` triggers **exactly one** local bounce/retry — no supervisor LLM.
+6. Capability switches use the structured **`Handoff`** schema (`donna/schema.py` / `donna/handoff.py`), not raw prose intents.
 
 ---
 
-## 3. Single-Instance Socket Lock
+## 3. Memory — Blackboard & Minimized LangGraph State (Stage 3 Module 1)
+
+### 3.1 Bureaucratic graph state
+
+`ReactGraphState` (`donna/schema.py`) is **strictly minimized** for durable control:
+
+| Field | Role |
+|-------|------|
+| `session_id` | Blackboard key — pull history / CoT by ID |
+| `current_agent` | Active bureaucratic agent (`Chat_Node`, `MoA_Reasoner`, `Vision_Agent`, …) |
+| `active_intent` | Current intent pointer |
+
+Ephemeral turn scratch (`messages`, `iterations`, `last_obs`, …) exists **only** to drive `bind_tools` within a single invoke. It is **not** the durable memory store. Agents must load conversational history via `session_id` from the Blackboard.
+
+### 3.2 Blackboard (SQLite)
+
+| Concern | Path / API |
+|---------|------------|
+| Database | `memory/blackboard.db` (runtime artifact under workspace) |
+| Package | `donna/memory/blackboard.py` |
+| Tables | `sessions`, `messages`, `reasoning_traces` |
+| APIs | `ensure_session`, `append_message`, `load_messages`, `append_reasoning_trace`, `load_reasoning_traces` |
+
+Chat/ReAct history and DeepSeek chain-of-thought are **permanently offloaded** here. Do not rehydrate full MemorySaver dialogue into graph state as the source of truth.
+
+---
+
+## 4. Single-Instance Socket Lock
 
 **Bind address:** `127.0.0.1:47473` (exclusive TCP listen; no `SO_REUSEADDR`)
 
@@ -88,6 +132,7 @@ Donna’s durable control plane lives on disk:
 | `execution_jail/task_queue.json` | Double-drain, lost completions, corrupt JSON |
 | `execution_jail/input.txt` | Raced clear/ingest; duplicate or dropped tasks |
 | `donna_security/patch_ledger.md` | Interleaved ticket writes; `Errno 22` / failed drains |
+| `memory/blackboard.db` | Concurrent SQLite writers / torn sessions |
 | `.trigger_ask` | Two Mains consuming one inject; duplicated sessions |
 
 Headless E2E and Startup-registered `pythonw` launches make multi-instance races likely without a lock. The socket gate is **fail-closed infrastructure**, not a UX nicety.
@@ -96,7 +141,7 @@ Headless E2E and Startup-registered `pythonw` launches make multi-instance races
 
 ---
 
-## 4. Thread Topology (summary)
+## 5. Thread Topology (summary)
 
 | Thread / owner | Responsibility |
 |----------------|----------------|
@@ -107,4 +152,4 @@ Headless E2E and Startup-registered `pythonw` launches make multi-instance races
 | Tracker | JIT YOLO when Vision (or warmed) |
 | System tray (`pystray`) | Open Settings / Quit |
 
-Telemetry contract between workers and UI: [`telemetry_and_ui.md`](telemetry_and_ui.md).
+Telemetry contracts: Live Trace UI + structured JSONL — [`telemetry_and_ui.md`](telemetry_and_ui.md).

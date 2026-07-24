@@ -170,4 +170,10 @@ def watch_input_txt(*, empty_sleep: float = EMPTY_POLL_SLEEP_S) -> None:
 
 
 if __name__ == "__main__":
+    try:
+        from donna.stdio_boot import ensure_stdio
+
+        ensure_stdio()
+    except Exception:
+        pass
     watch_input_txt()

@@ -2,6 +2,8 @@
 
 Donna’s operator UI is a **decoupled CustomTkinter surface**. Perception, cognition, and tool workers must never call Tk APIs directly. All Live Trace updates cross a single thread-safe queue and are applied on the GUI main thread.
 
+**Stage 3 also adds a structured JSONL logger** (`donna/telemetry.py` → `logs/donna_telemetry.jsonl`) for forensic / queryable bureaucracy events. Live Trace and JSONL are complementary: UI for operators, JSONL for diagnostics and soak tests.
+
 ---
 
 ## Design Goals
@@ -9,6 +11,7 @@ Donna’s operator UI is a **decoupled CustomTkinter surface**. Perception, cogn
 1. **Crash isolation** — Tkinter is not thread-safe; cross-thread widget updates cause intermittent freezes and hard crashes on Windows.
 2. **Transparency** — Contributors and operators can see stage lifecycle (`active` → `completed` / `bypassed`) without reading logs.
 3. **Mode awareness** — Header accent colors track Chat / Developer / Vision / Research without polling widgets from workers.
+4. **Queryable bureaucracy** — JSONL tags make mailroom hits, think traces, tool guards, and handoffs greppable without scraping free-form runtime logs.
 
 ---
 
@@ -20,6 +23,8 @@ Donna’s operator UI is a **decoupled CustomTkinter surface**. Perception, cogn
 | `emit_trace(...)` | `donna/core_agent.py` | Safe producer API for any thread |
 | `DonnaGUI.process_telemetry` | `donna/core_agent.py` | Consumer: `get_nowait` + `after(100, ...)` |
 | `TraceCell` | `donna/core_agent.py` | One stage row (icon + message + border pulse) |
+| `emit_tagged` / helpers | `donna/telemetry.py` | Structured JSONL writer (Stage 3) |
+| `TELEMETRY_JSONL_PATH` | `logs/donna_telemetry.jsonl` | Append-only forensic event stream |
 
 ```text
   Worker threads                    Tk main thread
@@ -30,7 +35,29 @@ Donna’s operator UI is a **decoupled CustomTkinter surface**. Perception, cogn
                               process_telemetry()
                                    TraceCell.pack / update_status
                                    border pulse after(500)
+
+  Worker threads                    Disk
+  ─────────────                    ────
+  emit_tagged / log_* ───────────► logs/donna_telemetry.jsonl
 ```
+
+---
+
+## Structured JSONL Telemetry (Stage 3)
+
+Path: **`logs/donna_telemetry.jsonl`** (one JSON object per line).
+
+| Tag | Helper | When |
+|-----|--------|------|
+| `[VOICE_ASR]` | `log_voice_asr` | Whisper / user transcript; mailroom fall-through |
+| `[ROUTER]` | `log_router` | Mailroom ≥80% hit; cascade / session route decisions |
+| `[REASONING_TRACE]` | `log_reasoning_trace` | Extracted DeepSeek `<think>` CoT (+ latency metadata) |
+| `[TOOL_EXECUTION]` | `log_tool_execution` | Guarded tool call success / error |
+| `[HANDOFF]` | `log_handoff` | Deterministic `Handoff` capability switch |
+
+Each record includes `ts`, `tag`, `message`, `session_id`, `current_agent`, `active_intent`, optional `latency_ms` / `payload`. Unknown tags raise at emit time — do not invent free-form labels.
+
+Dashboard markdown (`dashboard.md`) remains a separate ~45s operator surface and is **not** a substitute for JSONL forensics.
 
 ---
 
@@ -70,6 +97,7 @@ Implementation notes for contributors:
 - Prefer `put_nowait` semantics (already used inside `emit_trace`) so a stalled UI cannot block audio/LLM threads.
 - Invalid `status` values coerce to `"active"`.
 - Do **not** hold references to `DonnaGUI` widgets from worker code; only call `emit_trace`.
+- For FSM / soak diagnostics, also emit the matching JSONL tag via `donna.telemetry` helpers.
 
 ---
 
@@ -94,7 +122,8 @@ When adding a new pipeline stage or tool node:
 2. Call `emit_trace("YourStage", "completed", "…")` or `"bypassed"` on terminal outcomes.
 3. Pass `mode=...` only when the event itself changes or clarifies agent mode.
 4. Never import or invoke CustomTkinter from MicIngest, VAD, Whisper, Ollama, or tool handlers.
-5. Validate the new stage appears in Live Trace during the **Headless E2E State Reachability** suite (see [CONTRIBUTING.md](../CONTRIBUTING.md)).
+5. Emit the appropriate JSONL tag (`[TOOL_EXECUTION]`, `[HANDOFF]`, etc.) for bureaucratic events.
+6. Validate the new stage appears in Live Trace during the **Headless E2E State Reachability** suite (see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 
 ---
 

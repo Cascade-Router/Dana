@@ -19,7 +19,18 @@ from donna.tools.broker import IntentBroker, ToolValidationError, get_broker
 from donna.tools.schema import ToolCall
 
 # Re-export for callers that import ReactGraphState from this module.
-__all__ = ("ReactGraphState", "compile_donna_react_graph", "run_react_langgraph")
+__all__ = (
+    "ReactGraphState",
+    "compile_donna_react_graph",
+    "run_react_langgraph",
+    "validation_retry_tool_corridor",
+)
+
+
+def validation_retry_tool_corridor(failed_tool_id: str) -> list[str]:
+    """Stage 3.3: tools list for a ValidationError bounce turn (exactly one id)."""
+    tid = str(failed_tool_id or "").strip()
+    return [tid] if tid else []
 
 
 def _emit_live_trace(event_type: str, **payload: Any) -> None:
@@ -117,12 +128,32 @@ def _default_args_for_forced_tool(tool_id: str, user_text: str) -> dict[str, Any
         except Exception:  # noqa: BLE001
             args = {}
         if not str(args.get("objective") or "").strip():
-            args["objective"] = raw[:500] or "Log self-improvement ticket"
+            from donna.agentic import _full_sentence_boundary
+
+            args["objective"] = (
+                _full_sentence_boundary(raw) or "Log self-improvement ticket"
+            )
         if "context" not in args:
             args["context"] = ""
         return args
-    if tid in {"web_search", "dispatch_research_swarm"}:
+    if tid in {"web_search", "dispatch_research_swarm", "dispatch_jason_supervisor"}:
         return {"query": raw}
+    if tid == "file_editor":
+        path = "notes.txt"
+        m = re.search(
+            r"([\w./\\-]+\.(?:txt|md|json|csv|log))",
+            raw,
+            flags=re.I,
+        )
+        if m:
+            path = m.group(1).replace("\\", "/")
+        content = (
+            "Summary\n"
+            "1. Clear roles and interfaces beat vague agent swarms.\n"
+            "2. Shared memory and coordination are the usual bottlenecks.\n"
+            "3. Prefer local tools and small loops over unbounded fan-out.\n"
+        )
+        return {"action": "write", "filepath": path, "content": content}
     return {}
 
 
@@ -326,15 +357,14 @@ async def run_react_langgraph(
                     "Do NOT invent JSON repairs, continue the forge yourself, or "
                     "dump sandbox/vault document contents."
                 )
-
-    seed = ag._build_seed_messages(
-        user_text=user_text,
-        system_prompt=prompt,
-        prior_messages=prior_messages,
-        visual_context=visual_context,
-        reply_lang=reply_lang,
-    )
-    lc_messages = ag._dicts_to_lc_messages(seed)
+            if tid == "file_editor" or "file_editor" in extras:
+                prompt += (
+                    "\n- Dual-intent: call `file_editor` with action=write, filepath, "
+                    "and non-empty content (summary/notes). Then speak a short natural "
+                    "answer to any conversational question in the same user turn.\n"
+                    "- Never invent tool names (e.g. build_tool_that_*). On ERROR from "
+                    "an unknown/phantom tool, retry with file_editor then FINAL."
+                )
 
     semantic = get_tool_registry()
     known_ids = list(semantic.as_spec_dict().keys()) or list(broker.registry.keys())
@@ -348,6 +378,101 @@ async def run_react_langgraph(
                 known_ids=known_ids,
             )
         )
+    )
+    # --- Module 1: Blackboard + minimal bureaucratic state ---
+    from donna.memory import (
+        append_message,
+        ensure_session,
+        load_messages,
+        set_session_meta,
+    )
+    from donna.telemetry import log_router
+
+    current_agent = (
+        "MoA_Reasoner"
+        if (
+            forced_tool is not None
+            or "draft_cursor_prompt" in (user_text or "").lower()
+        )
+        else "ReAct_Agent"
+    )
+    active_intent = (
+        forced_tool.tool_id
+        if forced_tool is not None
+        else ("tool_graph" if always else "general")
+    )
+    # Stable session for ongoing dialogue; fresh id for isolated queue tasks.
+    session_key = ag._REACT_THREAD_ID if prior_messages else None
+    session_id = ensure_session(
+        session_key,
+        current_agent=current_agent,
+        active_intent=active_intent,
+    )
+    set_session_meta(
+        session_id,
+        current_agent=current_agent,
+        active_intent=active_intent,
+    )
+    # Stage 4.3 — piggyback unread actuator completions into this turn's prompt.
+    try:
+        from donna.memory.blackboard import (
+            format_background_system_alert,
+            get_and_clear_unread_notifications,
+        )
+
+        _unread = get_and_clear_unread_notifications(session_id)
+        _alert = format_background_system_alert(_unread)
+        if _alert:
+            prompt = f"{prompt}\n\n{_alert}"
+            try:
+                from donna.telemetry import log_notification_piggyback
+
+                log_notification_piggyback(
+                    _alert,
+                    session_id=session_id,
+                    count=len(_unread),
+                    payload={
+                        "action_ids": [
+                            int(r.get("action_id") or 0) for r in _unread
+                        ]
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    # Durable history on Blackboard — graph state only holds this turn's scratch.
+    if prior_messages:
+        existing = load_messages(session_id)
+        if not existing:
+            for m in prior_messages:
+                role = str((m or {}).get("role") or "").strip().lower()
+                content = str((m or {}).get("content") or "")
+                if role in {"user", "assistant", "system"} and content.strip():
+                    append_message(session_id, role, content)
+    append_message(session_id, "user", user_text or "")
+    bb_prior = [
+        {"role": r["role"], "content": r["content"]}
+        for r in load_messages(session_id, limit=8)
+        if r.get("role") in {"user", "assistant"}
+    ]
+    # Drop the user turn we just filed — _build_seed_messages appends it again.
+    if bb_prior and bb_prior[-1].get("role") == "user":
+        bb_prior = bb_prior[:-1]
+    seed = ag._build_seed_messages(
+        user_text=user_text,
+        system_prompt=prompt,
+        prior_messages=bb_prior,
+        visual_context=visual_context,
+        reply_lang=reply_lang,
+    )
+    lc_messages = ag._dicts_to_lc_messages(seed)
+    log_router(
+        f"session={session_id} agent={current_agent} intent={active_intent}",
+        session_id=session_id,
+        current_agent=current_agent,
+        active_intent=active_intent,
+        payload={"mode": ag.get_donna_mode(), "always_include": list(always)},
     )
     # When the broker merge is non-empty, bind_tools must match it exactly —
     # do not dilute/overwrite with MoA/Vision semantic top-K defaults.
@@ -389,6 +514,69 @@ async def run_react_langgraph(
     )
     llm_with_tools = llm.bind_tools(tools, strict=True)
 
+    # Two-stage MoA shim: DeepSeek-R1 plans (no tools) → Llama formats tool_calls.
+    moa_plan = ""
+    use_moa_shim = False
+    try:
+        from donna.moa_tool_shim import (
+            enrich_forced_tool_from_plan,
+            formatter_system_injection,
+            run_moa_reasoner_stage,
+            should_use_moa_tool_shim,
+        )
+
+        use_moa_shim = should_use_moa_tool_shim(
+            user_text,
+            forced_tool_id=forced_tool.tool_id if forced_tool is not None else None,
+        )
+        if use_moa_shim:
+            moa_plan = run_moa_reasoner_stage(
+                user_text,
+                forced_tool_id=(
+                    forced_tool.tool_id if forced_tool is not None else None
+                ),
+                allowed_tool_ids=sorted(n for n in bound_names if n),
+                session_id=session_id,
+            )
+            reasoner_plan_snapshot = moa_plan
+            # Stage 3.1: no MoA string CONTEXT gate — Pydantic tool guards +
+            # ValidationError retry own rejection.
+            inject = formatter_system_injection(moa_plan)
+            prompt = f"{prompt}\n\n{inject}"
+            if lc_messages and isinstance(lc_messages[0], SystemMessage):
+                lc_messages[0] = SystemMessage(content=prompt)
+            else:
+                lc_messages.insert(0, SystemMessage(content=prompt))
+            if forced_tool is not None:
+                forced_tool = enrich_forced_tool_from_plan(forced_tool, moa_plan)
+            try:
+                from donna.logging import log as _moa_log
+
+                _moa_log(
+                    "MoAShim",
+                    "stage2 formatter="
+                    f"{getattr(llm, 'model', None) or model} "
+                    f"tools={sorted(n for n in bound_names if n)}",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            # Module 3 files <think> on Blackboard inside run_moa_reasoner_stage.
+            # Here we only update the bureaucratic agent pointer for MoA turns.
+            if reasoner_plan_snapshot:
+                try:
+                    set_session_meta(session_id, current_agent="MoA_Reasoner")
+                    current_agent = "MoA_Reasoner"
+                except Exception:  # noqa: BLE001
+                    pass
+    except Exception as _moa_exc:  # noqa: BLE001
+        try:
+            from donna.logging import log as _moa_log
+
+            _moa_log("MoAShim", f"shim skipped: {_moa_exc}")
+        except Exception:  # noqa: BLE001
+            pass
+        use_moa_shim = False
+
     def _rebind_from_always(always_ids: list[str]) -> None:
         """Bind LLM tools strictly to the broker merge list (no mode top-K)."""
         nonlocal tools, bound_names, llm_with_tools, bind_registry
@@ -415,6 +603,45 @@ async def run_react_langgraph(
     last_obs = ""
     tool_ack_done = False
     tts_streamed = False
+    # Module 4: one localized ValidationError bounce per tool call id.
+    validation_retries: set[str] = set()
+    # Stage 3.3: on ValidationError bounce, next agent turn binds ONLY this tool.
+    strict_retry_tool_id: str | None = None
+
+    def _arm_strict_validation_retry(tool_id: str) -> None:
+        """Corridor: next agent bind_tools list is exactly ``[tool_id]``."""
+        nonlocal strict_retry_tool_id
+        tid = str(tool_id or "").strip()
+        if tid:
+            strict_retry_tool_id = tid
+
+    def _apply_strict_validation_retry_bind() -> str | None:
+        """If a ValidationError corridor is armed, rebind LLM to that tool only.
+
+        Returns the tool id when applied (one-shot; clears the arm). Fresh turns
+        never hit this path — only the immediate bounce retry.
+        """
+        nonlocal strict_retry_tool_id, llm_with_tools
+        tid = (strict_retry_tool_id or "").strip()
+        if not tid:
+            return None
+        strict_retry_tool_id = None
+        _rebind_from_always([tid])
+        _try_bind_tool_choice(tid)
+        try:
+            from donna.logging import log as _retry_log
+
+            bound = sorted(
+                n for n in (getattr(t, "name", "") for t in tools) if n
+            )
+            _retry_log(
+                "MoAShim",
+                f"strict validation retry bind tools={bound} "
+                f"(corridor={tid})",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return tid
 
     def _finish(final_text: str, iterations: int) -> AgenticResult:
         from donna.reflector import trace_has_failure
@@ -474,6 +701,7 @@ async def run_react_langgraph(
                 "web_search",
                 "dispatch_research_swarm",
                 "dispatch_watchdog",
+                "dispatch_jason_supervisor",
                 "dispatch_titan_repair",
                 "architect_new_tool",
                 "read_local_file",
@@ -486,6 +714,12 @@ async def run_react_langgraph(
                     "I'm researching that in the background — I'll speak up when it's ready."
                     if reply_lang != "fa"
                     else "  ‌   ‌ —    ‌."
+                )
+            elif forced_tool.tool_id == "dispatch_jason_supervisor":
+                spoken = (
+                    "Jason read the notes and Donna wrote the script."
+                    if reply_lang != "fa"
+                    else "Jason     Donna   ."
                 )
             elif forced_tool.tool_id == "dispatch_watchdog":
                 spoken = (
@@ -571,6 +805,7 @@ async def run_react_langgraph(
     _needs_args = {
         "web_search": ("query",),
         "dispatch_research_swarm": ("query",),
+        "dispatch_jason_supervisor": ("query",),
         "run_terminal_command": ("command",),
         "shell_execute": ("command",),
         "file_editor": ("action", "filepath"),
@@ -626,10 +861,22 @@ async def run_react_langgraph(
                 or (user_text or "").strip()
             )
         elif forced_tool.tool_id == "draft_cursor_prompt":
-            forced_args_ready = bool(
-                str((forced_tool.arguments or {}).get("objective") or "").strip()
-                or (user_text or "").strip()
-            )
+            obj = str((forced_tool.arguments or {}).get("objective") or "").strip()
+            ctx = str((forced_tool.arguments or {}).get("context") or "").strip()
+            if use_moa_shim:
+                # Prefer reasoner-enriched args; reject thin broker truncations.
+                forced_args_ready = bool(obj) and (bool(ctx) or len(obj) >= 80)
+            else:
+                forced_args_ready = bool(obj or (user_text or "").strip())
+        elif forced_tool.tool_id == "file_editor":
+            act = str((forced_tool.arguments or {}).get("action") or "").strip().lower()
+            path = str((forced_tool.arguments or {}).get("filepath") or "").strip()
+            content = str((forced_tool.arguments or {}).get("content") or "")
+            # Writes need content so dual-intent notes are not force-executed empty.
+            if act == "write":
+                forced_args_ready = bool(path and content.strip())
+            else:
+                forced_args_ready = bool(act and path)
         else:
             for key in required:
                 val = forced_tool.arguments.get(key)
@@ -684,6 +931,15 @@ async def run_react_langgraph(
         ag.sanitize_react_message_history(lc_messages)
         if forced_tool.tool_id == "evaluate_slide_and_type" and last_obs:
             return _finish(ag._obs_fallback(last_obs, reply_lang), 1)
+        # Jason→Donna supervisor is a complete multi-agent run — do not continue
+        # the outer ReAct loop (prevents file_editor ping-pong after handoff).
+        if forced_tool.tool_id == "dispatch_jason_supervisor":
+            if str(last_obs).startswith("OK:"):
+                spoken = str(last_obs)[3:].strip() or (
+                    "Jason read the notes and Donna wrote the script."
+                )
+                return _finish(spoken, 1)
+            return _finish(ag._obs_fallback(last_obs, reply_lang), 1)
     elif forced_tool is not None and not forced_args_ready:
         if on_tool_start is not None and not tool_ack_done:
             tool_ack_done = True
@@ -733,7 +989,11 @@ async def run_react_langgraph(
             for x in (state.get("always_include") or always or [])
             if str(x).strip()
         ]
-        if state_always:
+        # Stage 3.3: ValidationError bounce → bind ONLY the failed tool.
+        corridor = _apply_strict_validation_retry_bind()
+        if corridor:
+            state_always = [corridor]
+        elif state_always:
             _rebind_from_always(state_always)
         pending_start = [
             tid
@@ -930,14 +1190,52 @@ async def run_react_langgraph(
 
         always_list = list(state.get("always_include") or always)
         if tool_calls:
-            return {
-                "messages": [response],
-                "iterations": step,
-                "last_obs": last_obs,
-                "final_raw": "",
-                "halt": False,
-                "always_include": always_list,
-            }
+            # Drop phantom / unbound names so Llama cannot abort on build_tool_that_*.
+            cleaned: list[Any] = []
+            for tc in tool_calls:
+                name = str(
+                    (tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", ""))
+                    or ""
+                ).strip()
+                if name and name in bound_names:
+                    cleaned.append(tc)
+            if cleaned:
+                try:
+                    response.tool_calls = cleaned
+                except Exception:  # noqa: BLE001
+                    response = AIMessage(content="", tool_calls=cleaned)
+                return {
+                    "messages": [response],
+                    "iterations": step,
+                    "last_obs": last_obs,
+                    "final_raw": "",
+                    "halt": False,
+                    "always_include": always_list,
+                }
+            # Strip phantoms so we do not route into the tools node.
+            try:
+                response.tool_calls = []
+            except Exception:  # noqa: BLE001
+                response = AIMessage(
+                    content=str(getattr(response, "content", "") or "")
+                )
+            # All calls were phantoms — nudge toward file_editor when dual-intent.
+            if "file_editor" in always_list or "file_editor" in bound_names:
+                nudge = SystemMessage(
+                    content=(
+                        "SYSTEM: Previous tool name was invalid/unbound. "
+                        "Call `file_editor` with action=write, filepath, and content. "
+                        "Then speak your conversational answer. Do not invent tool names."
+                    )
+                )
+                return {
+                    "messages": [response, nudge],
+                    "iterations": step,
+                    "last_obs": last_obs,
+                    "final_raw": "",
+                    "halt": False,
+                    "always_include": always_list,
+                }
 
         # Option B: text-only reply while always_include tools remain → nudge
         # (or synthesize after nudge / max iters) instead of exiting to END.
@@ -980,6 +1278,40 @@ async def run_react_langgraph(
         raw = raw_stripped
         if ag.looks_like_raw_json_speech(raw) or ag._parse_content_tool_call(raw):
             raw = ""
+        # Module 4: deterministic Swarm Handoff (no supervisor LLM).
+        try:
+            from donna.handoff import execute_handoff, parse_handoff_payload
+
+            handoff = parse_handoff_payload(raw_stripped or raw)
+            if handoff is not None:
+                result = execute_handoff(
+                    handoff,
+                    session_id=str(state.get("session_id") or session_id),
+                    current_agent=str(
+                        state.get("current_agent") or current_agent
+                    ),
+                )
+                return {
+                    "messages": [response],
+                    "iterations": step,
+                    "last_obs": last_obs,
+                    "final_raw": str(
+                        result.get("ack")
+                        or f"Handoff → {handoff.target_agent}"
+                    ),
+                    "halt": True,
+                    "always_include": always_list,
+                    "session_id": str(state.get("session_id") or session_id),
+                    "current_agent": str(
+                        result.get("current_agent") or handoff.target_agent
+                    ),
+                    "active_intent": str(
+                        result.get("active_intent") or handoff.reason
+                    ),
+                    "pending_handoff": handoff.model_dump(),
+                }
+        except Exception:  # noqa: BLE001
+            pass
         answer = ag.extract_final(raw) or raw
         answer = re.sub(
             r"^\s*(FINAL|Final|final| )\s*[:：]\s*", "", answer
@@ -1041,7 +1373,35 @@ async def run_react_langgraph(
             try:
                 tool_call = broker.validate_and_correct(tool_call)
             except ToolValidationError as exc:
-                observation = f"ERROR: invalid tool call ({exc})"
+                hint = ""
+                if "file_editor" in bound_names or "file_editor" in (
+                    state.get("always_include") or always
+                ):
+                    hint = (
+                        " Retry with file_editor(action=write, filepath=..., content=...) "
+                        "then speak your conversational answer. Do not invent tool names."
+                    )
+                observation = f"ERROR: invalid tool call ({exc}).{hint}"
+                call_id = str(
+                    getattr(tc_raw, "id", None)
+                    or (tc_raw.get("id") if isinstance(tc_raw, dict) else None)
+                    or f"call-{tool_call.tool_id}"
+                )
+                new_msgs.append(ToolMessage(content=observation, tool_call_id=call_id))
+                continue
+            # Refuse phantom dynamics that slipped past bind_tools.
+            if tool_call.tool_id not in bound_names:
+                hint = (
+                    " Use a bound tool only"
+                    + (
+                        " — prefer file_editor for create/write notes."
+                        if "file_editor" in bound_names
+                        else "."
+                    )
+                )
+                observation = (
+                    f"ERROR: tool {tool_call.tool_id} is not bound.{hint}"
+                )
                 call_id = str(
                     getattr(tc_raw, "id", None)
                     or (tc_raw.get("id") if isinstance(tc_raw, dict) else None)
@@ -1054,56 +1414,231 @@ async def run_react_langgraph(
                 or (tc_raw.get("id") if isinstance(tc_raw, dict) else None)
                 or f"call-{tool_call.tool_id}-{uuid.uuid4().hex[:8]}"
             )
+            # Module 4: Pydantic guard before raw tool execution.
+            try:
+                from pydantic import ValidationError as _PydValidationError
+
+                from donna.tools.guards import (
+                    format_validation_bounce,
+                    guard_tool_call,
+                )
+
+                guarded_args = guard_tool_call(
+                    tool_call.tool_id, dict(tool_call.arguments or {})
+                )
+                tool_call = replace(tool_call, arguments=guarded_args)
+            except Exception as _guard_exc:  # noqa: BLE001 — includes ValidationError
+                from pydantic import ValidationError as _PydValidationError
+
+                from donna.tools.guards import format_validation_bounce
+
+                if not isinstance(_guard_exc, _PydValidationError):
+                    # Non-validation guard failures fall through as soft errors.
+                    observation = f"ERROR: tool guard failed: {_guard_exc}"
+                    new_msgs.append(
+                        ToolMessage(content=observation, tool_call_id=call_id)
+                    )
+                    continue
+                retry_key = f"{tool_call.tool_id}:{call_id}"
+                bounce = format_validation_bounce(_guard_exc)
+                try:
+                    from donna.telemetry import log_tool_execution
+
+                    log_tool_execution(
+                        tool_call.tool_id,
+                        session_id=str(state.get("session_id") or session_id),
+                        current_agent=str(
+                            state.get("current_agent") or current_agent
+                        ),
+                        active_intent=str(
+                            state.get("active_intent") or active_intent
+                        ),
+                        ok=False,
+                        payload={
+                            "validation_bounce": True,
+                            "guard": "pydantic",
+                            "retry": retry_key not in validation_retries,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                if retry_key in validation_retries:
+                    observation = f"ERROR: {bounce} (retry exhausted)"
+                else:
+                    validation_retries.add(retry_key)
+                    _arm_strict_validation_retry(tool_call.tool_id)
+                    observation = bounce
+                    new_msgs.append(
+                        ToolMessage(content=observation, tool_call_id=call_id)
+                    )
+                    new_msgs.append(
+                        SystemMessage(
+                            content=(
+                                f"SYSTEM: {observation} "
+                                "Do not invent softer wording — supply complete "
+                                "structured fields and call the same tool "
+                                f"`{tool_call.tool_id}` once more. "
+                                "No other tools are available on this retry."
+                            )
+                        )
+                    )
+                    continue
+                new_msgs.append(
+                    ToolMessage(content=observation, tool_call_id=call_id)
+                )
+                continue
             # Prefer explicit draft_cursor_prompt writer so patch_ledger.md updates
             # even when the model emitted raw JSON (content-parsed) tool calls.
             observation = ""
+            _tool_t0 = time.perf_counter()
+            # Stage 4.2 — heavy tools enqueue to action_queue; LLM turn stays non-blocking.
             try:
-                if tool_call.tool_id == "draft_cursor_prompt":
-                    from donna.tools.general.draft_cursor_prompt import (
-                        draft_cursor_prompt as _draft_cursor_prompt,
-                    )
+                from donna.memory.blackboard import (
+                    enqueue_action as _enqueue_action,
+                    is_heavy_actuator_tool as _is_heavy_actuator_tool,
+                )
 
-                    observation = str(
-                        _draft_cursor_prompt(
-                            objective=str(
-                                (tool_call.arguments or {}).get("objective") or ""
-                            ),
-                            context=str(
-                                (tool_call.arguments or {}).get("context") or ""
-                            ),
+                _enqueue_heavy = _is_heavy_actuator_tool(tool_call.tool_id)
+            except Exception:  # noqa: BLE001
+                _enqueue_heavy = False
+            if _enqueue_heavy:
+                try:
+                    _aid = _enqueue_action(
+                        tool_call.tool_id,
+                        dict(tool_call.arguments or {}),
+                        session_id=str(state.get("session_id") or session_id),
+                    )
+                    observation = (
+                        f"Action queued successfully. Task ID: {_aid}."
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    observation = (
+                        f"ERROR: failed to enqueue {tool_call.tool_id}: {exc}"
+                    )
+            else:
+                try:
+                    if tool_call.tool_id == "draft_cursor_prompt":
+                        from donna.tools.general.draft_cursor_prompt import (
+                            draft_cursor_prompt as _draft_cursor_prompt,
                         )
-                    )
-                elif tool_call.tool_id == "analyze_visual_context":
-                    # Direct JIT vision path → ToolMessage content for synthesis.
-                    from donna.vision_tools import analyze_visual_context as _analyze_visual
 
-                    src = str(
-                        (tool_call.arguments or {}).get("source") or "screen"
-                    ).strip().lower() or "screen"
-                    if src == "camera":
-                        src = "webcam"
-                    observation = str(_analyze_visual(source=src))
-                elif tool_call.tool_id == "ocr_with_region":
-                    from donna.tools.visual_tools import ocr_with_region as _ocr_region
-
-                    observation = str(
-                        _ocr_region(
-                            query=str(
-                                (tool_call.arguments or {}).get("query") or ""
-                            ).strip()
-                        )
-                    )
-                else:
-                    tool_map = {getattr(t, "name", ""): t for t in tools}
-                    st = tool_map.get(tool_call.tool_id)
-                    if st is not None and hasattr(st, "ainvoke"):
                         observation = str(
-                            await st.ainvoke(dict(tool_call.arguments or {}))
+                            _draft_cursor_prompt(
+                                objective=str(
+                                    (tool_call.arguments or {}).get("objective")
+                                    or ""
+                                ),
+                                context=str(
+                                    (tool_call.arguments or {}).get("context")
+                                    or ""
+                                ),
+                            )
+                        )
+                    elif tool_call.tool_id == "analyze_visual_context":
+                        # Direct JIT vision path → ToolMessage content for synthesis.
+                        from donna.vision_tools import (
+                            analyze_visual_context as _analyze_visual,
+                        )
+
+                        src = str(
+                            (tool_call.arguments or {}).get("source") or "screen"
+                        ).strip().lower() or "screen"
+                        if src == "camera":
+                            src = "webcam"
+                        observation = str(_analyze_visual(source=src))
+                    elif tool_call.tool_id == "ocr_with_region":
+                        from donna.tools.visual_tools import (
+                            ocr_with_region as _ocr_region,
+                        )
+
+                        observation = str(
+                            _ocr_region(
+                                query=str(
+                                    (tool_call.arguments or {}).get("query") or ""
+                                ).strip()
+                            )
                         )
                     else:
-                        observation = str(execute_fn(tool_call))
-            except Exception as exc:  # noqa: BLE001
-                observation = f"ERROR: tool {tool_call.tool_id} failed: {exc}"
+                        tool_map = {getattr(t, "name", ""): t for t in tools}
+                        st = tool_map.get(tool_call.tool_id)
+                        if st is not None and hasattr(st, "ainvoke"):
+                            observation = str(
+                                await st.ainvoke(dict(tool_call.arguments or {}))
+                            )
+                        else:
+                            observation = str(execute_fn(tool_call))
+                except Exception as exc:  # noqa: BLE001
+                    observation = f"ERROR: tool {tool_call.tool_id} failed: {exc}"
+            # Localized bounce when the tool returns a Validation Error string.
+            if "Validation Error:" in str(observation):
+                retry_key = f"{tool_call.tool_id}:{call_id}"
+                try:
+                    from donna.telemetry import log_tool_execution
+
+                    log_tool_execution(
+                        tool_call.tool_id,
+                        session_id=str(state.get("session_id") or session_id),
+                        current_agent=str(
+                            state.get("current_agent") or current_agent
+                        ),
+                        active_intent=str(
+                            state.get("active_intent") or active_intent
+                        ),
+                        ok=False,
+                        latency_ms=(time.perf_counter() - _tool_t0) * 1000.0,
+                        payload={"validation_bounce": True, "retry": retry_key not in validation_retries},
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                if retry_key not in validation_retries:
+                    validation_retries.add(retry_key)
+                    _arm_strict_validation_retry(tool_call.tool_id)
+                    new_msgs.append(
+                        ToolMessage(content=str(observation), tool_call_id=call_id)
+                    )
+                    new_msgs.append(
+                        SystemMessage(
+                            content=(
+                                f"SYSTEM: {observation} "
+                                f"Retry the same tool `{tool_call.tool_id}` once "
+                                "with complete fields. "
+                                "No other tools are available on this retry."
+                            )
+                        )
+                    )
+                    continue
+            try:
+                from donna.telemetry import log_tool_execution
+
+                log_tool_execution(
+                    tool_call.tool_id,
+                    session_id=str(state.get("session_id") or session_id),
+                    current_agent=str(
+                        state.get("current_agent") or current_agent
+                    ),
+                    active_intent=str(
+                        state.get("active_intent") or active_intent
+                    ),
+                    ok=not str(observation).startswith("ERROR:"),
+                    latency_ms=(time.perf_counter() - _tool_t0) * 1000.0,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            obs_l = str(observation).lower()
+            if (
+                str(observation).startswith("ERROR:")
+                and (
+                    "source not found" in obs_l
+                    or "dynamic tool" in obs_l
+                    or "unknown tool" in obs_l
+                )
+                and ("file_editor" in bound_names)
+            ):
+                observation = (
+                    f"{observation} HINT: Call file_editor(action=write, filepath=..., "
+                    "content=...) for file/notes requests, then FINAL with your "
+                    "conversational answer. Do not abort the turn."
+                )
             if tool_call.tool_id == "architect_new_tool" and str(observation).startswith(
                 "OK:"
             ):
@@ -1146,8 +1681,14 @@ async def run_react_langgraph(
                     "last_obs": last_obs,
                     "final_raw": ag._obs_fallback(last_obs, reply_lang),
                     "halt": True,
-                    "always_include": list(state.get("always_include") or always),
+                    "always_include": list(always),
                 }
+        # Stage 3.3: bounce corridor narrows always_include to the failed tool
+        # only; successful / exhausted paths restore the original broker merge.
+        if strict_retry_tool_id:
+            always_out = validation_retry_tool_corridor(strict_retry_tool_id)
+        else:
+            always_out = list(always)
         if step >= max_iters:
             extracted = ag._spoken_fact_from_search_obs(str(last_obs), user_text)
             if not extracted:
@@ -1164,7 +1705,7 @@ async def run_react_langgraph(
                 "last_obs": last_obs,
                 "final_raw": extracted or ag._obs_fallback(last_obs, reply_lang),
                 "halt": True,
-                "always_include": list(state.get("always_include") or always),
+                "always_include": list(always),
             }
         return {
             "messages": new_msgs,
@@ -1172,7 +1713,7 @@ async def run_react_langgraph(
             "last_obs": last_obs,
             "final_raw": "",
             "halt": False,
-            "always_include": list(state.get("always_include") or always),
+            "always_include": always_out,
         }
 
     graph = compile_donna_react_graph(
@@ -1182,27 +1723,17 @@ async def run_react_langgraph(
     )
 
     config = {
-        "configurable": {"thread_id": ag._REACT_THREAD_ID},
+        "configurable": {"thread_id": session_id or ag._REACT_THREAD_ID},
         "recursion_limit": max(10, max_iters * 4),
     }
-    # MemorySaver + add_messages: only append this turn when checkpoint already
-    # holds prior dialogue (avoids duplicating prior_messages every invoke).
+    # Module 1: durable history is on the Blackboard — do not rehydrate
+    # MemorySaver prior dialogue into graph state (keeps state minimal).
     turn_messages: list[Any] = list(lc_messages)
-    try:
-        snap = graph.get_state(config)
-        vals = getattr(snap, "values", None) or {}
-        if vals.get("messages"):
-            last_human = 0
-            for i, m in enumerate(lc_messages):
-                if isinstance(m, HumanMessage):
-                    last_human = i
-            turn_messages = list(lc_messages[last_human:])
-            if lc_messages and isinstance(lc_messages[0], SystemMessage):
-                turn_messages = [lc_messages[0], *turn_messages]
-    except Exception:  # noqa: BLE001
-        pass
 
     inputs: ReactGraphState = {
+        "session_id": session_id,
+        "current_agent": current_agent,
+        "active_intent": active_intent,
         "messages": turn_messages,
         "iterations": 0,
         "last_obs": last_obs,
@@ -1221,7 +1752,7 @@ async def run_react_langgraph(
         node="router",
         message="LangGraph ReAct start",
         mode=ag.get_donna_mode(),
-        state_keys=("messages",),
+        state_keys=("session_id", "current_agent", "active_intent"),
     )
     _chain_t0: dict[str, float] = {}
     async for event in graph.astream_events(inputs, config=config, version="v2"):
@@ -1267,6 +1798,18 @@ async def run_react_langgraph(
                 message=f"on_tool_start: {tool_name}",
                 mode=ag.get_donna_mode(),
             )
+            try:
+                from donna.telemetry import log_tool_execution
+
+                log_tool_execution(
+                    tool_name,
+                    session_id=session_id,
+                    current_agent=current_agent,
+                    active_intent=active_intent,
+                    ok=True,
+                )
+            except Exception:  # noqa: BLE001
+                pass
             if tool_name == "draft_cursor_prompt":
                 mute_post_ticket_stream = True
         elif kind == "on_tool_end":
@@ -1346,6 +1889,11 @@ async def run_react_langgraph(
         mode=ag.get_donna_mode(),
         payload=answer[:800],
         latency_ms=(time.perf_counter() - _graph_t0) * 1000.0,
-        state_keys=("final_raw", "last_obs", "messages"),
+        state_keys=("session_id", "current_agent", "active_intent", "final_raw"),
     )
+    # Persist assistant turn on Blackboard (durable memory).
+    try:
+        append_message(session_id, "assistant", answer)
+    except Exception:  # noqa: BLE001
+        pass
     return _finish(answer, iterations)

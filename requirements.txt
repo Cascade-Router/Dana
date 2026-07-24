@@ -21,6 +21,9 @@ numpy==2.5.1
 sounddevice==0.5.5
 soundfile==0.14.0
 piper-tts==1.4.2
+# Stage 8.1 — multi-voice mixer + Jason OS TTS (no VRAM)
+pygame>=2.5.0
+pyttsx3>=2.90
 openwakeword==0.6.0
 onnxruntime==1.27.0
 # Silero VAD loads via torch.hub (snakers4/silero-vad); no webrtcvad.
@@ -37,6 +40,8 @@ PyAutoGUI==0.9.54
 pywin32==312; platform_system=="Windows"
 ddgs>=9.0.0
 tzdata>=2025.1
+# Stage 6.2 — Jason bulk slide ingestion
+python-pptx>=1.0.0
 # Out-of-process research swarm (cloud LLM — never Ollama)
 langgraph>=0.2.0
 langchain>=0.3.0
@@ -48,5 +53,11 @@ duckduckgo-search>=6.0.0
 langchain-groq>=0.2.0
 pycaw>=20251023; platform_system=="Windows"
 comtypes>=1.4.0; platform_system=="Windows"
+# Stage 7.2 — global panic hotkey (hardware kill switch)
+keyboard>=0.13.5
+# Module 2 mailroom — ASR-tolerant command matching (Levenshtein / WRatio)
+rapidfuzz>=3.9.0
+# Stage 4.3 — silent Windows toast callbacks (PowerShell fallback if absent)
+win11toast>=0.32; platform_system=="Windows"
 # Optional: faster ToolRegistry vector search (falls back to NumPy cosine if absent)
 # faiss-cpu>=1.8.0

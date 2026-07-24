@@ -25,6 +25,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+try:
+    from donna.stdio_boot import ensure_stdio
+
+    ensure_stdio()
+except Exception:
+    pass
+
 # Absolute Windows console kill-switch: CREATE_NO_WINDOW + STARTUPINFO hide +
 # mutate python.exe → pythonw.exe (class patch so asyncio can still subclass).
 if os.name == "nt":
@@ -804,6 +811,12 @@ class VaultClient:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        from donna.stdio_boot import ensure_stdio
+
+        ensure_stdio()
+    except Exception:
+        pass
     parser = argparse.ArgumentParser(description="Donna vault key daemon")
     parser.add_argument("--serve", action="store_true", help="Run the vault key daemon")
     parser.add_argument("--vault", default=None, help="Path to donna_memory.enc")

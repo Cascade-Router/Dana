@@ -11,8 +11,8 @@ Donna is an offline-first agentic control plane for the desktop: wake-word perce
 | Capability | Engineering win |
 |---|---|
 | **Instant Wake & JIT ML Pipeline** | OpenWakeWord on the critical path; Whisper STT and YOLOv8 load deferred in background / on Vision demand so cold start stays sub-second where it matters. |
-| **LangGraph Orchestration** | A deterministic finite-state routing fabric: lightweight **Chat** fast-path vs heavy-duty **Developer** ReAct/MoA loops — modes never share context buffers or tool jails by accident. |
-| **Live Trace UI** | Thread-safe CustomTkinter telemetry: background workers enqueue events; the Tk main thread alone mutates widgets — pipeline stages and node states render in real time. |
+| **LangGraph Orchestration** | FSM hybrid: RapidFuzz **Mailroom** (≥80% ASR match) short-circuits LLM routing; minimized state (`session_id` / `current_agent` / `active_intent`) with SQLite **Blackboard** off-graph memory; Chat vs Developer/MoA loops stay mode-isolated. |
+| **Live Trace UI** | Thread-safe CustomTkinter telemetry: background workers enqueue events; the Tk main thread alone mutates widgets — pipeline stages and node states render in real time. Structured JSONL forensics: `logs/donna_telemetry.jsonl`. |
 | **Execution Jail & Single-Instance Lock** | Socket-bound process lock (`127.0.0.1:47473`) plus a filesystem execution jail so concurrent headless E2E runs cannot corrupt `task_queue.json` or `patch_ledger.md`. |
 
 ---
@@ -25,17 +25,19 @@ Mic / .trigger_ask / input.txt
         ▼
 ┌───────────────────┐     ┌────────────────────┐
 │  MicIngest (16k)  │────▶│  Conversation FSM  │
-│  InputIngest      │     │  (mode fast-paths) │
+│  InputIngest      │     │  Mailroom ≥80%     │
 └───────────────────┘     └─────────┬──────────┘
                                     │
               ┌─────────────────────┼─────────────────────┐
               ▼                     ▼                     ▼
          Chat Mode            Developer Mode         Vision / Research
       (local llama3.2)     (MoA + ReAct tools)      (JIT YOLO / scaffold)
-              │                     │
-              └──────────┬──────────┘
+              │               Pydantic guards              │
+              │               Handoff schema               │
+              └──────────┬────────────────────────────────┘
                          ▼
-              gui_telemetry_queue → Live Trace UI
+         Blackboard (SQLite) ← session_id
+         JSONL telemetry + gui_telemetry_queue → Live Trace UI
 ```
 
 Deep dive: [`docs/architecture.md`](docs/architecture.md) · Telemetry contract: [`docs/telemetry_and_ui.md`](docs/telemetry_and_ui.md) · Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)

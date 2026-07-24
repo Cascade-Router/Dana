@@ -167,8 +167,11 @@ def parse_draft_cursor_prompt_args(raw: str) -> dict[str, str]:
         args["context"] = ctx_m.group(1).strip()
 
     if not args.get("objective"):
-        first = re.split(r"[.!?\n]", text, maxsplit=1)[0].strip()
-        args["objective"] = (first[:200] if first else "Self-improvement ticket")
+        first = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip()
+        if not first:
+            first = re.split(r"[.!?\n]", text, maxsplit=1)[0].strip()
+        # Full first sentence — never mid-word character caps.
+        args["objective"] = first or "Self-improvement ticket"
     # Do not copy the full raw string into context when sections were absent —
     # enrich_draft_cursor_args scrubs raw_text once; duplicating it here caused
     # stacked "Technical intent:" / "Donna," echoes in patch_ledger.md.
@@ -284,6 +287,44 @@ _REPL_SUITE_TOOL_IDS: tuple[str, ...] = (
     "file_editor",
     "run_terminal_command",
 )
+# Jason/Titan conversational supervisor → Donna coder handoff (not Watchdog).
+_JASON_SUPERVISOR_HINT_RE = re.compile(
+    r"("
+    r"(?:hey\s+|hi\s+|ok\s+)?(?:jason|titan)\b[\s\S]{0,500}?"
+    r"(?:have\s+her|ask\s+donna|donna|delegate)\b[\s\S]{0,300}?"
+    r"(?:write|create|code|generate)\b|"
+    r"(?:hey\s+|hi\s+)?(?:jason|titan)\b[\s\S]{0,300}?"
+    r"\bread\b[\s\S]{0,160}?\bnotes\.txt\b"
+    r")",
+    re.IGNORECASE,
+)
+# Dual-intent: conversational Q + create/write a notes/summary file in one turn.
+_FILE_WRITE_HINT_RE = re.compile(
+    r"("
+    r"\b(?:create|write|save)\s+(?:(?:a|the|my)\s+)?(?:file\s+)?"
+    r"[\w./\\-]+\.(?:txt|md|json|csv|log)\b|"
+    r"\bnotes\.txt\b|"
+    r"\bwrite\s+down\s+a\s+\d+[-\s]?point\b|"
+    r"\bsave\s+(?:(?:a|the)\s+)?(?:summary|notes)\b|"
+    r"\bwrite\s+(?:a\s+)?(?:summary|notes)\s+(?:to|into)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _bindable_registry(registry: dict[str, ToolSpec] | None = None) -> dict[str, ToolSpec]:
+    """Drop phantom ``dynamic: true`` tools that have no executable source."""
+    from donna.tools.registry import _dynamic_source_available
+
+    raw = registry if registry is not None else load_tool_registry()
+    out: dict[str, ToolSpec] = {}
+    for tid, spec in raw.items():
+        if getattr(spec, "dynamic", False) and not _dynamic_source_available(tid):
+            continue
+        out[tid] = spec
+    return out
+
+
 # Explicit project-directory listing requests must not drift into read_local_file
 # or describe_spatial_scene.
 _PROJECT_LIST_RE = re.compile(
@@ -481,14 +522,28 @@ def merge_bound_tool_ids(
             merged.append(name)
 
     _add(forced_tool_id)
-    if (mode or "").strip().lower() == "vision":
+    mode_norm = (mode or "").strip().lower()
+    jason_sup = (forced_tool_id or "").strip() == "dispatch_jason_supervisor" or bool(
+        _JASON_SUPERVISOR_HINT_RE.search(user_text or "")
+    )
+    if mode_norm == "vision":
         _add("analyze_visual_context")
         if _OCR_GROUND_HINT_RE.search(user_text or ""):
             _add("ocr_with_region")
-    for tid in repl_suite_tool_ids(user_text or ""):
-        _add(tid)
+    # Jason→Donna supervisor owns file reads/writes inside its graph — do not
+    # also bind dual-intent file_editor on the outer ReAct loop (avoids loops).
+    if _FILE_WRITE_HINT_RE.search(user_text or "") and not jason_sup:
+        _add("file_editor")
+    if not jason_sup:
+        for tid in repl_suite_tool_ids(user_text or ""):
+            _add(tid)
     for tid in explicit_tool_ids_in_text(user_text, known):
+        if jason_sup and tid != "dispatch_jason_supervisor":
+            continue
         _add(tid)
+    # Stage 4.1 — lightweight Chat never binds live vision; it SELECTs the BB topic.
+    if mode_norm == "chat":
+        return [tid for tid in merged if tid != "analyze_visual_context"]
     return merged
 
 
@@ -561,7 +616,7 @@ class IntentBroker:
     """Language-agnostic tool router with structural validation + self-correction."""
 
     def __init__(self, registry: dict[str, ToolSpec] | None = None) -> None:
-        self.registry = registry or load_tool_registry()
+        self.registry = _bindable_registry(registry)
         self._lessons_provider: Callable[[], list[Any]] | None = None
         self._initialized_tools: list[Any] = initialize_tool_registry()
 
@@ -571,7 +626,7 @@ class IntentBroker:
 
     def reload_registry(self, path: str | None = None) -> dict[str, ToolSpec]:
         """Hot-reload tools.json (including dynamically registered tools)."""
-        self.registry = load_tool_registry(path)
+        self.registry = _bindable_registry(load_tool_registry(path))
         self._initialized_tools = initialize_tool_registry()
         return self.registry
 
@@ -706,7 +761,7 @@ class IntentBroker:
 
     def parse_utterance(self, text: str) -> ToolCall | None:
         """Map EN/FA speech or pseudo tool-call syntax into a ToolCall IR."""
-        raw = (text or "").strip()
+        raw = (text or "").lstrip("\ufeff").strip()
         if not raw:
             return None
         lang = detect_lang(raw)
@@ -785,6 +840,7 @@ class IntentBroker:
         os_type_hit = bool(_OS_TYPE_HINT_RE.search(raw))
         slide_review_hit = bool(_SLIDE_REVIEW_HINT_RE.search(raw))
         publish_hit = bool(_PUBLISH_TOOL_HINT_RE.search(raw))
+        jason_supervisor_hit = bool(_JASON_SUPERVISOR_HINT_RE.search(raw))
         if wall_clock_hit and not visual_hit:
             _foresight_cascade(raw, None)
             return None
@@ -792,6 +848,17 @@ class IntentBroker:
         if _looks_like_whisper_bias_echo(raw) and not forge_hit and not mem_write_hit:
             _foresight_cascade(raw, None)
             return None
+        # Jason/Titan supervisor → Donna coder (before notes.txt dual-intent /
+        # Watchdog titan protocol so "Hey Jason, read notes… have her write" works).
+        if jason_supervisor_hit and not mem_write_hit and not forge_hit:
+            _foresight_cascade(raw, "dispatch_jason_supervisor")
+            return ToolCall(
+                tool_id="dispatch_jason_supervisor",
+                arguments={"query": raw},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.98,
+            )
         # Slide review composite BEFORE bare screen-capture / type shortcuts.
         if slide_review_hit and not mem_write_hit:
             rule = raw
@@ -835,6 +902,26 @@ class IntentBroker:
             return ToolCall(
                 tool_id="capture_and_analyze_screen",
                 arguments={"prompt": raw},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.96,
+            )
+        # Dual-intent: conversational answer + create/write notes/summary file.
+        # Prefer file_editor BEFORE forge/phantom "build_tool_*" alias traps.
+        write_hit = bool(_FILE_WRITE_HINT_RE.search(raw))
+        if write_hit and not mem_write_hit and not forge_hit:
+            path = "notes.txt"
+            m = re.search(
+                r"([\w./\\-]+\.(?:txt|md|json|csv|log))",
+                raw,
+                flags=re.I,
+            )
+            if m:
+                path = m.group(1).replace("\\", "/")
+            _foresight_cascade(raw, "file_editor")
+            return ToolCall(
+                tool_id="file_editor",
+                arguments={"action": "write", "filepath": path},
                 source_lang=lang,
                 raw_text=raw,
                 confidence=0.96,
@@ -1150,6 +1237,8 @@ class IntentBroker:
         )
 
     def validate_and_correct(self, call: ToolCall) -> ToolCall:
+        from donna.tools.registry import _dynamic_source_available
+
         spec = self.registry.get(call.tool_id)
         if spec is None:
             corrected_id = self._fuzzy_tool_id(call.tool_id)
@@ -1157,6 +1246,10 @@ class IntentBroker:
                 raise ToolValidationError(f"Unknown tool id: {call.tool_id}")
             call = replace(call, tool_id=corrected_id)
             spec = self.registry[corrected_id]
+        if getattr(spec, "dynamic", False) and not _dynamic_source_available(spec.id):
+            raise ToolValidationError(
+                f"Phantom dynamic tool {spec.id}: source not found"
+            )
 
         args = normalize_tool_arguments(dict(call.arguments), call.source_lang)
         fixed: dict[str, Any] = {}

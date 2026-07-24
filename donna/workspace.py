@@ -89,6 +89,12 @@ def _log(msg: str) -> None:
 
     except Exception:
 
+        try:
+            from donna.stdio_boot import ensure_stdio
+
+            ensure_stdio()
+        except Exception:
+            pass
         print(f"[Workspace] {msg}")
 
 

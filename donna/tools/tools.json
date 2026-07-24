@@ -785,6 +785,33 @@
       }
     },
     {
+      "id": "dispatch_jason_supervisor",
+      "description_en": "Jason/Titan conversational supervisor: read a prior Donna file (e.g. notes.txt), evaluate it, then hand off to Donna to write a Python script (e.g. scaling_metrics.py). Use when the user addresses Jason/Titan and asks him to read/evaluate then have Donna write code.",
+      "parameters": [
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "description_en": "Full user utterance for Jason→Donna handoff.",
+          "description_fa": " ."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "hey jason read notes",
+          "hey titan read notes",
+          "jason supervisor handoff",
+          "dispatch jason supervisor",
+          "jason evaluate notes and have donna write"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": [
+          "dispatch_jason_supervisor"
+        ]
+      }
+    },
+    {
       "id": "dispatch_watchdog",
       "description_en": "Use this to monitor the screen, watch for visual events, or run continuous background polling.",
       "parameters": [
@@ -1002,6 +1029,100 @@
       }
     },
     {
+      "id": "type_stealth_text",
+      "description_en": "Ghost Typist Operator: closed-loop stealth typing with stochastic human cadence and Blackboard visual guardrails. Waits for F9, then types in chunks while sensing latest_visual_context; pauses on focus loss or pop-ups. Prefer for long anti-cheat-sensitive typing.",
+      "parameters": [
+        {
+          "name": "text",
+          "type": "string",
+          "required": true,
+          "description_en": "Paragraph or prompt to type into the focused window.",
+          "description_fa": ""
+        },
+        {
+          "name": "hotkey",
+          "type": "string",
+          "required": false,
+          "description_en": "Arming hotkey (default f9).",
+          "description_fa": ""
+        },
+        {
+          "name": "wait_hotkey",
+          "type": "boolean",
+          "required": false,
+          "description_en": "If true (default), wait for the arming hotkey before typing.",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "ghost typist",
+          "type stealth text",
+          "stealth type",
+          "humanized typing"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
+      "id": "navigate_and_click",
+      "description_en": "Navigation Operator: closed-loop Bezier mouse move to a UI target box from latest_visual_context (Florence/OCR bbox), then left-click via SendInput. Use for clicking evaluation fields like Enter Comments or a labeled Target.",
+      "parameters": [
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "description_en": "Target label to find in visual context (e.g. Target, Enter Comments).",
+          "description_fa": ""
+        },
+        {
+          "name": "visual_context",
+          "type": "string",
+          "required": false,
+          "description_en": "Optional override of Blackboard latest_visual_context.",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "navigate and click",
+          "click the target",
+          "move mouse to",
+          "click enter comments"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
+      "id": "press_key",
+      "description_en": "Keystroke Operator: send one virtual key via SendInput (left/right/tab/enter) with human pauses. Prefer for Feather slide navigation instead of mouse clicks.",
+      "parameters": [
+        {
+          "name": "key_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Key to press: left, right, up, down, tab, enter, esc, space.",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "press key",
+          "arrow left",
+          "arrow right",
+          "next slide",
+          "previous slide"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
       "id": "evaluate_slide_and_type",
       "description_en": "USE THIS TOOL IMMEDIATELY when the user asks to evaluate a slide on screen against a rule and type the evaluation into the active window (Chrome). Captures the screen, Cascade-Router judges the slide, then types a concise comment via OS keystrokes after a short focus delay.",
       "parameters": [
@@ -1087,106 +1208,6 @@
       }
     },
     {
-      "id": "need_you_to_build",
-      "description_en": "checks current CPU and RAM usage",
-      "parameters": [
-        {
-          "name": "text",
-          "type": "string",
-          "required": true,
-          "description_en": "Primary text input.",
-          "description_fa": "  ."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "need you to build",
-          "run need_you_to_build"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "need_you_to_build"
-        ]
-      },
-      "dynamic": true
-    },
-    {
-      "id": "build_tool_that_tells",
-      "description_en": "one-line English description",
-      "parameters": [
-        {
-          "name": "text",
-          "type": "string",
-          "required": true,
-          "description_en": "Primary text input.",
-          "description_fa": "  ."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "build tool that tells",
-          "run build_tool_that_tells"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "build_tool_that_tells"
-        ]
-      },
-      "dynamic": true
-    },
-    {
-      "id": "build_tool_that_generates_random_number",
-      "description_en": "one-line English description",
-      "parameters": [
-        {
-          "name": "text",
-          "type": "string",
-          "required": true,
-          "description_en": "Primary text input.",
-          "description_fa": "  ."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "build tool that generates random number",
-          "run build_tool_that_generates_random_number"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "build_tool_that_generates_random_number"
-        ]
-      },
-      "dynamic": true
-    },
-    {
-      "id": "build_tool_that_lists",
-      "description_en": "Lists files in the sandbox",
-      "parameters": [
-        {
-          "name": "text",
-          "type": "string",
-          "required": true,
-          "description_en": "Primary text input.",
-          "description_fa": "  ."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "build tool that lists",
-          "run build_tool_that_lists"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "build_tool_that_lists"
-        ]
-      },
-      "dynamic": true
-    },
-    {
       "id": "build_tool_named_greet",
       "description_en": "echoes back a greeting message",
       "parameters": [
@@ -1260,31 +1281,6 @@
       }
     },
     {
-      "id": "calculate_fibonacci",
-      "description_en": "Calculates the nth Fibonacci number",
-      "parameters": [
-        {
-          "name": "text",
-          "type": "string",
-          "required": true,
-          "description_en": "Primary text input.",
-          "description_fa": "  ."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "calculate fibonacci",
-          "run calculate_fibonacci"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "calculate_fibonacci"
-        ]
-      },
-      "dynamic": true
-    },
-    {
       "id": "draft_cursor_prompt",
       "description_en": "USE THIS TOOL EXCLUSIVELY FOR ALL SYSTEM MODIFICATIONS, BUG FIXES, ARCHITECTURAL TICKETS, AND SELF-IMPROVEMENT REQUESTS. This is the only authorized tool for logging code changes. It APPENDS a PENDING ticket to CAMGRASPER/donna_security/patch_ledger.md for the human to execute in their IDE. Do not attempt to hot-patch live core memory.",
       "ephemeral": false,
@@ -1327,56 +1323,6 @@
           " "
         ]
       }
-    },
-    {
-      "id": "cascaderouterstatuscheck",
-      "description_en": "Check Cascade Router status before high-complexity inference",
-      "parameters": [
-        {
-          "name": "text",
-          "type": "string",
-          "required": true,
-          "description_en": "Primary text input.",
-          "description_fa": "  ."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "cascaderouterstatuscheck",
-          "run cascaderouterstatuscheck"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "cascaderouterstatuscheck"
-        ]
-      },
-      "dynamic": true
-    },
-    {
-      "id": "read_file",
-      "description_en": "Reads a file from the Donna sandbox execution jail logs",
-      "parameters": [
-        {
-          "name": "text",
-          "type": "string",
-          "required": true,
-          "description_en": "Primary text input.",
-          "description_fa": "  ."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "read file",
-          "run read_file"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "read_file"
-        ]
-      },
-      "dynamic": true
     }
   ]
 }

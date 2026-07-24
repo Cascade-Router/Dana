@@ -24,6 +24,13 @@ def test_keywords_and_extensions_force_tool() -> None:
     assert requires_tool_graph("update settings.json") is True
 
 
+def test_tool_graph_escalates_research_store_and_ollama() -> None:
+    assert requires_tool_graph("Don't you have access to your research store?") is True
+    assert requires_tool_graph("Is my Olama local server online?") is True
+    assert requires_tool_graph("Is Ollama online?") is True
+    assert requires_tool_graph("Hello Donna, how are you?") is False
+
+
 def test_cascade_chat_mode_escalates_on_tool_intent() -> None:
     set_donna_mode("chat")
     d = decide_route(

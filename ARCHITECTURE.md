@@ -9,12 +9,17 @@ Offline voice agent for CAMGRASPER: wake-word → STT → native LangChain tool 
 |-------|------|-------------|
 | Perception | YOLO boxes + screen/camera frames | `vision_tools.py`, tracker in `donna/core_agent.py` |
 | Spatial compression | Dense `SpatialIR` prompt block | `spatial_context.py` |
-| Cognition | Bound-tools loop (≤3 turns) + language lock | `donna/agentic.py`, `donna/prompts/spatial_synthesis.py` |
-| Tooling | EN/FA STT aliases + Tool IR + LangChain `@tool`s | `donna/tools/` |
-| Memory | Encrypted profile; RAM key daemon | `donna/secure_memory.py`, `donna/vault_service.py` |
+| Cognition | Bound-tools loop (≤3 turns) + language lock; MoA think extract | `donna/agentic.py`, `donna/moa_tool_shim.py`, `donna/prompts/spatial_synthesis.py` |
+| Routing | RapidFuzz mailroom ≥80% before LLM cascade | `donna/cascade_router.py` |
+| Tooling | EN/FA STT aliases + Tool IR + Pydantic guards + LangChain `@tool`s | `donna/tools/`, `donna/tools/guards.py` |
+| Memory | Encrypted vault + **SQLite Blackboard** (off-graph history / CoT) | `donna/secure_memory.py`, `donna/vault_service.py`, `donna/memory/blackboard.py` |
+| Handoffs | Structured Swarm `Handoff` (deterministic capability switch) | `donna/schema.py`, `donna/handoff.py` |
 | Background | Research swarm + Watchdog (Jason-supervised) | `donna/swarm/` |
 | Speech | Whisper STT + Piper EN/FA TTS | `donna/core_agent.py` audio workers |
 | Paths | Cwd-independent repo root + logs/docs/execution_jail | `donna/paths.py` (`PROJECT_ROOT`) |
+| Telemetry | Live Trace queue + JSONL tags | `donna/telemetry.py` → `logs/donna_telemetry.jsonl` |
+
+> **Stage 3 FSM hybrid:** LangGraph state is minimized to `session_id` / `current_agent` / `active_intent`. Full conversational history and DeepSeek `<think>` traces live on `memory/blackboard.db`. See [`docs/architecture.md`](docs/architecture.md).
 
 ## Bilingual tool routing
 

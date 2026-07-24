@@ -213,6 +213,37 @@ def wipe_custom_tools(*, reason: str = "context_wipe") -> list[str]:
     return unique
 
 
+def _dynamic_source_available(tool_id: str) -> bool:
+    """True when a dynamic tool has executable source on disk."""
+    name = str(tool_id or "").strip()
+    if not name:
+        return False
+    try:
+        from donna_security import load_dynamic_source
+
+        if load_dynamic_source(name):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    for root in (GENERAL_TOOLS_DIR, CUSTOM_TOOLS_DIR):
+        try:
+            if (Path(root) / f"{name}.py").is_file():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def is_bindable_tool(entry: RegisteredTool) -> bool:
+    """False for phantom ``dynamic: true`` tools with no source (must not reach Llama)."""
+    if entry.callable is not None:
+        return True
+    is_dynamic = bool(entry.spec.dynamic) or bool(entry.metadata.get("dynamic"))
+    if not is_dynamic:
+        return True
+    return _dynamic_source_available(entry.name)
+
+
 def _tokenize(text: str) -> list[str]:
     return [t.lower() for t in _TOKEN_RE.findall(text or "") if t]
 
@@ -356,6 +387,8 @@ class ToolRegistry:
         schema_text = _spec_schema_text(spec)
         description = (spec.description_en or spec.id).strip()
         meta = dict(metadata or {})
+        if spec.dynamic:
+            meta["dynamic"] = True
         if ephemeral or source in ("forge", "custom"):
             meta.setdefault("ephemeral", True)
             ephemeral = True
@@ -400,12 +433,16 @@ class ToolRegistry:
     def retrieve(self, query: str, *, k: int = _DEFAULT_TOP_K) -> list[RegisteredTool]:
         """Embed ``query`` and return top-K registered tools by semantic score."""
         with self._lock:
-            hits = self._index.search(hash_embed(query), k)
+            # Over-fetch then drop phantom dynamic tools so Llama never sees them.
+            hits = self._index.search(hash_embed(query), max(k * 3, k))
             out: list[RegisteredTool] = []
             for tool_id, _score in hits:
                 entry = self.tools.get(tool_id)
-                if entry is not None:
-                    out.append(entry)
+                if entry is None or not is_bindable_tool(entry):
+                    continue
+                out.append(entry)
+                if len(out) >= k:
+                    break
             return out
 
     def retrieve_specs(
@@ -421,7 +458,7 @@ class ToolRegistry:
             selected[entry.name] = entry.spec
         for tid in always_include or ():
             entry = self.tools.get(str(tid))
-            if entry is not None:
+            if entry is not None and is_bindable_tool(entry):
                 selected[entry.name] = entry.spec
         return selected
 
@@ -430,13 +467,24 @@ class ToolRegistry:
         registry = load_tool_registry(str(path) if path else None)
         n = 0
         for spec in registry.values():
-            self.register(spec, source="tools.json")
+            # Skip phantom dynamic stubs with no source — they poison semantic RAG.
+            if spec.dynamic and not _dynamic_source_available(spec.id):
+                continue
+            self.register(
+                spec,
+                source="dynamic" if spec.dynamic else "tools.json",
+                metadata={"dynamic": True} if spec.dynamic else None,
+            )
             n += 1
         return n
 
     def as_spec_dict(self) -> dict[str, ToolSpec]:
         with self._lock:
-            return {name: entry.spec for name, entry in self.tools.items()}
+            return {
+                name: entry.spec
+                for name, entry in self.tools.items()
+                if is_bindable_tool(entry)
+            }
 
     def public_schemas(self, names: Iterable[str] | None = None) -> list[dict[str, Any]]:
         """Compact schemas suitable for prompt injection."""

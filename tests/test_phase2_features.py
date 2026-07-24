@@ -6,7 +6,8 @@ from donna.swarm.multi_forge import looks_like_multi_forge, split_forge_goals
 from donna.tools.broker import _TOOL_FORGE_HINT_RE, get_broker
 from donna.telemetry import note_tool_event, write_dashboard
 from donna.paths import DASHBOARD_PATH
-from donna.core_agent import ACOUSTIC_SHADOW_FLOOR, adaptive_vad_speech_rms
+from donna.audio.vad_consumer import SILERO_SPEECH_THRESHOLD, SILERO_WINDOW_SAMPLES
+from donna.core_agent import VAD_FRAME_SAMPLES, VAD_SILENCE_MS
 
 
 MASS = (
@@ -33,10 +34,12 @@ def test_split_three_goals() -> None:
     print("[PASS] split_forge_goals → 3")
 
 
-def test_acoustic_shadow_floor() -> None:
-    assert ACOUSTIC_SHADOW_FLOOR >= 0.0020
-    assert adaptive_vad_speech_rms() >= ACOUSTIC_SHADOW_FLOOR
-    print("[PASS] acoustic shadow floor")
+def test_silero_vad_frame_config() -> None:
+    assert SILERO_WINDOW_SAMPLES == 512
+    assert VAD_FRAME_SAMPLES == SILERO_WINDOW_SAMPLES
+    assert SILERO_SPEECH_THRESHOLD == 0.5
+    assert VAD_SILENCE_MS == 1500
+    print("[PASS] Silero VAD frame / threshold config")
 
 
 def test_dashboard_write() -> None:
@@ -53,6 +56,6 @@ def test_dashboard_write() -> None:
 if __name__ == "__main__":
     test_forge_hint_matches_batch()
     test_split_three_goals()
-    test_acoustic_shadow_floor()
+    test_silero_vad_frame_config()
     test_dashboard_write()
     print("OK")

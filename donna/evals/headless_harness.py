@@ -277,6 +277,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    try:
+        from donna.stdio_boot import ensure_stdio
+
+        ensure_stdio()
+    except Exception:
+        pass
     print("Donna headless eval harness")
     print("=" * 60)
     report = run_harness(cases_path=args.cases, k=args.k)

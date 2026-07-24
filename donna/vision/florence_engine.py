@@ -91,6 +91,14 @@ def _patch_transformers_florence_compat() -> None:
 def _resolve_device_dtype():
     import torch
 
+    # Stage 7.1 — hard-cap CUDA to 50% VRAM before Florence allocates.
+    try:
+        from donna.middleware.resource_cap import apply_torch_vram_half_cap
+
+        apply_torch_vram_half_cap(0)
+    except Exception:  # noqa: BLE001
+        pass
+
     if torch.cuda.is_available():
         return torch.device("cuda:0"), torch.float16
     return torch.device("cpu"), torch.float32
@@ -111,6 +119,15 @@ def load_florence(*, local_files_only: bool = True) -> tuple[Any, Any, Any, Any]
             return _processor, _model, _device, _dtype
 
         import torch
+
+        # Stage 7.1 — immediately after importing torch, lock VRAM to 50%.
+        try:
+            from donna.middleware.resource_cap import apply_torch_vram_half_cap
+
+            apply_torch_vram_half_cap(0)
+        except Exception:  # noqa: BLE001
+            pass
+
         from transformers import AutoModelForCausalLM, AutoProcessor
 
         _patch_transformers_florence_compat()

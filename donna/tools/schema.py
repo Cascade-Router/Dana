@@ -26,6 +26,7 @@ class ToolSpec:
     parameters: tuple[ToolParameterSpec, ...] = ()
     aliases_en: dict[str, tuple[str, ...]] = field(default_factory=dict)
     aliases_fa: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    dynamic: bool = False
 
 
 @dataclass
@@ -73,6 +74,7 @@ def load_tool_registry(path: str | None = None) -> dict[str, ToolSpec]:
             parameters=params,
             aliases_en=_as_tuple_map(item.get("aliases_en") or {}),
             aliases_fa=_as_tuple_map(item.get("aliases_fa") or {}),
+            dynamic=bool(item.get("dynamic", False)),
         )
         tools[spec.id] = spec
     return tools

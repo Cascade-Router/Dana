@@ -3733,6 +3733,15 @@ def flush_audio_buffer_queue() -> int:
 
 def get_mic_frame(*, timeout: float = 0.25) -> Optional[np.ndarray]:
     """Pull one 16 kHz mono float32 VAD frame from the ingest queue."""
+    # Stage 7.3 — drop frames while Ghost Typist is typing (no Whisper path).
+    try:
+        from donna.memory.blackboard import is_typing
+
+        if is_typing():
+            flush_audio_buffer_queue()
+            return None
+    except Exception:  # noqa: BLE001
+        pass
     try:
         frame = audio_buffer_queue.get(timeout=max(0.01, float(timeout)))
     except queue.Empty:
@@ -3952,6 +3961,14 @@ def mic_ingest_worker() -> None:
                 frame_16k = pad
             elif frame_16k.size > VAD_FRAME_SAMPLES:
                 frame_16k = frame_16k[:VAD_FRAME_SAMPLES]
+            # Stage 7.3 — do not enqueue mic frames while Ghost Typist types.
+            try:
+                from donna.memory.blackboard import is_typing
+
+                if is_typing():
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 audio_buffer_queue.put_nowait(frame_16k.copy())
             except queue.Full:
@@ -4700,6 +4717,18 @@ def execute_tool_call(tc: ToolCall) -> str:
         hotkey = str(call.arguments.get("hotkey") or "").strip()
         return execute_os_keystrokes(text, hotkey=hotkey)
 
+    def _handle_type_stealth_text(call: ToolCall) -> str:
+        from donna.operators.ghost_typist import type_stealth_text
+
+        text = str(call.arguments.get("text") or "")
+        hotkey = str(call.arguments.get("hotkey") or "f9")
+        wait_raw = call.arguments.get("wait_hotkey", True)
+        if isinstance(wait_raw, str):
+            wait_hotkey = wait_raw.strip().lower() not in {"0", "false", "no", "off"}
+        else:
+            wait_hotkey = bool(wait_raw)
+        return type_stealth_text(text, wait_hotkey=wait_hotkey, hotkey=hotkey)
+
     def _handle_evaluate_slide_and_type(call: ToolCall) -> str:
         from donna.tools.slide_review import evaluate_slide_and_type
 
@@ -4783,6 +4812,18 @@ def execute_tool_call(tc: ToolCall) -> str:
             on_complete=_speak_when_done,
         )
 
+    def _handle_dispatch_jason_supervisor(call: ToolCall) -> str:
+        from donna.swarm.jason_supervisor_graph import dispatch_jason_supervisor_impl
+
+        query = call.arguments.get("query")
+        if query is None or not str(query).strip():
+            query = call.arguments.get("task")
+        if query is None or not str(query).strip():
+            query = call.raw_text
+        if query is None or not str(query).strip():
+            return "ERROR: missing query"
+        return dispatch_jason_supervisor_impl(str(query).strip())
+
     def _handle_dispatch_watchdog(call: ToolCall) -> str:
         from donna.tools.langchain_tools import dispatch_watchdog_impl
 
@@ -4857,12 +4898,14 @@ def execute_tool_call(tc: ToolCall) -> str:
         "list_todo_basket": _handle_list_todo_basket,
         "capture_and_analyze_screen": _handle_capture_and_analyze_screen,
         "execute_os_keystrokes": _handle_execute_os_keystrokes,
+        "type_stealth_text": _handle_type_stealth_text,
         "evaluate_slide_and_type": _handle_evaluate_slide_and_type,
         "delegate_to_cursor": _handle_delegate_to_cursor,
         "dispatch_titan_repair": _handle_dispatch_titan_repair,
         "read_system_architecture": _handle_read_architecture,
         "web_search": _handle_web_search,
         "dispatch_research_swarm": _handle_dispatch_research_swarm,
+        "dispatch_jason_supervisor": _handle_dispatch_jason_supervisor,
         "dispatch_watchdog": _handle_dispatch_watchdog,
         "kill_watchdog": _handle_kill_watchdog,
         "save_script_to_library": _handle_save_script_to_library,
@@ -4960,8 +5003,8 @@ def ask_ollama_messages(
         "stream": False,
         # Hard caps for 8GB VRAM: shorter KV cache + bounded generation.
         "options": {
-            "num_ctx": 4096,
-            "num_predict": 256 if num_predict is None else int(num_predict),
+            "num_ctx": 8192,
+            "num_predict": 1024 if num_predict is None else int(num_predict),
         },
     }
     try:
@@ -5282,57 +5325,86 @@ def conversation_worker(
             f"{', isolated' if isolated else ''}]",
         )
         log_conversation("User", whisper_text)
-        SPATIAL_AGGREGATOR.update_transcript(user=whisper_text)
-
-        # Prefer a fresh frame from the active tool (important after a switch).
-        with active_vision_lock:
-            tool = active_vision_tool
-        frame = None
         try:
-            frame = tool.get_frame()
-        except Exception as exc:  # noqa: BLE001
-            log("Conversation", f"WARNING: active tool get_frame failed ({exc})")
-        if frame is not None:
-            with latest_frame_lock:
-                latest_frame = frame
-        else:
-            with latest_frame_lock:
-                frame = None if latest_frame is None else latest_frame.copy()
-        if frame is None and not use_chat and not tool_force:
-            log("Conversation", "No vision frame available; skipping turn.")
-            return False
+            from donna.telemetry import log_router, log_voice_asr
+
+            log_voice_asr(
+                whisper_text or "",
+                payload={"mode": route_tag, "isolated": bool(isolated)},
+            )
+            if tool_force and not use_chat:
+                log_router(
+                    "tool-graph escalation",
+                    current_agent="ReAct_Agent",
+                    active_intent="tool_graph",
+                    payload={"mode": route_tag},
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        SPATIAL_AGGREGATOR.update_transcript(user=whisper_text)
 
         yolo_labels: list[str] = []
         vision_log = ""
-        if frame is not None:
-            with latest_dets_lock:
-                dets = list(latest_dets)
-            live_labels = [name for _, name, _ in dets]
-            memory_labels = get_spatial_memory_labels()
-            yolo_labels = list(dict.fromkeys(live_labels + memory_labels))
+        if use_chat:
+            # Stage 4.1 — Chat reads the sensor topic; never runs live YOLO/LLM vision.
+            try:
+                from donna.memory import read_visual_state
 
-            if not yolo_labels and not use_chat:
-                try:
-                    from donna.tracker import get_yolo_model
+                vision_log = read_visual_state() or ""
+            except Exception as exc:  # noqa: BLE001
+                log(
+                    "Conversation",
+                    f"WARNING: read_visual_state failed ({exc})",
+                )
+                vision_log = ""
+        else:
+            # Prefer a fresh frame from the active tool (important after a switch).
+            with active_vision_lock:
+                tool = active_vision_tool
+            frame = None
+            try:
+                frame = tool.get_frame()
+            except Exception as exc:  # noqa: BLE001
+                log("Conversation", f"WARNING: active tool get_frame failed ({exc})")
+            if frame is not None:
+                with latest_frame_lock:
+                    latest_frame = frame
+            else:
+                with latest_frame_lock:
+                    frame = None if latest_frame is None else latest_frame.copy()
+            if frame is None and not tool_force:
+                log("Conversation", "No vision frame available; skipping turn.")
+                return False
 
-                    yolo = get_yolo_model(YOLO_WEIGHTS)
-                    results = yolo.predict(
-                        source=frame,
-                        conf=YOLO_CONF,
-                        device=yolo_dev,
-                        verbose=False,
-                    )
-                    yolo_labels, dets = parse_yolo_results(results)
-                    remember_spatial_labels(yolo_labels)
-                    with latest_dets_lock:
-                        latest_dets[:] = dets
-                    SPATIAL_AGGREGATOR.update_from_dets(
-                        dets, frame_shape=getattr(frame, "shape", None)
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    log("Conversation", f"ERROR during YOLO stage: {exc}")
-                    return False
-            vision_log = format_vision_context_for_llm(yolo_labels)
+            if frame is not None:
+                with latest_dets_lock:
+                    dets = list(latest_dets)
+                live_labels = [name for _, name, _ in dets]
+                memory_labels = get_spatial_memory_labels()
+                yolo_labels = list(dict.fromkeys(live_labels + memory_labels))
+
+                if not yolo_labels:
+                    try:
+                        from donna.tracker import get_yolo_model
+
+                        yolo = get_yolo_model(YOLO_WEIGHTS)
+                        results = yolo.predict(
+                            source=frame,
+                            conf=YOLO_CONF,
+                            device=yolo_dev,
+                            verbose=False,
+                        )
+                        yolo_labels, dets = parse_yolo_results(results)
+                        remember_spatial_labels(yolo_labels)
+                        with latest_dets_lock:
+                            latest_dets[:] = dets
+                        SPATIAL_AGGREGATOR.update_from_dets(
+                            dets, frame_shape=getattr(frame, "shape", None)
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log("Conversation", f"ERROR during YOLO stage: {exc}")
+                        return False
+                vision_log = format_vision_context_for_llm(yolo_labels)
 
         if use_chat:
             from donna.settings import resolve_reply_lang
@@ -7616,6 +7688,17 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
         t.start()
         log("Main", f"Started thread: {t.name}")
 
+    # Stage 7.2 — hardware panic button (F12 / DONNA_KILL_HOTKEY).
+    try:
+        from donna.middleware.kill_switch import start_kill_switch_listener
+
+        if start_kill_switch_listener():
+            log("Main", "Kill switch listener armed (default hotkey F12)")
+        else:
+            log("Main", "Kill switch listener not started")
+    except Exception as exc:  # noqa: BLE001
+        log("Main", f"WARNING: kill switch listener failed: {exc}")
+
     log(
         "Main",
         "Donna is ready. Say 'Donna' to wake. | Tray Quit / Ctrl+C=quit",
@@ -7705,6 +7788,13 @@ def main() -> int:
     """GUI owns the main thread; agent_loop + tray run in background daemons."""
     global _gui_instance, _agent_loop_thread
 
+    try:
+        from donna.stdio_boot import ensure_stdio
+
+        ensure_stdio()
+    except Exception:
+        pass
+
     # Cwd-independent asset paths (onnx, logs, yolov8n.pt, settings.json, …).
     chdir_project_root()
 
@@ -7787,6 +7877,14 @@ def main() -> int:
     # Create GUI first so Live Transcript / Trace are ready before Whisper/Ollama emit.
     gui = DonnaGUI()
     _gui_instance = gui
+    # Boot visible (DonnaGUI starts withdrawn for tray-close UX).
+    try:
+        gui.after(150, gui.show_window)
+    except Exception:  # noqa: BLE001
+        try:
+            gui.show_window()
+        except Exception:  # noqa: BLE001
+            pass
     try:
         emit_trace(
             "Boot",
@@ -7799,24 +7897,9 @@ def main() -> int:
     except Exception:  # noqa: BLE001
         pass
 
-    def _on_window_close() -> None:
-        log("Main", "Window close requested — shutting down.")
-        stop_event.set()
-        try:
-            speech_queue.put_nowait(None)
-        except queue.Full:
-            pass
-        try:
-            tts_interrupt_event.set()
-        except Exception:
-            pass
-        try:
-            gui.destroy()
-        except Exception:
-            pass
-
+    # Keep tray-close UX: X hides the window; Quit lives on the system tray.
     try:
-        gui.protocol("WM_DELETE_WINDOW", _on_window_close)
+        gui.protocol("WM_DELETE_WINDOW", gui._on_close_to_tray)
     except Exception:
         pass
 
@@ -7862,6 +7945,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    try:
+        from donna.stdio_boot import ensure_stdio
+
+        ensure_stdio()
+    except Exception:
+        pass
     try:
         sys.exit(main())
     except KeyboardInterrupt:

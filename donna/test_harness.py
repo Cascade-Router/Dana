@@ -31,10 +31,24 @@ from donna.agentic import (
     sanitize_react_observation,
     strip_r1_think_blocks,
 )
-from donna.agentic_react_graph import ReactGraphState
+from donna.agentic_react_graph import (
+    ReactGraphState,
+    _route_after_agent,
+    _route_after_tools,
+    _synthetic_tool_call_message,
+    _force_tool_nudge_message,
+    _messages_have_force_nudge,
+    _invoked_tool_ids_from_messages,
+    pending_always_include_tools,
+)
 from donna.cascade_router import resolve_chat_model
 from donna.tools.langchain_tools import build_langchain_tools
 from donna.tools.schema import ToolCall
+
+VISION_DRAFT_PROMPT = (
+    "Donna, use the draft_cursor_prompt tool to log a self-improvement ticket "
+    "to enhance cursor rendering capabilities."
+)
 
 # Dedicated CLI checkpointer — same MemorySaver class as donna.agentic._react_checkpointer.
 def _cli_checkpointer() -> MemorySaver:
@@ -103,6 +117,7 @@ def _cli_system_prompt() -> str:
         _SYSTEM_PROMPT,
         ag._TOOL_EXECUTION_RULE,
         ag._STRICT_TOOL_ENFORCEMENT_RULE,
+        ag._EXPLICIT_TOOL_INVOCATION_RULE,
         ag._R1_REASONING_RULE,
         ag._VOICE_SANITIZER_RULE,
         ag._INTERACTION_UX_RULE,
@@ -120,10 +135,12 @@ def _harness_execute(tc: ToolCall) -> str:
     return f"OK: [harness] executed {tc.tool_id} args={args}"
 
 
-def _tool_ids_for_query(query: str) -> set[str] | None:
+def _tool_ids_for_query(
+    query: str, *, vision_mode: bool = False
+) -> set[str] | None:
     """Prefer a tight tool set for ticket turns (faster, fewer distractions)."""
     q = (query or "").lower()
-    if any(
+    draft_hit = any(
         k in q
         for k in (
             "draft cursor",
@@ -133,19 +150,40 @@ def _tool_ids_for_query(query: str) -> set[str] | None:
             "log a ticket",
             "patch ledger",
         )
-    ):
+    )
+    if vision_mode and draft_hit:
+        # Mirror broker merge in Vision: vision JIT + explicit draft request.
+        return {"analyze_visual_context", "draft_cursor_prompt"}
+    if draft_hit:
         return {"draft_cursor_prompt"}
     return None
 
 
-def _compile_cli_graph(*, query: str, max_iters: int = REACT_MAX_ITERS):
+def _always_include_for_query(
+    query: str, *, vision_mode: bool = False
+) -> list[str]:
+    ids = _tool_ids_for_query(query, vision_mode=vision_mode)
+    if not ids:
+        return []
+    # Preserve Vision order: analyze first, then explicit draft.
+    ordered = ["analyze_visual_context", "draft_cursor_prompt"]
+    return [tid for tid in ordered if tid in ids] or sorted(ids)
+
+
+def _compile_cli_graph(
+    *,
+    query: str,
+    max_iters: int = REACT_MAX_ITERS,
+    vision_mode: bool = False,
+):
     """Compile agent↔tools StateGraph with MemorySaver (mirrors production shape).
 
     ``query`` is the live user turn — passed into Cascade so force-high keywords
     classify complexity. ReAct ChatOllama itself uses the local tool-caller
     (DeepSeek-R1 does not emit native Ollama tool_calls).
     """
-    tool_ids = _tool_ids_for_query(query)
+    tool_ids = _tool_ids_for_query(query, vision_mode=vision_mode)
+    always_include = _always_include_for_query(query, vision_mode=vision_mode)
     tools = build_langchain_tools(
         _harness_execute,
         tool_ids=tool_ids,
@@ -161,9 +199,40 @@ def _compile_cli_graph(*, query: str, max_iters: int = REACT_MAX_ITERS):
     llm_with_tools = llm.bind_tools(tools, strict=True)
 
     async def _agent_node(state: ReactGraphState) -> dict[str, Any]:
+        nonlocal llm_with_tools
         messages = list(state.get("messages") or [])
         step = int(state.get("iterations") or 0) + 1
+        always_list = [
+            str(x)
+            for x in (state.get("always_include") or always_include or [])
+            if str(x).strip()
+        ]
         sanitize_react_message_history(messages)
+
+        pending_start = [
+            tid
+            for tid in always_list
+            if tid not in _invoked_tool_ids_from_messages(messages)
+        ]
+        if pending_start and _messages_have_force_nudge(messages, pending_start[0]):
+            print(
+                _c(
+                    _YELLOW,
+                    f"[System: Forcing pending always_include -> {pending_start[0]}]",
+                )
+            )
+            return {
+                "messages": [
+                    _synthetic_tool_call_message(
+                        pending_start[0], query, step=step
+                    )
+                ],
+                "iterations": step,
+                "last_obs": str(state.get("last_obs") or ""),
+                "final_raw": "",
+                "halt": False,
+                "always_include": always_list,
+            }
 
         response: Any = None
         if hasattr(llm_with_tools, "astream"):
@@ -202,6 +271,48 @@ def _compile_cli_graph(*, query: str, max_iters: int = REACT_MAX_ITERS):
                 "last_obs": str(state.get("last_obs") or ""),
                 "final_raw": "",
                 "halt": False,
+                "always_include": always_list,
+            }
+
+        pending_after = [
+            tid
+            for tid in always_list
+            if tid
+            not in _invoked_tool_ids_from_messages(list(messages) + [response])
+        ]
+        if pending_after:
+            next_tid = pending_after[0]
+            if _messages_have_force_nudge(messages, next_tid) or step >= max_iters:
+                print(
+                    _c(
+                        _YELLOW,
+                        f"[System: Forcing pending always_include -> {next_tid}]",
+                    )
+                )
+                return {
+                    "messages": [
+                        response,
+                        _synthetic_tool_call_message(next_tid, query, step=step),
+                    ],
+                    "iterations": step,
+                    "last_obs": str(state.get("last_obs") or ""),
+                    "final_raw": "",
+                    "halt": False,
+                    "always_include": always_list,
+                }
+            print(
+                _c(
+                    _YELLOW,
+                    f"[System: Nudge pending always_include -> {next_tid}]",
+                )
+            )
+            return {
+                "messages": [response, _force_tool_nudge_message(next_tid)],
+                "iterations": step,
+                "last_obs": str(state.get("last_obs") or ""),
+                "final_raw": "",
+                "halt": False,
+                "always_include": always_list,
             }
 
         return {
@@ -210,6 +321,7 @@ def _compile_cli_graph(*, query: str, max_iters: int = REACT_MAX_ITERS):
             "last_obs": str(state.get("last_obs") or ""),
             "final_raw": raw_stripped or raw,
             "halt": True,
+            "always_include": always_list,
         }
 
     async def _tools_node(state: ReactGraphState) -> dict[str, Any]:
@@ -219,6 +331,11 @@ def _compile_cli_graph(*, query: str, max_iters: int = REACT_MAX_ITERS):
         tool_calls = list(getattr(last, "tool_calls", None) or []) if last else []
         new_msgs: list[Any] = []
         last_obs = str(state.get("last_obs") or "")
+        always_list = [
+            str(x)
+            for x in (state.get("always_include") or always_include or [])
+            if str(x).strip()
+        ]
 
         for tc_raw in tool_calls:
             tool_call = _tool_call_from_lc(tc_raw, raw_text="")
@@ -240,34 +357,33 @@ def _compile_cli_graph(*, query: str, max_iters: int = REACT_MAX_ITERS):
             last_obs = sanitize_react_observation(str(observation), max_chars=8000)
             new_msgs.append(ToolMessage(content=last_obs, tool_call_id=call_id))
 
-        halt = step >= max_iters
+        # Invoked ids live on prior AIMessages; keep looping while always_include
+        # tools remain even when step hits max_iters.
+        still_pending = pending_always_include_tools(
+            {"messages": list(messages), "always_include": always_list}
+        )
+        halt = step >= max_iters and not still_pending
         return {
             "messages": new_msgs,
             "iterations": step,
             "last_obs": last_obs,
             "final_raw": last_obs if halt else "",
             "halt": halt,
+            "always_include": always_list,
         }
-
-    def _route_after_agent(state: ReactGraphState) -> str:
-        if state.get("halt"):
-            return END
-        messages = state.get("messages") or []
-        last = messages[-1] if messages else None
-        if last is not None and getattr(last, "tool_calls", None):
-            return "tools"
-        return END
 
     workflow = StateGraph(ReactGraphState)
     workflow.add_node("agent", _agent_node)
     workflow.add_node("tools", _tools_node)
     workflow.add_edge(START, "agent")
     workflow.add_conditional_edges(
-        "agent", _route_after_agent, {"tools": "tools", END: END}
+        "agent",
+        _route_after_agent,
+        {"tools": "tools", "agent": "agent", END: END},
     )
     workflow.add_conditional_edges(
         "tools",
-        lambda s: END if s.get("halt") else "agent",
+        _route_after_tools,
         {"agent": "agent", END: END},
     )
     return workflow.compile(checkpointer=CLI_CHECKPOINTER)
@@ -303,7 +419,13 @@ def _chunk_text(chunk: Any) -> str:
     return str(content or "") if content is not None else ""
 
 
-async def _run_turn(graph: Any, user_text: str) -> None:
+async def _run_turn(
+    graph: Any,
+    user_text: str,
+    *,
+    always_include: list[str] | None = None,
+    vision_mode: bool = False,
+) -> list[str]:
     config = {
         "configurable": {"thread_id": CLI_THREAD_ID},
         "recursion_limit": max(10, REACT_MAX_ITERS * 4),
@@ -316,18 +438,30 @@ async def _run_turn(graph: Any, user_text: str) -> None:
     except Exception:  # noqa: BLE001
         pass
 
+    always = list(
+        always_include
+        if always_include is not None
+        else _always_include_for_query(user_text, vision_mode=vision_mode)
+    )
+    if always:
+        print(_c(_DIM, f"[System: always_include={always}]"))
+
     inputs: ReactGraphState = {
+        "session_id": "cli-session",
+        "current_agent": "ReAct_Agent",
+        "active_intent": (always[0] if always else "general"),
         "messages": _turn_messages(user_text, has_history=has_history),
         "iterations": 0,
         "last_obs": "",
         "final_raw": "",
         "halt": False,
-        "always_include": [],
+        "always_include": always,
     }
 
     streamed_any = False
     final_raw = ""
     think_filter = ThinkBlockTtsFilter()
+    executed_tools: list[str] = []
 
     async for event in graph.astream_events(inputs, config=config, version="v2"):
         kind = str(event.get("event") or "")
@@ -336,6 +470,7 @@ async def _run_turn(graph: Any, user_text: str) -> None:
             print(_c(_CYAN, "[System: Model generating...]"))
         elif kind == "on_tool_start":
             tool_name = str(event.get("name") or "tool")
+            executed_tools.append(tool_name)
             print(_c(_YELLOW, f"[System: Executing Tool -> {tool_name}]"))
         elif kind == "on_tool_end":
             data = event.get("data") or {}
@@ -379,7 +514,7 @@ async def _run_turn(graph: Any, user_text: str) -> None:
                     answer = last_obs
         except Exception as exc:  # noqa: BLE001
             print(_c(_DIM, f"[System: state read failed: {exc}]"))
-            return
+            return executed_tools
 
     if answer and not streamed_any:
         print(_c(_BOLD, "Donna: ") + answer)
@@ -391,10 +526,40 @@ async def _run_turn(graph: Any, user_text: str) -> None:
                 "content/tool_calls)]",
             )
         )
+    if executed_tools:
+        print(_c(_DIM, f"[System: tools_executed={executed_tools}]"))
+    return executed_tools
+
+
+async def _run_vision_draft_repro() -> int:
+    """Headless Vision+draft always_include repro (exit 0 iff both tools run)."""
+    _enable_ansi()
+    text = VISION_DRAFT_PROMPT
+    print(_c(_BOLD, "Donna Vision+draft always_include repro"))
+    print(_c(_DIM, f"prompt={text!r}"))
+    try:
+        ag.set_donna_mode("vision")
+    except Exception:  # noqa: BLE001
+        pass
+    graph = _compile_cli_graph(query=text, vision_mode=True, max_iters=4)
+    executed = await _run_turn(graph, text, vision_mode=True)
+    need = {"analyze_visual_context", "draft_cursor_prompt"}
+    got = set(executed)
+    ok = need.issubset(got)
+    print(
+        _c(
+            _GREEN if ok else _YELLOW,
+            f"[System: PASS both tools]" if ok else f"[System: FAIL missing={need - got}]",
+        )
+    )
+    return 0 if ok else 1
 
 
 async def main() -> None:
     _enable_ansi()
+    if any(a in {"--vision-draft", "--repro-vision-draft"} for a in sys.argv[1:]):
+        raise SystemExit(await _run_vision_draft_repro())
+
     print(_c(_BOLD, "Donna LangGraph Developer CLI"))
     print(
         _c(
@@ -402,7 +567,7 @@ async def main() -> None:
             f"thread_id={CLI_THREAD_ID} | MemorySaver | silent (no TTS/Whisper/VAD)",
         )
     )
-    print(_c(_DIM, "Commands: quit | exit | q"))
+    print(_c(_DIM, "Commands: quit | exit | q | :vision-draft"))
     print(_c(_DIM, "Tools run in harness stub mode (OK: [harness] …)."))
     print(
         _c(
@@ -411,6 +576,7 @@ async def main() -> None:
             "ReAct tool-loop uses local ChatOllama (R1 reserved for MoA stages).",
         )
     )
+    print(_c(_DIM, "One-shot: python -m donna.test_harness --vision-draft"))
 
     while True:
         try:
@@ -423,9 +589,18 @@ async def main() -> None:
             continue
         if text.lower() in {"quit", "exit", "q"}:
             break
+        vision_mode = False
+        if text.lower() in {":vision-draft", "vision-draft"}:
+            text = VISION_DRAFT_PROMPT
+            vision_mode = True
+            try:
+                ag.set_donna_mode("vision")
+            except Exception:  # noqa: BLE001
+                pass
+            print(_c(_DIM, f"[System: injecting Vision draft prompt] {text}"))
         try:
-            graph = _compile_cli_graph(query=text)
-            await _run_turn(graph, text)
+            graph = _compile_cli_graph(query=text, vision_mode=vision_mode)
+            await _run_turn(graph, text, vision_mode=vision_mode)
         except Exception as exc:  # noqa: BLE001
             print(_c(_YELLOW, f"[System: turn failed: {type(exc).__name__}: {exc}]"))
 

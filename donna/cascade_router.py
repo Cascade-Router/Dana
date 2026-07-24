@@ -106,6 +106,217 @@ _ollama_tags_cache: list[str] | None = None
 # Models that failed to load on this host (e.g. mllama unsupported by runner).
 _vision_blacklist: set[str] = set()
 
+# Deterministic pre-Cascade command dictionary (phrase → target node / mode).
+# Longer phrases are preferred on exact hits; fuzzy mailroom covers ASR garble.
+STATE_TOGGLE_TRIGGERS: dict[str, str] = {
+    "stretch to vision mode": "vision",
+    "stretch to vision": "vision",
+    "switch to vision mode": "vision",
+    "switch to vision": "vision",
+    "enter vision mode": "vision",
+    "enter vision": "vision",
+    "enable vision mode": "vision",
+    "enable vision": "vision",
+    "go to vision mode": "vision",
+    "go to vision": "vision",
+    "activate vision mode": "vision",
+    "activate vision": "vision",
+    "enable camera": "vision",
+    "vision mode": "vision",
+    # Known Whisper garble aliases (also caught by fuzzy ≥80%).
+    "vision mounts": "vision",
+    "vision model": "vision",
+    "vision modes": "vision",
+    "switch to developer mode": "developer",
+    "switch to developer": "developer",
+    "enter developer mode": "developer",
+    "enter developer": "developer",
+    "enable developer mode": "developer",
+    "go to developer mode": "developer",
+    "go to developer": "developer",
+    "activate developer mode": "developer",
+    "developer mode": "developer",
+    "agent mode": "developer",
+    "switch to research mode": "research",
+    "switch to research": "research",
+    "enter research mode": "research",
+    "enter research": "research",
+    "enable research mode": "research",
+    "go to research mode": "research",
+    "go to research": "research",
+    "activate research mode": "research",
+    "research mode": "research",
+    "switch to chat mode": "chat",
+    "switch to chat": "chat",
+    "enter chat mode": "chat",
+    "enter chat": "chat",
+    "enable chat mode": "chat",
+    "go to chat mode": "chat",
+    "go to chat": "chat",
+    "activate chat mode": "chat",
+    "chat mode": "chat",
+    # Non-mode system commands (mailroom short-circuits; not Mode Manager modes).
+    "status check": "status_check",
+    "system status": "status_check",
+    "check status": "status_check",
+    "donna status": "status_check",
+    "mute": "mute",
+    "mute audio": "mute",
+    "be quiet": "mute",
+    "silence": "mute",
+}
+
+# Alias kept for Module 2 docs / tests — same mapping as STATE_TOGGLE_TRIGGERS.
+COMMAND_DICTIONARY: dict[str, str] = STATE_TOGGLE_TRIGGERS
+
+# Mode Manager targets (set_donna_mode). Other COMMAND_DICTIONARY values are actions.
+_MAILROOM_MODE_TARGETS = frozenset({"chat", "developer", "vision", "research"})
+
+# Levenshtein / RapidFuzz ratio threshold (0–100). ≥80% short-circuits the LLM.
+FUZZY_MATCH_THRESHOLD = 80.0
+# Stage 3.1: long free-form utterances skip fuzzy (exact substring still allowed).
+MAILROOM_MAX_WORDS = 8
+
+_STATE_TOGGLE_WAKE_RE = re.compile(
+    r"^(?:hey\s+)?donna\b[\s,.\-!:]*",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class MailroomHit:
+    """Deterministic mailroom match (exact or fuzzy ≥ threshold)."""
+
+    command: str
+    target: str
+    score: float
+    raw_asr: str
+    method: str  # "exact" | "fuzzy"
+    residual: str = ""  # text remaining after stripping the matched command
+
+
+def _normalize_mailroom_asr(query: str) -> str:
+    """Strip wake wrappers / punctuation for deterministic matching."""
+    blob = re.sub(r"\s+", " ", (query or "").strip().lower())
+    blob = _STATE_TOGGLE_WAKE_RE.sub("", blob).strip(" \t.,;:!-")
+    blob = re.sub(r"[\"'`]+", "", blob)
+    return blob.strip(" \t.,;:!-")
+
+
+def _mailroom_word_count(query: str) -> int:
+    """Word count on the raw utterance (whitespace split)."""
+    return len((query or "").split())
+
+
+def strip_mailroom_residual(raw: str, matched_command: str) -> str:
+    """Remove the matched command phrase from ``raw``; return leftover intent text.
+
+    Prefers text *after* the matched phrase (compound mode + fact utterances).
+    """
+    text = (raw or "").strip()
+    phrase = (matched_command or "").strip()
+    if not text or not phrase:
+        return text
+    match = re.search(re.escape(phrase), text, re.IGNORECASE)
+    if not match:
+        return text
+    after = text[match.end() :].strip(" \t.,;:!-")
+    if after:
+        return re.sub(r"\s+", " ", after).strip(" \t.,;:!-")
+    before = text[: match.start()].strip(" \t.,;:!-")
+    return re.sub(r"\s+", " ", before).strip(" \t.,;:!-")
+
+
+def _fuzzy_score(a: str, b: str) -> float:
+    """Best RapidFuzz similarity in [0, 100] (ratio / partial / WRatio).
+
+    Short ASR utterances (typical voice commands) may use ``partial_ratio`` so
+    garble like ``vision mounts`` still hits ``vision mode``. Longer free-form
+    prompts only use full-string scorers so partial hits cannot hijack MoA text.
+    """
+    try:
+        from rapidfuzz import fuzz
+    except ImportError:  # pragma: no cover
+        return 100.0 if a == b else 0.0
+    left = (a or "").strip().lower()
+    right = (b or "").strip().lower()
+    if not left or not right:
+        return 0.0
+    # ``a`` is ASR blob, ``b`` is dictionary phrase.
+    long_utterance = len(left) > max(48, len(right) + 24)
+    if long_utterance:
+        return float(max(fuzz.ratio(left, right), fuzz.WRatio(left, right)))
+    return float(
+        max(
+            fuzz.ratio(left, right),
+            fuzz.partial_ratio(left, right),
+            fuzz.WRatio(left, right),
+        )
+    )
+
+
+def fuzzy_match_command(
+    query: str,
+    *,
+    threshold: float = FUZZY_MATCH_THRESHOLD,
+) -> MailroomHit | None:
+    """Match raw ASR against ``COMMAND_DICTIONARY`` (exact substring, then fuzzy ≥ threshold)."""
+    raw = (query or "").strip()
+    blob = _normalize_mailroom_asr(raw)
+    if not blob:
+        return None
+
+    # 1) Exact substring — prefer longest phrase (legacy behaviour, score=100).
+    for phrase, target in sorted(
+        COMMAND_DICTIONARY.items(), key=lambda item: -len(item[0])
+    ):
+        if phrase in blob:
+            return MailroomHit(
+                command=phrase,
+                target=target,
+                score=100.0,
+                raw_asr=raw,
+                method="exact",
+                residual=strip_mailroom_residual(raw, phrase),
+            )
+
+    # Stage 3.1 length guard: long free-form prompts bypass fuzzy (and mailroom).
+    if _mailroom_word_count(raw) > MAILROOM_MAX_WORDS:
+        return None
+
+    # 2) Fuzzy Levenshtein / WRatio — immunize against Whisper garble.
+    best: MailroomHit | None = None
+    for phrase, target in COMMAND_DICTIONARY.items():
+        # Reject tiny ASR fragments that only partial-match a longer command
+        # (e.g. bare "vision" must not fire "vision mode").
+        if len(blob) < int(len(phrase) * 0.75):
+            continue
+        score = _fuzzy_score(blob, phrase)
+        if score < float(threshold):
+            continue
+        if best is None or score > best.score or (
+            score == best.score and len(phrase) > len(best.command)
+        ):
+            best = MailroomHit(
+                command=phrase,
+                target=target,
+                score=score,
+                raw_asr=raw,
+                method="fuzzy",
+                residual=strip_mailroom_residual(raw, phrase),
+            )
+    return best
+
+
+def match_state_toggle(query: str) -> str | None:
+    """Return a Mode Manager id when mailroom hits a mode target (exact or fuzzy ≥80%)."""
+    hit = fuzzy_match_command(query)
+    if hit is None:
+        return None
+    if hit.target in _MAILROOM_MODE_TARGETS:
+        return hit.target
+    return None
+
 
 @dataclass(frozen=True)
 class CascadeDecision:
@@ -319,6 +530,137 @@ def decide_route(
     default_model: str | None = None,
 ) -> CascadeDecision:
     local = default_model or local_model_name()
+
+    # Module 2 mailroom — absolute top of pipeline (before chat bypass / MoA / LLM).
+    mailroom = fuzzy_match_command(query or "")
+    if mailroom is not None:
+        try:
+            from donna.telemetry import log_router
+
+            log_router(
+                f"mailroom {mailroom.method} -> {mailroom.target}",
+                current_agent="Mailroom",
+                active_intent=mailroom.target,
+                payload={
+                    "raw_asr": mailroom.raw_asr,
+                    "matched_command": mailroom.command,
+                    "confidence": round(float(mailroom.score), 2),
+                    "target_node": mailroom.target,
+                    "method": mailroom.method,
+                    "threshold": FUZZY_MATCH_THRESHOLD,
+                    "residual": mailroom.residual or "",
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        target = mailroom.target
+        if target in _MAILROOM_MODE_TARGETS:
+            try:
+                from donna.agentic import set_donna_mode
+
+                set_donna_mode(target)
+            except Exception:  # noqa: BLE001
+                pass
+            # Stage 3.1: residual clause rides in Handoff.intent_context.
+            try:
+                from donna.handoff import execute_handoff
+                from donna.schema import Handoff
+
+                _mode_to_agent = {
+                    "vision": "Vision_Agent",
+                    "chat": "Chat_Node",
+                    "developer": "ReAct_Agent",
+                    "research": "MoA_Reasoner",
+                }
+                residual = (mailroom.residual or "").strip()
+                intent_ctx = residual or (mailroom.raw_asr or query or "").strip() or target
+                execute_handoff(
+                    Handoff(
+                        target_agent=_mode_to_agent.get(target, "ReAct_Agent"),
+                        reason=f"mailroom {mailroom.method} → {target}",
+                        intent_context=intent_ctx[:500],
+                    ),
+                    session_id="",
+                    current_agent="Mailroom",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            _log_cascade(
+                f"mailroom {mailroom.method} "
+                f"score={mailroom.score:.1f} '{mailroom.command}' "
+                f"-> mode={target} (LLM / chat-node bypass)"
+                + (
+                    f" residual={mailroom.residual!r}"
+                    if (mailroom.residual or "").strip()
+                    else ""
+                )
+            )
+            if target == "vision":
+                vision = vision_model_name()
+                reasoner = reasoner_model_name()
+                return CascadeDecision(
+                    complexity="high",
+                    backend="moa",
+                    model=f"moa:{vision}+{reasoner}",
+                    reason=(
+                        f"mailroom {mailroom.method} "
+                        f"({mailroom.score:.0f}%) -> vision MoA pipeline (LLM bypass)"
+                    ),
+                    vision_model=vision,
+                    reasoner_model=reasoner,
+                )
+            if target == "chat":
+                return CascadeDecision(
+                    complexity="low",
+                    backend="local",
+                    model=local,
+                    reason=(
+                        f"mailroom {mailroom.method} "
+                        f"({mailroom.score:.0f}%) -> chat mode local"
+                    ),
+                )
+            # developer / research: mode already set; continue with tool heuristics.
+        elif target == "status_check":
+            _log_cascade(
+                f"mailroom {mailroom.method} score={mailroom.score:.1f} "
+                f"-> status_check (LLM bypass)"
+            )
+            return CascadeDecision(
+                complexity="low",
+                backend="local",
+                model=local,
+                reason=(
+                    f"mailroom {mailroom.method} "
+                    f"({mailroom.score:.0f}%) -> status_check"
+                ),
+            )
+        elif target == "mute":
+            _log_cascade(
+                f"mailroom {mailroom.method} score={mailroom.score:.1f} "
+                f"-> mute (LLM bypass)"
+            )
+            return CascadeDecision(
+                complexity="low",
+                backend="local",
+                model=local,
+                reason=(
+                    f"mailroom {mailroom.method} "
+                    f"({mailroom.score:.0f}%) -> mute"
+                ),
+            )
+    else:
+        # Fall-through: forensic ASR breadcrumb before semantic / LLM routing.
+        try:
+            from donna.telemetry import log_voice_asr
+
+            log_voice_asr(
+                query or "",
+                payload={"mailroom": "fallthrough", "threshold": FUZZY_MATCH_THRESHOLD},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     # Chat mode normally stays on lightweight llama — BUT system/file/code
     # intents must escalate to the tool-enabled MoA / ReAct path.
     try:
@@ -875,20 +1217,21 @@ def resolve_chat_model(
             )
 
     # ReAct / tool-calling MUST stay on the fast local chat model.
-    # DeepSeek-R1 (MoA reasoner) does not emit Ollama native tool_calls when
-    # bind_tools is used — it returns empty content/tool_calls or prose tickets.
-    # Reasoner stays reserved for ``run_visual_moa`` / ``reason_over_context``.
+    # DeepSeek-R1 does not emit reliable Ollama native tool_calls under bind_tools.
+    # High-complexity MoA turns use the two-stage shim in agentic_react_graph:
+    #   stage1 reasoner (no tools) → stage2 local formatter (bind_tools).
     reasoner_id = decision.reasoner_model or reasoner_model_name()
     if decision.backend == "local":
         model_id = decision.model or local_model_name()
     else:
-        # moa / cascade text ReAct path → local tool-caller
+        # moa / cascade text ReAct path → local tool-caller (formatter stage)
         model_id = local_model_name()
         if decision.complexity == "high" or decision.backend == "moa":
             _log_cascade(
                 f"ReAct tool-loop local={model_id} "
-                f"(reasoner={reasoner_id} reserved for MoA stages; "
-                f"R1 bind_tools is non-functional on Ollama)"
+                f"(MoA shim: reasoner={reasoner_id} plans, "
+                f"formatter={model_id} bind_tools; "
+                f"R1 native tool_calls non-functional on Ollama)"
             )
 
     # Opt-in escape hatch for experiments only (expect broken native tool_calls).

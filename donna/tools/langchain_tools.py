@@ -257,6 +257,29 @@ def kill_watchdog_impl(task_id: str) -> str:
     return f"OK: Watchdog {tid} stopped."
 
 
+_JASON_SUPERVISOR_TOOL_DESCRIPTION = (
+    "Jason/Titan conversational supervisor. Call when the user addresses Jason/Titan "
+    "to read/evaluate a prior Donna file (notes.txt) and have Donna write a Python "
+    "script (e.g. scaling_metrics.py). Runs a linear Jason→Donna LangGraph handoff."
+)
+
+
+def dispatch_jason_supervisor_impl(query: str) -> str:
+    """Synchronous Jason→Donna supervisor graph (ReAct-safe; no background thread)."""
+    from donna.swarm.jason_supervisor_graph import dispatch_jason_supervisor_impl as _run
+
+    return _run(query)
+
+
+@tool(
+    "dispatch_jason_supervisor",
+    description=_JASON_SUPERVISOR_TOOL_DESCRIPTION,
+)
+def dispatch_jason_supervisor(query: str) -> str:
+    """Jason reads/evaluates a file then hands off to Donna to write a Python script."""
+    return dispatch_jason_supervisor_impl(query)
+
+
 @tool(
     "dispatch_watchdog",
     description=_WATCHDOG_TOOL_DESCRIPTION,

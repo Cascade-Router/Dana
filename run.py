@@ -18,6 +18,17 @@ try:
 except OSError:
     pass
 
+# pythonw.exe leaves stdout/stderr as None — patch before any library prints/tqdm.
+try:
+    from donna.stdio_boot import ensure_stdio
+
+    ensure_stdio()
+except Exception:
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8", errors="replace")  # type: ignore[assignment]
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")  # type: ignore[assignment]
+
 # Ensure workspace dirs exist + migrate legacy artifacts before agent boot.
 try:
     from donna.workspace import ensure_donna_workspace

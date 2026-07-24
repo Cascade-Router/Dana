@@ -75,15 +75,17 @@ def bat_path() -> Path:
 
 
 def write_start_bat() -> Path:
-    """Create ``start_donna.bat``: abs ``cd``, ``--no-gui``, log redirect."""
+    """Create ``start_donna.bat``: abs ``cd``, GUI enabled (no ``--no-gui``)."""
     root = absolute_workdir()
-    py = str(python_launcher(headless=True))
+    # Prefer pythonw for a windowed GUI launch (no console flash).
+    py = str(python_launcher(headless=False))
     entry = str(entry_script())
-    # Do not use ``start`` — it detaches and breaks ``> log 2>&1`` capture.
+    # ``start`` detaches so the Run-key / Startup launcher returns immediately.
     lines = [
         "@echo off",
         f'cd /d "{root}"',
-        f'"{py}" "{entry}" --no-gui > "%TEMP%\\donna_startup.log" 2>&1',
+        "REM GUI enabled (CustomTkinter). Use stop_donna.bat before relaunch.",
+        f'start "Donna" "{py}" "{entry}"',
         "",
     ]
     path = bat_path()
