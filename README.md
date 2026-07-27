@@ -12,9 +12,75 @@ license: agpl-3.0
 
 # Donna: Local-First Agentic Voice OS
 
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![OS: Windows 10/11](https://img.shields.io/badge/OS-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
+[![Hugging Face Space](https://img.shields.io/badge/%F0%9F%A4%97%20Space-AMIXXM%2FDonna-yellow)](https://huggingface.co/spaces/AMIXXM/Donna)
+
 **Bridge local LLMs (Llama 3.2), vision (YOLOv8), and Mixture-of-Agents reasoning (DeepSeek-R1) into a deterministic, low-latency voice operating system — with a CustomTkinter Live Trace UI that makes every graph transition observable.**
 
-Donna is an offline-first agentic control plane for the desktop: wake-word perception, strict mode-isolated cognition, filesystem-jailed tool execution, and thread-safe telemetry. It is engineered as infrastructure — not a chatbot shell.
+Donna (Dānā) is an offline-first agentic control plane for the desktop: wake-word perception, strict mode-isolated cognition, filesystem-jailed tool execution, and thread-safe telemetry. It is engineered as infrastructure — not a chatbot shell.
+
+Try the Gradio simulator on Hugging Face: [AMIXXM/Donna](https://huggingface.co/spaces/AMIXXM/Donna).
+
+---
+
+## System Requirements
+
+| Resource | Requirement |
+|----------|-------------|
+| **OS** | Windows 10 / 11 (recommended for tray, Startup, and OS automation) |
+| **Python** | 3.10+ (3.11+ recommended) |
+| **GPU** | NVIDIA RTX with **8GB+ VRAM** recommended (Whisper / YOLO / vision) |
+| **CUDA** | **12.6** wheels (`torch==2.13.0+cu126` via the `cu126` index in `requirements.txt`) |
+| **CPU fallback** | Supported; vision / Whisper are slower (`run.py` warns and continues) |
+| **Storage** | ~15GB+ free for venv, PyTorch CUDA wheels, and local model weights |
+| **Runtime** | [Ollama](https://ollama.com/) with local models (e.g. `llama3.2`, `deepseek-r1:8b`) |
+
+---
+
+## Quickstart / Local Installation
+
+Copy-paste on Windows (PowerShell):
+
+```powershell
+git clone https://github.com/Cascade-Router/Donna.git
+cd Donna
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+ollama pull llama3.2
+ollama pull deepseek-r1:8b
+python run.py
+```
+
+macOS / Linux (voice tray features may differ):
+
+```bash
+git clone https://github.com/Cascade-Router/Donna.git
+cd Donna
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+ollama pull llama3.2
+ollama pull deepseek-r1:8b
+python run.py
+```
+
+`run.py` is the local entry point for Dānā. First launch configures mic/speaker into `settings.json` (gitignored). Optional Windows logon autostart:
+
+```bash
+python -m donna.tools.setup_startup install
+```
+
+Open the Live Trace window from the system tray (**Open Settings**).
+
+Dev / unit tests:
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/test_router.py tests/test_environment.py -q
+```
 
 ---
 
@@ -52,51 +118,7 @@ Mic / .trigger_ask / input.txt
          JSONL telemetry + gui_telemetry_queue → Live Trace UI
 ```
 
-Deep dive: [`docs/architecture.md`](docs/architecture.md) · Telemetry contract: [`docs/telemetry_and_ui.md`](docs/telemetry_and_ui.md) · Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
-
----
-
-## Quickstart
-
-**Prerequisites**
-
-- Python 3.11+ (Windows recommended for tray + Startup integration)
-- [Ollama](https://ollama.com/) with local models (e.g. `llama3.2`, `deepseek-r1:8b`)
-- PyTorch (CUDA preferred for Whisper / YOLO)
-
-**Install**
-
-```bash
-git clone https://github.com/Cascade-Router/Donna.git
-cd Donna
-python -m venv .venv
-
-# Windows
-.\.venv\Scripts\activate
-pip install -r requirements.txt
-# Optional CUDA torch (see comments in requirements.txt)
-```
-
-**Pull models (example)**
-
-```bash
-ollama pull llama3.2
-ollama pull deepseek-r1:8b
-```
-
-**Run**
-
-```bash
-python run.py
-```
-
-First launch configures mic/speaker into `settings.json` (gitignored). Optional Windows logon autostart:
-
-```bash
-python -m donna.tools.setup_startup install
-```
-
-Open the Live Trace window from the system tray (**Open Settings**).
+Deep dive: [`docs/architecture.md`](docs/architecture.md) · Telemetry contract: [`docs/telemetry_and_ui.md`](docs/telemetry_and_ui.md) · Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) · Security: [`SECURITY.md`](SECURITY.md)
 
 ---
 
@@ -127,4 +149,4 @@ Do not commit these. Contributors: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License & Status
 
-Open-source release under active systems hardening. Architecture notes and UI telemetry contracts in `docs/` are the source of truth for external integrators.
+Open-source under **AGPL-3.0**. Architecture notes and UI telemetry contracts in `docs/` are the source of truth for external integrators.

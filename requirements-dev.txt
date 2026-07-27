@@ -1,0 +1,2 @@
+# Development / CI test dependencies (not required for production runtime).
+pytest>=8.0,<9

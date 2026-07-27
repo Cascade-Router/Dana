@@ -29,6 +29,19 @@ jobs:
           print("smoke_import_ok")
           PY
 
+      - name: Install lightweight test deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          # Router corridor tests need LangGraph; env tests mock torch.
+          pip install "langgraph==0.3.34" "langchain-core==0.3.86" "pydantic>=2,<3"
+
+      - name: Unit tests (router + environment)
+        shell: bash
+        run: |
+          pytest tests/test_environment.py tests/test_router.py -q --tb=short
+
   sync-to-hf:
     name: Sync to Hugging Face
     needs: smoke-test
