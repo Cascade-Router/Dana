@@ -6,8 +6,19 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Annotated, Any, Literal, TypedDict
 
-from langgraph.graph.message import add_messages
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+try:
+    from langgraph.graph.message import add_messages
+except ImportError:  # Lightweight UI / schema imports without LangGraph installed.
+
+    def add_messages(left: Any, right: Any) -> list[Any]:
+        """Minimal list-merge stand-in used only when langgraph is absent."""
+        if left is None or left == []:
+            return list(right or [])
+        if right is None or right == []:
+            return list(left)
+        return list(left) + list(right)
 
 TraceEventType = Literal[
     "node_enter",
