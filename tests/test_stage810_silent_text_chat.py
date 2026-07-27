@@ -17,9 +17,25 @@ def test_chat_bar_widgets_and_standby_guard() -> None:
     try:
         assert app.chat_entry is not None
         assert app._chat_send_btn is not None
-        assert "Dānā" in str(app.chat_entry.cget("placeholder_text"))
+        assert "Type below or say Donna" in str(app.chat_entry.cget("placeholder_text"))
         accent = str(app._chat_send_btn.cget("fg_color")).lower()
         assert "#00adb5" in accent
+
+        # Welcome banner once at build; Start Chat must not re-append it.
+        box = app.transcript_box
+        assert box is not None
+        welcome = "Type below or say Donna, then speak."
+        initial = str(box.get("1.0", "end"))
+        assert welcome in initial
+        assert initial.count(welcome) == 1
+        app.engine_active = True
+        set_engine_engaged(True)
+        app._dashboard_start_chat()
+        app._dashboard_start_chat()
+        after = str(box.get("1.0", "end"))
+        assert after.count(welcome) == 1
+        set_engine_engaged(False)
+        app.engine_active = False
 
         # Standby: Send aborts and does not inject.
         app.chat_entry.insert(0, "hello from text")

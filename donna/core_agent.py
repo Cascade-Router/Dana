@@ -5340,6 +5340,10 @@ def conversation_worker(
     def end_session_to_idle(message: Optional[str] = None) -> None:
         if message:
             log("Conversation", f'Session end -> "{message}"')
+            try:
+                emit_live_transcript("Donna", message)
+            except Exception:  # noqa: BLE001
+                pass
             enqueue_speech(message)
             wait_for_speech_idle(timeout=TTS_IDLE_WAIT_TIMEOUT)
         set_subtitle("")
@@ -5633,7 +5637,7 @@ def conversation_worker(
                 answer = OLLAMA_UNREACHABLE_SPEECH
                 log("Conversation", f'Donna: "{answer}"')
                 log_conversation("Donna", answer)
-                emit_live_transcript("Donna (Ollama)", answer)
+                emit_live_transcript("Donna", answer)
                 enqueue_speech(answer)
                 wait_for_speech_idle(timeout=30.0)
                 time.sleep(0.15)
@@ -5784,7 +5788,7 @@ def conversation_worker(
         )
         log("Conversation", f'Donna: "{answer}"')
         log_conversation("Donna", answer or "", extra=f"{latency_ms:.0f} ms")
-        emit_live_transcript("Donna (Ollama)", answer)
+        emit_live_transcript("Donna", answer)
         SPATIAL_AGGREGATOR.update_transcript(assistant=answer)
 
         # Prefer live astream TTS; skip duplicate final enqueue when already spoken.
@@ -5838,12 +5842,14 @@ def conversation_worker(
                 set_subtitle(f'User (Queue): "{command}"')
                 emit_live_transcript("User (TaskQueue)", command)
                 if is_standby_command(command):
+                    emit_live_transcript("Donna", "Standing by.")
                     enqueue_speech("Standing by.", interruptible=False)
                     wait_for_speech_idle(timeout=8.0)
                     return
                 if is_clear_context_command(command):
                     flush_conversation_memory(reason="task_queue")
                     reply = clear_context_spoken_reply(command)
+                    emit_live_transcript("Donna", reply)
                     enqueue_speech(reply)
                     wait_for_speech_idle(timeout=8.0)
                     return
@@ -5852,6 +5858,7 @@ def conversation_worker(
                     return
                 if is_time_command(command):
                     reply = wall_clock_spoken_reply()
+                    emit_live_transcript("Donna", reply)
                     enqueue_speech(reply)
                     wait_for_speech_idle(timeout=8.0)
                     return
@@ -5949,6 +5956,7 @@ def conversation_worker(
                     flush_conversation_memory(reason="voice_command")
                     reply = clear_context_spoken_reply(whisper_text)
                     log_conversation("Donna", reply)
+                    emit_live_transcript("Donna", reply)
                     enqueue_speech(reply)
                     wait_for_speech_idle(timeout=8.0)
                     follow_up = True
@@ -6184,6 +6192,7 @@ def conversation_worker(
                     flush_conversation_memory(reason="voice_command")
                     reply = clear_context_spoken_reply(whisper_text)
                     log_conversation("Donna", reply)
+                    emit_live_transcript("Donna", reply)
                     enqueue_speech(reply)
                     wait_for_speech_idle(timeout=8.0)
                     follow_up = True
@@ -6227,6 +6236,7 @@ def conversation_worker(
                 flush_conversation_memory(reason="voice_command")
                 reply = clear_context_spoken_reply(whisper_text)
                 log_conversation("Donna", reply)
+                emit_live_transcript("Donna", reply)
                 enqueue_speech(reply)
                 wait_for_speech_idle(timeout=8.0)
                 follow_up = True
@@ -7139,8 +7149,22 @@ _TRAY_LISTENING_STATES = frozenset({"listening", "followup"})
 
 
 def create_tray_image(mode: str = "idle") -> Image.Image:
-    """Branded tray icon; ``listening`` mode uses a green fill as the visual cue."""
+    """Branded tray icon; prefers ``donna/assets/donna.ico``, procedural fallback."""
     size = 64
+    try:
+        from donna.ui.logo import load_app_icon_pil
+
+        logo = load_app_icon_pil((size, size))
+    except Exception:  # noqa: BLE001
+        logo = None
+    if logo is not None:
+        img = logo.convert("RGBA")
+        if mode == "listening":
+            # Status pip (same cue as procedural tray icon).
+            draw = ImageDraw.Draw(img)
+            draw.ellipse((42, 8, 56, 22), fill=(250, 250, 250, 255))
+            draw.ellipse((45, 11, 53, 19), fill=(34, 197, 94, 255))
+        return img
     fill = _TRAY_FILL_LISTENING if mode == "listening" else _TRAY_FILL_IDLE
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -7403,8 +7427,8 @@ class DonnaGUI(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Donna — Control Dashboard")
-        self.geometry("880x720")
-        self.minsize(720, 580)
+        self.geometry("880x780")
+        self.minsize(650, 750)
         self._dictation_active = False
         self._behavior_locked = False
         # Stage 8.9.7 — soft LangGraph engine ignition (False = STANDBY).
@@ -7451,6 +7475,15 @@ class DonnaGUI(ctk.CTk):
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
         self.withdraw()
+        try:
+            from donna.ui.logo import resolve_app_icon_path
+
+            ico = resolve_app_icon_path()
+            if ico is not None:
+                # Windows taskbar / title-bar icon (multi-resolution .ico).
+                self.iconbitmap(str(ico))
+        except Exception:  # noqa: BLE001
+            pass
         # Stage 8.7 — floating AssistiveTouch orb (supplements system tray).
         try:
             self.after(200, self._start_assistive_orb)
@@ -7651,18 +7684,54 @@ class DonnaGUI(ctk.CTk):
             pass
 
     def _build_dashboard_tab(self, tab) -> None:  # noqa: ANN001
-        """Stage 8.9.4 — welcome / quick actions + embedded Live Transcript."""
+        """Stage 8.9.4 — welcome / quick actions + Live Transcript + bottom chat bar.
+
+        Pack order matters: bottom input is reserved first so the transcript is the
+        only region that expands/shrinks on resize (input stays visible).
+        """
         try:
             tab.configure(fg_color=_UI_CANVAS)
         except Exception:  # noqa: BLE001
             pass
 
+        # --- Bottom input (pack first, side=bottom) ---
+        chat_bar = ctk.CTkFrame(tab, fg_color="transparent")
+        chat_bar.pack(side="bottom", fill="x", padx=14, pady=(6, 14))
+        chat_bar.grid_columnconfigure(0, weight=1)
+        self.chat_entry = ctk.CTkEntry(
+            chat_bar,
+            placeholder_text="Type below or say Donna, then speak.",
+            height=36,
+            corner_radius=10,
+            fg_color=_UI_GHOST,
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+            text_color="#F9FAFB",
+            placeholder_text_color=_UI_MUTED,
+            font=ctk.CTkFont(size=13),
+        )
+        self.chat_entry.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.chat_entry.bind("<Return>", self.submit_text_command)
+        self._chat_send_btn = ctk.CTkButton(
+            chat_bar,
+            text="Send",
+            width=92,
+            height=36,
+            corner_radius=999,
+            fg_color=_UI_ACCENT,
+            hover_color=_UI_ACCENT_HOVER,
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self.submit_text_command,
+        )
+        self._chat_send_btn.grid(row=0, column=1, sticky="e")
+
+        # --- Top welcome / ignition (fixed height, no expand) ---
         welcome = self._make_card(
-            tab, title="System Ready", pady=(10, 8), expand=False
+            tab, title="System Ready", pady=(10, 4), expand=False
         )
         center = ctk.CTkFrame(welcome, fg_color="transparent")
-        center.pack(fill="x", pady=(4, 8))
-        # Stage 8.9.9 — high-fidelity LANCZOS logo (CTkImage), no glyph text.
+        center.pack(fill="x", pady=(4, 4))
         self._dash_logo_img = None
         try:
             from donna.ui.logo import load_premium_logo
@@ -7676,14 +7745,13 @@ class DonnaGUI(ctk.CTk):
                 text="",
                 image=self._dash_logo_img,
                 fg_color="transparent",
-            ).pack(pady=(2, 6))
+            ).pack(pady=(2, 4))
         ctk.CTkLabel(
             center,
             text="Donna is online",
             font=ctk.CTkFont(size=15, weight="bold"),
             text_color="#F9FAFB",
-        ).pack(pady=(4, 2))
-        # Dynamic runtime state (header/orb own Mode — no duplicate Mode: label).
+        ).pack(pady=(2, 2))
         self.status_value = ctk.CTkLabel(
             center,
             text="Idle",
@@ -7697,11 +7765,10 @@ class DonnaGUI(ctk.CTk):
             font=ctk.CTkFont(size=12),
             text_color="#00E676",
         )
-        self.wake_value.pack(pady=(0, 8))
+        self.wake_value.pack(pady=(0, 6))
 
-        # Stage 8.9.7 — soft engine ignition (ENGAGE / STANDBY).
         engine_row = ctk.CTkFrame(center, fg_color="transparent")
-        engine_row.pack(pady=(4, 4))
+        engine_row.pack(pady=(2, 2))
         try:
             _engage_font = ctk.CTkFont(
                 family="Segoe UI Historic", size=13, weight="bold"
@@ -7740,17 +7807,17 @@ class DonnaGUI(ctk.CTk):
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color="#A1887F",
         )
-        self._engine_status_lbl.pack(pady=(6, 2))
+        self._engine_status_lbl.pack(pady=(4, 2))
         self._engine_warn_lbl = ctk.CTkLabel(
             center,
             text="",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color="#F87171",
         )
-        self._engine_warn_lbl.pack(pady=(0, 6))
+        self._engine_warn_lbl.pack(pady=(0, 4))
 
         actions = ctk.CTkFrame(center, fg_color="transparent")
-        actions.pack(pady=(4, 6))
+        actions.pack(pady=(2, 4))
         for label, cmd in (
             ("Start Chat", self._dashboard_start_chat),
             ("Trigger Dictation", self._dashboard_trigger_dictation),
@@ -7770,13 +7837,15 @@ class DonnaGUI(ctk.CTk):
                 font=ctk.CTkFont(size=12),
                 command=cmd,
             ).pack(side="left", padx=6)
-        # Sync ignition chrome to initial STANDBY.
         try:
             self._refresh_engine_ui()
         except Exception:  # noqa: BLE001
             pass
 
-        transcript_card = self._make_card(tab, title="Live Transcript", pady=(4, 4))
+        # --- Middle transcript (only expanding region) ---
+        transcript_card = self._make_card(
+            tab, title="Live Transcript", pady=(4, 4), expand=True
+        )
         ctk.CTkLabel(
             transcript_card,
             text="Persona-colored STT / agent replies",
@@ -7792,45 +7861,13 @@ class DonnaGUI(ctk.CTk):
             border_width=0,
         )
         self.transcript_box.pack(fill="both", expand=True)
-        # Stage 8.5.2 — persona color tags on the underlying Tk Text.
         self._init_persona_transcript_tags()
+        # One-time welcome banner (never re-logged from Start Chat / idle loops).
         self.transcript_box.insert(
             "1.0",
-            "Waiting for speech… Say 'Donna', then speak.\n\n",
+            "[Donna] Type below or say Donna, then speak.\n\n",
         )
         self.transcript_box.configure(state="disabled")
-
-        # Stage 8.10 — silent text chat bar (bypasses STT → LangGraph inject).
-        chat_bar = ctk.CTkFrame(tab, fg_color="transparent")
-        chat_bar.pack(fill="x", padx=14, pady=(8, 18))
-        chat_bar.grid_columnconfigure(0, weight=1)
-        self.chat_entry = ctk.CTkEntry(
-            chat_bar,
-            placeholder_text="Type a command to Dānā...",
-            height=36,
-            corner_radius=10,
-            fg_color=_UI_GHOST,
-            border_width=1,
-            border_color=_UI_CARD_BORDER,
-            text_color="#F9FAFB",
-            placeholder_text_color=_UI_MUTED,
-            font=ctk.CTkFont(size=13),
-        )
-        self.chat_entry.grid(row=0, column=0, sticky="ew", padx=(0, 10))
-        self.chat_entry.bind("<Return>", self.submit_text_command)
-        self._chat_send_btn = ctk.CTkButton(
-            chat_bar,
-            text="Send",
-            width=92,
-            height=36,
-            corner_radius=999,
-            fg_color=_UI_ACCENT,
-            hover_color=_UI_ACCENT_HOVER,
-            text_color="#FFFFFF",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            command=self.submit_text_command,
-        )
-        self._chat_send_btn.grid(row=0, column=1, sticky="e")
 
     def submit_text_command(self, event=None):  # noqa: ANN001
         """Stage 8.10 — inject typed text as the next user utterance (no STT)."""
@@ -8332,7 +8369,7 @@ class DonnaGUI(ctk.CTk):
             pass
 
     def _dashboard_start_chat(self) -> None:
-        """Quick action — focus Dashboard silent chat entry."""
+        """Quick action — focus Dashboard silent chat entry (no transcript spam)."""
         if not self._require_engine():
             return
         self._select_tab("Dashboard")
@@ -8344,14 +8381,6 @@ class DonnaGUI(ctk.CTk):
         try:
             if self.chat_entry is not None:
                 self.chat_entry.focus_set()
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            self.log_transcript(
-                "Donna",
-                "Type below or say Donna, then speak.",
-                agent_id="broker",
-            )
         except Exception:  # noqa: BLE001
             pass
 
