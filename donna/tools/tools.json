@@ -1208,31 +1208,6 @@
       }
     },
     {
-      "id": "build_tool_named_greet",
-      "description_en": "echoes back a greeting message",
-      "parameters": [
-        {
-          "name": "text",
-          "type": "string",
-          "required": true,
-          "description_en": "Primary text input.",
-          "description_fa": "  ."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "build tool named greet",
-          "run build_tool_named_greet"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "build_tool_named_greet"
-        ]
-      },
-      "dynamic": true
-    },
-    {
       "id": "github_issue_reporter",
       "description_en": "Report a bug via voice or text by creating an official GitHub issue on the community repository. Use when the user or a friend wants to file a bug report.",
       "ephemeral": false,

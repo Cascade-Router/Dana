@@ -122,6 +122,16 @@ Deep dive: [`docs/architecture.md`](docs/architecture.md) · Telemetry contract:
 
 ---
 
+## Documentation / Operator Guide
+
+- **[User Handbook](User%20Handbook.md)** — operating modes, wake/voice commands, and automated system behaviors for day-to-day use of Dānā.
+- Architecture: [`docs/architecture.md`](docs/architecture.md)
+- Telemetry & UI contract: [`docs/telemetry_and_ui.md`](docs/telemetry_and_ui.md)
+- Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Security: [`SECURITY.md`](SECURITY.md)
+
+---
+
 ## Runtime Boundaries (Local State)
 
 Donna treats the repo root as the active workspace. The following are **machine-local** and excluded from Git:
