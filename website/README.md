@@ -1,4 +1,4 @@
-# Dānā (دانا) Web — Stage 9.0
+# Dānā Web — Stage 9.0
 
 Astro + Tailwind dark-first landing for the Dānā cybernetic brand.
 

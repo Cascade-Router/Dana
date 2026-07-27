@@ -1,4 +1,4 @@
-# Dānā (دانا) — Hugging Face Space Deployment (Stage 9.2)
+# Dānā — Hugging Face Space Deployment (Stage 9.2)
 
 Gradio wrapper that exposes the LangGraph text corridor as::
 

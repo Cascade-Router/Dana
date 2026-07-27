@@ -43,7 +43,7 @@ def build_demo():
             placeholder="Type a command to Dānā…",
         ),
         outputs=gr.Textbox(lines=8, label="Dānā"),
-        title="Dānā (دانا) — LangGraph Cloud",
+        title="Dānā — LangGraph Cloud",
         description=(
             "Hugging Face Space wrapper for the Dānā ReAct / LangGraph backend. "
             "Desktop vision and OS actuators are mocked. "

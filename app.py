@@ -55,10 +55,10 @@ def simulate_vision_grounding(image, target_prompt):
     return (image, annotations), json.dumps(bbox_info, indent=2)
 
 # --- Gradio Blocks UI ---
-with gr.Blocks(title="Dānā (دانا) · Agent Simulator") as demo:
+with gr.Blocks(title="Dānā · Agent Simulator") as demo:
     gr.Markdown(
         """
-        # Dānā (دانا) · Cybernetic Agent Simulator
+        # Dānā · Cybernetic Agent Simulator
         
         > **Local by design.** This Hugging Face Space runs a lightweight CPU simulation of Dānā's **LangGraph routing corridor** and **Florence-2 UI grounding logic**.
         > 

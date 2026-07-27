@@ -206,7 +206,7 @@ def _system_prompt(user_text: str) -> str:
         return build_donna_system_prompt([], user_text=user_text)
     except Exception:  # noqa: BLE001
         return (
-            "You are Dānā (دانا), a local-first cybernetic copilot running in "
+            "You are Dānā, a local-first cybernetic copilot running in "
             "cloud/Hugging Face mode. Prefer tools when asked. Vision and OS "
             "actuators are mocked — explain limitations briefly when hit."
         )

@@ -1,5 +1,5 @@
 ---
-title: Dānā (دانا) · Cybernetic Agent Simulator
+title: Dānā · Cybernetic Agent Simulator
 emoji: ⚡
 colorFrom: blue
 colorTo: gray
