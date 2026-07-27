@@ -1,7 +1,7 @@
 ---
 import FloatingLogo from "./FloatingLogo.astro";
+import { withBase } from "../utils/withBase";
 
-const base = import.meta.env.BASE_URL;
 const downloadHref =
   "https://github.com/Cascade-Router/Donna/releases/latest/download/Donna-windows-x64.zip";
 ---
@@ -37,7 +37,7 @@ const downloadHref =
           Download for Windows
         </a>
         <a
-          href={`${base}demo`}
+          href={withBase("demo")}
           class="text-sm font-medium text-slate-400 underline-offset-4 transition hover:text-violet-soft hover:underline"
         >
           Open live demo

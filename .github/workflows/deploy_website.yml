@@ -37,7 +37,7 @@ jobs:
         env:
           # Project Pages URL: https://cascade-router.github.io/Donna/
           SITE_URL: https://cascade-router.github.io
-          BASE_PATH: /Donna
+          BASE_PATH: /Donna/
           ASTRO_PAGES: "1"
         run: |
           npm ci

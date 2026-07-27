@@ -1,6 +1,7 @@
 ---
 import "../styles/global.css";
 import GlobalChat from "../components/GlobalChat.astro";
+import { withBase } from "../utils/withBase";
 
 interface Props {
   title?: string;
@@ -30,8 +31,8 @@ const canonical = new URL(pathname, Astro.site).toString();
     <title>{title}</title>
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
-    <link rel="icon" type="image/svg+xml" href={`${base}favicon.svg`} />
-    <link rel="preload" as="image" href={`${base}dana-logo.png`} fetchpriority="high" />
+    <link rel="icon" type="image/svg+xml" href={withBase("favicon.svg")} />
+    <link rel="preload" as="image" href={withBase("dana-logo.png")} fetchpriority="high" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

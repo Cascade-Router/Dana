@@ -3,7 +3,7 @@
  * Stage 9.0 — floating / glowing brand mark.
  * Transform + opacity only (composite-friendly; no layout shift).
  */
-const base = import.meta.env.BASE_URL;
+import { withBase } from "../utils/withBase";
 ---
 
 <div class="relative mx-auto flex h-44 w-44 items-center justify-center sm:h-56 sm:w-56">
@@ -18,8 +18,7 @@ const base = import.meta.env.BASE_URL;
   >
   </div>
   <img
-    src={`${base}dana-logo.png`}
-
+    src={withBase("dana-logo.png")}
     alt="Dānā mark"
     width="224"
     height="224"

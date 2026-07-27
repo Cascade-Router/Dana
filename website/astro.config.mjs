@@ -8,11 +8,14 @@ const onPages =
 const site =
   process.env.SITE_URL ||
   (onPages ? "https://cascade-router.github.io" : "http://localhost:4321");
-const base = process.env.BASE_PATH || (onPages ? "/Donna" : "/");
+const base = process.env.BASE_PATH || (onPages ? "/Donna/" : "/");
+// Astro requires a trailing slash on project bases (e.g. /Donna/) so
+// `${BASE_URL}dana-logo.png` resolves to /Donna/dana-logo.png — not /Donnadana-logo.png.
+const normalizedBase = base.endsWith("/") ? base : `${base}/`;
 
 export default defineConfig({
   site,
-  base,
+  base: normalizedBase,
   integrations: [
     tailwind({
       applyBaseStyles: false,
