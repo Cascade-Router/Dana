@@ -191,22 +191,29 @@ def _get_session_meta() -> dict[str, Any]:
 
 
 def _seed_vision_sensor() -> None:
-    """Simulate vision_poller publishing latest_visual_context + SENSOR_VISION."""
+    """Simulate vision_poller publishing perception.objects (+ legacy mirror)."""
     from donna.memory.blackboard import (
         LATEST_VISUAL_CONTEXT_KEY,
-        set_sensor_state,
+        PERCEPTION_OBJECTS_KEY,
+        publish_perception_objects,
     )
     from donna.telemetry import log_sensor_vision
 
-    set_sensor_state(
-        LATEST_VISUAL_CONTEXT_KEY,
+    # read_visual_state prefers perception.objects over legacy latest_visual_context.
+    publish_perception_objects(
         SEEDED_VISUAL,
-        meta={"publisher": "full_tree_suite", "session_id": SESSION_ID},
+        producer="full_tree_suite",
+        model="fixture",
+        latency_ms=1.0,
     )
     log_sensor_vision(
         "latest_visual_context seeded by full-tree suite",
         latency_ms=1.0,
-        payload={"key": LATEST_VISUAL_CONTEXT_KEY, "suite": "full_tree_text"},
+        payload={
+            "key": LATEST_VISUAL_CONTEXT_KEY,
+            "objects_key": PERCEPTION_OBJECTS_KEY,
+            "suite": "full_tree_text",
+        },
     )
 
 

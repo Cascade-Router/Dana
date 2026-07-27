@@ -189,6 +189,7 @@ class _ActuatorDaemon:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.processed = 0
+        self._orig_execute_tool_payload: Any = None
 
     def start(self) -> None:
         from donna.middleware import actuator_executor as ae
@@ -196,12 +197,18 @@ class _ActuatorDaemon:
 
         # Prefer live web_search; if ddgs missing, return deterministic research.
         _orig = ae.execute_tool_payload
+        self._orig_execute_tool_payload = _orig
 
-        def _payload(tool_name: str, arguments: dict[str, Any] | None) -> str:
+        def _payload(
+            tool_name: str,
+            arguments: dict[str, Any] | None,
+            *,
+            db_path: Any = None,
+        ) -> str:
             name = (tool_name or "").strip()
             if name == "web_search":
                 try:
-                    out = _orig(tool_name, arguments)
+                    out = _orig(tool_name, arguments, db_path=db_path)
                 except Exception as exc:  # noqa: BLE001
                     out = f"ERROR: {exc}"
                 if str(out).startswith("ERROR:") or "ddgs" in str(out).lower():
@@ -211,7 +218,7 @@ class _ActuatorDaemon:
                 if "batch" not in blob.lower() or "quant" not in blob.lower():
                     return MOCK_FLORENCE_RESEARCH + "\n\n(live wrap)\n" + blob[:800]
                 return blob
-            return _orig(tool_name, arguments)
+            return _orig(tool_name, arguments, db_path=db_path)
 
         ae.execute_tool_payload = _payload  # type: ignore[assignment]
 
@@ -237,21 +244,26 @@ class _ActuatorDaemon:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=5.0)
+        # Prevent monkeypatch leak into later pytest modules.
+        if self._orig_execute_tool_payload is not None:
+            from donna.middleware import actuator_executor as ae
+
+            ae.execute_tool_payload = self._orig_execute_tool_payload
+            self._orig_execute_tool_payload = None
 
 
 def step1_sensor_inject() -> StepResult:
-    from donna.memory.blackboard import (
-        LATEST_VISUAL_CONTEXT_KEY,
-        set_sensor_state,
-    )
+    from donna.memory.blackboard import publish_perception_objects
     from donna.memory import read_visual_state
     from donna.telemetry import log_sensor_vision
 
     r = StepResult("Step 1 (Sensor Injection)", "(setup)", False)
-    set_sensor_state(
-        LATEST_VISUAL_CONTEXT_KEY,
+    # read_visual_state prefers perception.objects over legacy latest_visual_context.
+    publish_perception_objects(
         SEEDED_VISUAL,
-        meta={"publisher": "compound_scenario", "session_id": SESSION_ID},
+        producer="compound_scenario",
+        model="fixture",
+        latency_ms=0.5,
     )
     log_sensor_vision(
         "compound scenario seeded CUDA OOM visual",
