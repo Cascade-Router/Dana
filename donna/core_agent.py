@@ -7904,6 +7904,23 @@ class DonnaGUI(ctk.CTk):
             text_color="#00E676",
         )
         self._settings_wake_lbl.pack(fill="x", pady=(0, 12))
+        try:
+            from donna.settings import is_open_window_on_startup
+
+            open_on_start = bool(is_open_window_on_startup())
+        except Exception:  # noqa: BLE001
+            open_on_start = True
+        self._open_window_var = ctk.BooleanVar(value=open_on_start)
+        self._open_window_chk = ctk.CTkCheckBox(
+            stats_card,
+            text="Open window on startup",
+            variable=self._open_window_var,
+            command=self._on_open_window_startup_toggle,
+            fg_color=_UI_ACCENT,
+            hover_color=_UI_ACCENT_HOVER,
+            text_color=_UI_MUTED,
+        )
+        self._open_window_chk.pack(anchor="w", pady=(0, 12))
         ctk.CTkLabel(
             stats_card,
             text=(
@@ -9061,6 +9078,20 @@ class DonnaGUI(ctk.CTk):
         except Exception:
             pass
 
+    def _on_open_window_startup_toggle(self) -> None:
+        """Persist Settings → Open window on startup immediately."""
+        try:
+            from donna.settings import set_open_window_on_startup
+
+            enabled = bool(self._open_window_var.get())
+            set_open_window_on_startup(enabled)
+            log(
+                "UI",
+                f"open_window_on_startup={'True' if enabled else 'False'} (saved)",
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: could not save open_window_on_startup ({exc})")
+
     def kill_donna_processes(self) -> dict[str, Any]:
         """Stage 8.9.2 — launch ``stop_donna.bat`` (non-blocking) to terminate Donna.
 
@@ -9080,16 +9111,26 @@ class DonnaGUI(ctk.CTk):
             return {"ok": False, "error": "FileNotFoundError", "message": msg}
         try:
             creationflags = 0
-            if hasattr(subprocess, "DETACHED_PROCESS"):
-                creationflags |= int(subprocess.DETACHED_PROCESS)
-            if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-                creationflags |= int(subprocess.CREATE_NEW_PROCESS_GROUP)
+            startupinfo = None
+            if sys.platform == "win32":
+                # Hide cmd.exe host for stop_donna.bat (no flashing console).
+                creationflags |= int(
+                    getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                )
+                if hasattr(subprocess, "DETACHED_PROCESS"):
+                    creationflags |= int(subprocess.DETACHED_PROCESS)
+                if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+                    creationflags |= int(subprocess.CREATE_NEW_PROCESS_GROUP)
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = int(getattr(subprocess, "SW_HIDE", 0))
             # shell=True + absolute path — matches Windows .bat launch semantics.
             proc = subprocess.Popen(  # noqa: S603
                 f'"{bat}"',
                 cwd=str(root),
                 shell=True,
                 creationflags=creationflags,
+                startupinfo=startupinfo,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -9576,14 +9617,26 @@ def main() -> int:
     # Stage 8.9.7 — GUI paints in STANDBY first; heavy agent loop deferred.
     gui = DonnaGUI()
     _gui_instance = gui
-    # Boot visible (DonnaGUI starts withdrawn for tray-close UX).
+    # Boot visible by default; honor open_window_on_startup (tray-only when False).
     try:
-        gui.after(150, gui.show_window)
+        from donna.settings import is_open_window_on_startup
+
+        _show_on_boot = bool(is_open_window_on_startup())
     except Exception:  # noqa: BLE001
+        _show_on_boot = True
+    if _show_on_boot:
         try:
-            gui.show_window()
+            gui.after(150, gui.show_window)
         except Exception:  # noqa: BLE001
-            pass
+            try:
+                gui.show_window()
+            except Exception:  # noqa: BLE001
+                pass
+    else:
+        log(
+            "Main",
+            "open_window_on_startup=False — tray/orb only (dashboard hidden).",
+        )
     try:
         emit_trace(
             "Boot",

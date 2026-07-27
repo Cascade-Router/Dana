@@ -37,6 +37,10 @@ def test_kill_donna_processes_launches_bat(monkeypatch: pytest.MonkeyPatch, tmp_
     assert launched
     assert "stop_donna.bat" in str(launched[0]["args"][0])
     assert launched[0]["kwargs"].get("shell") is True
+    if os.name == "nt":
+        flags = int(launched[0]["kwargs"].get("creationflags") or 0)
+        no_window = int(getattr(__import__("subprocess"), "CREATE_NO_WINDOW", 0x08000000))
+        assert flags & no_window, f"CREATE_NO_WINDOW missing from flags={flags:#x}"
     app.destroy()
 
 

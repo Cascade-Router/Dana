@@ -25,6 +25,8 @@ DEFAULT_FLAGS: dict[str, Any] = {
     # Human place label spoken in answers (city / region).
     "home_city": "",
     "home_region": "",
+    # When False, boot to tray/orb only (main dashboard stays hidden).
+    "open_window_on_startup": True,
 }
 
 
@@ -201,6 +203,25 @@ def load_donna_settings(*, force_reload: bool = False) -> dict[str, Any]:
             pass
     _CACHE = dict(cfg)
     return dict(cfg)
+
+
+def is_open_window_on_startup() -> bool:
+    """True when the main dashboard should deiconify on boot (default True)."""
+    return bool(load_donna_settings().get("open_window_on_startup", True))
+
+
+def set_open_window_on_startup(enabled: bool) -> None:
+    """Persist ``open_window_on_startup`` and refresh the settings cache."""
+    global _CACHE
+    cfg = load_donna_settings(force_reload=True)
+    cfg["open_window_on_startup"] = bool(enabled)
+    try:
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+    except OSError:
+        return
+    _CACHE = dict(cfg)
 
 
 def is_dynamic_tool_synthesis_enabled() -> bool:

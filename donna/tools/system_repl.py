@@ -106,11 +106,18 @@ def _kill_process_tree(pid: int) -> None:
         return
     if os.name == "nt":
         try:
+            tk_kwargs: dict = {
+                "capture_output": True,
+                "timeout": 5,
+                "check": False,
+            }
+            if sys.platform == "win32":
+                tk_kwargs["creationflags"] = int(
+                    getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                )
             subprocess.run(  # noqa: S603
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True,
-                timeout=5,
-                check=False,
+                **tk_kwargs,
             )
         except Exception:  # noqa: BLE001
             pass

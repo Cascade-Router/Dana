@@ -45,15 +45,20 @@ def _python() -> str:
 
 def _spawn(name: str, module: str) -> subprocess.Popen[Any]:
     creationflags = 0
-    if os.name == "nt":
-        # DETACHED_PROCESS-ish: avoid Ctrl+C killing children with the console
-        # group when possible; CREATE_NEW_PROCESS_GROUP is enough for soft stop.
-        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    startupinfo = None
+    if sys.platform == "win32":
+        # Hide child consoles on spawn/restart (no flash during stop/cleanup).
+        creationflags |= int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        creationflags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = int(getattr(subprocess, "SW_HIDE", 0))
     proc = subprocess.Popen(  # noqa: S603
         [_python(), "-m", module],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=creationflags,
+        startupinfo=startupinfo,
     )
     print(
         f"[sidekick_supervisor] started {name} pid={proc.pid} module={module}",

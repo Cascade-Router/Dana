@@ -33,16 +33,23 @@ def _run_git(
     cwd: Path,
     timeout_s: float = 120.0,
 ) -> subprocess.CompletedProcess[str]:
+    kwargs: dict = {
+        "cwd": str(cwd),
+        "check": True,
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": timeout_s,
+        "shell": False,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = int(
+            getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        )
     return subprocess.run(
         ["git", *args],
-        cwd=str(cwd),
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout_s,
-        shell=False,
+        **kwargs,
     )
 
 
@@ -50,16 +57,23 @@ def _run_pip_install(*, cwd: Path, timeout_s: float = 600.0) -> subprocess.Compl
     req = cwd / "requirements.txt"
     if not req.is_file():
         raise FileNotFoundError(f"requirements.txt missing under {cwd}")
+    kwargs: dict = {
+        "cwd": str(cwd),
+        "check": True,
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": timeout_s,
+        "shell": False,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = int(
+            getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        )
     return subprocess.run(
         [sys.executable, "-m", "pip", "install", "-r", str(req)],
-        cwd=str(cwd),
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout_s,
-        shell=False,
+        **kwargs,
     )
 
 
