@@ -33,8 +33,6 @@ cp .env.example .env
 
 ## Develop
 
-Requires Node.js ≥ 18.17.
-
 ```bash
 cd website
 npm install
@@ -47,6 +45,10 @@ Build:
 npm run build
 npm run preview
 ```
+
+## GitHub Pages
+
+Workflow: `.github/workflows/deploy_website.yml` — builds on `website/**` pushes to `main`, uploads `website/dist`. CI sets `BASE_PATH=/Donna` for project Pages; local keeps `base: "/"`. Enable **Settings → Pages → Source: GitHub Actions**.
 
 ## Assets
 

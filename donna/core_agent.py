@@ -7422,6 +7422,11 @@ class DonnaGUI(ctk.CTk):
         self._engage_btn: ctk.CTkButton | None = None
         self._standby_btn: ctk.CTkButton | None = None
         self._engine_warn_job: str | None = None
+        # Stage 9.3 — Settings auto-updater chrome.
+        self._update_status_lbl: ctk.CTkLabel | None = None
+        self._update_check_btn: ctk.CTkButton | None = None
+        self._update_apply_btn: ctk.CTkButton | None = None
+        self._update_busy = False
         # Stage 8.10 — Dashboard silent text chat.
         self.chat_entry: ctk.CTkEntry | None = None
         self._chat_send_btn: ctk.CTkButton | None = None
@@ -7955,6 +7960,185 @@ class DonnaGUI(ctk.CTk):
             justify="left",
         )
         self.apply_note.pack(fill="x", pady=(4, 0))
+
+        # Stage 9.3 — System Updates (git fetch / pull + pip + restart).
+        updates = self._make_card(
+            tab, title="System Updates", padx=8, pady=(10, 8), expand=False
+        )
+        ctk.CTkLabel(
+            updates,
+            text=(
+                "Fetch from GitHub, compare revisions, then update dependencies "
+                "and restart Dānā in one click."
+            ),
+            anchor="w",
+            justify="left",
+            wraplength=720,
+            text_color=_UI_MUTED,
+        ).pack(fill="x", pady=(0, 8))
+        self._update_status_lbl = ctk.CTkLabel(
+            updates,
+            text="Status: idle",
+            anchor="w",
+            text_color=_UI_MUTED,
+            font=ctk.CTkFont(size=12),
+        )
+        self._update_status_lbl.pack(fill="x", pady=(0, 8))
+        btn_row = ctk.CTkFrame(updates, fg_color="transparent")
+        btn_row.pack(fill="x")
+        self._update_check_btn = ctk.CTkButton(
+            btn_row,
+            text="Check for Updates",
+            width=160,
+            height=32,
+            corner_radius=999,
+            fg_color=_UI_GHOST,
+            hover_color="#34344A",
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+            text_color="#E5E7EB",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._on_check_for_updates,
+        )
+        self._update_check_btn.pack(side="left", padx=(0, 8))
+        self._update_apply_btn = ctk.CTkButton(
+            btn_row,
+            text="Update & Restart Dānā",
+            width=190,
+            height=32,
+            corner_radius=999,
+            fg_color="#FB8C00",
+            hover_color="#EF6C00",
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._on_apply_update_and_restart,
+        )
+        # Hidden until check_for_updates() reports True.
+        # (pack later via _set_update_available)
+
+    def _set_update_status(self, text: str, *, color: str | None = None) -> None:
+        lbl = self._update_status_lbl
+        if lbl is None:
+            return
+        try:
+            kwargs: dict[str, Any] = {"text": str(text)}
+            if color:
+                kwargs["text_color"] = color
+            lbl.configure(**kwargs)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _set_update_available(self, available: bool) -> None:
+        btn = self._update_apply_btn
+        if btn is None:
+            return
+        try:
+            if available:
+                if not btn.winfo_ismapped():
+                    btn.pack(side="left", padx=(0, 8))
+            else:
+                btn.pack_forget()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_check_for_updates(self) -> None:
+        """Stage 9.3 — background git fetch + rev compare (non-blocking UI)."""
+        if self._update_busy:
+            return
+        self._update_busy = True
+        try:
+            if self._update_check_btn is not None:
+                self._update_check_btn.configure(state="disabled")
+        except Exception:  # noqa: BLE001
+            pass
+        self._set_update_status("Checking GitHub…", color=_UI_ACCENT)
+        self._set_update_available(False)
+
+        def _worker() -> None:
+            available = False
+            err = ""
+            try:
+                from donna.utils.updater import check_for_updates
+
+                available = bool(check_for_updates())
+            except Exception as exc:  # noqa: BLE001
+                err = f"{type(exc).__name__}: {exc}"
+                log("Updater", f"check_for_updates raised: {err}")
+
+            def _ui() -> None:
+                self._update_busy = False
+                try:
+                    if self._update_check_btn is not None:
+                        self._update_check_btn.configure(state="normal")
+                except Exception:  # noqa: BLE001
+                    pass
+                if err:
+                    self._set_update_status(
+                        f"Update check failed: {err}",
+                        color="#F87171",
+                    )
+                    self._set_update_available(False)
+                    return
+                if available:
+                    self._set_update_status(
+                        "Update available — review then Update & Restart.",
+                        color="#FB8C00",
+                    )
+                    self._set_update_available(True)
+                else:
+                    self._set_update_status(
+                        "System is up to date.",
+                        color="#66BB6A",
+                    )
+                    self._set_update_available(False)
+
+            try:
+                self.after(0, _ui)
+            except Exception:  # noqa: BLE001
+                _ui()
+
+        threading.Thread(target=_worker, name="UpdateCheck", daemon=True).start()
+
+    def _on_apply_update_and_restart(self) -> None:
+        """Stage 9.3 — git pull + pip install + relaunch (background)."""
+        if self._update_busy:
+            return
+        self._update_busy = True
+        try:
+            if self._update_check_btn is not None:
+                self._update_check_btn.configure(state="disabled")
+            if self._update_apply_btn is not None:
+                self._update_apply_btn.configure(state="disabled")
+        except Exception:  # noqa: BLE001
+            pass
+        self._set_update_status("Updating from GitHub…", color="#FB8C00")
+
+        def _worker() -> None:
+            from donna.utils.updater import apply_update_and_restart
+
+            result = apply_update_and_restart(restart=True)
+
+            # Only reached on failure (success calls sys.exit).
+            def _ui() -> None:
+                self._update_busy = False
+                try:
+                    if self._update_check_btn is not None:
+                        self._update_check_btn.configure(state="normal")
+                    if self._update_apply_btn is not None:
+                        self._update_apply_btn.configure(state="normal")
+                except Exception:  # noqa: BLE001
+                    pass
+                msg = result.message or "Update Failed."
+                self._set_update_status(msg, color="#F87171")
+                if result.stderr:
+                    log("Updater", f"stderr:\n{result.stderr[:2000]}")
+
+            try:
+                self.after(0, _ui)
+            except Exception:  # noqa: BLE001
+                _ui()
+
+        threading.Thread(target=_worker, name="UpdateApply", daemon=True).start()
 
     def _flash_engine_warning(self, message: str = "Please Engage Engine First.") -> None:
         """Brief Dashboard toast when a task is attempted in STANDBY."""

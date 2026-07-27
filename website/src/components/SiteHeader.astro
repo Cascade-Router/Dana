@@ -1,8 +1,9 @@
 ---
+const base = import.meta.env.BASE_URL;
 const links = [
-  { href: "/#features", label: "Features" },
-  { href: "/#routing", label: "Routing" },
-  { href: "/demo", label: "Demo" },
+  { href: `${base}#features`, label: "Features" },
+  { href: `${base}#routing`, label: "Routing" },
+  { href: `${base}demo`, label: "Demo" },
   {
     href: "https://github.com/Cascade-Router/Donna",
     label: "GitHub",
@@ -12,9 +13,10 @@ const links = [
 ---
 
 <header class="relative z-20 mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
-  <a href="/" class="group flex items-center gap-3 text-white">
+  <a href={base} class="group flex items-center gap-3 text-white">
     <img
-      src="/dana-logo.png"
+      src={`${base}dana-logo.png`}
+
       alt=""
       width="36"
       height="36"
