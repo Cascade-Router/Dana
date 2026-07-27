@@ -1,0 +1,113 @@
+"""Stage 8.9.9 — High-fidelity logo loader (PIL LANCZOS → CTkImage / PhotoImage)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+# Preferred filenames under donna/ui/assets/ (first hit wins).
+_LOGO_CANDIDATES = (
+    "dana_logo_highres.png",
+    "donna_logo_highres.png",
+    "donna_logo.png",
+    "orb_logo.png",
+)
+
+
+def ui_assets_dir() -> Path:
+    """``donna/ui/assets`` — drop artist-rendered PNG/SVG exports here."""
+    return Path(__file__).resolve().parent / "assets"
+
+
+def resolve_logo_path() -> Path | None:
+    """Return the first existing premium logo path, or None."""
+    root = ui_assets_dir()
+    for name in _LOGO_CANDIDATES:
+        path = root / name
+        if path.is_file():
+            return path
+    return None
+
+
+def _load_pil(path: Path):
+    from PIL import Image
+
+    return Image.open(path).convert("RGBA")
+
+
+def load_premium_logo_pil(
+    size: tuple[int, int],
+    *,
+    tint: str | None = None,
+) -> Any | None:
+    """Load + LANCZOS-resize the premium logo; optional hex tint for orb pulses."""
+    path = resolve_logo_path()
+    if path is None:
+        return None
+    try:
+        from PIL import Image, ImageEnhance
+
+        img = _load_pil(path)
+        w, h = int(size[0]), int(size[1])
+        if w < 1 or h < 1:
+            return None
+        img = img.resize((w, h), Image.Resampling.LANCZOS)
+        if tint:
+            img = _tint_rgba(img, tint)
+        # Mild contrast keep edges crisp on dark chrome.
+        try:
+            img = ImageEnhance.Sharpness(img).enhance(1.05)
+        except Exception:  # noqa: BLE001
+            pass
+        return img
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _tint_rgba(img: Any, hex_color: str) -> Any:
+    """Recolor opaque pixels to ``hex_color`` while preserving alpha edges."""
+    from PIL import Image
+
+    color = (hex_color or "").strip().lstrip("#")
+    if len(color) != 6:
+        return img
+    try:
+        rgb = (int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16))
+    except ValueError:
+        return img
+    base = img.convert("RGBA")
+    alpha = base.getchannel("A")
+    solid = Image.new("RGBA", base.size, (*rgb, 255))
+    solid.putalpha(alpha)
+    return solid
+
+
+def load_premium_logo(size: tuple[int, int]) -> Any | None:
+    """Return a ``CTkImage`` sized with LANCZOS, or None if asset missing."""
+    img = load_premium_logo_pil(size)
+    if img is None:
+        return None
+    try:
+        import customtkinter as ctk
+
+        return ctk.CTkImage(light_image=img, dark_image=img, size=size)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def load_premium_logo_photoimage(
+    master: Any,
+    size: tuple[int, int],
+    *,
+    tint: str | None = None,
+) -> Any | None:
+    """Tk ``PhotoImage`` for Canvas (Assistive Orb) — LANCZOS scaled + tinted."""
+    img = load_premium_logo_pil(size, tint=tint)
+    if img is None:
+        return None
+    try:
+        from PIL import ImageTk
+
+        return ImageTk.PhotoImage(img, master=master)
+    except Exception:  # noqa: BLE001
+        return None

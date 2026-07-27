@@ -294,8 +294,28 @@ def draft_cursor_prompt(
     try:
         dest = _append_ticket_to_ledger(ticket)
     except Exception as exc:  # noqa: BLE001 — never crash the ReAct loop
-        return f"{_WRITE_ERROR_MSG}: {type(exc).__name__}"
+        try:
+            from donna.logging import log
 
+            log(
+                "Ledger",
+                f"ERROR writing ticket id={ticket_id}: "
+                f"{type(exc).__name__}: {exc}",
+            )
+        except Exception:  # noqa: BLE001
+            print(
+                f"[Ledger] ERROR writing ticket id={ticket_id}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+        return f"{_WRITE_ERROR_MSG}: {type(exc).__name__}: {exc}"
+
+    try:
+        from donna.logging import log
+
+        log("Ledger", f"Ticket written ID={ticket_id} path={dest}")
+    except Exception:  # noqa: BLE001
+        pass
     return f"{_SUCCESS_MSG} ID={ticket_id} path={dest}"
 
 

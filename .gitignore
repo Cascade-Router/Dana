@@ -1,15 +1,30 @@
-# Local Donna runtime secrets / machine config
+# =============================================================================
+# Dānā / CAMGRASPER — secrets, runtime, and machine-local artifacts
+# =============================================================================
+
+# --- Secrets & credentials (never commit) ---
 .env
+.env.*
+!.env.example
+!**/.env.example
+website/.env
+deploy/.env
+*.pem
+*.key
+credentials.json
+**/secrets.json
+**/github_reporter.json
+
+# Local Donna runtime secrets / machine config
 settings.json
 donna_memory.enc
 donna_memory.enc.tmp
 .trigger_ask
 temp_reply.wav
 vault/
-execution_jail/
-logs/
 
 # Runtime workspace secrets / local reporter config
+execution_jail/
 execution_jail/github_reporter.json
 
 # Piper offline voices (large ONNX)
@@ -21,15 +36,23 @@ tts_models/
 *persian*
 *ticket_on_board_fa*
 
-# Python
+# --- Python / virtualenvs / caches ---
 .venv/
+venv/
+env/
+ENV/
 __pycache__/
-*.pyc
+**/__pycache__/
+*.py[cod]
+*$py.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.tox/
+.coverage
+htmlcov/
 
-# PyInstaller
+# PyInstaller / packaging
 build/
 dist/
 *.egg-info/
@@ -44,9 +67,21 @@ donna_module_uml.md
 classes_Donna.*
 packages_Donna.*
 
-# Repo-rooted runtime workspace (DONNA_WORKSPACE == CAMGRASPER)
+# --- Persistent memory / databases / logs ---
+logs/
 /logs/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+memory/
+/memory/
 /tracker/
+docs/*.db
+
+# Repo-rooted runtime workspace (DONNA_WORKSPACE == CAMGRASPER)
 /execution_jail/
 /custom_tools/
 /captures/
@@ -62,6 +97,7 @@ packages_Donna.*
 donna_security/run_*_donna_watchdog.py
 donna_security/__pycache__/
 donna_security/patch_ledger.md
+donna_security/patch_ledger_archive.md
 
 # Optional in-repo custom mirror (gitignored except __init__.py)
 donna/tools/custom/*
@@ -95,17 +131,32 @@ REPO_AUDIT.md
 
 # Debug and local testing utilities
 debug_*.py
+!donna/tools/debug_vision_live.py
 audio_diagnostics.py
 register_startup.py
 train_donna_local.py
 verify_agentic.py
 
+# Live vision diagnostic dumps
+debug_output/
+
 # Generated runtime reports & logs
 docs/*_report.txt
 docs/*_status.txt
-*.log
 
-donna_security/patch_ledger_archive.md
-docs/*.db
+# Stage 8.9 — local HITL / Jason feedback (training; never commit)
+memory/feedback_logs.jsonl
+memory/*.jsonl
+
+# Website build artifacts (also covered by website/.gitignore)
+website/node_modules/
+website/dist/
+website/.astro/
+website/.env
+website/.env.local
+
+# Local scratch
 _h1.txt
-
+notes.txt
+*.bak
+*.tmp

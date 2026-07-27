@@ -1,0 +1,59 @@
+---
+const features = [
+  {
+    title: "Zero-cloud cognition",
+    body: "MoA routing, Distil-Whisper STT, and Florence-2 OCR stay on your RTX — no API keys, no egress.",
+    span: "md:col-span-2",
+    accent: "teal",
+  },
+  {
+    title: "HITL ticket gate",
+    body: "Jason review + Approve/Deny before patch_ledger writes. Fail closed, never silent.",
+    span: "",
+    accent: "violet",
+  },
+  {
+    title: "Silent text lane",
+    body: "Dashboard chat injects into LangGraph without waking Whisper — Engage-gated standby.",
+    span: "",
+    accent: "teal",
+  },
+  {
+    title: "Hardware control plane",
+    body: "Win32 ROI overlays, half-duplex audio, kill switch, and actuator jail for heavy tools.",
+    span: "md:col-span-2",
+    accent: "violet",
+  },
+];
+---
+
+<section id="features" class="border-t border-slate-800/80 bg-ink-900/40">
+  <div class="mx-auto max-w-6xl px-6 py-20">
+    <div data-reveal class="max-w-2xl">
+      <h2 class="text-2xl font-semibold text-white sm:text-3xl">
+        Built like a control surface, not a chatbot.
+      </h2>
+      <p class="mt-3 text-slate-400">
+        Perception, routing, and actuation — composed as a cybernetic stack you can
+        audit offline.
+      </p>
+    </div>
+
+    <div class="mt-12 grid gap-4 sm:grid-cols-2 md:grid-cols-3">
+      {
+        features.map((f) => (
+          <article data-reveal class:list={["bento-card", f.span]}>
+            <div
+              class:list={[
+                "mb-4 h-1 w-12 rounded-full",
+                f.accent === "teal" ? "bg-teal" : "bg-violet",
+              ]}
+            />
+            <h3 class="text-lg font-semibold text-white">{f.title}</h3>
+            <p class="mt-3 text-sm leading-relaxed text-slate-400">{f.body}</p>
+          </article>
+        ))
+      }
+    </div>
+  </div>
+</section>

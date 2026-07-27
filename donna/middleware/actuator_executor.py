@@ -34,16 +34,30 @@ except Exception:  # noqa: BLE001
     pass
 
 from donna.memory.blackboard import (
+    HEARTBEAT_ACTUATOR_KEY,
     claim_next_pending,
+    publish_heartbeat,
+    release_actuator_lease,
     resolve_action,
+    try_acquire_actuator_lease,
 )
 from donna.telemetry import log_actuator_done, log_actuator_start
 
 DEFAULT_POLL_INTERVAL_S = 0.5
-DEFAULT_WORKERS = 2
+# Sidekick: one foreground desktop owner — never parallel SendInput.
+DEFAULT_WORKERS = 1
 
 # Stage 6.5 — physical operators that pull the Andon Cord on failure.
 _OPERATOR_ANDON_TOOLS = frozenset({"navigate_and_click", "type_stealth_text"})
+_PHYSICAL_LEASE_TOOLS = frozenset(
+    {
+        "navigate_and_click",
+        "type_stealth_text",
+        "press_key",
+        "execute_os_keystrokes",
+        "click_close_button",
+    }
+)
 
 
 def execute_tool_payload(
@@ -215,6 +229,9 @@ def process_action(action: dict[str, Any], *, db_path: Any = None) -> dict[str, 
     session_id = str(action.get("session_id") or "")
     arguments = action.get("arguments") if isinstance(action.get("arguments"), dict) else {}
     t0 = time.perf_counter()
+    lease_owner = f"action:{aid}:{tool_name}"
+    needs_lease = (tool_name or "").strip() in _PHYSICAL_LEASE_TOOLS
+    lease_held = False
     try:
         log_actuator_start(
             tool_name,
@@ -226,6 +243,7 @@ def process_action(action: dict[str, Any], *, db_path: Any = None) -> dict[str, 
 
     status = "completed"
     error_context = ""
+    result = ""
     try:
         from donna.middleware.kill_switch import is_halted
 
@@ -234,20 +252,58 @@ def process_action(action: dict[str, Any], *, db_path: Any = None) -> dict[str, 
             result = "HALTED: cancelled by GLOBAL_HALT_EVENT"
             error_context = "halted by GLOBAL_HALT_EVENT"
         else:
-            result = execute_tool_payload(tool_name, arguments, db_path=db_path)
-            result_s = str(result)
-            if result_s.startswith("HALTED:"):
-                status = "cancelled"
-                error_context = result_s
-            elif result_s.startswith("ERROR:"):
-                status = "failed"
-                error_context = result_s
+            if needs_lease:
+                # Single foreground owner — queue behind an active physical lease.
+                deadline = time.monotonic() + 30.0
+                while time.monotonic() < deadline:
+                    if try_acquire_actuator_lease(lease_owner, db_path=db_path):
+                        lease_held = True
+                        break
+                    time.sleep(0.05)
+                if not lease_held:
+                    status = "failed"
+                    result = "ERROR: actuator lease busy (another physical action owns the desktop)"
+                    error_context = result
+                else:
+                    result = execute_tool_payload(tool_name, arguments, db_path=db_path)
+                    result_s = str(result)
+                    if result_s.startswith("HALTED:"):
+                        status = "cancelled"
+                        error_context = result_s
+                    elif result_s.startswith("ERROR:"):
+                        status = "failed"
+                        error_context = result_s
+            else:
+                result = execute_tool_payload(tool_name, arguments, db_path=db_path)
+                result_s = str(result)
+                if result_s.startswith("HALTED:"):
+                    status = "cancelled"
+                    error_context = result_s
+                elif result_s.startswith("ERROR:"):
+                    status = "failed"
+                    error_context = result_s
     except Exception as exc:  # noqa: BLE001
         status = "failed"
         result = f"ERROR: tool {tool_name} failed: {exc}"
         error_context = str(exc)
+    finally:
+        if lease_held:
+            try:
+                release_actuator_lease(lease_owner, db_path=db_path)
+            except Exception:  # noqa: BLE001
+                pass
 
     latency_ms = (time.perf_counter() - t0) * 1000.0
+    try:
+        publish_heartbeat(
+            HEARTBEAT_ACTUATOR_KEY,
+            publisher="actuator_executor",
+            ok=status in {"completed", "cancelled"},
+            detail=f"{tool_name}:{status}",
+            db_path=db_path,
+        )
+    except Exception:  # noqa: BLE001
+        pass
     resolve_action(
         aid,
         status=status,
@@ -367,10 +423,30 @@ def run_forever(
         f"[actuator] starting workers={n_workers} poll={interval}s",
         flush=True,
     )
+    try:
+        publish_heartbeat(
+            HEARTBEAT_ACTUATOR_KEY,
+            publisher="actuator_executor",
+            ok=True,
+            detail="starting",
+            db_path=db_path,
+        )
+    except Exception:  # noqa: BLE001
+        pass
     inflight: set[Future[Any]] = set()
     with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="donna-act") as pool:
         while True:
             try:
+                try:
+                    publish_heartbeat(
+                        HEARTBEAT_ACTUATOR_KEY,
+                        publisher="actuator_executor",
+                        ok=True,
+                        detail="idle" if not inflight else f"inflight={len(inflight)}",
+                        db_path=db_path,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
                 n = poll_once(
                     pool,
                     inflight,

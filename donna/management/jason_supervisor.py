@@ -31,6 +31,58 @@ PROGRESS_KEY = "jason_bulk_slide_progress"
 _AUDIT_BLOCKED_TOOLS: frozenset[str] = frozenset({"type_stealth_text", "press_key"})
 
 
+class BulkSlideState(TypedDict, total=False):
+    directory: str
+    session_id: str
+    slides: list[dict[str, Any]]
+    index: int
+    evaluations: list[dict[str, Any]]
+    enqueued: list[dict[str, Any]]
+    skipped: list[str]
+    status: str
+    history: list[dict[str, Any]]
+
+
+def _log(msg: str) -> None:
+    try:
+        from donna.logging import log
+
+        log("JasonCTO", msg)
+    except Exception:  # noqa: BLE001
+        print(f"[JasonCTO] {msg}", flush=True)
+
+
+# Stage 8.2 — Feather grading rubric injected before DeepSeek slide eval.
+_FEATHER_RULES_REL = Path("donna") / "knowledge" / "feather_project_rules.md"
+
+
+def feather_project_rules_path() -> Path:
+    """Absolute path to ``donna/knowledge/feather_project_rules.md``."""
+    return Path(__file__).resolve().parents[2] / _FEATHER_RULES_REL
+
+
+def load_feather_project_rules() -> str:
+    """Read Feather project rules markdown (empty file → empty string)."""
+    path = feather_project_rules_path()
+    try:
+        if not path.is_file():
+            return ""
+        return path.read_text(encoding="utf-8").strip()
+    except Exception as exc:  # noqa: BLE001
+        _log(f"feather rules read failed: {exc}")
+        return ""
+
+
+def feather_rules_system_preamble(rules: str | None = None) -> str:
+    """System-prompt prefix Jason injects before routing a slide to DeepSeek."""
+    body = rules if rules is not None else load_feather_project_rules()
+    body = (body or "").strip() or "(no project rules on file)"
+    return (
+        "Strictly evaluate this slide against the following project rules: "
+        f"{body}."
+    )
+
+
 def audit_mode_enabled() -> bool:
     """True when ``DONNA_AUDIT_MODE=1`` — no physical actuator enqueue."""
     return os.environ.get("DONNA_AUDIT_MODE", "").strip().lower() in {
@@ -109,27 +161,6 @@ def enqueue_jason_physical(
     )
 
 
-class BulkSlideState(TypedDict, total=False):
-    directory: str
-    session_id: str
-    slides: list[dict[str, Any]]
-    index: int
-    evaluations: list[dict[str, Any]]
-    enqueued: list[dict[str, Any]]
-    skipped: list[str]
-    status: str
-    history: list[dict[str, Any]]
-
-
-def _log(msg: str) -> None:
-    try:
-        from donna.logging import log
-
-        log("JasonCTO", msg)
-    except Exception:  # noqa: BLE001
-        print(f"[JasonCTO] {msg}", flush=True)
-
-
 def _dry_reasoner() -> bool:
     return os.environ.get("DONNA_JASON_DRY_REASONER", "").strip().lower() in {
         "1",
@@ -198,7 +229,18 @@ def reason_slide_evaluation(
     session_id: str = "",
 ) -> str:
     """Ask MoA/DeepSeek for a concise evaluation string (no markdown)."""
+    # Stage 8.2 — inject Feather project rules at the top of the system prompt.
+    rules_preamble = feather_rules_system_preamble()
+    # Stage 8.5 — Behavior Mixer weights from Blackboard persona_mixer.
+    try:
+        from donna.memory.blackboard import behavior_mixer_prompt_weights
+
+        behavior = behavior_mixer_prompt_weights()
+    except Exception:  # noqa: BLE001
+        behavior = ""
     prompt = (
+        f"{rules_preamble}\n\n"
+        f"{behavior}\n\n"
         "You are Donna's MoA slide reasoner. Evaluate the slide CONTENT against "
         "the INSTRUCTIONS. Reply with ONE concise plain-text evaluation only — "
         "no markdown, no bullet lists, no greetings, no JSON.\n\n"
@@ -214,7 +256,8 @@ def reason_slide_evaluation(
         words = len(re.findall(r"[A-Za-z0-9']+", body))
         return strip_evaluation_text(
             f"Slide follows '{inst[:80]}' with approximately {words} words; "
-            f"review notes: content present={'yes' if body else 'no'}."
+            f"review notes: content present={'yes' if body else 'no'}; "
+            f"rules_applied={rules_preamble[:120]}"
         )
 
     try:
@@ -226,6 +269,7 @@ def reason_slide_evaluation(
                 {
                     "role": "system",
                     "content": (
+                        f"{rules_preamble}\n\n"
                         "Output only a short plain-text slide evaluation. "
                         "No markdown. No preamble."
                     ),
@@ -509,7 +553,7 @@ def format_wake_cto_ticket(task_name: str, error_context: str) -> str:
     return (
         f"Operator failed on task {task_name}. "
         f"Reason: {error_context}. "
-        "Review latest_visual_context and generate a recovery plan."
+        "Review perception.ocr (Florence) and generate a recovery plan."
     )
 
 
@@ -700,7 +744,7 @@ def recovery_mode(
     visual_context: str | None = None,
 ) -> dict[str, Any]:
     """Jason recovery_mode: read screen state, enqueue close + retry sequence."""
-    from donna.memory.blackboard import get_action, read_visual_state
+    from donna.memory.blackboard import get_action, read_perception_ocr_text
 
     # Stage 8.1 — Jason talks over Donna as Andon wakes.
     voice_meta = announce_jason_andon_override()
@@ -717,11 +761,17 @@ def recovery_mode(
             if not args:
                 args = dict(row.get("arguments") or {})
 
+    # Fail closed on YOLO-only Blackboard: recovery needs OCR grounding.
     visual = (
         visual_context
         if visual_context is not None
-        else read_visual_state(db_path=db_path)
+        else read_perception_ocr_text(db_path=db_path)
     )
+    if visual_context is None and not (visual or "").strip():
+        visual = (
+            "(no OCR: perception.ocr missing — recovery limited; "
+            "run ocr_with_region for grounded UI state)"
+        )
     ticket_text = ticket or format_wake_cto_ticket(tool or "operator", err or "unknown")
     plan = plan_recovery_sequence(
         failed_tool=tool or "navigate_and_click",

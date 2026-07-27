@@ -134,3 +134,11 @@ class ReactGraphState(TypedDict, total=False):
     always_include: list[str]
     # Module 4: pending handoff after deterministic parse (optional).
     pending_handoff: dict[str, str]
+    # Stage 8.9 — Jason supervisor critique before HITL ticket approval.
+    jason_critique: str
+    # Stage 8.9.3 — consecutive HITL denials for GitHub escalation.
+    consecutive_denials: int
+    # Stage 8.9.6 — Pydantic-validated ticket payload (HITL only after True).
+    drafted_ticket: dict
+    ticket_validated: bool
+    ticket_validation_retries: int

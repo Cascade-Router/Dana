@@ -1,7 +1,7 @@
 """Stage 4.1 — Asynchronous vision sensor daemon (blackboard publisher).
 
-Standalone process: capture screen → YOLO extract → upsert
-``latest_visual_context`` on the SQLite Blackboard, then sleep.
+Standalone process: capture screen → YOLO extract → upsert typed
+``perception.objects`` (mirrored to legacy ``latest_visual_context``).
 
 Run:
     python -m donna.middleware.vision_poller
@@ -47,13 +47,17 @@ except Exception:  # noqa: BLE001
     pass
 
 from donna.memory.blackboard import (
-    LATEST_VISUAL_CONTEXT_KEY,
-    set_sensor_state,
+    HEARTBEAT_VISION_KEY,
+    PERCEPTION_OBJECTS_KEY,
+    publish_heartbeat,
+    publish_perception_objects,
+    read_visual_state,
 )
 from donna.telemetry import log_sensor_vision
 from donna.vision_tools import analyze_visual_context, capture_screen_frame
 
-DEFAULT_INTERVAL_S = 30.0
+# Align with OCR freshness gate (10s) so ambient objects stay usable.
+DEFAULT_INTERVAL_S = 10.0
 DEFAULT_PIXEL_DIFF_THRESHOLD = 0.02
 _PREV_GRAY: np.ndarray | None = None
 
@@ -92,18 +96,28 @@ def publish_visual_context(
     latency_ms: float,
     skipped: bool = False,
 ) -> None:
-    """Write/overwrite ``latest_visual_context`` and emit ``[SENSOR_VISION]``."""
-    meta: dict[str, Any] = {
-        "latency_ms": float(latency_ms),
-        "skipped_inference": bool(skipped),
-        "publisher": "vision_poller",
-    }
-    set_sensor_state(LATEST_VISUAL_CONTEXT_KEY, semantic_text or "", meta=meta)
+    """Write typed ``perception.objects`` (+ legacy mirror) and emit telemetry."""
+    publish_perception_objects(
+        semantic_text or "",
+        producer="vision_poller",
+        model="yolov8",
+        latency_ms=float(latency_ms),
+        skipped=bool(skipped),
+    )
+    try:
+        publish_heartbeat(
+            HEARTBEAT_VISION_KEY,
+            publisher="vision_poller",
+            ok=True,
+            detail=f"objects chars={len(semantic_text or '')}",
+        )
+    except Exception:  # noqa: BLE001
+        pass
     log_sensor_vision(
-        f"latest_visual_context updated chars={len(semantic_text or '')}",
+        f"perception.objects updated chars={len(semantic_text or '')}",
         latency_ms=float(latency_ms),
         payload={
-            "key": LATEST_VISUAL_CONTEXT_KEY,
+            "key": PERCEPTION_OBJECTS_KEY,
             "chars": len(semantic_text or ""),
             "skipped_inference": bool(skipped),
         },
@@ -135,10 +149,8 @@ def poll_once(
     if not force and not _significant_change(
         frame, threshold=pixel_diff_threshold
     ):
-        # Screen quiet — still refresh the key lightly so Chat sees freshness,
+        # Screen quiet — still refresh the objects topic so Chat sees freshness,
         # but skip GPU inference. Re-read prior value if we have one.
-        from donna.memory.blackboard import read_visual_state
-
         prior = read_visual_state()
         text = prior or "[Vision Output] Detected: (unchanged; inference skipped)."
         latency_ms = (time.perf_counter() - t0) * 1000.0
@@ -165,6 +177,15 @@ def run_forever(
         flush=True,
     )
     while True:
+        # Honor temporary interval requests from debug_vision_live --fast.
+        try:
+            from donna.memory.blackboard import get_sensor_state
+
+            req = get_sensor_state("vision_capture_interval_s")
+            if req and str(req.get("value") or "").strip():
+                interval = max(1.0, float(req["value"]))
+        except Exception:  # noqa: BLE001
+            pass
         try:
             stats = poll_once(
                 source=source,

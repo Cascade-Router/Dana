@@ -18,9 +18,11 @@ from donna.memory.blackboard import (
     set_persona_trait,
 )
 
-# Display label → DB trait_name
+# Display label → DB trait_name (Stage 8.5 adds Autonomy / Creativity).
 _SLIDER_SPECS: tuple[tuple[str, str], ...] = (
+    ("Autonomy", "autonomy"),
     ("Verbosity", "verbosity"),
+    ("Creativity", "creativity"),
     ("Humor", "humor"),
     ("Flirt", "flirt"),
     ("Tech Depth", "technical_depth"),
@@ -83,6 +85,10 @@ class PersonaMixerApp(ctk.CTk):
                 from_=0,
                 to=100,
                 number_of_steps=100,
+                progress_color="#00ADB5",
+                button_color="#E5E7EB",
+                button_hover_color="#F9FAFB",
+                fg_color="#2A2A3C",
                 command=lambda v, k=key: self._on_drag(k, v),
             )
             slider.set(float(state.get(key, PERSONA_MIXER_DEFAULTS.get(key, 50))))

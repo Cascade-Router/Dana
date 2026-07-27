@@ -251,10 +251,16 @@ _WEBCAM_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 # Florence-2 OCR / UI grounding (read text, find buttons, terminal traceback).
+# Sidekick: OCR modality must win over YOLO for rules/paragraph/page reads.
 _OCR_GROUND_HINT_RE = re.compile(
     r"\b("
     r"ocr|"
     r"read\s+the\s+text|"
+    r"read\s+(?:my\s+)?(?:the\s+)?(?:screen|page|rules|paragraph|instructions)|"
+    r"read\s+(?:what(?:'s|\s+is)\s+)?on\s+(?:my\s+)?(?:the\s+)?screen|"
+    r"ingest\s+(?:the\s+)?(?:rules|ocr|text)|"
+    r"capture\s+(?:the\s+)?(?:rules|text)|"
+    r"what\s+(?:does|do)\s+(?:the|this)\s+(?:page|rules?|paragraph)\s+say|"
     r"read\s+(?:my\s+)?(?:the\s+)?terminal|"
     r"text\s+in\s+(?:my\s+)?(?:the\s+)?terminal|"
     r"traceback|"

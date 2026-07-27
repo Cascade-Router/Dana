@@ -1,0 +1,80 @@
+---
+/**
+ * Stage 9.1 — Site-wide floating command bar (REST → Hugging Face).
+ * Persists chat in sessionStorage; Cmd/Ctrl+K focuses; Esc collapses.
+ */
+---
+
+<div
+  id="dana-global-chat"
+  class="dana-chat fixed inset-x-0 bottom-0 z-50 px-3 pb-3 sm:px-6 sm:pb-5"
+  role="region"
+  aria-label="Dānā command bar"
+>
+  <div class="mx-auto flex max-w-3xl flex-col gap-2">
+    <div
+      data-chat-panel
+      id="dana-chat-panel"
+      class="dana-chat__panel overflow-hidden rounded-2xl border border-slate-700/70 bg-ink-950/95 shadow-teal-glow backdrop-blur-md"
+      hidden
+    >
+      <div
+        class="flex items-center justify-between border-b border-slate-800 px-4 py-2.5"
+      >
+        <p class="text-xs font-semibold uppercase tracking-[0.18em] text-teal-soft">
+          Dānā · live REST
+        </p>
+        <p
+          data-chat-status
+          class="min-h-[1rem] text-xs text-slate-500"
+          aria-live="polite"
+        >
+        </p>
+      </div>
+      <div
+        data-chat-log
+        class="dana-chat__log max-h-56 overflow-y-auto px-4 py-3 text-sm leading-relaxed sm:max-h-72"
+        aria-live="polite"
+      >
+      </div>
+    </div>
+
+    <form
+      data-chat-form
+      class="dana-chat__bar flex items-center gap-2 rounded-2xl border border-slate-700/80 bg-ink-900/95 p-2 shadow-lg backdrop-blur-md"
+    >
+      <button
+        type="button"
+        data-chat-toggle
+        class="hidden shrink-0 rounded-xl px-2.5 py-2 text-xs font-medium text-slate-400 transition hover:text-teal-soft sm:inline-flex"
+        aria-expanded="false"
+        aria-controls="dana-chat-panel"
+        title="Toggle history (Esc)"
+      >
+        ⌘K
+      </button>
+      <label class="sr-only" for="dana-chat-input">Command to Dānā</label>
+      <input
+        id="dana-chat-input"
+        data-chat-input
+        type="text"
+        autocomplete="off"
+        maxlength="4000"
+        placeholder="Type a command to Dānā…"
+        class="dana-chat__input min-w-0 flex-1 rounded-xl border border-transparent bg-ink-950/60 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-teal/50 focus:outline-none focus:ring-0"
+      />
+      <button
+        type="submit"
+        data-chat-send
+        class="shrink-0 rounded-xl bg-teal px-4 py-2.5 text-sm font-semibold text-ink-950 transition hover:bg-teal-soft disabled:cursor-wait disabled:opacity-70"
+      >
+        Send
+      </button>
+    </form>
+  </div>
+</div>
+
+<script>
+  import { initGlobalChat } from "../scripts/global_chat";
+  initGlobalChat();
+</script>

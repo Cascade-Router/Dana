@@ -1,0 +1,49 @@
+---
+const links = [
+  { href: "/#features", label: "Features" },
+  { href: "/#routing", label: "Routing" },
+  { href: "/demo", label: "Demo" },
+  {
+    href: "https://github.com/Cascade-Router/Donna",
+    label: "GitHub",
+    external: true,
+  },
+];
+---
+
+<header class="relative z-20 mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
+  <a href="/" class="group flex items-center gap-3 text-white">
+    <img
+      src="/dana-logo.png"
+      alt=""
+      width="36"
+      height="36"
+      class="h-9 w-9 object-contain"
+      decoding="async"
+    />
+    <span class="text-lg font-semibold tracking-tight">
+      Dānā
+      <span class="ms-1 text-sm font-normal text-slate-400">(دانا)</span>
+    </span>
+  </a>
+  <nav class="flex items-center gap-5 text-sm font-medium text-slate-300" aria-label="Primary">
+    {
+      links.map((link) =>
+        link.external ? (
+          <a
+            href={link.href}
+            class="transition hover:text-teal-soft"
+            rel="noopener noreferrer"
+            target="_blank"
+          >
+            {link.label}
+          </a>
+        ) : (
+          <a href={link.href} class="transition hover:text-teal-soft">
+            {link.label}
+          </a>
+        ),
+      )
+    }
+  </nav>
+</header>

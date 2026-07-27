@@ -1,0 +1,150 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --dana-teal: #00adb5;
+  --dana-violet: #7b2cbf;
+  --dana-ink: #070b12;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-ink-950 text-slate-200 antialiased;
+  background-image:
+    radial-gradient(ellipse 90% 60% at 12% 8%, rgba(0, 173, 181, 0.14), transparent 55%),
+    radial-gradient(ellipse 70% 50% at 88% 0%, rgba(123, 44, 191, 0.12), transparent 50%),
+    linear-gradient(165deg, #070b12 0%, #0b1220 48%, #101827 100%);
+  background-attachment: fixed;
+  min-height: 100%;
+  /* Stage 9.1 — clear fixed command bar */
+  padding-bottom: 5.5rem;
+}
+
+/* Trace lattice — decorative, no layout cost */
+.trace-grid {
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+  background-size: 48px 48px;
+  contain: paint;
+}
+
+.bento-card {
+  @apply relative overflow-hidden rounded-2xl border border-slate-700/50 bg-ink-900/70 p-6 transition-[border-color,box-shadow,transform] duration-300 ease-out;
+  will-change: transform;
+}
+
+.bento-card:hover,
+.bento-card:focus-within {
+  @apply border-teal/60 shadow-teal-glow;
+  transform: translateY(-2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-floaty,
+  .animate-glow-pulse,
+  .animate-fade-up,
+  .animate-caret {
+    animation: none !important;
+  }
+
+  .bento-card:hover {
+    transform: none;
+  }
+}
+
+/* Scroll-reveal: reserved space avoids CLS; opacity only until visible */
+[data-reveal] {
+  opacity: 0;
+  transform: translateY(14px);
+  transition:
+    opacity 0.55s ease,
+    transform 0.55s ease;
+}
+
+[data-reveal].is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-reveal] {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+/* Stage 9.1 — global chat bar */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.dana-chat__line {
+  margin-bottom: 0.65rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dana-chat__speaker {
+  font-weight: 600;
+}
+
+.dana-chat__line--user {
+  color: #00adb5;
+  font-style: italic;
+}
+
+.dana-chat__line--dana {
+  color: #e5e7eb;
+}
+
+.dana-chat__line--system {
+  color: #94a3b8;
+  font-size: 0.9em;
+}
+
+.dana-chat.is-loading .dana-chat__bar {
+  border-color: rgba(0, 173, 181, 0.75);
+  box-shadow:
+    0 0 0 1px rgba(0, 173, 181, 0.35),
+    0 0 22px rgba(0, 173, 181, 0.28);
+  animation: dana-pulse-border 1.4s ease-in-out infinite;
+}
+
+.dana-chat.is-loading .dana-chat__input {
+  border-color: rgba(0, 173, 181, 0.55);
+}
+
+@keyframes dana-pulse-border {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(0, 173, 181, 0.3),
+      0 0 14px rgba(0, 173, 181, 0.18);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(0, 173, 181, 0.7),
+      0 0 28px rgba(0, 173, 181, 0.4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dana-chat.is-loading .dana-chat__bar {
+    animation: none;
+  }
+}

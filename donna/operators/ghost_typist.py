@@ -5,7 +5,7 @@ into a deterministic control agent that:
 
 * types with stochastic human cadence (40–120 ms between keystrokes)
 * processes text in small chunks (15–20 chars)
-* senses ``latest_visual_context`` from the Blackboard after each chunk
+* senses typed ``perception.ocr`` from the Blackboard after each chunk
 * pauses immediately on focus-loss / popup / drastic visual change
 
 Hotkey arming defaults to F9 (Win32 GetAsyncKeyState). Set
@@ -117,9 +117,11 @@ class GhostTypistOperator:
             except Exception as exc:  # noqa: BLE001
                 return f"(sense_error: {exc})"
         try:
-            from donna.memory import read_visual_state
+            from donna.memory import read_perception_ocr_text
 
-            return read_visual_state() or ""
+            # Prefer OCR for focus/popup safety; empty OCR = unknown (do not
+            # fall back to YOLO object labels — they are not UI text).
+            return read_perception_ocr_text() or ""
         except Exception as exc:  # noqa: BLE001
             return f"(sense_error: {exc})"
 

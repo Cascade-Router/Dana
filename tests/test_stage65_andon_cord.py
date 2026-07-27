@@ -36,10 +36,12 @@ def test_navigate_missing_target_pulls_andon(
     monkeypatch.setenv("DONNA_DISABLE_TOAST", "1")
     db = tmp_path / "bb.db"
     init_blackboard(db)
-    # Screen has no matching Target box.
-    set_sensor_state(
-        "latest_visual_context",
+    # Screen has no matching Target box (typed OCR topic).
+    from donna.memory.blackboard import publish_perception_ocr
+
+    publish_perception_ocr(
         "Florence-2 OCR: empty desktop, no Target, no Enter Comments.",
+        producer="test",
         db_path=db,
     )
 
@@ -71,7 +73,7 @@ def test_navigate_missing_target_pulls_andon(
     andon = stats["andon"]
     ticket = andon.get("ticket") or ""
     assert "Operator failed on task navigate_and_click" in ticket
-    assert "Review latest_visual_context" in ticket
+    assert "Review perception.ocr" in ticket
     wake_id = int(andon.get("wake_cto_action_id") or 0)
     assert wake_id > 0
     wake = get_action(wake_id, db_path=db)
@@ -112,9 +114,11 @@ def test_navigate_missing_target_pulls_andon(
 def test_recovery_mode_direct(tmp_path: Path) -> None:
     db = tmp_path / "bb.db"
     init_blackboard(db)
-    set_sensor_state(
-        "latest_visual_context",
+    from donna.memory.blackboard import publish_perception_ocr
+
+    publish_perception_ocr(
         "modal popup Close button [10,10,40,40]",
+        producer="test",
         db_path=db,
     )
     result = recovery_mode(

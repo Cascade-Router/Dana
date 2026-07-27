@@ -183,8 +183,23 @@ def get_donna_mode() -> str:
     return "chat"
 
 
-def set_donna_mode(mode: str) -> str:
-    """Set and return the normalized mode (``agent`` → ``developer``)."""
+def get_voice_mode() -> str:
+    """User conversational mode (Blackboard), immune to system-job escalations."""
+    try:
+        from donna.memory.blackboard import get_voice_session_mode
+
+        return get_voice_session_mode()
+    except Exception:  # noqa: BLE001
+        return get_donna_mode()
+
+
+def set_donna_mode(mode: str, *, as_voice: bool = True) -> str:
+    """Set and return the normalized mode (``agent`` → ``developer``).
+
+    When ``as_voice`` is True (mailroom / user switches), also persist
+    ``voice_session_mode`` on the Blackboard. System job escalations should
+    pass ``as_voice=False`` so they do not steal the live conversation mode.
+    """
     global donna_mode
     raw = (mode or "").strip().lower()
     if raw == "agent":
@@ -193,7 +208,20 @@ def set_donna_mode(mode: str) -> str:
         raw = "chat"
     with _DONNA_MODE_LOCK:
         donna_mode = raw
+    if as_voice:
+        try:
+            from donna.memory.blackboard import set_voice_session_mode
+
+            set_voice_session_mode(raw)
+        except Exception:  # noqa: BLE001
+            pass
     return raw
+
+
+def restore_voice_mode() -> str:
+    """Restore process mode from durable voice_session_mode after a system job."""
+    voice = get_voice_mode()
+    return set_donna_mode(voice, as_voice=False)
 
 
 def parse_mode_switch(text: str) -> str | None:
@@ -912,6 +940,49 @@ class StreamSentenceTtsBuffer:
 
 
 _stream_sentence_tts = StreamSentenceTtsBuffer()
+_STREAM_TTS_AGENT = "broker"
+_STREAM_TTS_AGENT_LOCK = threading.Lock()
+
+
+def set_stream_tts_agent(agent_id: str | None) -> str:
+    """Stage 8.8 — bind streaming / callback TTS to an active agent persona."""
+    global _STREAM_TTS_AGENT
+    try:
+        from donna.audio.multi_voice_tts import (
+            normalize_agent_id,
+            set_active_tts_agent,
+        )
+
+        aid = normalize_agent_id(agent_id) or "broker"
+        set_active_tts_agent(aid)
+    except Exception:  # noqa: BLE001
+        aid = (agent_id or "broker").strip().lower() or "broker"
+    with _STREAM_TTS_AGENT_LOCK:
+        _STREAM_TTS_AGENT = aid
+    return aid
+
+
+def get_stream_tts_agent() -> str:
+    with _STREAM_TTS_AGENT_LOCK:
+        return _STREAM_TTS_AGENT
+
+
+def agent_id_from_label(label: str | None) -> str:
+    """Map bureaucratic labels (MoA_Reasoner, Vision_Agent, …) → voice agent_id."""
+    raw = (label or "").strip().lower()
+    if not raw:
+        return "broker"
+    if "moa" in raw or "deepseek" in raw or "reasoner" in raw:
+        return "moa"
+    if "jason" in raw or "cto" in raw:
+        return "jason"
+    if "vision" in raw or "yolo" in raw or "florence" in raw:
+        return "vision"
+    if "typist" in raw:
+        return "typist"
+    if "mail" in raw:
+        return "broker"
+    return "broker"
 
 
 def reset_stream_sentence_tts() -> None:
@@ -938,25 +1009,35 @@ def end_stream_sentence_tts() -> bool:
     return spoken
 
 
-def feed_stream_tts(piece: str) -> int:
-    """Buffer streaming tokens; enqueue only complete sentences. Returns count."""
+def feed_stream_tts(piece: str, *, agent_id: str | None = None) -> int:
+    """Buffer streaming tokens; enqueue only complete sentences. Returns count.
+
+    Sentence-level chunking lets Piper/pyttsx3 start before the LangGraph node
+    finishes emitting the full token stream (Stage 8.8 latency fix).
+    """
     sentences = _stream_sentence_tts.feed(piece or "")
+    aid = agent_id or get_stream_tts_agent()
     for sentence in sentences:
-        _enqueue_tts_nonblocking(sentence)
+        _enqueue_tts_nonblocking(sentence, agent_id=aid)
     return len(sentences)
 
 
-def _enqueue_tts_nonblocking(phrase: str) -> None:
+def _enqueue_tts_nonblocking(
+    phrase: str,
+    *,
+    agent_id: str | None = None,
+) -> None:
     """Dispatch TTS without blocking the async graph / event stream."""
     text = (phrase or "").strip()
     if not text:
         return
+    aid = agent_id or get_stream_tts_agent()
 
     def _run() -> None:
         try:
             from donna.core_agent import enqueue_speech
 
-            enqueue_speech(text)
+            enqueue_speech(text, agent_id=aid)
         except Exception:  # noqa: BLE001
             pass
 
@@ -1567,6 +1648,23 @@ def _is_memory_key_miss(observation: str) -> bool:
     return bool(_MEMORY_MISS_RE.search(observation or ""))
 
 
+def _is_draft_ticket_validation_bounce(observation: str) -> bool:
+    """True for draft_cursor_prompt Pydantic / intent-echo rejects (not crashes)."""
+    text = (observation or "").strip().lower()
+    if not text:
+        return False
+    markers = (
+        "validation error",
+        "intent-echo",
+        "ticket validation failed",
+        "max retries reached: ticket validation",
+        "context is an intent-echo",
+        "require root cause, step-by-step",
+        "draft rejected. context must include",
+    )
+    return any(m in text for m in markers)
+
+
 _FALLBACK_EN = "I couldn't finish that cleanly — please ask me again."
 _FALLBACK_FA = "    ‌  ."
 
@@ -1602,6 +1700,12 @@ def _maybe_record_bug_tracker(
         error = (last_obs or spoken_l or "agentic_fallback").strip()[:2000]
     # Soft memory misses are not terminal failures — don't pollute the bug tracker.
     if _is_memory_key_miss(error) or _is_memory_key_miss(last_obs):
+        return
+    # Ticket validation / intent-echo bounces belong in the MoA rewrite loop,
+    # not tracker/bug_tracker.json (that misroutes "PENDING" away from patch_ledger).
+    if _is_draft_ticket_validation_bounce(error) or _is_draft_ticket_validation_bounce(
+        last_obs
+    ):
         return
     try:
         from donna.bug_tracker import log_bug_to_tracker

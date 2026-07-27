@@ -136,4 +136,39 @@ def ocr_with_region(
         lines.append(f"  … +{len(regions) - 12} more")
     if not regions:
         lines.append("(no OCR regions detected)")
-    return "\n".join(lines)
+    # Parseable Florence-style labeled bbox for nav_and_click.
+    if picked is not None and overlay_box is not None:
+        label = str(picked.get("text") or "target").strip() or "target"
+        x1, y1, x2, y2 = [int(v) for v in overlay_box]
+        lines.append(f"{label} [{x1}, {y1}, {x2}, {y2}]")
+
+    observation = "\n".join(lines)
+    # Typed OCR topic — consumers (ingest/nav/ghost/jason) read this only.
+    try:
+        from donna.memory.blackboard import publish_perception_ocr
+
+        boxes_meta: list[dict[str, Any]] = []
+        for reg in regions:
+            boxes_meta.append(
+                {
+                    "text": str(reg.get("text") or ""),
+                    "xyxy_norm": list(reg.get("xyxy_norm") or []),
+                }
+            )
+        if overlay_box is not None and picked is not None:
+            boxes_meta.insert(
+                0,
+                {
+                    "text": str(picked.get("text") or ""),
+                    "xyxy_screen": list(overlay_box),
+                },
+            )
+        publish_perception_ocr(
+            observation,
+            producer="ocr_with_region",
+            model="florence-2",
+            boxes=boxes_meta,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return observation

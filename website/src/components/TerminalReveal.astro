@@ -1,0 +1,106 @@
+---
+/**
+ * Mock routing terminal — typing starts only when scrolled into view.
+ * Fixed min-height reserves space (no CLS). Vanilla JS only.
+ */
+const lines = [
+  "$ donna engage --mode developer",
+  "Status: ACTIVE (Variables Locked)",
+  "$ route \"draft_cursor_prompt: fix OCR bounds\"",
+  "→ MoA_Reasoner  intent=draft_cursor_prompt",
+  "→ ticket_validate  OK",
+  "→ jason_ticket_review  critique ready",
+  "→ ticket_approval  HITL interrupt",
+  "→ tools  patch_ledger.md  [PENDING]",
+  "OK: The ticket is on the board.",
+];
+---
+
+<section id="routing" class="border-t border-slate-800/80">
+  <div class="mx-auto max-w-6xl px-6 py-20">
+    <div data-reveal class="max-w-2xl">
+      <h2 class="text-2xl font-semibold text-white sm:text-3xl">
+        Routing you can watch.
+      </h2>
+      <p class="mt-3 text-slate-400">
+        LangGraph corridor from utterance to ledger — validate, critique, approve,
+        then write.
+      </p>
+    </div>
+
+    <div
+      data-reveal
+      class="mt-10 overflow-hidden rounded-2xl border border-slate-700/60 bg-ink-950 shadow-teal-glow"
+      style="min-height: 22rem"
+    >
+      <div
+        class="flex items-center gap-2 border-b border-slate-800 bg-ink-900/90 px-4 py-3"
+      >
+        <span class="h-2.5 w-2.5 rounded-full bg-rose-500/80"></span>
+        <span class="h-2.5 w-2.5 rounded-full bg-amber-400/80"></span>
+        <span class="h-2.5 w-2.5 rounded-full bg-teal/80"></span>
+        <span class="ms-3 text-xs font-medium uppercase tracking-[0.18em] text-slate-500"
+          >dana · offline router</span
+        >
+      </div>
+      <pre
+        id="dana-terminal"
+        class="h-[18rem] overflow-hidden p-5 font-mono text-[13px] leading-relaxed text-slate-300 sm:text-sm"
+        data-lines={JSON.stringify(lines)}
+        aria-live="polite"
+      ><span class="text-slate-600">// scroll into view to replay</span></pre>
+    </div>
+  </div>
+</section>
+
+<script>
+  const el = document.getElementById("dana-terminal");
+  if (el) {
+    const raw = el.getAttribute("data-lines") || "[]";
+    /** @type {string[]} */
+    let lines = [];
+    try {
+      lines = JSON.parse(raw);
+    } catch {
+      lines = [];
+    }
+
+    const reduce =
+      window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    const renderAll = () => {
+      el.textContent = lines.join("\n");
+    };
+
+    const typeLines = async () => {
+      el.textContent = "";
+      for (const line of lines) {
+        for (let i = 0; i < line.length; i += 1) {
+          el.textContent += line[i];
+          await new Promise((r) => setTimeout(r, 12 + (i % 3)));
+        }
+        el.textContent += "\n";
+        await new Promise((r) => setTimeout(r, 180));
+      }
+    };
+
+    if (reduce) {
+      renderAll();
+    } else if ("IntersectionObserver" in window) {
+      const io = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            io.disconnect();
+            void typeLines();
+          }
+        },
+        { threshold: 0.35 },
+      );
+      io.observe(el);
+    } else {
+      void typeLines();
+    }
+  }
+</script>

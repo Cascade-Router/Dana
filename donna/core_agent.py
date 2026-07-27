@@ -208,16 +208,26 @@ _mic_ambient_rms: float = 0.0
 # Live Trace telemetry (background threads → Tk main thread via Queue only).
 gui_telemetry_queue: queue.Queue = queue.Queue()
 _TRACE_MODE_COLORS: dict[str, str] = {
-    "chat": "#10B981",
-    "developer": "#8B5CF6",
+    "chat": "#00E676",
+    "developer": "#FB8C00",  # execution / developer
     "vision": "#3B82F6",
     "research": "#F59E0B",
+    "dictation": "#9C27B0",
 }
 _TRACE_IDLE_COLOR = "#9CA3AF"
+_UI_CANVAS = "#121218"
+_UI_CARD = "#1E1E2E"
+_UI_CARD_BORDER = "#2A2A3C"
+_UI_GHOST = "#2A2A3C"
+_UI_MUTED = "#9AA0A6"
+# Stage 8.9.8 — unified cybernetic accent (replaces default CTk blue).
+_UI_ACCENT = "#00ADB5"
+_UI_ACCENT_HOVER = "#008E95"
+# ASCII-only — emoji tofu glyphs rendered as broken purple boxes on Win fonts.
 _TRACE_STATUS_ICONS: dict[str, str] = {
-    "active": "⏳",
-    "completed": "✅",
-    "bypassed": "⏭️",
+    "active": "[~]",
+    "completed": "[OK]",
+    "bypassed": "[--]",
 }
 
 
@@ -573,10 +583,13 @@ subtitle_text = ""
 # Optional injected question from .trigger_ask file contents (automation / tests).
 injected_question_lock = threading.Lock()
 injected_question: Optional[str] = None
+_injected_source: str = "inject"
+_injected_already_logged: bool = False
 
 # TTS Output Spooler — producers push (text, interruptible); consumer owns PortAudio.
 # ``interruptible=False`` = UI ack exemption (no self-barge-in on speaker bleed).
-tts_queue: queue.Queue[Optional[tuple[str, bool]]] = queue.Queue(maxsize=16)
+# Stage 8.8 — spool items are (text, interruptible, agent_id).
+tts_queue: queue.Queue[Optional[tuple[str, bool, str]]] = queue.Queue(maxsize=16)
 speech_queue = tts_queue  # backward-compatible alias
 # Serialize TTS enqueue / flush mutations.
 _tts_enqueue_lock = threading.Lock()
@@ -602,6 +615,9 @@ ollama_ready = threading.Event()
 # Boot coordination: ready audio plays only when all three are set.
 piper_voices_ready = threading.Event()
 wakeword_armed = threading.Event()
+# Stage 8.9.7 — soft engine ignition (clear = STANDBY; set = ACTIVE).
+# Distinct from stop_event / STOP DONNA (hard exit).
+engine_engaged = threading.Event()
 _boot_ready_audio_lock = threading.Lock()
 _boot_ready_audio_played = False
 # Shared OpenWakeWord model for stream-barge during TTS (set by wakeword_worker).
@@ -740,13 +756,18 @@ def compile_and_append_voice_prompt(raw_transcript: str) -> str:
     return text
 
 
-def emit_live_transcript(speaker: str, text: str) -> None:
-    """Thread-safe bridge from audio/LLM workers into the Live Transcript tab."""
+def emit_live_transcript(
+    speaker: str,
+    text: str,
+    *,
+    agent_id: str | None = None,
+) -> None:
+    """Thread-safe bridge from audio/LLM workers into the Dashboard transcript."""
     gui = _gui_instance
     if gui is None:
         return
     try:
-        gui.log_transcript(speaker, text)
+        gui.log_transcript(speaker, text, agent_id=agent_id)
     except Exception as exc:  # noqa: BLE001
         log("UI", f"WARNING: live transcript update failed ({exc})")
 
@@ -777,24 +798,49 @@ def set_subtitle(text: str) -> None:
         log_debug("UI", f"Subtitle -> {text}")
 
 
-def set_injected_question(text: str) -> None:
-    global injected_question
+def set_injected_question(
+    text: str,
+    *,
+    source: str = "inject",
+    already_logged: bool = False,
+) -> None:
+    """Queue text as the next user utterance (skips mic / Whisper).
+
+    ``source="text"`` marks Dashboard silent-chat injections for transcript labeling.
+    ``already_logged=True`` skips a second Live Transcript echo.
+    """
+    global injected_question, _injected_source, _injected_already_logged
     with injected_question_lock:
         injected_question = text
+        _injected_source = (source or "inject").strip() or "inject"
+        _injected_already_logged = bool(already_logged)
 
 
 def clear_injected_question() -> None:
-    global injected_question
+    global injected_question, _injected_source, _injected_already_logged
     with injected_question_lock:
         injected_question = None
+        _injected_source = "inject"
+        _injected_already_logged = False
 
 
 def pop_injected_question() -> Optional[str]:
-    global injected_question
+    """Pop pending inject text (legacy API — discards source metadata)."""
+    text, _source, _logged = pop_injected_question_ex()
+    return text
+
+
+def pop_injected_question_ex() -> tuple[Optional[str], str, bool]:
+    """Pop inject text with ``(text, source, already_logged)``."""
+    global injected_question, _injected_source, _injected_already_logged
     with injected_question_lock:
         text = injected_question
+        source = _injected_source
+        already_logged = _injected_already_logged
         injected_question = None
-        return text
+        _injected_source = "inject"
+        _injected_already_logged = False
+        return text, source, already_logged
 
 
 def _clear_text_injection_file(path: Path | None = None) -> None:
@@ -1079,6 +1125,33 @@ _TIME_PHRASES = (
     "what time is it",
     "current time",
 )
+
+
+def is_engine_engaged() -> bool:
+    """Stage 8.9.7 — True when Dashboard ENGAGE has armed the LangGraph engine."""
+    return bool(engine_engaged.is_set())
+
+
+def set_engine_engaged(active: bool) -> None:
+    """Arm (True) or soft-standby (False) the conversational engine."""
+    if active:
+        engine_engaged.set()
+    else:
+        engine_engaged.clear()
+
+
+def _warm_heavy_runtime_assets() -> None:
+    """Stage 8.9.7 — background warm after ENGAGE (GUI already interactive).
+
+    Imports LangGraph wiring only. Florence-2 / YOLO stay JIT on first vision
+    call so Standby boot never blocks on VRAM-heavy models.
+    """
+    try:
+        import donna.agentic_react_graph  # noqa: F401
+
+        log("Main", "Heavy warm: agentic_react_graph imported (Florence remains JIT)")
+    except Exception as exc:  # noqa: BLE001
+        log("Main", f"Heavy warm skipped: {exc}")
 
 
 def is_standby_command(text: str) -> bool:
@@ -1476,16 +1549,24 @@ def chunk_text_for_tts(text: str, *, max_chars: int = TTS_CHUNK_MAX_CHARS) -> li
     return chunks or [raw]
 
 
-def enqueue_speech(text: str, *, interruptible: bool | None = None) -> None:
+def enqueue_speech(
+    text: str,
+    *,
+    interruptible: bool | None = None,
+    agent_id: str | None = None,
+) -> None:
     """Producer API: push text into the TTS spooler and return immediately.
 
     Never opens PortAudio or blocks on Piper — the ``tts_worker`` owns playback.
     Caps pending phrases while busy so stream handlers cannot hammer the device.
-    Long utterances are chunked into sequential spool items.
+    Long utterances are chunked into sequential spool items (sentence-level) so
+    playback can start before LangGraph finishes the full turn.
 
     ``interruptible=False`` marks UI acknowledgments (wake "Yes?", mode acks) so
     VAD/wake barge-in cannot cut them (Apple-style self-barge exemption).
     When omitted, canned UX cache hits default to uninterruptible.
+
+    Stage 8.8 — ``agent_id`` selects a multi-voice profile (broker/moa/jason/…).
     """
     pieces = chunk_text_for_tts(text or "")
     if not pieces:
@@ -1493,6 +1574,18 @@ def enqueue_speech(text: str, *, interruptible: bool | None = None) -> None:
             if tts_queue.empty() and not tts_busy.is_set():
                 speech_idle.set()
         return
+
+    try:
+        from donna.audio.multi_voice_tts import (
+            normalize_agent_id,
+            set_active_tts_agent,
+        )
+
+        aid = normalize_agent_id(agent_id) if agent_id else "broker"
+        if agent_id:
+            set_active_tts_agent(aid)
+    except Exception:  # noqa: BLE001
+        aid = (agent_id or "broker").strip().lower() or "broker"
 
     with _tts_enqueue_lock:
         for piece in pieces:
@@ -1513,11 +1606,11 @@ def enqueue_speech(text: str, *, interruptible: bool | None = None) -> None:
                 )
                 break
             try:
-                tts_queue.put_nowait((piece, piece_interruptible))
+                tts_queue.put_nowait((piece, piece_interruptible, aid))
                 log_debug(
                     "TTS",
                     f"spooled chars={len(piece)} interruptible={piece_interruptible} "
-                    f"pending={tts_queue.qsize()} "
+                    f"agent={aid} pending={tts_queue.qsize()} "
                     f"busy={tts_busy.is_set()} vad={vad_capture_active.is_set()}",
                 )
             except queue.Full:
@@ -1525,13 +1618,14 @@ def enqueue_speech(text: str, *, interruptible: bool | None = None) -> None:
                 break
 
 
-def _parse_tts_spool_item(item: Any) -> tuple[str, bool]:
-    """Normalize queue items to ``(text, interruptible)``."""
+def _parse_tts_spool_item(item: Any) -> tuple[str, bool, str]:
+    """Normalize queue items to ``(text, interruptible, agent_id)``."""
     if isinstance(item, tuple) and item:
         text = str(item[0] or "")
         flag = bool(item[1]) if len(item) > 1 else True
-        return text, flag
-    return str(item or ""), True
+        agent = str(item[2] or "broker") if len(item) > 2 else "broker"
+        return text, flag, agent
+    return str(item or ""), True, "broker"
 
 
 def flush_tts_queue() -> int:
@@ -2910,6 +3004,16 @@ def wakeword_worker() -> None:
                 pass
             continue
 
+        if not is_engine_engaged():
+            # Soft STANDBY — ignore wake hits until Dashboard ENGAGE.
+            consecutive_hits = 0
+            cooldown_until = time.monotonic() + 1.0
+            try:
+                oww.reset()
+            except Exception:
+                pass
+            continue
+
         log("WakeWord", f"Wake word detected ({hit}) -> yield to VAD consumer")
         print(f"[Debug] Wake word HIT ({hit}) on device={AUDIO_INPUT_DEVICE}", flush=True)
         consecutive_hits = 0
@@ -3803,18 +3907,19 @@ def input_txt_ingest_worker() -> None:
                     continue
                 log("Ingest", f"Queued {n} task(s) from input.txt")
                 print(f"[Ingest] Queued {n} task(s) from input.txt", flush=True)
-                # Ensure the conversation loop can drain: chat previously blocked
-                # both ingest and allows_react_task_jail (silent no-op).
+                # Ensure the conversation loop can drain: escalate process mode
+                # without stealing the user's durable voice_session_mode.
                 try:
                     if get_donna_mode() == "chat":
-                        set_donna_mode("developer")
+                        set_donna_mode("developer", as_voice=False)
                         print(
-                            "[Ingest] Escalated chat -> developer for queued tasks",
+                            "[Ingest] Escalated chat -> developer for queued tasks "
+                            "(voice mode preserved)",
                             flush=True,
                         )
                         log(
                             "Ingest",
-                            "Escalated chat -> developer so task jail can drain",
+                            "Escalated chat -> developer (as_voice=False) so task jail can drain",
                         )
                     # Empty trigger wakes Conversation when idle (no mic inject).
                     if get_ui_state() == "idle" and not is_recording.is_set():
@@ -5276,6 +5381,52 @@ def conversation_worker(
             set_subtitle("")
             return True
 
+        # Stage 8.5 — Dictation Loop (keyword "dictate" or GUI Start latch).
+        try:
+            from donna.management.dictation import (
+                DICTATION_ACK,
+                handle_dictation,
+                should_handle_dictation,
+            )
+
+            if should_handle_dictation(whisper_text or ""):
+                log_conversation("User", whisper_text or "")
+                emit_live_transcript("User (Whisper)", whisper_text or "")
+                result = handle_dictation(whisper_text or "")
+                sid = str((result.get("session") or {}).get("session_id") or "")
+                ack = str(result.get("ack") or DICTATION_ACK)
+                log(
+                    "Dictation",
+                    f"Logged session_id={sid} "
+                    f"cmd={result.get('command_text')!r} "
+                    f"visual_chars={result.get('visual_chars')}",
+                )
+                try:
+                    emit_trace(
+                        "Dictation",
+                        "completed",
+                        f"Dictation logged ({sid[:8]})",
+                        mode=get_donna_mode(),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    gui_ref = _gui_instance
+                    if gui_ref is not None and hasattr(
+                        gui_ref, "refresh_dictation_sessions"
+                    ):
+                        gui_ref.after(0, gui_ref.refresh_dictation_sessions)
+                except Exception:  # noqa: BLE001
+                    pass
+                log_conversation("Donna", ack)
+                emit_live_transcript("Donna", ack)
+                enqueue_speech(ack, interruptible=False)
+                wait_for_speech_idle(timeout=8.0)
+                set_subtitle("")
+                return True
+        except Exception as exc:  # noqa: BLE001
+            log("Dictation", f"WARNING: dictation handler failed ({exc})")
+
         # Mode switch fast-path — no LLM, no YOLO, no tools.
         switched = parse_mode_switch(whisper_text or "")
         if switched is not None:
@@ -5346,7 +5497,7 @@ def conversation_worker(
         yolo_labels: list[str] = []
         vision_log = ""
         if use_chat:
-            # Stage 4.1 — Chat reads the sensor topic; never runs live YOLO/LLM vision.
+            # Stage 4.1 — Chat reads typed objects topic; never runs live YOLO/LLM vision.
             try:
                 from donna.memory import read_visual_state
 
@@ -5357,6 +5508,20 @@ def conversation_worker(
                     f"WARNING: read_visual_state failed ({exc})",
                 )
                 vision_log = ""
+            try:
+                from donna.middleware.sidekick_supervisor import (
+                    format_degraded_chat_hint,
+                )
+
+                degraded = format_degraded_chat_hint()
+                if degraded:
+                    vision_log = (
+                        f"{vision_log}\n{degraded}".strip()
+                        if vision_log
+                        else degraded
+                    )
+            except Exception:  # noqa: BLE001
+                pass
         else:
             # Prefer a fresh frame from the active tool (important after a switch).
             with active_vision_lock:
@@ -5637,18 +5802,11 @@ def conversation_worker(
 
         Returns the number of tasks processed (completed or failed). Never raises
         into the voice loop — broker isolates per-task exceptions.
-        Chat mode: refuse to ingest/dispatch tool jail work.
+
+        System job lane: when Chat has pending jail tasks, escalate process mode
+        with ``as_voice=False`` so the user's conversational mode is restored.
         """
         try:
-            try:
-                from donna.cascade_router import allows_react_task_jail
-
-                if not allows_react_task_jail():
-                    return 0
-            except Exception:  # noqa: BLE001
-                if get_donna_mode() == "chat":
-                    return 0
-
             from donna.tools.broker import dispatch_pending_tasks
             from donna.tools.task_queue import (
                 ensure_execution_jail_queue,
@@ -5701,7 +5859,23 @@ def conversation_worker(
                 if not ok:
                     raise RuntimeError("isolated ReAct turn failed")
 
-            results = dispatch_pending_tasks(_isolated_handler)
+            # System job lane: escalate for ReAct jail without mutating voice mode.
+            from donna.agentic import restore_voice_mode
+
+            prior = get_donna_mode()
+            escalated = False
+            if prior == "chat":
+                set_donna_mode("developer", as_voice=False)
+                escalated = True
+            try:
+                results = dispatch_pending_tasks(_isolated_handler)
+            finally:
+                if escalated:
+                    restored = restore_voice_mode()
+                    log(
+                        "TaskQueue",
+                        f"Restored voice mode after jail drain -> {restored}",
+                    )
             completed = sum(1 for r in results if r.get("status") == "completed")
             failed = sum(1 for r in results if r.get("status") == "failed")
             log(
@@ -5719,6 +5893,10 @@ def conversation_worker(
         if not triggered:
             continue
         is_recording.clear()
+        if not is_engine_engaged():
+            # Standby: drop latched recording / file triggers until ENGAGE.
+            log("Conversation", "Ignored session latch — engine STANDBY")
+            continue
 
         # ---- Conversation session: initial wake turn + optional follow-ups ----
         follow_up = False
@@ -5743,17 +5921,24 @@ def conversation_worker(
                 end_session_to_idle()
                 break
 
-            if not follow_up:
-                injected = pop_injected_question()
-            else:
-                injected = None
+            # Stage 8.10 — silent Dashboard text may arrive on any turn (incl. follow-up).
+            injected, inject_source, inject_logged = pop_injected_question_ex()
 
             if injected:
                 whisper_text = injected
                 set_subtitle(f'User: "{whisper_text}"')
                 log("Conversation", f'User said: "{whisper_text}"')
-                log("Conversation", f"Injected user question: \"{whisper_text}\"")
-                emit_live_transcript("User (Whisper)", whisper_text)
+                log(
+                    "Conversation",
+                    f'Injected user question ({inject_source}): "{whisper_text}"',
+                )
+                if not inject_logged:
+                    label = (
+                        "User (Text)"
+                        if inject_source == "text"
+                        else "User (Whisper)"
+                    )
+                    emit_live_transcript(label, whisper_text)
                 if is_standby_command(whisper_text):
                     log("Router", "Fast-path standby triggered")
                     end_session_to_idle("Standing by.")
@@ -6545,15 +6730,48 @@ def _synthesize_and_play(
     output_device: Optional[int],
     *,
     interruptible: bool = True,
+    agent_id: str | None = None,
 ) -> bool:
-    """Worker-only: Piper synth + interruptible playback under ``playback_lock``.
+    """Worker-only: synth + interruptible playback under ``playback_lock``.
 
     Returns True if barge-in aborted playback. Producers must use ``enqueue_speech``.
     Canned UX strings play from ``donna/assets/audio_cache/`` when available.
+    Stage 8.8 — specialized ``agent_id`` voices bypass the receptionist Piper path.
     """
     text = sanitize_text_for_tts(text or "")
     if not text:
         return False
+
+    try:
+        from donna.audio.multi_voice_tts import (
+            set_active_tts_agent,
+            synthesize_speech,
+            uses_receptionist_piper,
+        )
+
+        set_active_tts_agent(agent_id or "broker")
+        use_piper = uses_receptionist_piper(agent_id)
+    except Exception:  # noqa: BLE001
+        use_piper = True
+
+    # Specialized personas: multi-voice WAV → same interruptible PCM path.
+    if not use_piper:
+        tmp_path: str | None = None
+        try:
+            wav = synthesize_speech(text, agent_id=agent_id)
+            tmp_path = str(wav)
+            return _play_cached_wav(
+                Path(tmp_path), output_device, interruptible=interruptible
+            )
+        except Exception as exc:  # noqa: BLE001
+            log_debug("TTS", f"multi-voice play failed ({exc}); Piper fallback")
+        finally:
+            if tmp_path:
+                try:
+                    if os.path.isfile(tmp_path) and "donna_" in os.path.basename(tmp_path):
+                        os.remove(tmp_path)
+                except OSError:
+                    pass
 
     cache_path = canned_ux_cache_path(text)
     if cache_path is not None and cache_path.is_file() and cache_path.stat().st_size > 44:
@@ -6570,7 +6788,7 @@ def _synthesize_and_play(
     log_debug(
         "TTS",
         f"Piper route -> {lang} ({os.path.basename(model_path)}) chars={len(text)} "
-        f"interruptible={interruptible}",
+        f"interruptible={interruptible} agent={agent_id or 'broker'}",
     )
 
     voice = get_piper_voice(model_path)
@@ -6650,6 +6868,7 @@ def _speak_with_timeout(
     *,
     max_seconds: float = TTS_UTTERANCE_MAX_SECONDS,
     interruptible: bool = True,
+    agent_id: str | None = None,
 ) -> bool:
     """Play on a watchdog-guarded helper thread; abort if it exceeds ``max_seconds``."""
     result: list[bool] = [False]
@@ -6660,7 +6879,10 @@ def _speak_with_timeout(
         try:
             result[0] = bool(
                 _synthesize_and_play(
-                    text, output_device, interruptible=interruptible
+                    text,
+                    output_device,
+                    interruptible=interruptible,
+                    agent_id=agent_id,
                 )
             )
         except BaseException as exc:  # noqa: BLE001
@@ -6777,7 +6999,7 @@ def tts_worker() -> None:
                 speech_idle.set()
                 break
 
-            text, item_interruptible = _parse_tts_spool_item(raw_item)
+            text, item_interruptible, item_agent = _parse_tts_spool_item(raw_item)
 
             # Drop orphaned spool items after a barge-in latch.
             if _tts_barge.is_set():
@@ -6816,7 +7038,7 @@ def tts_worker() -> None:
                 log_debug(
                     "TTS",
                     f'play start t={turn_t0:.3f} chars={len(text)} '
-                    f'interruptible={item_interruptible} '
+                    f'interruptible={item_interruptible} agent={item_agent} '
                     f'pending={tts_queue.qsize()} preview="{text[:80]}"',
                 )
                 interrupted = bool(
@@ -6824,6 +7046,7 @@ def tts_worker() -> None:
                         text,
                         AUDIO_OUTPUT_DEVICE,
                         interruptible=item_interruptible,
+                        agent_id=item_agent,
                     )
                 )
             except Exception as exc:  # noqa: BLE001
@@ -7159,7 +7382,7 @@ class TraceCell(ctk.CTkFrame):
             self.msg_label.configure(text=message or self.stage)
         color = accent or _TRACE_IDLE_COLOR
         if normalized == "active":
-            border = color if color != _TRACE_IDLE_COLOR else "#6366F1"
+            border = color if color != _TRACE_IDLE_COLOR else _UI_ACCENT
             text_color = border
         elif normalized == "completed":
             border = color if color != _TRACE_IDLE_COLOR else "#10B981"
@@ -7179,12 +7402,37 @@ class DonnaGUI(ctk.CTk):
 
     def __init__(self) -> None:
         super().__init__()
-        self.title("Donna — Live Trace")
-        self.geometry("640x560")
-        self.minsize(560, 440)
+        self.title("Donna — Control Dashboard")
+        self.geometry("880x720")
+        self.minsize(720, 580)
+        self._dictation_active = False
+        self._behavior_locked = False
+        # Stage 8.9.7 — soft LangGraph engine ignition (False = STANDBY).
+        self.engine_active = False
+        self._behavior_sliders: dict[str, ctk.CTkSlider] = {}
+        self._behavior_labels: dict[str, ctk.CTkLabel] = {}
+        self._behavior_last_write: dict[str, float] = {}
+        # Stage 8.5.1 — static settings that must not change while system is hot.
+        self._static_behavior_widgets: list[Any] = []
+        self._behavior_lock_hint: ctk.CTkLabel | None = None
+        self._behavior_reload_btn: ctk.CTkButton | None = None
+        self.dictation_status: ctk.CTkLabel | None = None
+        self._engine_status_lbl: ctk.CTkLabel | None = None
+        self._engine_warn_lbl: ctk.CTkLabel | None = None
+        self._engage_btn: ctk.CTkButton | None = None
+        self._standby_btn: ctk.CTkButton | None = None
+        self._engine_warn_job: str | None = None
+        # Stage 8.10 — Dashboard silent text chat.
+        self.chat_entry: ctk.CTkEntry | None = None
+        self._chat_send_btn: ctk.CTkButton | None = None
+        self.transcript_box = None
 
         ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
+        ctk.set_default_color_theme("dark-blue")
+        try:
+            self.configure(fg_color=_UI_CANVAS)
+        except Exception:  # noqa: BLE001
+            pass
 
         self._mic_labels: list[str] = []
         self._speaker_labels: list[str] = []
@@ -7193,16 +7441,25 @@ class DonnaGUI(ctk.CTk):
         self._trace_cells: dict[str, TraceCell] = {}
         self._pulse_on = False
         self._header_mode = "chat"
+        self.assistive_orb: Any | None = None
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
         self.withdraw()
+        # Stage 8.7 — floating AssistiveTouch orb (supplements system tray).
+        try:
+            self.after(200, self._start_assistive_orb)
+        except Exception:  # noqa: BLE001
+            pass
         self.after(400, self._refresh_stats)
         self.after(100, self.process_telemetry)
         self.after(500, self._pulse_active_cells)
 
     def _mode_accent(self, mode: str | None = None) -> str:
         key = (mode or self._header_mode or "chat").strip().lower()
+        if self._dictation_active and key in {"chat", "developer", "vision", "research"}:
+            # Dictation latch overrides the glowing status badge.
+            return _TRACE_MODE_COLORS.get("dictation", "#9C27B0")
         return _TRACE_MODE_COLORS.get(key, _TRACE_IDLE_COLOR)
 
     def _set_mode_indicator(self, mode: str | None) -> None:
@@ -7210,134 +7467,1180 @@ class DonnaGUI(ctk.CTk):
         if key not in _TRACE_MODE_COLORS:
             key = "chat"
         self._header_mode = key
-        color = self._mode_accent(key)
-        label = key.title()
+        display_key = "dictation" if self._dictation_active else key
+        color = _TRACE_MODE_COLORS.get(display_key, self._mode_accent(key))
+        label = "Dictation" if self._dictation_active else key.title()
         try:
-            self.mode_dot.configure(text_color=color)
-            self.mode_label.configure(text=f"Mode: {label}", text_color=color)
+            # Stage 8.9.8 — pill only (no plain-text Mode / Dictation label).
+            if hasattr(self, "mode_badge") and self.mode_badge is not None:
+                self.mode_badge.configure(
+                    text=f"  ●  {label.upper()}  ",
+                    text_color=color,
+                    fg_color=_UI_GHOST,
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self.assistive_orb is not None:
+                self.assistive_orb.refresh_controls()
         except Exception:  # noqa: BLE001
             pass
 
-    def _build_ui(self) -> None:
-        header = ctk.CTkFrame(self, fg_color=("gray90", "gray18"), corner_radius=0)
-        header.pack(fill="x", padx=0, pady=0)
-        self.mode_dot = ctk.CTkLabel(
-            header,
-            text="●",
-            font=ctk.CTkFont(size=18),
-            text_color=self._mode_accent("chat"),
-            width=24,
+    def _make_card(
+        self,
+        parent: Any,
+        *,
+        title: str,
+        padx: int = 12,
+        pady: tuple[int, int] = (10, 10),
+        expand: bool = True,
+    ) -> ctk.CTkFrame:
+        """Floating dark card container with padded header."""
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=_UI_CARD,
+            corner_radius=16,
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
         )
-        self.mode_dot.pack(side="left", padx=(16, 4), pady=12)
-        self.mode_label = ctk.CTkLabel(
-            header,
-            text="Mode: Chat",
-            font=ctk.CTkFont(size=16, weight="bold"),
-            text_color=self._mode_accent("chat"),
+        card.pack(fill="both" if expand else "x", expand=expand, padx=padx, pady=pady)
+        ctk.CTkLabel(
+            card,
+            text=title,
             anchor="w",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#F3F4F6",
+        ).pack(fill="x", padx=14, pady=(12, 6))
+        body = ctk.CTkFrame(card, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        return body
+
+    def _build_ui(self) -> None:
+        # Top navigation / status bar
+        header = ctk.CTkFrame(
+            self,
+            fg_color=_UI_CARD,
+            corner_radius=0,
+            border_width=0,
+            height=56,
         )
-        self.mode_label.pack(side="left", padx=(0, 12), pady=12)
+        header.pack(fill="x", padx=0, pady=0)
+        # Stage 8.9.8 / 8.9.9 — OS title owns brand text; header shows logo + status.
+        self.mode_dot = None
+        self.mode_label = None
+        self._header_logo_img = None
+        try:
+            from donna.ui.logo import load_premium_logo
+
+            self._header_logo_img = load_premium_logo((36, 36))
+        except Exception:  # noqa: BLE001
+            self._header_logo_img = None
+        if self._header_logo_img is not None:
+            self._header_logo_lbl = ctk.CTkLabel(
+                header,
+                text="",
+                image=self._header_logo_img,
+                fg_color="transparent",
+            )
+            self._header_logo_lbl.pack(side="left", padx=(16, 8), pady=10)
+        else:
+            self._header_logo_lbl = None
+        self.mode_badge = ctk.CTkLabel(
+            header,
+            text="  ●  CHAT  ",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=self._mode_accent("chat"),
+            fg_color=_UI_GHOST,
+            corner_radius=999,
+            padx=8,
+            pady=4,
+        )
+        self.mode_badge.pack(side="left", padx=(8, 12), pady=12)
+        # Stage 8.9.2 — emergency kill switch (runs stop_donna.bat).
+        self.stop_donna_btn = ctk.CTkButton(
+            header,
+            text="STOP DONNA",
+            width=128,
+            height=32,
+            corner_radius=8,
+            fg_color="#d32f2f",
+            hover_color="#b71c1c",
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._on_stop_donna_clicked,
+        )
+        self.stop_donna_btn.pack(side="right", padx=(8, 16), pady=12)
         ctk.CTkLabel(
             header,
-            text="Donna Live Trace",
-            font=ctk.CTkFont(size=14),
-            text_color=("gray40", "gray65"),
+            text="local · offline-first",
+            font=ctk.CTkFont(size=11),
+            text_color="#6B7280",
             anchor="e",
-        ).pack(side="right", padx=16, pady=12)
+        ).pack(side="right", padx=(8, 4), pady=14)
 
-        tabs = ctk.CTkTabview(self)
-        tabs.pack(fill="both", expand=True, padx=16, pady=(8, 16))
+        # Stage 8.9.4 — optimized tab order (widget refs, not notebook indices).
+        tabs = ctk.CTkTabview(
+            self,
+            fg_color=_UI_CANVAS,
+            segmented_button_fg_color=_UI_CARD,
+            segmented_button_selected_color=_UI_ACCENT,
+            segmented_button_selected_hover_color=_UI_ACCENT_HOVER,
+            segmented_button_unselected_color=_UI_GHOST,
+            segmented_button_unselected_hover_color="#34344A",
+            text_color="#E5E7EB",
+            corner_radius=14,
+            border_width=0,
+        )
+        tabs.pack(fill="both", expand=True, padx=14, pady=(10, 14))
+        self._tabs = tabs
+        try:
+            tabs._segmented_button.configure(corner_radius=999, height=34)  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+
+        tab_dashboard = tabs.add("Dashboard")
+        tab_dictation = tabs.add("Dictation")
+        tab_behavior = tabs.add("Behavior")
         tab_trace = tabs.add("Live Trace")
-        tab_stats = tabs.add("Stats")
-        tab_audio = tabs.add("Audio Settings")
-        tab_transcript = tabs.add("Live Transcript")
+        tab_settings = tabs.add("Settings")
+
+        self._build_dashboard_tab(tab_dashboard)
+        self._build_dictation_tab(tab_dictation)
+        self._build_behavior_tab(tab_behavior)
 
         # LangGraph Live Trace panel (queue drain via self.after — never worker threads).
         try:
             from donna.ui.trace_window import LiveTracePanel
 
             self.live_trace = LiveTracePanel(tab_trace, poll_ms=50)
-            self.live_trace.pack(fill="both", expand=True, padx=4, pady=4)
+            self.live_trace.pack(fill="both", expand=True, padx=2, pady=2)
             self.trace_scroll = self.live_trace.timeline
         except Exception:  # noqa: BLE001
             self.live_trace = None
-            self.trace_scroll = ctk.CTkScrollableFrame(
-                tab_trace,
-                label_text="Pipeline stages",
-                label_anchor="w",
-            )
-            self.trace_scroll.pack(fill="both", expand=True, padx=8, pady=8)
+            fallback = self._make_card(tab_trace, title="Pipeline stages")
+            self.trace_scroll = ctk.CTkScrollableFrame(fallback, fg_color="transparent")
+            self.trace_scroll.pack(fill="both", expand=True)
 
-        ctk.CTkLabel(tab_stats, text="Current Status", anchor="w").pack(
-            fill="x", padx=12, pady=(16, 2)
-        )
-        self.status_value = ctk.CTkLabel(
-            tab_stats,
-            text="Idle",
-            font=ctk.CTkFont(size=18, weight="bold"),
-            anchor="w",
-        )
-        self.status_value.pack(fill="x", padx=12, pady=(0, 14))
+        self._build_settings_tab(tab_settings)
 
-        ctk.CTkLabel(tab_stats, text="Active Wake Word", anchor="w").pack(
-            fill="x", padx=12, pady=(8, 2)
-        )
-        self.wake_value = ctk.CTkLabel(
-            tab_stats,
-            text="Donna",
-            font=ctk.CTkFont(size=18, weight="bold"),
-            anchor="w",
-        )
-        self.wake_value.pack(fill="x", padx=12, pady=(0, 14))
+        try:
+            tabs.set("Dashboard")
+        except Exception:  # noqa: BLE001
+            pass
 
-        ctk.CTkLabel(tab_audio, text="Microphone", anchor="w").pack(
-            fill="x", padx=12, pady=(16, 4)
-        )
-        self.mic_menu = ctk.CTkOptionMenu(tab_audio, values=["(none)"])
-        self.mic_menu.pack(fill="x", padx=12, pady=(0, 12))
+        self._reload_device_menus()
+        try:
+            self.after(300, self.refresh_dictation_sessions)
+            self.after(350, self._reload_behavior_sliders)
+        except Exception:  # noqa: BLE001
+            pass
 
-        ctk.CTkLabel(tab_audio, text="Speaker", anchor="w").pack(
-            fill="x", padx=12, pady=(4, 4)
-        )
-        self.speaker_menu = ctk.CTkOptionMenu(tab_audio, values=["(none)"])
-        self.speaker_menu.pack(fill="x", padx=12, pady=(0, 16))
+    def _select_tab(self, name: str) -> None:
+        """Switch notebook by tab name (stable across reorder)."""
+        tabs = getattr(self, "_tabs", None)
+        if tabs is None:
+            return
+        try:
+            tabs.set(str(name))
+        except Exception:  # noqa: BLE001
+            pass
 
-        self.save_btn = ctk.CTkButton(
-            tab_audio,
-            text="Save & Apply",
-            command=self._save_and_apply_audio,
-        )
-        self.save_btn.pack(padx=12, pady=(4, 8), anchor="w")
+    def _build_dashboard_tab(self, tab) -> None:  # noqa: ANN001
+        """Stage 8.9.4 — welcome / quick actions + embedded Live Transcript."""
+        try:
+            tab.configure(fg_color=_UI_CANVAS)
+        except Exception:  # noqa: BLE001
+            pass
 
-        self.apply_note = ctk.CTkLabel(
-            tab_audio,
-            text="",
-            text_color=("gray30", "gray70"),
-            anchor="w",
-            wraplength=440,
-            justify="left",
+        welcome = self._make_card(
+            tab, title="System Ready", pady=(10, 8), expand=False
         )
-        self.apply_note.pack(fill="x", padx=12, pady=(4, 8))
+        center = ctk.CTkFrame(welcome, fg_color="transparent")
+        center.pack(fill="x", pady=(4, 8))
+        # Stage 8.9.9 — high-fidelity LANCZOS logo (CTkImage), no glyph text.
+        self._dash_logo_img = None
+        try:
+            from donna.ui.logo import load_premium_logo
 
+            self._dash_logo_img = load_premium_logo((72, 72))
+        except Exception:  # noqa: BLE001
+            self._dash_logo_img = None
+        if self._dash_logo_img is not None:
+            ctk.CTkLabel(
+                center,
+                text="",
+                image=self._dash_logo_img,
+                fg_color="transparent",
+            ).pack(pady=(2, 6))
         ctk.CTkLabel(
-            tab_transcript,
-            text="Whisper STT and Ollama replies",
+            center,
+            text="Donna is online",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color="#F9FAFB",
+        ).pack(pady=(4, 2))
+        # Dynamic runtime state (header/orb own Mode — no duplicate Mode: label).
+        self.status_value = ctk.CTkLabel(
+            center,
+            text="Idle",
+            font=ctk.CTkFont(size=13),
+            text_color=_UI_MUTED,
+        )
+        self.status_value.pack(pady=(0, 2))
+        self.wake_value = ctk.CTkLabel(
+            center,
+            text="Wake: Donna",
+            font=ctk.CTkFont(size=12),
+            text_color="#00E676",
+        )
+        self.wake_value.pack(pady=(0, 8))
+
+        # Stage 8.9.7 — soft engine ignition (ENGAGE / STANDBY).
+        engine_row = ctk.CTkFrame(center, fg_color="transparent")
+        engine_row.pack(pady=(4, 4))
+        try:
+            _engage_font = ctk.CTkFont(
+                family="Segoe UI Historic", size=13, weight="bold"
+            )
+        except Exception:  # noqa: BLE001
+            _engage_font = ctk.CTkFont(size=13, weight="bold")
+        self._engage_btn = ctk.CTkButton(
+            engine_row,
+            text="ENGAGE \U000103ad",
+            width=160,
+            height=36,
+            corner_radius=999,
+            fg_color="#2E7D32",
+            hover_color="#1B5E20",
+            text_color="#FFFFFF",
+            font=_engage_font,
+            command=self.engage_engine,
+        )
+        self._engage_btn.pack(side="left", padx=6)
+        self._standby_btn = ctk.CTkButton(
+            engine_row,
+            text="STANDBY",
+            width=130,
+            height=36,
+            corner_radius=999,
+            fg_color="#6B6560",
+            hover_color="#5A5550",
+            text_color="#E8E0D5",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self.standby_engine,
+        )
+        self._standby_btn.pack(side="left", padx=6)
+        self._engine_status_lbl = ctk.CTkLabel(
+            center,
+            text="Status: STANDBY (Variables Unlocked)",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#A1887F",
+        )
+        self._engine_status_lbl.pack(pady=(6, 2))
+        self._engine_warn_lbl = ctk.CTkLabel(
+            center,
+            text="",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#F87171",
+        )
+        self._engine_warn_lbl.pack(pady=(0, 6))
+
+        actions = ctk.CTkFrame(center, fg_color="transparent")
+        actions.pack(pady=(4, 6))
+        for label, cmd in (
+            ("Start Chat", self._dashboard_start_chat),
+            ("Trigger Dictation", self._dashboard_trigger_dictation),
+            ("Open Live Trace", self._dashboard_open_trace),
+        ):
+            ctk.CTkButton(
+                actions,
+                text=label,
+                width=140,
+                height=32,
+                corner_radius=999,
+                fg_color=_UI_GHOST,
+                hover_color="#34344A",
+                border_width=1,
+                border_color=_UI_CARD_BORDER,
+                text_color="#E5E7EB",
+                font=ctk.CTkFont(size=12),
+                command=cmd,
+            ).pack(side="left", padx=6)
+        # Sync ignition chrome to initial STANDBY.
+        try:
+            self._refresh_engine_ui()
+        except Exception:  # noqa: BLE001
+            pass
+
+        transcript_card = self._make_card(tab, title="Live Transcript", pady=(4, 4))
+        ctk.CTkLabel(
+            transcript_card,
+            text="Persona-colored STT / agent replies",
             anchor="w",
-            text_color=("gray40", "gray65"),
-        ).pack(fill="x", padx=12, pady=(12, 6))
+            text_color=_UI_MUTED,
+        ).pack(fill="x", pady=(0, 6))
         self.transcript_box = ctk.CTkTextbox(
-            tab_transcript,
+            transcript_card,
             wrap="word",
             font=ctk.CTkFont(family="Segoe UI", size=14),
+            fg_color=_UI_CANVAS,
+            corner_radius=12,
+            border_width=0,
         )
-        self.transcript_box.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.transcript_box.pack(fill="both", expand=True)
+        # Stage 8.5.2 — persona color tags on the underlying Tk Text.
+        self._init_persona_transcript_tags()
         self.transcript_box.insert(
             "1.0",
             "Waiting for speech… Say 'Donna', then speak.\n\n",
         )
         self.transcript_box.configure(state="disabled")
 
-        self._reload_device_menus()
+        # Stage 8.10 — silent text chat bar (bypasses STT → LangGraph inject).
+        chat_bar = ctk.CTkFrame(tab, fg_color="transparent")
+        chat_bar.pack(fill="x", padx=14, pady=(8, 18))
+        chat_bar.grid_columnconfigure(0, weight=1)
+        self.chat_entry = ctk.CTkEntry(
+            chat_bar,
+            placeholder_text="Type a command to Dānā...",
+            height=36,
+            corner_radius=10,
+            fg_color=_UI_GHOST,
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+            text_color="#F9FAFB",
+            placeholder_text_color=_UI_MUTED,
+            font=ctk.CTkFont(size=13),
+        )
+        self.chat_entry.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.chat_entry.bind("<Return>", self.submit_text_command)
+        self._chat_send_btn = ctk.CTkButton(
+            chat_bar,
+            text="Send",
+            width=92,
+            height=36,
+            corner_radius=999,
+            fg_color=_UI_ACCENT,
+            hover_color=_UI_ACCENT_HOVER,
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self.submit_text_command,
+        )
+        self._chat_send_btn.grid(row=0, column=1, sticky="e")
+
+    def submit_text_command(self, event=None):  # noqa: ANN001
+        """Stage 8.10 — inject typed text as the next user utterance (no STT)."""
+        if not self._require_engine():
+            return "break" if event is not None else None
+        entry = self.chat_entry
+        if entry is None:
+            return "break" if event is not None else None
+        try:
+            text = str(entry.get() or "").strip()
+        except Exception:  # noqa: BLE001
+            text = ""
+        if not text:
+            return "break" if event is not None else None
+        try:
+            entry.delete(0, "end")
+        except Exception:  # noqa: BLE001
+            pass
+        # Instant distinct echo — conversation path will not re-log.
+        try:
+            self.log_transcript("User (Text)", text)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            set_injected_question(text, source="text", already_logged=True)
+            is_recording.set()
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: silent text inject failed ({exc})")
+            self._flash_engine_warning("Could not dispatch text command.")
+            return "break" if event is not None else None
+        preview = text if len(text) <= 120 else text[:117] + "..."
+        log("UI", f'Silent text → LangGraph: "{preview}"')
+        try:
+            set_subtitle(f'User (Text): "{text}"')
+        except Exception:  # noqa: BLE001
+            pass
+        return "break" if event is not None else None
+
+    def _build_settings_tab(self, tab) -> None:  # noqa: ANN001
+        """Stage 8.9.4 — merged Stats + Audio into one Settings surface."""
+        try:
+            tab.configure(fg_color=_UI_CANVAS)
+        except Exception:  # noqa: BLE001
+            pass
+
+        row = ctk.CTkFrame(tab, fg_color="transparent")
+        row.pack(fill="both", expand=True, padx=8, pady=8)
+        row.grid_columnconfigure(0, weight=1)
+        row.grid_columnconfigure(1, weight=1)
+        row.grid_rowconfigure(0, weight=1)
+
+        left_host = ctk.CTkFrame(row, fg_color="transparent")
+        left_host.grid(row=0, column=0, sticky="nsew", padx=(4, 6), pady=4)
+        right_host = ctk.CTkFrame(row, fg_color="transparent")
+        right_host.grid(row=0, column=1, sticky="nsew", padx=(6, 4), pady=4)
+
+        stats_card = self._make_card(left_host, title="Runtime", padx=4, pady=(0, 0))
+        ctk.CTkLabel(
+            stats_card,
+            text="Wake word",
+            anchor="w",
+            text_color=_UI_MUTED,
+        ).pack(fill="x", pady=(0, 4))
+        self._settings_wake_lbl = ctk.CTkLabel(
+            stats_card,
+            text="Active wake word: Donna",
+            anchor="w",
+            justify="left",
+            wraplength=320,
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="#00E676",
+        )
+        self._settings_wake_lbl.pack(fill="x", pady=(0, 12))
+        ctk.CTkLabel(
+            stats_card,
+            text=(
+                "Audio device changes apply after Save & Apply. "
+                "Pipeline mode is shown in the header and Assistive Orb."
+            ),
+            anchor="w",
+            justify="left",
+            wraplength=320,
+            text_color=_UI_MUTED,
+        ).pack(fill="x", pady=(0, 4))
+
+        audio_card = self._make_card(right_host, title="Audio Devices", padx=4, pady=(0, 0))
+        ctk.CTkLabel(
+            audio_card, text="Microphone", anchor="w", text_color=_UI_MUTED
+        ).pack(fill="x", pady=(0, 4))
+        self.mic_menu = ctk.CTkOptionMenu(
+            audio_card,
+            values=["(none)"],
+            fg_color=_UI_GHOST,
+            button_color=_UI_ACCENT,
+            button_hover_color=_UI_ACCENT_HOVER,
+            corner_radius=10,
+        )
+        self.mic_menu.pack(fill="x", pady=(0, 12))
+        ctk.CTkLabel(
+            audio_card, text="Speaker", anchor="w", text_color=_UI_MUTED
+        ).pack(fill="x", pady=(0, 4))
+        self.speaker_menu = ctk.CTkOptionMenu(
+            audio_card,
+            values=["(none)"],
+            fg_color=_UI_GHOST,
+            button_color=_UI_ACCENT,
+            button_hover_color=_UI_ACCENT_HOVER,
+            corner_radius=10,
+        )
+        self.speaker_menu.pack(fill="x", pady=(0, 16))
+        self.save_btn = ctk.CTkButton(
+            audio_card,
+            text="Save & Apply",
+            command=self._save_and_apply_audio,
+            corner_radius=999,
+            fg_color=_UI_ACCENT,
+            hover_color=_UI_ACCENT_HOVER,
+            height=32,
+        )
+        self.save_btn.pack(anchor="w", pady=(4, 8))
+        self.apply_note = ctk.CTkLabel(
+            audio_card,
+            text="",
+            text_color=_UI_MUTED,
+            anchor="w",
+            wraplength=320,
+            justify="left",
+        )
+        self.apply_note.pack(fill="x", pady=(4, 0))
+
+    def _flash_engine_warning(self, message: str = "Please Engage Engine First.") -> None:
+        """Brief Dashboard toast when a task is attempted in STANDBY."""
+        lbl = self._engine_warn_lbl
+        if lbl is None:
+            return
+        if self._engine_warn_job is not None:
+            try:
+                self.after_cancel(self._engine_warn_job)
+            except Exception:  # noqa: BLE001
+                pass
+            self._engine_warn_job = None
+        try:
+            lbl.configure(text=str(message))
+        except Exception:  # noqa: BLE001
+            pass
+
+        def _clear() -> None:
+            self._engine_warn_job = None
+            try:
+                if self._engine_warn_lbl is not None:
+                    self._engine_warn_lbl.configure(text="")
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            self._engine_warn_job = self.after(2800, _clear)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _require_engine(self) -> bool:
+        """Return True when engine is ACTIVE; else flash warning and return False."""
+        if self.engine_active and is_engine_engaged():
+            return True
+        self._select_tab("Dashboard")
+        self._flash_engine_warning("Please Engage Engine First.")
+        return False
+
+    def _apply_behavior_mixer_payload(self) -> dict[str, int]:
+        """Push current Behavior sliders into Blackboard persona_mixer."""
+        values: dict[str, int] = {}
+        for key, slider in self._behavior_sliders.items():
+            try:
+                values[key] = int(round(float(slider.get())))
+            except Exception:  # noqa: BLE001
+                continue
+        if not values:
+            try:
+                from donna.memory.blackboard import get_persona_mixer
+
+                return dict(get_persona_mixer())
+            except Exception:  # noqa: BLE001
+                return {}
+        try:
+            from donna.memory.blackboard import set_persona_mixer
+
+            return dict(set_persona_mixer(values))
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: engage mixer apply failed ({exc})")
+            return values
+
+    def _refresh_engine_ui(self) -> None:
+        """Sync ENGAGE/STANDBY chrome with ``engine_active``."""
+        active = bool(self.engine_active)
+        status = self._engine_status_lbl
+        if status is not None:
+            try:
+                if active:
+                    status.configure(
+                        text="Status: ACTIVE (Variables Locked)",
+                        text_color="#66BB6A",
+                    )
+                else:
+                    status.configure(
+                        text="Status: STANDBY (Variables Unlocked)",
+                        text_color="#A1887F",
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            if self._engage_btn is not None:
+                self._engage_btn.configure(state="disabled" if active else "normal")
+            if self._standby_btn is not None:
+                self._standby_btn.configure(state="normal" if active else "disabled")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def engage_engine(self) -> None:
+        """Stage 8.9.7 — arm engine, apply mixer, lock Behavior sliders."""
+        applied = self._apply_behavior_mixer_payload()
+        self.engine_active = True
+        set_engine_engaged(True)
+        self._set_behavior_controls_locked(True)
+        self._refresh_engine_ui()
+        try:
+            if self._engine_warn_lbl is not None:
+                self._engine_warn_lbl.configure(text="")
+        except Exception:  # noqa: BLE001
+            pass
+        log(
+            "UI",
+            f"ENGAGE engine — behavior locked mixer={list(applied.keys())}",
+        )
+        try:
+            self.log_transcript(
+                "Donna",
+                "Engine ENGAGED — Behavior variables locked. Ready for chat.",
+                agent_id="broker",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self.assistive_orb is not None:
+                self.assistive_orb.refresh_controls()
+        except Exception:  # noqa: BLE001
+            pass
+        # Lazy warm: LangGraph import only — Florence/YOLO stay JIT.
+        try:
+            threading.Thread(
+                target=_warm_heavy_runtime_assets,
+                name="HeavyWarm",
+                daemon=True,
+            ).start()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def standby_engine(self) -> None:
+        """Stage 8.9.7 — soft pause loops, unlock Behavior (GUI stays alive)."""
+        # Drop dictation latch if hot — mixer must be editable in STANDBY.
+        if self._dictation_active:
+            try:
+                from donna.management.dictation import toggle_dictation_mode
+
+                toggle_dictation_mode(False)
+            except Exception:  # noqa: BLE001
+                pass
+            self._dictation_active = False
+            try:
+                self.dictation_btn.configure(
+                    text="  ●  OFF  ",
+                    fg_color=_UI_GHOST,
+                    hover_color="#34344A",
+                    border_color=_UI_CARD_BORDER,
+                    text_color="#F87171",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        self.engine_active = False
+        set_engine_engaged(False)
+        # Soft-pause: clear pending mic latch; do NOT touch stop_event / STOP DONNA.
+        try:
+            is_recording.clear()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            reset_tts_audio_state("standby_engine", ui_state="idle")
+        except Exception:  # noqa: BLE001
+            pass
+        self._set_behavior_controls_locked(False)
+        self._refresh_engine_ui()
+        log("UI", "STANDBY engine — behavior unlocked (soft pause)")
+        try:
+            self.log_transcript(
+                "Donna",
+                "Engine STANDBY — Behavior variables unlocked.",
+                agent_id="broker",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self.assistive_orb is not None:
+                self.assistive_orb.refresh_controls()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _dashboard_start_chat(self) -> None:
+        """Quick action — focus Dashboard silent chat entry."""
+        if not self._require_engine():
+            return
+        self._select_tab("Dashboard")
+        try:
+            self.lift()
+            self.focus_force()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self.chat_entry is not None:
+                self.chat_entry.focus_set()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.log_transcript(
+                "Donna",
+                "Type below or say Donna, then speak.",
+                agent_id="broker",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _dashboard_trigger_dictation(self) -> None:
+        """Quick action — open Dictation tab and arm the latch if cold."""
+        if not self._require_engine():
+            return
+        self._select_tab("Dictation")
+        if not self._dictation_active:
+            try:
+                self._toggle_dictation_mode()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _dashboard_open_trace(self) -> None:
+        self._select_tab("Live Trace")
+
+    def _transcript_tk(self):
+        """Return the raw ``tk.Text`` inside CTkTextbox (for tag_configure)."""
+        box = getattr(self, "transcript_box", None)
+        if box is None:
+            return None
+        return getattr(box, "_textbox", None) or getattr(box, "textbox", None)
+
+    def _init_persona_transcript_tags(self) -> None:
+        """Stage 8.5.2 — register persona styles via Tk ``tag_configure``."""
+        tk_text = self._transcript_tk()
+        if tk_text is None:
+            return
+        try:
+            tk_text.tag_configure(
+                "jason",
+                foreground="#9c27b0",
+                font=("Segoe UI", 14, "bold"),
+            )
+            tk_text.tag_configure(
+                "llama",
+                foreground="#0288d1",
+                font=("Segoe UI", 14),
+            )
+            tk_text.tag_configure(
+                "deepseek",
+                foreground="#d32f2f",
+                font=("Courier New", 10),
+            )
+            tk_text.tag_configure(
+                "vision",
+                foreground="#388e3c",
+                font=("Segoe UI", 14),
+            )
+            tk_text.tag_configure(
+                "typist",
+                foreground="#f57c00",
+                font=("Segoe UI", 14, "italic"),
+            )
+            # Stage 8.10 — silent Dashboard text (distinct from Whisper).
+            tk_text.tag_configure(
+                "user_text",
+                foreground=_UI_ACCENT,
+                font=("Segoe UI", 14, "italic"),
+            )
+            # Theme-safe default when no agent_id is provided.
+            tk_text.tag_configure(
+                "default",
+                foreground="#E5E7EB",
+                font=("Segoe UI", 14),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: persona tag_configure failed ({exc})")
+
+    @staticmethod
+    def _persona_tag_for_agent(
+        agent_id: str | None,
+        *,
+        speaker: str = "",
+    ) -> str:
+        """Map agent_id / speaker heuristics → transcript tag name."""
+        key = (agent_id or "").strip().lower()
+        aliases = {
+            "jason": "jason",
+            "jason_cto": "jason",
+            "cto": "jason",
+            "llama": "llama",
+            "llama3": "llama",
+            "broker": "llama",
+            "chat": "llama",
+            "chat_node": "llama",
+            "receptionist": "llama",
+            "donna": "llama",
+            "deepseek": "deepseek",
+            "moa": "deepseek",
+            "moa_reasoner": "deepseek",
+            "reasoner": "deepseek",
+            "vision": "vision",
+            "yolo": "vision",
+            "florence": "vision",
+            "ocr": "vision",
+            "vision_agent": "vision",
+            "typist": "typist",
+            "ghost": "typist",
+            "ghost_typist": "typist",
+            "keystroke": "typist",
+            "nav": "typist",
+            "navigation": "typist",
+        }
+        if key in aliases:
+            return aliases[key]
+        sp = (speaker or "").strip().lower()
+        if "jason" in sp:
+            return "jason"
+        if "deepseek" in sp or "moa" in sp:
+            return "deepseek"
+        if any(x in sp for x in ("vision", "yolo", "florence", "ocr")):
+            return "vision"
+        if any(x in sp for x in ("typist", "ghost", "keystroke", "nav")):
+            return "typist"
+        if sp.startswith("donna") or "ollama" in sp or "llama" in sp:
+            return "llama"
+        if sp.startswith("user") and "text" in sp:
+            return "user_text"
+        if sp.startswith("user"):
+            return "default"
+        return "default"
+
+    def _build_dictation_tab(self, tab) -> None:  # noqa: ANN001
+        """Stage 8.5 — pill toggle dictation + recent sessions card."""
+        try:
+            tab.configure(fg_color=_UI_CANVAS)
+        except Exception:  # noqa: BLE001
+            pass
+
+        control_card = self._make_card(
+            tab, title="Dictation Latch", pady=(10, 8), expand=False
+        )
+        ctk.CTkLabel(
+            control_card,
+            text=(
+                "When ON, every utterance is logged with Florence OCR visual state. "
+                "You can also say “dictate …” while OFF."
+            ),
+            anchor="w",
+            text_color=_UI_MUTED,
+            wraplength=640,
+            justify="left",
+        ).pack(fill="x", pady=(0, 12))
+
+        controls = ctk.CTkFrame(control_card, fg_color="transparent")
+        controls.pack(fill="x", pady=(0, 4))
+        # Unified pill toggle — OFF: dim gray + red pill; ON: accent glow + DICTATING.
+        self.dictation_btn = ctk.CTkButton(
+            controls,
+            text="  ●  OFF  ",
+            width=168,
+            height=40,
+            corner_radius=999,
+            fg_color=_UI_GHOST,
+            hover_color="#34344A",
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+            text_color="#F87171",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._toggle_dictation_mode,
+        )
+        self.dictation_btn.pack(side="left")
+        # Compatibility stub — pill on dictation_btn is the sole latch chrome
+        # (Stage 8.9.4 removed the duplicate Status: label beside the toggle).
+        self.dictation_status = ctk.CTkLabel(
+            controls,
+            text="● OFF",
+            anchor="w",
+            text_color="#F87171",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=_UI_CANVAS,
+            corner_radius=999,
+            padx=10,
+            pady=4,
+        )
+        ctk.CTkButton(
+            controls,
+            text="Refresh",
+            width=88,
+            height=30,
+            corner_radius=999,
+            fg_color=_UI_CANVAS,
+            hover_color="#34344A",
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+            text_color="#D1D5DB",
+            font=ctk.CTkFont(size=11),
+            command=self.refresh_dictation_sessions,
+        ).pack(side="right")
+
+        sessions_card = self._make_card(tab, title="Recent sessions", pady=(4, 10))
+        self.dictation_list = ctk.CTkTextbox(
+            sessions_card,
+            wrap="word",
+            font=ctk.CTkFont(family="Consolas", size=12),
+            height=280,
+            fg_color=_UI_CANVAS,
+            corner_radius=12,
+            border_width=0,
+        )
+        self.dictation_list.pack(fill="both", expand=True)
+        self.dictation_list.insert("1.0", "(no dictation sessions yet)\n")
+        self.dictation_list.configure(state="disabled")
+        # Sync latch from Blackboard (may already be on).
+        try:
+            from donna.memory.blackboard import is_dictation_mode
+
+            self._set_dictation_ui(bool(is_dictation_mode()))
+        except Exception:  # noqa: BLE001
+            self._set_dictation_ui(False)
+
+    def _build_behavior_tab(self, tab) -> None:  # noqa: ANN001
+        """Stage 8.5 — Behavior Mixer sliders → Blackboard persona_mixer."""
+        try:
+            tab.configure(fg_color=_UI_CANVAS)
+        except Exception:  # noqa: BLE001
+            pass
+
+        card = self._make_card(tab, title="Behavior Mixer")
+        ctk.CTkLabel(
+            card,
+            text=(
+                "Static weights for Jason / Receptionist prompts "
+                "(blackboard persona_mixer). Locked while engine is ACTIVE."
+            ),
+            anchor="w",
+            text_color=_UI_MUTED,
+            wraplength=640,
+            justify="left",
+        ).pack(fill="x", pady=(0, 4))
+        self._behavior_lock_hint = ctk.CTkLabel(
+            card,
+            text="Control plane: unlocked (engine STANDBY)",
+            anchor="w",
+            text_color="#888888",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        self._behavior_lock_hint.pack(fill="x", pady=(0, 12))
+
+        specs = (
+            ("Autonomy Level", "autonomy"),
+            ("Verbosity", "verbosity"),
+            ("Creativity", "creativity"),
+            ("Tech Depth", "technical_depth"),
+        )
+        try:
+            from donna.memory.blackboard import (
+                PERSONA_MIXER_DEFAULTS,
+                get_persona_mixer,
+            )
+
+            state = get_persona_mixer()
+        except Exception:  # noqa: BLE001
+            PERSONA_MIXER_DEFAULTS = {
+                "autonomy": 40,
+                "verbosity": 50,
+                "creativity": 50,
+                "technical_depth": 80,
+            }
+            state = dict(PERSONA_MIXER_DEFAULTS)
+
+        self._static_behavior_widgets = []
+        for label, key in specs:
+            frame = ctk.CTkFrame(card, fg_color="transparent")
+            frame.pack(fill="x", pady=6)
+            row = ctk.CTkFrame(frame, fg_color="transparent")
+            row.pack(fill="x")
+            ctk.CTkLabel(
+                row, text=label, width=120, anchor="w", text_color="#E5E7EB"
+            ).pack(side="left")
+            val = int(state.get(key, PERSONA_MIXER_DEFAULTS.get(key, 50)))
+            val_lbl = ctk.CTkLabel(
+                row, text=str(val), width=36, text_color="#F9FAFB"
+            )
+            val_lbl.pack(side="right")
+            self._behavior_labels[key] = val_lbl
+            slider = ctk.CTkSlider(
+                frame,
+                from_=0,
+                to=100,
+                number_of_steps=100,
+                progress_color=_UI_ACCENT,
+                button_color="#E5E7EB",
+                button_hover_color="#F9FAFB",
+                fg_color=_UI_GHOST,
+                command=lambda v, k=key: self._on_behavior_drag(k, v),
+            )
+            slider.set(float(val))
+            slider.pack(fill="x", pady=(4, 0))
+            slider.bind(
+                "<ButtonRelease-1>",
+                lambda _e, k=key: self._commit_behavior(k, force=True),
+            )
+            self._behavior_sliders[key] = slider
+            # Stage 8.5.1 — flag as static (restart/session-sensitive) control.
+            self._static_behavior_widgets.append(slider)
+
+        self._behavior_reload_btn = ctk.CTkButton(
+            card,
+            text="Reload from DB",
+            width=140,
+            height=30,
+            corner_radius=999,
+            fg_color=_UI_CANVAS,
+            hover_color="#34344A",
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+            text_color="#D1D5DB",
+            font=ctk.CTkFont(size=11),
+            command=self._reload_behavior_sliders,
+        )
+        self._behavior_reload_btn.pack(pady=(16, 4), anchor="w")
+        self._static_behavior_widgets.append(self._behavior_reload_btn)
+
+    def _set_behavior_controls_locked(self, locked: bool) -> None:
+        """Stage 8.5.1 — grey out static Behavior Mixer widgets when system is hot."""
+        self._behavior_locked = bool(locked)
+        state = "disabled" if self._behavior_locked else "normal"
+        for widget in list(self._static_behavior_widgets):
+            try:
+                widget.configure(state=state)
+            except Exception:  # noqa: BLE001
+                pass
+        hint = self._behavior_lock_hint
+        if hint is not None:
+            try:
+                if self._behavior_locked:
+                    hint.configure(
+                        text="Control plane: LOCKED (engine ACTIVE — STANDBY to edit)",
+                        text_color=("#DC2626", "#F87171"),
+                    )
+                else:
+                    hint.configure(
+                        text="Control plane: unlocked (engine STANDBY)",
+                        text_color="#888888",
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _set_dictation_ui(self, active: bool) -> None:
+        self._dictation_active = bool(active)
+        try:
+            if self._dictation_active:
+                self.dictation_btn.configure(
+                    text="  ●  DICTATING  ",
+                    fg_color="#388e3c",
+                    hover_color="#2E7D32",
+                    border_color="#66BB6A",
+                    text_color="#E8F5E9",
+                )
+                if self.dictation_status is not None:
+                    self.dictation_status.configure(
+                        text="● DICTATING",
+                        text_color="#66BB6A",
+                    )
+            else:
+                self.dictation_btn.configure(
+                    text="  ●  OFF  ",
+                    fg_color=_UI_GHOST,
+                    hover_color="#34344A",
+                    border_color=_UI_CARD_BORDER,
+                    text_color="#F87171",
+                )
+                if self.dictation_status is not None:
+                    self.dictation_status.configure(
+                        text="● OFF",
+                        text_color="#F87171",
+                    )
+        except Exception:  # noqa: BLE001
+            pass
+        # Stage 8.9.7 — Behavior lock follows engine ignition (not dictation alone).
+        self._set_behavior_controls_locked(bool(self.engine_active))
+        # Keep top status bar glowing badge in sync with latch.
+        try:
+            self._set_mode_indicator(self._header_mode)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self.assistive_orb is not None:
+                self.assistive_orb.refresh_controls()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _toggle_dictation_mode(self) -> None:
+        """Non-blocking GUI latch → Blackboard dictation_mode + mixer lock."""
+        # Turning ON requires ENGAGE; turning OFF is always allowed.
+        if (not self._dictation_active) and (not self._require_engine()):
+            return
+        try:
+            from donna.management.dictation import toggle_dictation_mode
+
+            active = toggle_dictation_mode(not self._dictation_active)
+            self._set_dictation_ui(active)
+            log(
+                "UI",
+                f"Dictation mode -> {'on' if active else 'off'} "
+                f"(behavior_locked={self._behavior_locked})",
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: dictation toggle failed ({exc})")
+
+    def refresh_dictation_sessions(self) -> None:
+        """Query Blackboard dictation_sessions on the Tk thread."""
+        if not self.winfo_exists():
+            return
+        try:
+            from donna.memory.blackboard import list_dictation_sessions
+
+            rows = list_dictation_sessions(limit=40)
+        except Exception as exc:  # noqa: BLE001
+            rows = []
+            log("UI", f"WARNING: list_dictation_sessions failed ({exc})")
+        lines: list[str] = []
+        if not rows:
+            lines.append("(no dictation sessions yet)\n")
+        else:
+            for r in rows:
+                ts = str(r.get("timestamp") or "")[:19].replace("T", " ")
+                cmd = str(r.get("command_text") or "").replace("\n", " ")
+                if len(cmd) > 90:
+                    cmd = cmd[:87] + "..."
+                vis_n = len(str(r.get("visual_state_reference") or ""))
+                sid = str(r.get("session_id") or "")[:8]
+                st = str(r.get("status") or "recorded")
+                lines.append(f"[{ts}] {sid}  {st}\n  {cmd}\n  visual_chars={vis_n}\n\n")
+        try:
+            self.dictation_list.configure(state="normal")
+            self.dictation_list.delete("1.0", "end")
+            self.dictation_list.insert("1.0", "".join(lines))
+            self.dictation_list.configure(state="disabled")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_behavior_drag(self, trait: str, value: float) -> None:
+        if self._behavior_locked:
+            return
+        n = int(round(float(value)))
+        lbl = self._behavior_labels.get(trait)
+        if lbl is not None:
+            try:
+                lbl.configure(text=str(n))
+            except Exception:  # noqa: BLE001
+                pass
+        now = time.monotonic()
+        if now - float(self._behavior_last_write.get(trait, 0.0)) >= 0.15:
+            self._commit_behavior(trait, force=False)
+
+    def _commit_behavior(self, trait: str, *, force: bool) -> None:
+        if self._behavior_locked:
+            return
+        slider = self._behavior_sliders.get(trait)
+        if slider is None:
+            return
+        n = int(round(float(slider.get())))
+        now = time.monotonic()
+        if not force and (now - float(self._behavior_last_write.get(trait, 0.0))) < 0.15:
+            return
+        try:
+            from donna.memory.blackboard import set_persona_trait
+
+            set_persona_trait(trait, n)
+            self._behavior_last_write[trait] = now
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: behavior slider write failed ({exc})")
+
+    def _reload_behavior_sliders(self) -> None:
+        if not self.winfo_exists():
+            return
+        if self._behavior_locked:
+            return
+        try:
+            from donna.memory.blackboard import (
+                PERSONA_MIXER_DEFAULTS,
+                get_persona_mixer,
+            )
+
+            state = get_persona_mixer()
+        except Exception:  # noqa: BLE001
+            return
+        for key, slider in self._behavior_sliders.items():
+            n = int(state.get(key, PERSONA_MIXER_DEFAULTS.get(key, 50)))
+            try:
+                slider.set(float(n))
+                lbl = self._behavior_labels.get(key)
+                if lbl is not None:
+                    lbl.configure(text=str(n))
+            except Exception:  # noqa: BLE001
+                pass
 
     def process_telemetry(self) -> None:
         """Drain legacy ``gui_telemetry_queue`` on the Tk main thread (~10 Hz).
@@ -7409,16 +8712,31 @@ class DonnaGUI(ctk.CTk):
         except Exception:  # noqa: BLE001
             pass
 
-    def log_transcript(self, speaker: str, text: str) -> None:
-        """Append a speaker line to the Live Transcript tab (thread-safe)."""
+    def log_transcript(
+        self,
+        speaker: str,
+        text: str,
+        *,
+        agent_id: str | None = None,
+    ) -> None:
+        """Append a speaker line to Live Transcript (Tk thread; persona tags)."""
         line = f"[{speaker}] {text}\n\n"
+        tag = self._persona_tag_for_agent(agent_id, speaker=speaker)
 
         def _append() -> None:
             try:
                 if not self.winfo_exists():
                     return
                 self.transcript_box.configure(state="normal")
-                self.transcript_box.insert("end", line)
+                # Prefer tagged insert on underlying Text; fall back to CTk API.
+                tk_text = self._transcript_tk()
+                if tk_text is not None:
+                    tk_text.insert("end", line, (tag,))
+                else:
+                    try:
+                        self.transcript_box.insert("end", line, tag)
+                    except TypeError:
+                        self.transcript_box.insert("end", line)
                 self.transcript_box.see("end")
                 self.transcript_box.configure(state="disabled")
             except Exception:
@@ -7482,9 +8800,23 @@ class DonnaGUI(ctk.CTk):
         if not self.winfo_exists():
             return
         raw = get_ui_state()
-        self.status_value.configure(text=_UI_STATE_LABELS.get(raw, raw.title()))
+        label = _UI_STATE_LABELS.get(raw, raw.title())
+        try:
+            self.status_value.configure(text=label)
+        except Exception:  # noqa: BLE001
+            pass
         wake = ", ".join(WAKEWORD_MODELS) if WAKEWORD_MODELS else "—"
-        self.wake_value.configure(text=wake.title() if wake != "—" else wake)
+        wake_disp = wake.title() if wake != "—" else wake
+        try:
+            self.wake_value.configure(text=f"Wake: {wake_disp}")
+        except Exception:  # noqa: BLE001
+            pass
+        settings_wake = getattr(self, "_settings_wake_lbl", None)
+        if settings_wake is not None:
+            try:
+                settings_wake.configure(text=f"Active wake word: {wake_disp}")
+            except Exception:  # noqa: BLE001
+                pass
         try:
             self._set_mode_indicator(get_donna_mode())
         except Exception:  # noqa: BLE001
@@ -7545,7 +8877,168 @@ class DonnaGUI(ctk.CTk):
         except Exception:
             pass
 
+    def kill_donna_processes(self) -> dict[str, Any]:
+        """Stage 8.9.2 — launch ``stop_donna.bat`` (non-blocking) to terminate Donna.
+
+        Uses a detached ``subprocess.Popen`` so the batch can finish even after
+        this GUI process is killed. Path errors are caught and returned.
+        """
+        try:
+            from donna.paths import PROJECT_ROOT
+
+            root = Path(PROJECT_ROOT)
+        except Exception:  # noqa: BLE001
+            root = Path(__file__).resolve().parents[1]
+        bat = root / "stop_donna.bat"
+        if not bat.is_file():
+            msg = f"stop_donna.bat not found at {bat}"
+            log("UI", f"WARNING: {msg}")
+            return {"ok": False, "error": "FileNotFoundError", "message": msg}
+        try:
+            creationflags = 0
+            if hasattr(subprocess, "DETACHED_PROCESS"):
+                creationflags |= int(subprocess.DETACHED_PROCESS)
+            if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+                creationflags |= int(subprocess.CREATE_NEW_PROCESS_GROUP)
+            # shell=True + absolute path — matches Windows .bat launch semantics.
+            proc = subprocess.Popen(  # noqa: S603
+                f'"{bat}"',
+                cwd=str(root),
+                shell=True,
+                creationflags=creationflags,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+            )
+            log("UI", f"STOP DONNA — launched stop_donna.bat pid={proc.pid}")
+            return {"ok": True, "pid": int(proc.pid), "path": str(bat)}
+        except FileNotFoundError as exc:
+            msg = f"Failed to launch stop_donna.bat: {exc}"
+            log("UI", f"WARNING: {msg}")
+            return {"ok": False, "error": "FileNotFoundError", "message": msg}
+        except OSError as exc:
+            msg = f"Failed to launch stop_donna.bat: {exc}"
+            log("UI", f"WARNING: {msg}")
+            return {"ok": False, "error": type(exc).__name__, "message": msg}
+
+    def _on_stop_donna_clicked(self) -> None:
+        """Show TERMINATING… then fire the kill switch (Tk main thread)."""
+        btn = getattr(self, "stop_donna_btn", None)
+        try:
+            if btn is not None:
+                btn.configure(
+                    text="TERMINATING...",
+                    state="disabled",
+                    fg_color="#b71c1c",
+                )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.update_idletasks()
+        except Exception:  # noqa: BLE001
+            pass
+
+        def _launch() -> None:
+            result = self.kill_donna_processes()
+            if not result.get("ok"):
+                try:
+                    if btn is not None:
+                        btn.configure(
+                            text="STOP DONNA",
+                            state="normal",
+                            fg_color="#d32f2f",
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    log(
+                        "UI",
+                        f"STOP DONNA aborted: {result.get('message') or 'unknown'}",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+        try:
+            # Brief paint of TERMINATING… before the batch tears us down.
+            self.after(80, _launch)
+        except Exception:  # noqa: BLE001
+            _launch()
+
+    def _start_assistive_orb(self) -> None:
+        """Stage 8.7 — spawn frameless topmost orb on the Tk main thread."""
+        if self.assistive_orb is not None:
+            return
+        try:
+            from donna.ui.assistive_orb import AssistiveTouchOrb
+
+            def _active_agent() -> str:
+                try:
+                    from donna.audio.multi_voice_tts import get_active_tts_agent
+
+                    return str(get_active_tts_agent() or "broker")
+                except Exception:  # noqa: BLE001
+                    return "broker"
+
+            self.assistive_orb = AssistiveTouchOrb(
+                self,
+                on_toggle_dictation=self._toggle_dictation_mode,
+                on_open_dashboard=self.show_window,
+                on_approve_ticket=self._orb_approve_ticket,
+                on_deny_ticket=self._orb_deny_ticket,
+                dictation_getter=lambda: bool(self._dictation_active),
+                mode_getter=lambda: str(self._header_mode or "chat"),
+                accent_getter=lambda: self._mode_accent(),
+                agent_getter=_active_agent,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: AssistiveTouch orb failed to start ({exc})")
+            self.assistive_orb = None
+
+    def open_github_issue(
+        self,
+        ticket_content: dict[str, Any] | str | None = None,
+        jason_critique: str = "",
+    ) -> str:
+        """Stage 8.9.3 — open a pre-filled GitHub issue in the default browser."""
+        try:
+            from donna.middleware.hitl_ticket import get_pending
+            from donna.ui.github_escalation import open_github_issue as _open
+
+            pending = ticket_content if ticket_content is not None else get_pending()
+            return _open(pending, jason_critique or str((pending or {}).get("jason_critique") or ""))
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: open_github_issue failed ({exc})")
+            return ""
+
+    def _orb_approve_ticket(self) -> None:
+        try:
+            from donna.middleware.hitl_ticket import submit_decision
+
+            submit_decision(True, action="approve")
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: orb approve failed ({exc})")
+        try:
+            if getattr(self, "live_trace", None) is not None:
+                self.live_trace._set_hitl_visible(False)  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _orb_deny_ticket(self) -> None:
+        try:
+            from donna.middleware.hitl_ticket import submit_decision
+
+            submit_decision(False, action="deny")
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: orb deny failed ({exc})")
+        try:
+            if getattr(self, "live_trace", None) is not None:
+                self.live_trace._set_hitl_visible(False)  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+
     def _on_close_to_tray(self) -> None:
+        # Dashboard hides; AssistiveTouch orb stays visible as the always-on control.
         self.withdraw()
 
 
@@ -7699,6 +9192,24 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
     except Exception as exc:  # noqa: BLE001
         log("Main", f"WARNING: kill switch listener failed: {exc}")
 
+    # Persist conversational mode so system jobs cannot steal it later.
+    try:
+        set_donna_mode(get_donna_mode(), as_voice=True)
+        log("Main", f"Voice session mode seeded: {get_donna_mode()}")
+    except Exception as exc:  # noqa: BLE001
+        log("Main", f"WARNING: voice session mode seed failed: {exc}")
+
+    # Sidekick supervisor — eyes (vision_poller) + hands (actuator_executor).
+    try:
+        from donna.middleware.sidekick_supervisor import start_sidekick_supervisor
+
+        if start_sidekick_supervisor(as_thread=True):
+            log("Main", "Sidekick supervisor started (vision_poller + actuator_executor)")
+        else:
+            log("Main", "Sidekick supervisor not started")
+    except Exception as exc:  # noqa: BLE001
+        log("Main", f"WARNING: sidekick supervisor failed: {exc}")
+
     log(
         "Main",
         "Donna is ready. Say 'Donna' to wake. | Tray Quit / Ctrl+C=quit",
@@ -7744,18 +9255,22 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
                 except OSError:
                     injected = ""
                 if get_ui_state() == "idle" and not is_recording.is_set():
-                    try:
-                        os.remove(TRIGGER_FILE)
-                    except OSError:
+                    if not is_engine_engaged():
+                        # Soft STANDBY — leave trigger file for retry after ENGAGE.
                         pass
-                    if injected:
-                        log("Main", f"File trigger inject -> \"{injected}\"")
-                        set_injected_question(injected)
-                        is_recording.set()
                     else:
-                        log("Main", "File trigger -> start listening")
-                        clear_injected_question()
-                        is_recording.set()
+                        try:
+                            os.remove(TRIGGER_FILE)
+                        except OSError:
+                            pass
+                        if injected:
+                            log("Main", f"File trigger inject -> \"{injected}\"")
+                            set_injected_question(injected)
+                            is_recording.set()
+                        else:
+                            log("Main", "File trigger -> start listening")
+                            clear_injected_question()
+                            is_recording.set()
                 # else: leave file in place until idle so automation retries cleanly
 
             # PortAudio / PaErrorCode from Audio thread → soft restart before freeze.
@@ -7874,7 +9389,7 @@ def main() -> int:
         log("Main", "Headless mode (--no-gui): Live Trace UI disabled.")
         return agent_loop(args)
 
-    # Create GUI first so Live Transcript / Trace are ready before Whisper/Ollama emit.
+    # Stage 8.9.7 — GUI paints in STANDBY first; heavy agent loop deferred.
     gui = DonnaGUI()
     _gui_instance = gui
     # Boot visible (DonnaGUI starts withdrawn for tray-close UX).
@@ -7889,11 +9404,11 @@ def main() -> int:
         emit_trace(
             "Boot",
             "completed",
-            "Live Trace UI online",
+            "Live Trace UI online (STANDBY — engine unlocked)",
             mode=get_donna_mode(),
         )
-        emit_trace("STT", "completed", "STT: Whisper pipeline armed")
-        emit_trace("Router", "active", "Router: waiting for turn")
+        emit_trace("STT", "idle", "STT: deferred until AgentLoop warm")
+        emit_trace("Router", "idle", "Router: waiting for ENGAGE")
     except Exception:  # noqa: BLE001
         pass
 
@@ -7905,20 +9420,35 @@ def main() -> int:
 
     _install_signal_handlers(gui)
 
-    _agent_loop_thread = threading.Thread(
-        target=agent_loop,
-        name="AgentLoop",
-        kwargs={"args": args},
-        daemon=True,
-    )
-    _agent_loop_thread.start()
+    def _boot_agent_loop() -> None:
+        """Deferred background start so Standby chrome paints instantly."""
+        global _agent_loop_thread
+        if _agent_loop_thread is not None:
+            return
+        _agent_loop_thread = threading.Thread(
+            target=agent_loop,
+            name="AgentLoop",
+            kwargs={"args": args},
+            daemon=True,
+        )
+        _agent_loop_thread.start()
+        threading.Thread(
+            target=run_system_tray,
+            name="SystemTray",
+            args=(gui,),
+            daemon=True,
+        ).start()
+        try:
+            emit_trace("STT", "active", "STT: Whisper pipeline arming")
+            emit_trace("Router", "active", "Router: waiting for turn")
+        except Exception:  # noqa: BLE001
+            pass
 
-    threading.Thread(
-        target=run_system_tray,
-        name="SystemTray",
-        args=(gui,),
-        daemon=True,
-    ).start()
+    try:
+        # ~350ms lets Tk draw ENGAGE/STANDBY before Whisper/tracker threads.
+        gui.after(350, _boot_agent_loop)
+    except Exception:  # noqa: BLE001
+        _boot_agent_loop()
 
     try:
         gui.mainloop()

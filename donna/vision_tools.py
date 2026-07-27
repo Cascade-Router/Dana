@@ -259,6 +259,27 @@ def analyze_visual_context(source: str = "screen") -> str:
             f"{payload} "
             f"[Temporal: {temporal_n} buffered frames @ ~2s]."
         )
+    # Typed objects topic for Chat / ambient awareness (not OCR).
+    try:
+        from donna.memory.blackboard import publish_perception_objects
+
+        boxes_meta = []
+        for d in detections[:24]:
+            boxes_meta.append(
+                {
+                    "label": str(d.get("name") or "object"),
+                    "confidence": float(d.get("confidence") or 0.0),
+                    "xyxy": list(d.get("xyxy") or []),
+                }
+            )
+        publish_perception_objects(
+            payload,
+            producer="analyze_visual_context",
+            model="yolov8",
+            boxes=boxes_meta,
+        )
+    except Exception:  # noqa: BLE001
+        pass
     return payload
 
 

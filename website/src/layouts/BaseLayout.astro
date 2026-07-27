@@ -1,0 +1,71 @@
+---
+import "../styles/global.css";
+import GlobalChat from "../components/GlobalChat.astro";
+
+interface Props {
+  title?: string;
+  description?: string;
+  path?: string;
+}
+
+const {
+  title = "Dānā (دانا) — Local Cybernetic Copilot",
+  description =
+    "Dānā is a Windows-native, CUDA-accelerated offline AI copilot. LangGraph routing, Distil-Whisper, Florence-2 — zero cloud.",
+  path = "/",
+} = Astro.props;
+
+const canonical = new URL(path, Astro.site).toString();
+---
+
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#070b12" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preload" as="image" href="/dana-logo.png" fetchpriority="high" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
+    />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
+  </head>
+  <body class="font-sans">
+    <slot />
+    <GlobalChat />
+    <script>
+      // Lightweight IntersectionObserver reveal (no animation libs on critical path).
+      const nodes = document.querySelectorAll("[data-reveal]");
+      if (nodes.length && "IntersectionObserver" in window) {
+        const io = new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              if (!entry.isIntersecting) continue;
+              entry.target.classList.add("is-visible");
+              io.unobserve(entry.target);
+            }
+          },
+          { rootMargin: "0px 0px -8% 0px", threshold: 0.12 },
+        );
+        nodes.forEach((el) => io.observe(el));
+      } else {
+        nodes.forEach((el) => el.classList.add("is-visible"));
+      }
+    </script>
+  </body>
+</html>

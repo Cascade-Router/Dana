@@ -1,0 +1,29 @@
+# Stage 9.2 — Hugging Face Space requirements (lightweight cloud image).
+# Intentionally EXCLUDES desktop GUI / audio / vision stacks:
+#   customtkinter, pyttsx3, piper-tts, pygame, sounddevice, openwakeword,
+#   onnxruntime, ultralytics, opencv, mss, pystray, pywin32, keyboard, pycaw
+
+gradio==4.44.1
+fastapi>=0.115.0
+uvicorn>=0.30.0
+
+# LangGraph / LangChain MoA corridor
+langgraph>=0.2.0,<0.4.0
+langchain>=0.3.0,<0.4.0
+langchain-core>=0.3.0,<0.4.0
+langchain-openai>=0.2.0,<0.4.0
+langchain-community>=0.3.0,<0.4.0
+langchain-ollama>=0.2.0,<0.3.0
+langchain-groq>=0.2.0,<0.3.0
+
+# Core Donna imports used by cloud_bridge (keep lean)
+pydantic>=2.7.0,<3
+requests>=2.32.0
+python-dotenv>=1.0.0
+rapidfuzz>=3.9.0
+duckduckgo-search>=6.0.0
+httpx>=0.27.0
+tenacity>=8.0.0
+
+# Optional OpenAI SDK (langchain-openai)
+openai>=1.40.0

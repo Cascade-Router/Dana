@@ -91,23 +91,28 @@ def _spawn_headless_boot_terminal() -> str:
     return "Spawned headless boot terminal (python run.py --no-gui)."
 
 _MODE_COLORS = {
-    "chat": "#10B981",
-    "developer": "#8B5CF6",
-    "agentic": "#8B5CF6",
+    "chat": "#00E676",
+    "developer": "#FB8C00",
+    "agentic": "#FB8C00",
     "vision": "#3B82F6",
     "research": "#F59E0B",
+    "dictation": "#9C27B0",
     "idle": "#9CA3AF",
     "routing": "#F59E0B",
     "tool": "#8B5CF6",
-    "synthesis": "#10B981",
+    "synthesis": "#00E676",
 }
+_CARD_BG = "#1E1E2E"
+_CANVAS_BG = "#121218"
+_GHOST_BG = "#2A2A3C"
+_GHOST_BORDER = "#3A3A4C"
 
 _STATUS_PILLS = {
     "idle": ("[IDLE]", "#9CA3AF"),
     "routing": ("[ROUTING]", "#F59E0B"),
     "tool": ("[TOOL]", "#8B5CF6"),
     "synthesis": ("[SYNTHESIS]", "#10B981"),
-    "active": ("[ACTIVE]", "#6366F1"),
+    "active": ("[ACTIVE]", "#00ADB5"),
 }
 
 
@@ -115,7 +120,7 @@ class LiveTracePanel(ctk.CTkFrame):
     """Dark Live Trace dashboard: status pill, timeline, payload viewer."""
 
     def __init__(self, master: Any, *, poll_ms: int = 50) -> None:
-        super().__init__(master, fg_color=("gray94", "#0b1220"))
+        super().__init__(master, fg_color=_CANVAS_BG)
         self._poll_ms = max(30, int(poll_ms))
         self._phase = "idle"
         self._mode = "chat"
@@ -126,89 +131,245 @@ class LiveTracePanel(ctk.CTkFrame):
         self.after(self._poll_ms, self._drain_trace_queue)
 
     def _build(self) -> None:
-        header = ctk.CTkFrame(self, fg_color=("gray90", "#121a2b"), corner_radius=0)
-        header.pack(fill="x")
+        header = ctk.CTkFrame(
+            self,
+            fg_color=_CARD_BG,
+            corner_radius=14,
+            border_width=1,
+            border_color=_GHOST_BORDER,
+        )
+        header.pack(fill="x", padx=10, pady=(10, 6))
         self.pill = ctk.CTkLabel(
             header,
             text="[IDLE]",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(size=13, weight="bold"),
             text_color=_STATUS_PILLS["idle"][1],
-            fg_color=("gray85", "#1a2438"),
-            corner_radius=12,
-            padx=12,
+            fg_color=_GHOST_BG,
+            corner_radius=999,
+            padx=14,
             pady=6,
         )
         self.pill.pack(side="left", padx=12, pady=10)
         self.mode_label = ctk.CTkLabel(
             header,
-            text="Mode: Chat",
+            text="LangGraph Live Trace",
             font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=_MODE_COLORS["chat"],
+            text_color="#E5E7EB",
             anchor="w",
         )
         self.mode_label.pack(side="left", padx=8, pady=10)
         ctk.CTkLabel(
             header,
-            text="LangGraph Live Trace",
-            text_color=("gray40", "gray60"),
-            font=ctk.CTkFont(size=12),
+            text="pipeline · payload",
+            text_color="#6B7280",
+            font=ctk.CTkFont(size=11),
         ).pack(side="right", padx=14, pady=10)
 
         body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+        body.pack(fill="both", expand=True, padx=10, pady=(4, 8))
         body.grid_columnconfigure(0, weight=3)
         body.grid_columnconfigure(1, weight=2)
         body.grid_rowconfigure(0, weight=1)
 
-        left = ctk.CTkFrame(body, fg_color=("gray92", "#121a2b"))
+        left = ctk.CTkFrame(
+            body,
+            fg_color=_CARD_BG,
+            corner_radius=16,
+            border_width=1,
+            border_color=_GHOST_BORDER,
+        )
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         ctk.CTkLabel(
             left,
             text="State Graph Timeline",
             anchor="w",
             font=ctk.CTkFont(size=13, weight="bold"),
-        ).pack(fill="x", padx=10, pady=(10, 4))
+            text_color="#F3F4F6",
+        ).pack(fill="x", padx=14, pady=(12, 4))
         self.timeline = ctk.CTkScrollableFrame(left, fg_color="transparent")
-        self.timeline.pack(fill="both", expand=True, padx=6, pady=(0, 8))
+        self.timeline.pack(fill="both", expand=True, padx=8, pady=(0, 10))
 
-        right = ctk.CTkFrame(body, fg_color=("gray92", "#121a2b"))
+        right = ctk.CTkFrame(
+            body,
+            fg_color=_CARD_BG,
+            corner_radius=16,
+            border_width=1,
+            border_color=_GHOST_BORDER,
+        )
         right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         ctk.CTkLabel(
             right,
             text="Payload Viewer",
             anchor="w",
             font=ctk.CTkFont(size=13, weight="bold"),
-        ).pack(fill="x", padx=10, pady=(10, 4))
+            text_color="#F3F4F6",
+        ).pack(fill="x", padx=14, pady=(12, 4))
         self.payload = ctk.CTkTextbox(
             right,
             wrap="word",
             font=ctk.CTkFont(family="Consolas", size=12),
-            fg_color=("gray96", "#0b1220"),
+            fg_color=_CANVAS_BG,
+            border_width=0,
+            corner_radius=10,
         )
-        self.payload.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.payload.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         self.payload.insert("1.0", "Waiting for LangGraph transitions…\n")
         self.payload.configure(state="disabled")
 
-        dev = ctk.CTkFrame(self, fg_color=("gray90", "#121a2b"), corner_radius=0)
-        dev.pack(fill="x", padx=0, pady=0)
+        # Stage 8.6 — HITL Approve / Deny (hidden until ticket_approval interrupt).
+        self._hitl_bar = ctk.CTkFrame(
+            self,
+            fg_color=_CARD_BG,
+            corner_radius=12,
+            border_width=1,
+            border_color="#388e3c",
+        )
+        self._hitl_label = ctk.CTkLabel(
+            self._hitl_bar,
+            text="Ticket approval required",
+            anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color="#E8F5E9",
+        )
+        self._hitl_label.pack(side="left", padx=(14, 8), pady=10)
+        self._hitl_approve_btn = ctk.CTkButton(
+            self._hitl_bar,
+            text="Approve & Submit",
+            width=150,
+            height=32,
+            corner_radius=999,
+            fg_color="#388e3c",
+            hover_color="#2E7D32",
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._on_hitl_approve,
+        )
+        self._hitl_approve_btn.pack(side="right", padx=(4, 12), pady=8)
+        self._hitl_deny_btn = ctk.CTkButton(
+            self._hitl_bar,
+            text="Deny / Edit",
+            width=120,
+            height=32,
+            corner_radius=999,
+            fg_color="#C62828",
+            hover_color="#B71C1C",
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._on_hitl_deny,
+        )
+        self._hitl_deny_btn.pack(side="right", padx=4, pady=8)
+        # Stage 8.9.3 — shown only when consecutive_denials >= 2.
+        self._hitl_github_btn = ctk.CTkButton(
+            self._hitl_bar,
+            text="\U0001f419 Report Issue on GitHub",
+            width=200,
+            height=32,
+            corner_radius=999,
+            fg_color="#24292F",
+            hover_color="#1B1F23",
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=self._on_hitl_github,
+        )
+        self._hitl_visible = False
+        self._hitl_github_visible = False
+
+        # Subtle footer toolbar — ghost secondary actions.
+        self._dev_footer = ctk.CTkFrame(
+            self,
+            fg_color=_GHOST_BG,
+            corner_radius=12,
+            border_width=1,
+            border_color=_GHOST_BORDER,
+            height=44,
+        )
+        self._dev_footer.pack(fill="x", padx=10, pady=(0, 10))
         ctk.CTkLabel(
-            dev,
+            self._dev_footer,
             text="Developer Tools",
             anchor="w",
-            font=ctk.CTkFont(size=13, weight="bold"),
-        ).pack(side="left", padx=12, pady=8)
+            font=ctk.CTkFont(size=11),
+            text_color="#9CA3AF",
+        ).pack(side="left", padx=(12, 8), pady=8)
+        for label, cmd in (
+            ("View Startup Log", self._on_view_startup_log),
+            ("Test Headless Boot", self._on_test_headless_boot),
+        ):
+            ctk.CTkButton(
+                self._dev_footer,
+                text=label,
+                width=140,
+                height=28,
+                corner_radius=999,
+                fg_color=_CANVAS_BG,
+                hover_color="#34344A",
+                border_width=1,
+                border_color=_GHOST_BORDER,
+                text_color="#D1D5DB",
+                font=ctk.CTkFont(size=11),
+                command=cmd,
+            ).pack(side="left", padx=4, pady=8)
+        # Stage 8.9.1 — truncate local HITL feedback JSONL (no app restart).
         ctk.CTkButton(
-            dev,
-            text="View Startup Log",
-            width=150,
-            command=self._on_view_startup_log,
-        ).pack(side="left", padx=6, pady=8)
-        ctk.CTkButton(
-            dev,
-            text="Test Headless Boot",
-            width=160,
-            command=self._on_test_headless_boot,
-        ).pack(side="left", padx=6, pady=8)
+            self._dev_footer,
+            text="Clear Logs",
+            width=100,
+            height=28,
+            corner_radius=999,
+            fg_color=_CANVAS_BG,
+            hover_color="#4A1520",
+            border_width=1,
+            border_color="#d32f2f",
+            text_color="#EF9A9A",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=self._on_clear_feedback_logs,
+        ).pack(side="left", padx=(8, 4), pady=8)
+        self._clear_logs_status = ctk.CTkLabel(
+            self._dev_footer,
+            text="",
+            anchor="w",
+            font=ctk.CTkFont(size=10),
+            text_color="#9CA3AF",
+        )
+        self._clear_logs_status.pack(side="left", padx=(2, 10), pady=8)
+        self._clear_logs_status_job: str | None = None
+        # Stage 8.9.8 — footer KILL SWITCH removed; header STOP DONNA is sole exit.
+
+    def _on_clear_feedback_logs(self) -> None:
+        """Tk-main-thread clear of feedback_logs.jsonl + 3s status toast."""
+        try:
+            from donna.memory.feedback_log import clear_feedback_logs
+
+            result = clear_feedback_logs()
+            msg = str(
+                (result or {}).get("message")
+                or "Logs Cleared (0 B)"
+            )
+        except Exception as exc:  # noqa: BLE001
+            msg = f"Clear failed: {exc}"
+        try:
+            self._clear_logs_status.configure(text=msg, text_color="#EF9A9A")
+        except Exception:  # noqa: BLE001
+            pass
+        self._append_timeline(f"Dev → {msg}", accent="#d32f2f")
+        if self._clear_logs_status_job is not None:
+            try:
+                self.after_cancel(self._clear_logs_status_job)
+            except Exception:  # noqa: BLE001
+                pass
+            self._clear_logs_status_job = None
+
+        def _clear_toast() -> None:
+            self._clear_logs_status_job = None
+            try:
+                self._clear_logs_status.configure(text="")
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            self._clear_logs_status_job = self.after(3000, _clear_toast)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _run_dev_action(self, action: Any, label: str) -> None:
         """Run a developer action off the Tk main thread."""
@@ -237,6 +398,111 @@ class LiveTracePanel(ctk.CTkFrame):
     def _on_test_headless_boot(self) -> None:
         self._run_dev_action(_spawn_headless_boot_terminal, "Test Headless Boot")
 
+    def _set_hitl_visible(self, visible: bool) -> None:
+        """Reveal or hide Approve / Deny controls (Tk main thread only)."""
+        self._hitl_visible = bool(visible)
+        try:
+            if self._hitl_visible:
+                self._sync_github_escalate_button()
+                if not self._hitl_bar.winfo_ismapped():
+                    footer = getattr(self, "_dev_footer", None)
+                    if footer is not None:
+                        self._hitl_bar.pack(
+                            fill="x", padx=10, pady=(0, 6), before=footer
+                        )
+                    else:
+                        self._hitl_bar.pack(fill="x", padx=10, pady=(0, 6))
+            else:
+                self._set_github_escalate_visible(False)
+                self._hitl_bar.pack_forget()
+        except Exception:  # noqa: BLE001
+            try:
+                if self._hitl_visible:
+                    self._hitl_bar.pack(fill="x", padx=10, pady=(0, 6))
+                else:
+                    self._hitl_bar.pack_forget()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _sync_github_escalate_button(self) -> None:
+        """Stage 8.9.3 — reveal GitHub escalate when denials >= 2."""
+        denials = 0
+        try:
+            from donna.middleware.hitl_ticket import (
+                get_consecutive_denials,
+                get_pending,
+            )
+
+            pending = get_pending() or {}
+            denials = int(
+                pending.get("consecutive_denials")
+                if pending.get("consecutive_denials") is not None
+                else get_consecutive_denials()
+            )
+        except Exception:  # noqa: BLE001
+            denials = 0
+        self._set_github_escalate_visible(denials >= 2)
+
+    def _set_github_escalate_visible(self, visible: bool) -> None:
+        self._hitl_github_visible = bool(visible)
+        try:
+            if self._hitl_github_visible:
+                if not self._hitl_github_btn.winfo_ismapped():
+                    self._hitl_github_btn.pack(
+                        side="right", padx=(4, 4), pady=8, before=self._hitl_deny_btn
+                    )
+            else:
+                self._hitl_github_btn.pack_forget()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_hitl_github(self) -> None:
+        """Open a pre-filled GitHub issue for repeated HITL failures."""
+        try:
+            from donna.middleware.hitl_ticket import get_pending
+            from donna.ui.github_escalation import open_github_issue
+
+            pending = get_pending() or {}
+            url = open_github_issue(
+                pending,
+                str(pending.get("jason_critique") or ""),
+            )
+            self._append_timeline(
+                "HITL → Report Issue on GitHub",
+                accent="#24292F",
+            )
+            if url:
+                self._set_payload(f"GitHub issue draft opened:\n{url[:500]}")
+        except Exception as exc:  # noqa: BLE001
+            self._append_timeline(
+                f"HITL → GitHub escalate failed: {exc}",
+                accent="#C62828",
+            )
+
+    def _on_hitl_approve(self) -> None:
+        try:
+            from donna.middleware.hitl_ticket import submit_decision
+
+            submit_decision(True, action="approve")
+        except Exception:  # noqa: BLE001
+            pass
+        self._set_hitl_visible(False)
+        self._append_timeline("HITL → Approve & Submit", accent="#388e3c")
+
+    def _on_hitl_deny(self) -> None:
+        try:
+            from donna.middleware.hitl_ticket import submit_decision
+
+            submit_decision(False, action="deny")
+        except Exception:  # noqa: BLE001
+            pass
+        self._set_hitl_visible(False)
+        self._append_timeline("HITL → Deny / Edit", accent="#C62828")
+        self._set_payload(
+            "Ticket denied. Graph returned to idle — edit your request in chat "
+            "and try again when ready."
+        )
+
     def _set_pill(self, phase: str, *, tool: str = "") -> None:
         self._phase = phase
         if phase == "tool" and tool:
@@ -254,18 +520,17 @@ class LiveTracePanel(ctk.CTkFrame):
         if key == "agentic":
             key = "developer"
         self._mode = key
-        color = _MODE_COLORS.get(key, _MODE_COLORS["idle"])
-        try:
-            self.mode_label.configure(
-                text=f"Mode: {key.title()}",
-                text_color=color,
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        # Global Mode indicator lives in DonnaGUI status bar; keep local title stable.
 
     def _append_timeline(self, line: str, *, accent: str | None = None) -> None:
-        row = ctk.CTkFrame(self.timeline, fg_color=("gray88", "#1a2438"), corner_radius=6)
-        row.pack(fill="x", padx=2, pady=2)
+        row = ctk.CTkFrame(
+            self.timeline,
+            fg_color=_GHOST_BG,
+            corner_radius=10,
+            border_width=1,
+            border_color=_GHOST_BORDER,
+        )
+        row.pack(fill="x", padx=2, pady=3)
         ctk.CTkLabel(
             row,
             text=line,
@@ -345,6 +610,26 @@ class LiveTracePanel(ctk.CTkFrame):
             self._set_mode(event.mode or event.message)
             self._append_timeline(event.message or f"mode={self._mode}")
         else:
+            msg = str(event.message or "")
+            # Stage 8.6 — reveal / hide HITL confirmation buttons.
+            if "HITL_PENDING_APPROVAL" in msg or (
+                event.node == "ticket_approval" and "awaiting" in msg.lower()
+            ):
+                self._set_pill("tool", tool="HITL")
+                self._append_timeline(
+                    "HITL → ticket approval required",
+                    accent="#388e3c",
+                )
+                if event.payload:
+                    self._set_payload(event.payload)
+                self._set_hitl_visible(True)
+                return
+            if "HITL_RESOLVED" in msg or "HITL_RESUME" in msg:
+                self._set_hitl_visible(False)
+                self._append_timeline(msg or "HITL resolved")
+                if event.payload:
+                    self._set_payload(event.payload)
+                return
             if event.message:
                 self._append_timeline(event.message)
             if event.payload:

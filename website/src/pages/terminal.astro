@@ -1,0 +1,21 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import SiteHeader from "../components/SiteHeader.astro";
+import SiteFooter from "../components/SiteFooter.astro";
+import HfDemoPlaceholder from "../components/HfDemoPlaceholder.astro";
+---
+
+<BaseLayout
+  title="Dānā Terminal — Live Agent Shell"
+  description="Terminal-shaped shell for the Hugging Face Dānā LangGraph space."
+  path="/terminal"
+>
+  <SiteHeader />
+  <main>
+    <HfDemoPlaceholder
+      title="Agent terminal"
+      subtitle="Same Hugging Face container as /demo — framed as an operator terminal for the LangGraph backend."
+    />
+  </main>
+  <SiteFooter />
+</BaseLayout>

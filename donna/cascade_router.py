@@ -531,6 +531,35 @@ def decide_route(
 ) -> CascadeDecision:
     local = default_model or local_model_name()
 
+    # Stage 8.5 — Dictation Loop short-circuit (keyword or GUI latch).
+    try:
+        from donna.management.dictation import should_handle_dictation
+
+        if should_handle_dictation(query or ""):
+            _log_cascade(
+                "dictation keyword/mode -> Dictation_Handler "
+                "(OCR-paired session log; LLM bypass)"
+            )
+            try:
+                from donna.telemetry import log_router
+
+                log_router(
+                    "dictation route",
+                    current_agent="Dictation_Handler",
+                    active_intent="dictate",
+                    payload={"query_preview": (query or "")[:160]},
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return CascadeDecision(
+                complexity="low",
+                backend="local",
+                model=local,
+                reason="dictation mode -> Dictation_Handler (OCR session log)",
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
     # Module 2 mailroom — absolute top of pipeline (before chat bypass / MoA / LLM).
     mailroom = fuzzy_match_command(query or "")
     if mailroom is not None:

@@ -175,13 +175,449 @@ def _synthetic_tool_call_message(tool_id: str, user_text: str, *, step: int) -> 
     )
 
 
+def _iter_tool_calls(message: Any) -> list[dict[str, Any]]:
+    """Normalize AIMessage.tool_calls into ``{name, args, id}`` dicts."""
+    out: list[dict[str, Any]] = []
+    for tc in getattr(message, "tool_calls", None) or []:
+        if isinstance(tc, dict):
+            name = str(tc.get("name") or "").strip()
+            args = dict(tc.get("args") or tc.get("arguments") or {})
+            call_id = str(tc.get("id") or "").strip()
+        else:
+            name = str(getattr(tc, "name", "") or "").strip()
+            args = dict(getattr(tc, "args", None) or {})
+            call_id = str(getattr(tc, "id", "") or "").strip()
+        if name:
+            out.append({"name": name, "args": args, "id": call_id})
+    return out
+
+
+def message_has_draft_cursor_prompt(message: Any) -> bool:
+    return any(tc["name"] == "draft_cursor_prompt" for tc in _iter_tool_calls(message))
+
+
+# Stage 8.9.6 — Pydantic rewrite loop before Jason / HITL (not infinite).
+_MAX_TICKET_VALIDATION_RETRIES = 3
+
+
+def extract_draft_cursor_payload(state: ReactGraphState | dict[str, Any]) -> dict[str, Any]:
+    """Pull ``objective`` / ``context`` from the latest draft_cursor_prompt tool call."""
+    messages = list(state.get("messages") or [])
+    for msg in reversed(messages):
+        for tc in _iter_tool_calls(msg):
+            if tc["name"] != "draft_cursor_prompt":
+                continue
+            args = dict(tc.get("args") or {})
+            return {
+                "type": "ticket_approval",
+                "tool": "draft_cursor_prompt",
+                "objective": str(args.get("objective") or "").strip(),
+                "context": str(args.get("context") or "").strip(),
+                "tool_call_id": str(tc.get("id") or ""),
+                "session_id": str(state.get("session_id") or ""),
+                "active_intent": str(state.get("active_intent") or ""),
+                "jason_critique": str(state.get("jason_critique") or "").strip(),
+            }
+    return {
+        "type": "ticket_approval",
+        "tool": "draft_cursor_prompt",
+        "objective": "",
+        "context": "",
+        "tool_call_id": "",
+        "session_id": str(state.get("session_id") or ""),
+        "active_intent": str(state.get("active_intent") or "draft_cursor_prompt"),
+        "jason_critique": str(state.get("jason_critique") or "").strip(),
+    }
+
+
+def resolved_drafted_ticket(state: ReactGraphState | dict[str, Any]) -> dict[str, Any]:
+    """Prefer Stage 8.9.6 ``drafted_ticket``; fall back to latest tool-call args."""
+    drafted = state.get("drafted_ticket")
+    if isinstance(drafted, dict) and (
+        str(drafted.get("objective") or "").strip()
+        or str(drafted.get("context") or "").strip()
+    ):
+        out = dict(drafted)
+        out["jason_critique"] = str(
+            state.get("jason_critique") or out.get("jason_critique") or ""
+        ).strip()
+        return out
+    return extract_draft_cursor_payload(state)
+
+
+def ticket_validate_node(state: ReactGraphState) -> dict[str, Any]:
+    """Stage 8.9.6 — Pydantic gate before Jason / HITL; bounce MoA on failure."""
+    from langchain_core.messages import SystemMessage, ToolMessage
+    from pydantic import ValidationError
+
+    from donna.tools.guards import DraftCursorTicketPayload, format_validation_bounce
+
+    raw = extract_draft_cursor_payload(state)
+    call_id = str(raw.get("tool_call_id") or f"validate-{uuid.uuid4().hex[:8]}")
+    try:
+        retries = int(state.get("ticket_validation_retries") or 0)
+    except (TypeError, ValueError):
+        retries = 0
+
+    try:
+        validated = DraftCursorTicketPayload.model_validate(
+            {
+                "objective": str(raw.get("objective") or ""),
+                "context": str(raw.get("context") or ""),
+            }
+        )
+    except ValidationError as exc:
+        retries += 1
+        detail = format_validation_bounce(exc)
+        bounce = (
+            f"Ticket validation failed: {detail} "
+            "You must include root cause, step-by-step changes, and "
+            "acceptance criteria."
+        )
+        _emit_live_trace(
+            "status",
+            node="ticket_validate",
+            message="TICKET_VALIDATION_FAILED",
+            payload=bounce[:800],
+            mode="developer",
+            tool="draft_cursor_prompt",
+            state_keys=("ticket_validation_retries", "drafted_ticket"),
+        )
+        try:
+            from donna.telemetry import log_tool_execution
+
+            log_tool_execution(
+                "draft_cursor_prompt",
+                session_id=str(state.get("session_id") or ""),
+                current_agent="Ticket_Validator",
+                active_intent=str(state.get("active_intent") or "draft_cursor_prompt"),
+                ok=False,
+                payload={
+                    "validation_bounce": True,
+                    "guard": "pydantic",
+                    "retry": retries < _MAX_TICKET_VALIDATION_RETRIES,
+                    "attempt": retries,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        if retries >= _MAX_TICKET_VALIDATION_RETRIES:
+            obs = (
+                f"Max retries reached: ticket validation failed after "
+                f"{retries} attempts. {detail}"
+            )
+            return {
+                "messages": [ToolMessage(content=obs, tool_call_id=call_id)],
+                "drafted_ticket": {},
+                "ticket_validated": False,
+                "ticket_validation_retries": retries,
+                "halt": True,
+                "final_raw": (
+                    "Max retries reached — ticket validation failed after 3 "
+                    "attempts. Please rewrite with full context (root cause, "
+                    "step-by-step, acceptance criteria, target files) and try again."
+                ),
+                "last_obs": obs,
+                "always_include": [],
+                "current_agent": "Ticket_Validator",
+            }
+
+        return {
+            "messages": [
+                ToolMessage(content=bounce, tool_call_id=call_id),
+                SystemMessage(
+                    content=(
+                        f"SYSTEM: {bounce} "
+                        f"Rewrite `draft_cursor_prompt` now "
+                        f"(attempt {retries}/{_MAX_TICKET_VALIDATION_RETRIES}). "
+                        "Supply complete structured fields. No other tools."
+                    )
+                ),
+            ],
+            "drafted_ticket": {},
+            "ticket_validated": False,
+            "ticket_validation_retries": retries,
+            "halt": False,
+            "last_obs": bounce,
+            "current_agent": "Ticket_Validator",
+        }
+
+    from donna.middleware.hitl_ticket import extract_files_line
+
+    drafted = {
+        "type": "ticket_approval",
+        "tool": "draft_cursor_prompt",
+        "objective": validated.objective,
+        "context": validated.context,
+        "files": extract_files_line(validated.context),
+        "tool_call_id": call_id,
+        "session_id": str(state.get("session_id") or ""),
+        "active_intent": str(state.get("active_intent") or "draft_cursor_prompt"),
+        "jason_critique": str(state.get("jason_critique") or "").strip(),
+    }
+    _emit_live_trace(
+        "status",
+        node="ticket_validate",
+        message="TICKET_VALIDATED",
+        payload=f"objective_chars={len(drafted['objective'])} "
+        f"context_chars={len(drafted['context'])}",
+        mode="developer",
+        tool="draft_cursor_prompt",
+        state_keys=("drafted_ticket", "ticket_validated"),
+    )
+    return {
+        "drafted_ticket": drafted,
+        "ticket_validated": True,
+        "ticket_validation_retries": 0,
+        "halt": False,
+        "last_obs": "Ticket payload validated — proceeding to Jason review",
+        "current_agent": "Ticket_Validator",
+    }
+
+
+def _extract_user_request_text(state: ReactGraphState | dict[str, Any]) -> str:
+    """Best-effort original user request from graph messages."""
+    from langchain_core.messages import HumanMessage
+
+    for msg in reversed(list(state.get("messages") or [])):
+        if isinstance(msg, HumanMessage) or getattr(msg, "type", "") == "human":
+            return str(getattr(msg, "content", "") or "").strip()
+        if isinstance(msg, dict) and str(msg.get("role") or "") == "user":
+            return str(msg.get("content") or "").strip()
+    return ""
+
+
+def _heuristic_jason_critique(
+    user_request: str,
+    *,
+    objective: str,
+    context: str,
+) -> str:
+    """Offline fallback when Ollama is unavailable."""
+    obj = (objective or "").strip()
+    ctx = (context or "").strip()
+    req = (user_request or "").strip()
+    if not obj:
+        return (
+            "This ticket is missing a clear objective — I recommend you deny it "
+            "and ask MoA to redraft."
+        )
+    missing = []
+    req_l = req.lower()
+    blob = f"{obj}\n{ctx}".lower()
+    if any(k in req_l for k in ("visual", "ocr", "bounds", "region", "screen")) and not any(
+        k in blob for k in ("visual", "ocr", "bound", "region", "box", "screen")
+    ):
+        missing.append("visual bounds")
+    if any(k in req_l for k in ("api", "endpoint", "schema")) and "api" not in blob:
+        missing.append("API constraints")
+    if missing:
+        return (
+            f"This ticket is missing the {missing[0]}; I recommend you deny it "
+            "until MoA fills that gap."
+        )
+    if len(obj) < 24:
+        return (
+            "This ticket is thin on detail — approve only if you intend a narrow patch."
+        )
+    return "This ticket accurately captures the request; safe to approve if you agree."
+
+
+def generate_jason_ticket_critique(
+    user_request: str,
+    *,
+    objective: str,
+    context: str,
+) -> str:
+    """Lightweight Jason review → 1–2 sentence spoken critique."""
+    system = (
+        "You are Jason, Donna's CTO supervisor. Review a drafted self-improvement "
+        "ticket against the user's original request. Reply with ONLY 1-2 short "
+        "spoken sentences. Either confirm it accurately captures the request, or "
+        "name what is missing and recommend deny. No markdown, no bullet lists."
+    )
+    user = (
+        f"USER REQUEST:\n{(user_request or '').strip() or '(unknown)'}\n\n"
+        f"DRAFTED OBJECTIVE:\n{(objective or '').strip() or '(empty)'}\n\n"
+        f"DRAFTED CONTEXT:\n{(context or '').strip() or '(empty)'}\n"
+    )
+    try:
+        from donna.core_agent import ask_ollama_messages
+
+        raw = ask_ollama_messages(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            num_predict=96,
+        )
+        critique = re.sub(r"\s+", " ", str(raw or "")).strip()
+        # Keep to ~2 sentences for TTS.
+        parts = re.split(r"(?<=[.!?])\s+", critique)
+        critique = " ".join(p for p in parts[:2] if p).strip()
+        if len(critique) > 280:
+            critique = critique[:277].rstrip() + "…"
+        if critique:
+            return critique
+    except Exception:  # noqa: BLE001
+        pass
+    return _heuristic_jason_critique(
+        user_request, objective=objective, context=context
+    )
+
+
+def jason_ticket_review_node(state: ReactGraphState) -> dict[str, Any]:
+    """Stage 8.9 — Jason reviews drafted ticket, speaks critique, then HITL.
+
+    Runs only after Stage 8.9.6 ``ticket_validate`` succeeds (valid
+    ``drafted_ticket``), before ``ticket_approval`` interrupt.
+    """
+    payload = resolved_drafted_ticket(state)
+    user_req = _extract_user_request_text(state)
+    critique = generate_jason_ticket_critique(
+        user_req,
+        objective=str(payload.get("objective") or ""),
+        context=str(payload.get("context") or ""),
+    )
+    try:
+        from donna import agentic as ag
+
+        ag.set_stream_tts_agent("jason")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from donna.core_agent import enqueue_speech
+
+        enqueue_speech(critique, agent_id="jason")
+    except Exception:  # noqa: BLE001
+        pass
+    _emit_live_trace(
+        "status",
+        node="jason_ticket_review",
+        message="JASON_TICKET_REVIEW",
+        payload=critique[:800],
+        mode="developer",
+        tool="draft_cursor_prompt",
+        state_keys=("jason_critique", "objective", "context"),
+    )
+    drafted = dict(payload)
+    drafted["jason_critique"] = critique
+    return {
+        "jason_critique": critique,
+        "drafted_ticket": drafted,
+        "current_agent": "Jason_Supervisor",
+        "last_obs": f"Jason review: {critique}",
+        "halt": False,
+    }
+
+
+def _deny_draft_tool_messages(state: ReactGraphState | dict[str, Any]) -> list[Any]:
+    """ToolMessage receipts so the ReAct turn can halt cleanly after Deny."""
+    from langchain_core.messages import ToolMessage
+
+    messages = list(state.get("messages") or [])
+    last = messages[-1] if messages else None
+    obs = (
+        "DENIED: Ticket submission cancelled by operator (HITL). "
+        "Do not retry draft_cursor_prompt unless the user asks again."
+    )
+    out: list[Any] = []
+    for tc in _iter_tool_calls(last):
+        if tc["name"] != "draft_cursor_prompt":
+            continue
+        call_id = str(tc.get("id") or f"deny-draft-{uuid.uuid4().hex[:8]}")
+        out.append(ToolMessage(content=obs, tool_call_id=call_id))
+    if not out:
+        out.append(
+            ToolMessage(content=obs, tool_call_id=f"deny-draft-{uuid.uuid4().hex[:8]}")
+        )
+    return out
+
+
+def ticket_approval_node(state: ReactGraphState) -> dict[str, Any]:
+    """Stage 8.6 — LangGraph HITL breakpoint before ``tools`` for ledger tickets.
+
+    Uses ``interrupt(payload)`` so the graph freezes with the drafted ticket in
+    the interrupt value. Resume with ``Command(resume={{approved: bool}})``.
+    """
+    from langgraph.types import interrupt
+
+    from donna.middleware.hitl_ticket import (
+        begin_ticket_hitl,
+        decision_is_approved,
+        get_consecutive_denials,
+        hitl_enabled,
+        record_hitl_decision,
+    )
+
+    if not hitl_enabled():
+        return {"halt": False}
+    # Stage 8.9.6 — never interrupt on unvalidated / missing drafted_ticket.
+    if not state.get("ticket_validated"):
+        return {"halt": False}
+    drafted_ok = state.get("drafted_ticket")
+    if not (
+        isinstance(drafted_ok, dict)
+        and str(drafted_ok.get("objective") or "").strip()
+        and str(drafted_ok.get("context") or "").strip()
+    ):
+        return {"halt": False}
+    if not any(
+        message_has_draft_cursor_prompt(m) for m in (state.get("messages") or [])[-3:]
+    ):
+        return {"halt": False}
+
+    payload = resolved_drafted_ticket(state)
+    # Ensure Jason critique from prior node is surfaced to the GUI.
+    payload["jason_critique"] = str(
+        state.get("jason_critique") or payload.get("jason_critique") or ""
+    ).strip()
+    # Stage 8.9.3 — sync denial counter (reset on new distinct task fingerprint).
+    denials = begin_ticket_hitl(payload)
+    try:
+        prior = int(state.get("consecutive_denials") or 0)
+    except (TypeError, ValueError):
+        prior = 0
+    # Prefer process counter; seed from graph state if larger (checkpointer resume).
+    denials = max(int(denials), prior)
+    payload["consecutive_denials"] = denials
+    decision = interrupt(payload)
+    if decision_is_approved(decision):
+        n = record_hitl_decision(True)
+        return {
+            "halt": False,
+            "last_obs": "HITL: ticket approved — executing tools",
+            "consecutive_denials": n,
+        }
+    # Deny path: submit_decision / wait_for_decision may already have incremented;
+    # keep graph state aligned with the live counter.
+    n = get_consecutive_denials()
+    if n <= prior:
+        n = record_hitl_decision(False)
+    deny_msgs = _deny_draft_tool_messages(state)
+    return {
+        "messages": deny_msgs,
+        "halt": True,
+        "last_obs": "DENIED: ticket cancelled by operator",
+        "final_raw": "Understood — I cancelled the ticket submission.",
+        "always_include": [],
+        "consecutive_denials": n,
+    }
+
+
 def _route_after_agent(state: ReactGraphState) -> str:
-    """Conditional edge: agent → tools / agent (pending always_include) / END."""
+    """Conditional edge: agent → ticket_validate / tools / agent / END."""
     from langgraph.graph import END
+
+    from donna.middleware.hitl_ticket import hitl_enabled
 
     messages = state.get("messages") or []
     last = messages[-1] if messages else None
     if last is not None and getattr(last, "tool_calls", None):
+        # Stage 8.9.6 — Pydantic gate before Jason / HITL for draft tickets.
+        if hitl_enabled() and message_has_draft_cursor_prompt(last):
+            return "ticket_validate"
         return "tools"
     # Option B: do not END while broker-merged tools remain uninvoked.
     if pending_always_include_tools(state):
@@ -189,6 +625,35 @@ def _route_after_agent(state: ReactGraphState) -> str:
     if state.get("halt"):
         return END
     return END
+
+
+def _route_after_ticket_validate(state: ReactGraphState) -> str:
+    """Valid → Jason; bounce → MoA agent; max retries → END."""
+    from langgraph.graph import END
+
+    if state.get("halt"):
+        return END
+    if state.get("ticket_validated"):
+        return "jason_ticket_review"
+    return "agent"
+
+
+def _route_after_jason_review(state: ReactGraphState) -> str:
+    """After Jason critique → HITL ticket_approval (unless halted)."""
+    from langgraph.graph import END
+
+    if state.get("halt"):
+        return END
+    return "ticket_approval"
+
+
+def _route_after_ticket_approval(state: ReactGraphState) -> str:
+    """After HITL: Deny → END; Approve → tools (enqueue / execute)."""
+    from langgraph.graph import END
+
+    if state.get("halt"):
+        return END
+    return "tools"
 
 
 def _route_after_tools(state: ReactGraphState) -> str:
@@ -206,14 +671,25 @@ def compile_donna_react_graph(
     agent_node: Callable[..., Any],
     tools_node: Callable[..., Any],
     *,
+    ticket_approval_node_fn: Callable[..., Any] | None = None,
+    jason_review_node_fn: Callable[..., Any] | None = None,
+    ticket_validate_node_fn: Callable[..., Any] | None = None,
     checkpointer: Any | None = None,
 ) -> Any:
     """Compile the production ReAct StateGraph (same topology as live Donna).
 
     Topology:
-      START → agent ─(tool_calls)→ tools ─(continue)→ agent
+      START → agent ─(draft_cursor_prompt)→ ticket_validate
+                    ─(valid)→ jason_ticket_review → ticket_approval ─(approve)→ tools
+                    ─(invalid, <3)→ agent
+                    ─(max retries)→ END
+                    ─(other tool_calls)→ tools ─(continue)→ agent
                     ╲(pending always_include / nudge)→ agent
-                    ╲(halt/final)→ END          ╲(halt)→ END
+                    ╲(halt/final)→ END
+
+    ``ticket_validate`` (Stage 8.9.6) runs Pydantic before Jason / HITL.
+    ``jason_ticket_review`` (Stage 8.9) speaks a critique, then
+    ``ticket_approval`` HITL-interrupts before heavy / ledger tool execution.
     """
     from langgraph.graph import END, START, StateGraph
 
@@ -221,12 +697,48 @@ def compile_donna_react_graph(
 
     workflow = StateGraph(ReactGraphState)
     workflow.add_node("agent", agent_node)
+    workflow.add_node(
+        "ticket_validate",
+        ticket_validate_node_fn or ticket_validate_node,
+    )
+    workflow.add_node(
+        "jason_ticket_review",
+        jason_review_node_fn or jason_ticket_review_node,
+    )
+    workflow.add_node(
+        "ticket_approval",
+        ticket_approval_node_fn or ticket_approval_node,
+    )
     workflow.add_node("tools", tools_node)
     workflow.add_edge(START, "agent")
     workflow.add_conditional_edges(
         "agent",
         _route_after_agent,
-        {"tools": "tools", "agent": "agent", END: END},
+        {
+            "ticket_validate": "ticket_validate",
+            "tools": "tools",
+            "agent": "agent",
+            END: END,
+        },
+    )
+    workflow.add_conditional_edges(
+        "ticket_validate",
+        _route_after_ticket_validate,
+        {
+            "jason_ticket_review": "jason_ticket_review",
+            "agent": "agent",
+            END: END,
+        },
+    )
+    workflow.add_conditional_edges(
+        "jason_ticket_review",
+        _route_after_jason_review,
+        {"ticket_approval": "ticket_approval", END: END},
+    )
+    workflow.add_conditional_edges(
+        "ticket_approval",
+        _route_after_ticket_approval,
+        {"tools": "tools", END: END},
     )
     workflow.add_conditional_edges(
         "tools",
@@ -234,6 +746,7 @@ def compile_donna_react_graph(
         {"agent": "agent", END: END},
     )
     cp = checkpointer if checkpointer is not None else ag._react_checkpointer()
+    # Checkpointer required for interrupt() resume; ticket_approval is the gate.
     return workflow.compile(checkpointer=cp)
 
 
@@ -266,18 +779,28 @@ async def run_react_langgraph(
     broker = broker or get_broker()
     reply_lang = resolve_reply_lang(user_text)
 
-    def _speak(phrase: str) -> None:
-        """Prefer injected TTS callback; fall back to agentic spooler helper."""
+    def _speak(phrase: str, *, agent_id: str | None = None) -> None:
+        """Prefer injected TTS callback; fall back to agentic spooler helper.
+
+        Stage 8.8 — routes voice by ``agent_id`` (sentence-chunked, non-blocking).
+        """
         text = (phrase or "").strip()
         if not text:
             return
+        aid = agent_id or ag.get_stream_tts_agent()
         if tts_callback is not None:
             try:
-                tts_callback(text)
+                tts_callback(text, agent_id=aid)  # type: ignore[call-arg]
                 return
+            except TypeError:
+                try:
+                    tts_callback(text)
+                    return
+                except Exception:  # noqa: BLE001
+                    pass
             except Exception:  # noqa: BLE001
                 pass
-        ag._enqueue_tts_nonblocking(text)
+        ag._enqueue_tts_nonblocking(text, agent_id=aid)
 
     prompt = system_prompt
     if ag._TOOL_EXECUTION_RULE not in prompt:
@@ -396,6 +919,11 @@ async def run_react_langgraph(
         )
         else "ReAct_Agent"
     )
+    # Stage 8.8 — bind sentence-stream TTS voice to the active bureaucratic agent.
+    try:
+        ag.set_stream_tts_agent(ag.agent_id_from_label(current_agent))
+    except Exception:  # noqa: BLE001
+        pass
     active_intent = (
         forced_tool.tool_id
         if forced_tool is not None
@@ -566,6 +1094,7 @@ async def run_react_langgraph(
                 try:
                     set_session_meta(session_id, current_agent="MoA_Reasoner")
                     current_agent = "MoA_Reasoner"
+                    ag.set_stream_tts_agent("moa")
                 except Exception:  # noqa: BLE001
                     pass
     except Exception as _moa_exc:  # noqa: BLE001
@@ -884,11 +1413,24 @@ async def run_react_langgraph(
                     forced_args_ready = False
                     break
 
+    # Stage 8.9.6 / post-HITL persistence: never force-exec draft_cursor_prompt
+    # (or other MoA-deferred tools) from thin broker args — MoA + ticket_validate
+    # → jason → HITL → tools must own the write.
+    _defer_forced_exec = False
+    if forced_tool is not None:
+        try:
+            from donna.moa_tool_shim import defer_forced_tool_for_moa
+
+            _defer_forced_exec = bool(defer_forced_tool_for_moa(forced_tool.tool_id))
+        except Exception:  # noqa: BLE001
+            _defer_forced_exec = forced_tool.tool_id == "draft_cursor_prompt"
+
     if (
         forced_tool is not None
         and forced_tool.tool_id in bound_names
         and forced_tool.tool_id not in _UNBOUND_TOOL_IDS
         and forced_args_ready
+        and not _defer_forced_exec
     ):
         call_id = f"router-{forced_tool.tool_id}"
         if on_tool_start is not None and not tool_ack_done:
@@ -940,7 +1482,7 @@ async def run_react_langgraph(
                 )
                 return _finish(spoken, 1)
             return _finish(ag._obs_fallback(last_obs, reply_lang), 1)
-    elif forced_tool is not None and not forced_args_ready:
+    elif forced_tool is not None and (not forced_args_ready or _defer_forced_exec):
         if on_tool_start is not None and not tool_ack_done:
             tool_ack_done = True
             try:
@@ -1489,6 +2031,21 @@ async def run_react_langgraph(
                 continue
             # Prefer explicit draft_cursor_prompt writer so patch_ledger.md updates
             # even when the model emitted raw JSON (content-parsed) tool calls.
+            # Stage 8.9.6 — after HITL, execute the validated drafted_ticket body.
+            if tool_call.tool_id == "draft_cursor_prompt":
+                dt = state.get("drafted_ticket") or {}
+                if isinstance(dt, dict) and (
+                    str(dt.get("objective") or "").strip()
+                    or str(dt.get("context") or "").strip()
+                ):
+                    tool_call = replace(
+                        tool_call,
+                        arguments={
+                            **dict(tool_call.arguments or {}),
+                            "objective": str(dt.get("objective") or ""),
+                            "context": str(dt.get("context") or ""),
+                        },
+                    )
             observation = ""
             _tool_t0 = time.perf_counter()
             # Stage 4.2 — heavy tools enqueue to action_queue; LLM turn stays non-blocking.
@@ -1500,6 +2057,10 @@ async def run_react_langgraph(
 
                 _enqueue_heavy = _is_heavy_actuator_tool(tool_call.tool_id)
             except Exception:  # noqa: BLE001
+                _enqueue_heavy = False
+            # Post-HITL (or any graph tools pass): ledger write must be sync.
+            # Enqueue alone can silently miss if actuator_executor is down.
+            if tool_call.tool_id == "draft_cursor_prompt":
                 _enqueue_heavy = False
             if _enqueue_heavy:
                 try:
@@ -1755,107 +2316,192 @@ async def run_react_langgraph(
         state_keys=("session_id", "current_agent", "active_intent"),
     )
     _chain_t0: dict[str, float] = {}
-    async for event in graph.astream_events(inputs, config=config, version="v2"):
-        kind = str(event.get("event") or "")
-        name = str(event.get("name") or "")
-        if kind == "on_chain_start" and name in {"agent", "tools"}:
-            _chain_t0[name] = time.perf_counter()
-            _emit_live_trace(
-                "node_enter",
-                node=name,
-                message=f"chain start: {name}",
-                mode=ag.get_donna_mode(),
-            )
-        elif kind == "on_chain_end" and name in {"agent", "tools"}:
-            t0 = _chain_t0.pop(name, None)
-            ms = (time.perf_counter() - t0) * 1000.0 if t0 is not None else None
-            _emit_live_trace(
-                "node_exit",
-                node=name,
-                message=f"chain end: {name}",
-                mode=ag.get_donna_mode(),
-                latency_ms=ms,
-            )
-        if kind == "on_chat_model_start":
-            # Mute "Thinking..." — R1 plans inside <think>; speak only outer text.
-            think_tts_filter.reset()
-            ag.reset_stream_sentence_tts()
-            _emit_live_trace(
-                "status",
-                node="synthesis",
-                message="LLM synthesis streaming",
-                mode=ag.get_donna_mode(),
-            )
-        elif kind == "on_tool_start":
-            # Flush any buffered speech before tool-status TTS.
-            ag.flush_stream_sentence_tts()
-            tool_name = str(event.get("name") or "tool")
-            _speak(ag._friendly_tool_tts(tool_name))
-            _emit_live_trace(
-                "tool_execution",
-                node="tools",
-                tool=tool_name,
-                message=f"on_tool_start: {tool_name}",
-                mode=ag.get_donna_mode(),
-            )
-            try:
-                from donna.telemetry import log_tool_execution
 
-                log_tool_execution(
-                    tool_name,
-                    session_id=session_id,
-                    current_agent=current_agent,
-                    active_intent=active_intent,
-                    ok=True,
+    async def _consume_astream(stream_input: Any) -> None:
+        nonlocal mute_post_ticket_stream, tts_streamed
+        async for event in graph.astream_events(
+            stream_input, config=config, version="v2"
+        ):
+            kind = str(event.get("event") or "")
+            name = str(event.get("name") or "")
+            if kind == "on_chain_start" and name in {
+                "agent",
+                "tools",
+                "ticket_approval",
+                "jason_ticket_review",
+            }:
+                _chain_t0[name] = time.perf_counter()
+                _emit_live_trace(
+                    "node_enter",
+                    node=name,
+                    message=f"chain start: {name}",
+                    mode=ag.get_donna_mode(),
                 )
-            except Exception:  # noqa: BLE001
-                pass
-            if tool_name == "draft_cursor_prompt":
-                mute_post_ticket_stream = True
-        elif kind == "on_tool_end":
-            # Mute raw tool payloads — never speak JSON / OK: observations.
-            tool_name = str(event.get("name") or "")
-            data = event.get("data") or {}
-            output = data.get("output")
-            _emit_live_trace(
-                "state_update",
-                node="tools",
-                tool=tool_name,
-                message=f"on_tool_end: {tool_name}",
-                mode=ag.get_donna_mode(),
-                payload=str(output or "")[:800],
-                state_keys=("messages", "last_obs"),
-            )
-            if tool_name == "draft_cursor_prompt":
-                mute_post_ticket_stream = True
-                if output is not None:
-                    ag.log_tool_receipt_console(str(output), tool_id=tool_name)
-        elif kind == "on_chat_model_stream":
-            if mute_post_ticket_stream:
-                # Ticket receipts stay in ledger + console; speak ack in _finish.
-                continue
-            data = event.get("data") or {}
-            piece = ag._stream_chunk_for_tts(data.get("chunk"))
-            # Strip R1 reasoning across chunk boundaries (never speak <think>).
-            piece = think_tts_filter.feed(piece)
-            if piece:
-                # Sentence-level buffer — never push raw single-word tokens.
-                n = ag.feed_stream_tts(piece)
-                if n:
-                    tts_streamed = True
-        elif kind in ("on_chain_end", "on_chain_stream"):
-            data = event.get("data") or {}
-            output = data.get("output")
-            if isinstance(output, dict) and (
-                "messages" in output or "final_raw" in output
-            ):
-                final_state.update(output)
+            elif kind == "on_chain_end" and name in {
+                "agent",
+                "tools",
+                "ticket_approval",
+                "jason_ticket_review",
+            }:
+                t0 = _chain_t0.pop(name, None)
+                ms = (time.perf_counter() - t0) * 1000.0 if t0 is not None else None
+                _emit_live_trace(
+                    "node_exit",
+                    node=name,
+                    message=f"chain end: {name}",
+                    mode=ag.get_donna_mode(),
+                    latency_ms=ms,
+                )
+            if kind == "on_chat_model_start":
+                # Mute "Thinking..." — R1 plans inside <think>; speak only outer text.
+                think_tts_filter.reset()
+                ag.reset_stream_sentence_tts()
+                _emit_live_trace(
+                    "status",
+                    node="synthesis",
+                    message="LLM synthesis streaming",
+                    mode=ag.get_donna_mode(),
+                )
+            elif kind == "on_tool_start":
+                # Flush any buffered speech before tool-status TTS.
+                ag.flush_stream_sentence_tts()
+                tool_name = str(event.get("name") or "tool")
+                # Stage 8.8 — tool status lines speak in the owning persona voice.
+                _tool_agent = "broker"
+                tn = tool_name.lower()
+                if "vision" in tn or "ocr" in tn or "yolo" in tn or "visual" in tn:
+                    _tool_agent = "vision"
+                elif "jason" in tn:
+                    _tool_agent = "jason"
+                elif "typist" in tn or "type" in tn:
+                    _tool_agent = "typist"
+                elif "draft_cursor" in tn:
+                    _tool_agent = "moa"
+                try:
+                    ag.set_stream_tts_agent(_tool_agent)
+                except Exception:  # noqa: BLE001
+                    pass
+                _speak(ag._friendly_tool_tts(tool_name), agent_id=_tool_agent)
+                _emit_live_trace(
+                    "tool_execution",
+                    node="tools",
+                    tool=tool_name,
+                    message=f"on_tool_start: {tool_name}",
+                    mode=ag.get_donna_mode(),
+                )
+                try:
+                    from donna.telemetry import log_tool_execution
+
+                    log_tool_execution(
+                        tool_name,
+                        session_id=session_id,
+                        current_agent=current_agent,
+                        active_intent=active_intent,
+                        ok=True,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                if tool_name == "draft_cursor_prompt":
+                    mute_post_ticket_stream = True
+            elif kind == "on_tool_end":
+                # Mute raw tool payloads — never speak JSON / OK: observations.
+                tool_name = str(event.get("name") or "")
+                data = event.get("data") or {}
+                output = data.get("output")
+                _emit_live_trace(
+                    "state_update",
+                    node="tools",
+                    tool=tool_name,
+                    message=f"on_tool_end: {tool_name}",
+                    mode=ag.get_donna_mode(),
+                    payload=str(output or "")[:800],
+                    state_keys=("messages", "last_obs"),
+                )
+                if tool_name == "draft_cursor_prompt":
+                    mute_post_ticket_stream = True
+                    if output is not None:
+                        ag.log_tool_receipt_console(str(output), tool_id=tool_name)
+            elif kind == "on_chat_model_stream":
+                if mute_post_ticket_stream:
+                    # Ticket receipts stay in ledger + console; speak ack in _finish.
+                    continue
+                data = event.get("data") or {}
+                piece = ag._stream_chunk_for_tts(data.get("chunk"))
+                # Strip R1 reasoning across chunk boundaries (never speak <think>).
+                piece = think_tts_filter.feed(piece)
+                if piece:
+                    # Sentence-level buffer — never push raw single-word tokens.
+                    n = ag.feed_stream_tts(piece)
+                    if n:
+                        tts_streamed = True
+            elif kind in ("on_chain_end", "on_chain_stream"):
+                data = event.get("data") or {}
+                output = data.get("output")
+                if isinstance(output, dict) and (
+                    "messages" in output or "final_raw" in output
+                ):
+                    final_state.update(output)
+
+    def _snapshot_interrupts() -> list[Any]:
+        try:
+            snap = graph.get_state(config)
+        except Exception:  # noqa: BLE001
+            return []
+        vals = getattr(snap, "values", None) or {}
+        if isinstance(vals, dict) and vals:
+            final_state.update(vals)
+        interrupts = list(getattr(snap, "interrupts", None) or ())
+        if interrupts:
+            return interrupts
+        # Fallback: some versions stash interrupts on values.
+        raw = vals.get("__interrupt__") if isinstance(vals, dict) else None
+        if raw:
+            return list(raw) if isinstance(raw, (list, tuple)) else [raw]
+        return []
+
+    await _consume_astream(inputs)
+
+    # Stage 8.6 — HITL resume loop (Approve / Deny via GUI or auto-resolve).
+    from langgraph.types import Command
+
+    from donna.middleware import hitl_ticket as _hitl
+
+    _hitl_rounds = 0
+    while _hitl_rounds < 4:
+        interrupts = _snapshot_interrupts()
+        if not interrupts:
+            break
+        _hitl_rounds += 1
+        first = interrupts[0]
+        payload = getattr(first, "value", first)
+        if not isinstance(payload, dict):
+            payload = {"type": "ticket_approval", "raw": str(payload)}
+        _hitl.publish_pending(
+            payload,
+            thread_id=str(session_id or ag._REACT_THREAD_ID),
+        )
+        _speak("Ticket drafted — waiting for your approval in the dashboard.")
+        decision = await asyncio.to_thread(_hitl.wait_for_decision)
+        approved = _hitl.decision_is_approved(decision)
+        _emit_live_trace(
+            "status",
+            node="ticket_approval",
+            message="HITL_RESUME",
+            payload=f"approved={approved} action={decision.get('action')}",
+            mode=ag.get_donna_mode(),
+        )
+        try:
+            await _consume_astream(Command(resume=decision))
+        finally:
+            _hitl.clear_pending()
 
     try:
         snap = graph.get_state(config)
         vals = getattr(snap, "values", None) or {}
         if isinstance(vals, dict) and vals:
-            final_state.update(vals)
+            final_state.update(
+                {k: v for k, v in vals.items() if k != "__interrupt__"}
+            )
     except Exception:  # noqa: BLE001
         pass
 

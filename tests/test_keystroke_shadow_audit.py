@@ -9,6 +9,9 @@ import pytest
 from donna.management.jason_supervisor import (
     audit_mode_enabled,
     enqueue_stealth_evaluation,
+    feather_project_rules_path,
+    feather_rules_system_preamble,
+    reason_slide_evaluation,
     reset_bulk_progress,
 )
 from donna.memory.blackboard import (
@@ -16,7 +19,12 @@ from donna.memory.blackboard import (
     init_blackboard,
     is_heavy_actuator_tool,
 )
-from donna.operators.keystroke import press_key, resolve_vk
+from donna.operators.keystroke import (
+    press_key,
+    press_left_arrow,
+    press_right_arrow,
+    resolve_vk,
+)
 
 
 def test_press_key_is_heavy() -> None:
@@ -36,6 +44,50 @@ def test_press_key_dry_run(monkeypatch) -> None:  # noqa: ANN001
     out = press_key("right")
     assert out.startswith("OK: press_key dry_run")
     assert "0x27" in out
+
+
+def test_press_left_right_arrow_wrappers(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DONNA_DISABLE_HUMAN_YIELD", "1")
+    left = press_left_arrow()
+    right = press_right_arrow()
+    assert left.startswith("OK: press_key dry_run")
+    assert "0x25" in left
+    assert right.startswith("OK: press_key dry_run")
+    assert "0x27" in right
+
+
+def test_feather_rules_file_exists_and_preamble() -> None:
+    path = feather_project_rules_path()
+    assert path.is_file()
+    preamble = feather_rules_system_preamble()
+    assert preamble.startswith(
+        "Strictly evaluate this slide against the following project rules:"
+    )
+
+
+def test_reasoner_injects_feather_rules(monkeypatch) -> None:  # noqa: ANN001
+    captured: list[str] = []
+
+    def _capture(prompt: str) -> str:
+        captured.append(prompt)
+        return "Meets word limit."
+
+    monkeypatch.setattr(
+        "donna.management.jason_supervisor.load_feather_project_rules",
+        lambda: "Max 30 words per slide.",
+    )
+    out = reason_slide_evaluation(
+        "Be concise",
+        "Hello world",
+        reasoner_fn=_capture,
+    )
+    assert out.startswith("Meets word limit")
+    assert captured
+    assert captured[0].startswith(
+        "Strictly evaluate this slide against the following project rules:"
+    )
+    assert "Max 30 words per slide." in captured[0]
 
 
 def test_audit_mode_writes_shadow_file_not_queue(

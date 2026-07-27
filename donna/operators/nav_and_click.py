@@ -1,8 +1,8 @@
 """Stage 6.3 — Navigation Operator (closed-loop mouse servo).
 
-Locates a UI target box from Blackboard ``latest_visual_context``, moves the
-cursor along a stochastic cubic Bezier path (easeInOutQuad velocity), and
-left-clicks via SendInput after a human pause — with Sense-Evaluate-Act
+Locates a UI target box from typed Blackboard ``perception.ocr`` (Florence),
+moves the cursor along a stochastic cubic Bezier path (easeInOutQuad velocity),
+and left-clicks via SendInput after a human pause — with Sense-Evaluate-Act
 repathing if the target drifts or disappears.
 """
 
@@ -254,9 +254,15 @@ class NavigationOperator:
         if self.read_visual is not None:
             return str(self.read_visual() or "")
         try:
-            from donna.memory import read_visual_state
+            from donna.memory import read_perception_ocr_text
 
-            return read_visual_state() or ""
+            text = read_perception_ocr_text() or ""
+            if not text.strip():
+                return (
+                    "(no OCR boxes: perception.ocr missing or schema mismatch — "
+                    "run ocr_with_region before navigate_and_click)"
+                )
+            return text
         except Exception as exc:  # noqa: BLE001
             return f"(sense_error: {exc})"
 
@@ -302,8 +308,27 @@ class NavigationOperator:
         """SEA servo: Bezier move → sense → evaluate → click."""
         self.events.clear()
         visual = visual_context if visual_context is not None else self._sense_visual()
+        if "(no OCR boxes:" in (visual or ""):
+            return {
+                "ok": False,
+                "error": (
+                    "no OCR boxes: perception.ocr missing or schema mismatch — "
+                    "run ocr_with_region before navigate_and_click"
+                ),
+                "engine": "navigation_operator",
+            }
         target = find_target_box(visual, query)
         if target is None:
+            # Fail closed: YOLO object prose never yields Florence boxes.
+            if (visual or "").lstrip().startswith("[Vision Output]"):
+                return {
+                    "ok": False,
+                    "error": (
+                        "no OCR boxes: got YOLO objects prose instead of "
+                        "perception.ocr — run ocr_with_region first"
+                    ),
+                    "engine": "navigation_operator",
+                }
             return {
                 "ok": False,
                 "error": f"target box not found for query={query!r}",

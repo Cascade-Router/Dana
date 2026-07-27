@@ -55,11 +55,11 @@ def test_recovery_mode_triggers_jason_voice(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setenv("DONNA_AUDIO_DRY_RUN", "1")
     monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
     from donna.management.jason_supervisor import recovery_mode
-    from donna.memory.blackboard import init_blackboard, set_sensor_state
+    from donna.memory.blackboard import init_blackboard, publish_perception_ocr
 
     db = tmp_path / "bb.db"
     init_blackboard(db)
-    set_sensor_state("latest_visual_context", "empty desk", db_path=db)
+    publish_perception_ocr("empty desk", producer="test", db_path=db)
 
     called: list[dict] = []
 

@@ -44,14 +44,20 @@ def test_sensor_state_upsert_and_read_visual_state(tmp_path: Path) -> None:
 def test_publish_emits_sensor_vision_telemetry(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
+    from donna.memory.blackboard import publish_perception_objects
+
     db = tmp_path / "bb.db"
     out = tmp_path / "donna_telemetry.jsonl"
     monkeypatch.setattr("donna.telemetry.TELEMETRY_JSONL_PATH", out)
     monkeypatch.setattr(
-        "donna.middleware.vision_poller.set_sensor_state",
-        lambda key, value, meta=None: set_sensor_state(
-            key, value, meta=meta, db_path=db
+        "donna.middleware.vision_poller.publish_perception_objects",
+        lambda text, **kwargs: publish_perception_objects(
+            text, db_path=db, **{k: v for k, v in kwargs.items() if k != "db_path"}
         ),
+    )
+    monkeypatch.setattr(
+        "donna.middleware.vision_poller.publish_heartbeat",
+        lambda *a, **k: None,
     )
     init_blackboard(db)
     publish_visual_context(

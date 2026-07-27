@@ -84,19 +84,48 @@ CREATE TABLE IF NOT EXISTS system_state (
     value INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dictation_sessions (
+    session_id TEXT PRIMARY KEY,
+    timestamp TEXT NOT NULL,
+    command_text TEXT NOT NULL DEFAULT '',
+    visual_state_reference TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'recorded'
+);
+CREATE INDEX IF NOT EXISTS idx_dictation_sessions_ts
+    ON dictation_sessions(timestamp DESC);
 """
 
 # Stage 4.1 — continuous vision publisher key on the Blackboard middleware.
 LATEST_VISUAL_CONTEXT_KEY = "latest_visual_context"
 
-# Stage 6.4 — Llama 3.2 Receptionist persona sliders (0–100).
+# Sidekick reliability — typed perception topics (never overload one key).
+PERCEPTION_OBJECTS_KEY = "perception.objects"
+PERCEPTION_OCR_KEY = "perception.ocr"
+PERCEPTION_FRAME_REF_KEY = "perception.frame_ref"
+SCHEMA_OBJECTS_V1 = "perception.objects.v1"
+SCHEMA_OCR_V1 = "perception.ocr.v1"
+
+# Middleware heartbeats + voice-mode isolation + actuator lease.
+HEARTBEAT_VISION_KEY = "heartbeat.vision_poller"
+HEARTBEAT_ACTUATOR_KEY = "heartbeat.actuator"
+VOICE_SESSION_MODE_KEY = "voice_session_mode"
+ACTUATOR_LEASE_KEY = "actuator_lease"
+ACTUATOR_LEASE_TTL_S = 120.0
+HEARTBEAT_STALE_S = 45.0
+
+# Stage 6.4 / 8.5 — Receptionist + Behavior Mixer sliders (0–100).
 PERSONA_MIXER_DEFAULTS: dict[str, int] = {
     "verbosity": 50,
     "humor": 20,
     "flirt": 10,
     "technical_depth": 80,
+    "autonomy": 40,
+    "creativity": 50,
 }
 _PERSONA_OVERRIDE_MARKER = "[SYSTEM OVERRIDE: Current Persona Settings (0-100)"
+
+# Stage 8.5 — GUI / voice dictation routing latch.
+DICTATION_MODE_KEY = "dictation_mode"
 
 # Stage 4.2 — tools enqueued for the actuator daemon (not run on the LLM turn).
 HEAVY_ACTUATOR_TOOLS: frozenset[str] = frozenset(
@@ -253,17 +282,130 @@ def set_persona_mixer(
 def format_persona_mixer_override(
     db_path: Path | str | None = None,
 ) -> str:
-    """Receptionist system-prompt block for current slider state."""
+    """Receptionist / Jason system-prompt block for current slider state."""
     m = get_persona_mixer(db_path)
     v = m.get("verbosity", PERSONA_MIXER_DEFAULTS["verbosity"])
     h = m.get("humor", PERSONA_MIXER_DEFAULTS["humor"])
     f = m.get("flirt", PERSONA_MIXER_DEFAULTS["flirt"])
     t = m.get("technical_depth", PERSONA_MIXER_DEFAULTS["technical_depth"])
+    a = m.get("autonomy", PERSONA_MIXER_DEFAULTS["autonomy"])
+    c = m.get("creativity", PERSONA_MIXER_DEFAULTS["creativity"])
     return (
         f"{_PERSONA_OVERRIDE_MARKER} - Verbosity: {v}, Humor: {h}, "
-        f"Flirt: {f}, Tech Depth: {t}. Strictly adapt your tone to match "
-        "these levels. Do not acknowledge these settings to the user.]"
+        f"Flirt: {f}, Tech Depth: {t}, Autonomy: {a}, Creativity: {c}. "
+        "Strictly adapt your tone and initiative to match these levels. "
+        "Do not acknowledge these settings to the user.]"
     )
+
+
+def is_dictation_mode(*, db_path: Path | str | None = None) -> bool:
+    """True when GUI / router has forced dictation routing on."""
+    row = get_sensor_state(DICTATION_MODE_KEY, db_path=db_path)
+    if not row:
+        return False
+    return str(row.get("value") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "active",
+    }
+
+
+def set_dictation_mode(
+    active: bool,
+    *,
+    db_path: Path | str | None = None,
+) -> bool:
+    """Force dictation routing on/off (GUI Start/Stop toggle)."""
+    on = bool(active)
+    set_sensor_state(
+        DICTATION_MODE_KEY,
+        "on" if on else "off",
+        meta={"publisher": "dictation", "active": on},
+        db_path=db_path,
+    )
+    return on
+
+
+def record_dictation_session(
+    command_text: str,
+    *,
+    visual_state_reference: str = "",
+    status: str = "recorded",
+    session_id: str | None = None,
+    db_path: Path | str | None = None,
+) -> dict[str, Any]:
+    """INSERT one Stage 8.5 dictation learning step; return the row dict."""
+    path = init_blackboard(db_path)
+    sid = (session_id or "").strip() or uuid.uuid4().hex[:16]
+    now = _utc_now()
+    cmd = (command_text or "").strip()
+    visual = (visual_state_reference or "").strip()
+    st = (status or "recorded").strip() or "recorded"
+    with _LOCK:
+        with sqlite3.connect(str(path), timeout=30.0) as conn:
+            conn.execute(
+                "INSERT INTO dictation_sessions "
+                "(session_id, timestamp, command_text, visual_state_reference, status) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (sid, now, cmd, visual, st),
+            )
+            conn.commit()
+    return {
+        "session_id": sid,
+        "timestamp": now,
+        "command_text": cmd,
+        "visual_state_reference": visual,
+        "status": st,
+    }
+
+
+def list_dictation_sessions(
+    *,
+    limit: int = 50,
+    db_path: Path | str | None = None,
+) -> list[dict[str, Any]]:
+    """Newest-first dictation sessions for the GUI list."""
+    path = init_blackboard(db_path)
+    n = max(1, min(500, int(limit)))
+    with _LOCK:
+        with sqlite3.connect(str(path), timeout=30.0) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT session_id, timestamp, command_text, "
+                "visual_state_reference, status "
+                "FROM dictation_sessions ORDER BY timestamp DESC LIMIT ?",
+                (n,),
+            ).fetchall()
+    return [
+        {
+            "session_id": str(r["session_id"] or ""),
+            "timestamp": str(r["timestamp"] or ""),
+            "command_text": str(r["command_text"] or ""),
+            "visual_state_reference": str(r["visual_state_reference"] or ""),
+            "status": str(r["status"] or ""),
+        }
+        for r in rows
+    ]
+
+
+def behavior_mixer_prompt_weights(
+    db_path: Path | str | None = None,
+) -> str:
+    """Compact Jason/supervisor weight block from Behavior Mixer sliders."""
+    m = get_persona_mixer(db_path)
+    a = int(m.get("autonomy", PERSONA_MIXER_DEFAULTS["autonomy"]))
+    v = int(m.get("verbosity", PERSONA_MIXER_DEFAULTS["verbosity"]))
+    c = int(m.get("creativity", PERSONA_MIXER_DEFAULTS["creativity"]))
+    t = int(m.get("technical_depth", PERSONA_MIXER_DEFAULTS["technical_depth"]))
+    return (
+        "[BEHAVIOR MIXER] Autonomy={a}/100 Verbosity={v}/100 "
+        "Creativity={c}/100 TechDepth={t}/100. "
+        "Higher Autonomy → more decisive operator actions with less confirmation; "
+        "higher Verbosity → longer evaluations; higher Creativity → freer phrasing; "
+        "higher TechDepth → denser technical criteria."
+    ).format(a=a, v=v, c=c, t=t)
 
 
 def append_persona_mixer_override(
@@ -669,12 +811,370 @@ def get_sensor_state(
     }
 
 
-def read_visual_state(*, db_path: Path | str | None = None) -> str:
-    """Fast read-only SELECT of ``latest_visual_context`` (Chat node hook)."""
-    row = get_sensor_state(LATEST_VISUAL_CONTEXT_KEY, db_path=db_path)
+def _new_frame_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def publish_perception_objects(
+    text: str,
+    *,
+    producer: str,
+    model: str = "yolov8",
+    boxes: list[Any] | None = None,
+    frame_id: str = "",
+    latency_ms: float | None = None,
+    skipped: bool = False,
+    db_path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Publish YOLO / object-detection envelope to ``perception.objects``.
+
+    Also mirrors the human-readable ``text`` onto legacy
+    ``latest_visual_context`` so Chat ambient reads stay compatible.
+    """
+    body = (text or "").strip()
+    fid = (frame_id or "").strip() or _new_frame_id()
+    meta: dict[str, Any] = {
+        "schema": SCHEMA_OBJECTS_V1,
+        "producer": (producer or "").strip() or "unknown",
+        "model": (model or "").strip() or "yolov8",
+        "frame_id": fid,
+        "boxes": list(boxes or []),
+        "skipped_inference": bool(skipped),
+        "kind": "objects",
+    }
+    if latency_ms is not None:
+        meta["latency_ms"] = float(latency_ms)
+    set_sensor_state(PERCEPTION_OBJECTS_KEY, body, meta=meta, db_path=db_path)
+    # Legacy mirror for Chat / older readers (objects only — never OCR).
+    set_sensor_state(
+        LATEST_VISUAL_CONTEXT_KEY,
+        body,
+        meta={**meta, "mirrored_from": PERCEPTION_OBJECTS_KEY},
+        db_path=db_path,
+    )
+    return {"key": PERCEPTION_OBJECTS_KEY, "text": body, "meta": meta}
+
+
+def publish_perception_ocr(
+    text: str,
+    *,
+    producer: str,
+    model: str = "florence-2",
+    boxes: list[Any] | None = None,
+    frame_id: str = "",
+    latency_ms: float | None = None,
+    db_path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Publish Florence OCR envelope to ``perception.ocr`` (never YOLO prose)."""
+    body = (text or "").strip()
+    fid = (frame_id or "").strip() or _new_frame_id()
+    meta: dict[str, Any] = {
+        "schema": SCHEMA_OCR_V1,
+        "producer": (producer or "").strip() or "unknown",
+        "model": (model or "").strip() or "florence-2",
+        "frame_id": fid,
+        "boxes": list(boxes or []),
+        "kind": "ocr",
+    }
+    if latency_ms is not None:
+        meta["latency_ms"] = float(latency_ms)
+    set_sensor_state(PERCEPTION_OCR_KEY, body, meta=meta, db_path=db_path)
+    return {"key": PERCEPTION_OCR_KEY, "text": body, "meta": meta}
+
+
+def publish_perception_frame_ref(
+    path: str,
+    *,
+    producer: str = "debug_vision_live",
+    frame_id: str = "",
+    db_path: Path | str | None = None,
+) -> None:
+    """Optional debug frame path/hash — never treated as OCR/object text."""
+    set_sensor_state(
+        PERCEPTION_FRAME_REF_KEY,
+        (path or "").strip(),
+        meta={
+            "schema": "perception.frame_ref.v1",
+            "producer": (producer or "").strip() or "unknown",
+            "frame_id": (frame_id or "").strip() or _new_frame_id(),
+            "kind": "frame_ref",
+        },
+        db_path=db_path,
+    )
+
+
+def _parse_sensor_age_seconds(updated_at: str) -> float | None:
+    text = (updated_at or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+    except ValueError:
+        return None
+
+
+def get_perception_topic(
+    key: str,
+    *,
+    expected_schema: str,
+    db_path: Path | str | None = None,
+) -> dict[str, Any] | None:
+    """Return typed perception row or ``None`` when missing / wrong schema."""
+    row = get_sensor_state(key, db_path=db_path)
+    if not row:
+        return None
+    meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+    schema = str(meta.get("schema") or "").strip()
+    if schema != expected_schema:
+        return None
+    age = _parse_sensor_age_seconds(str(row.get("updated_at") or ""))
+    return {
+        "key": str(row.get("key") or key),
+        "text": str(row.get("value") or "").strip(),
+        "updated_at": str(row.get("updated_at") or ""),
+        "age_seconds": age,
+        "meta": meta,
+        "schema": schema,
+    }
+
+
+def read_perception_objects(
+    *,
+    db_path: Path | str | None = None,
+    max_age_s: float | None = None,
+) -> dict[str, Any] | None:
+    """Read ``perception.objects``; reject wrong schema / optional staleness."""
+    row = get_perception_topic(
+        PERCEPTION_OBJECTS_KEY,
+        expected_schema=SCHEMA_OBJECTS_V1,
+        db_path=db_path,
+    )
+    if row is None:
+        return None
+    if max_age_s is not None:
+        age = row.get("age_seconds")
+        if age is None or float(age) > float(max_age_s):
+            return None
+    return row
+
+
+def read_perception_ocr(
+    *,
+    db_path: Path | str | None = None,
+    max_age_s: float | None = None,
+) -> dict[str, Any] | None:
+    """Read ``perception.ocr``; reject YOLO / wrong schema / optional staleness."""
+    row = get_perception_topic(
+        PERCEPTION_OCR_KEY,
+        expected_schema=SCHEMA_OCR_V1,
+        db_path=db_path,
+    )
+    if row is None:
+        return None
+    text = str(row.get("text") or "")
+    # Fail closed: never treat YOLO object prose as OCR corpus.
+    if text.lstrip().startswith("[Vision Output]"):
+        return None
+    meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+    if str(meta.get("kind") or "").strip() == "objects":
+        return None
+    if max_age_s is not None:
+        age = row.get("age_seconds")
+        if age is None or float(age) > float(max_age_s):
+            return None
+    return row
+
+
+def read_perception_ocr_text(*, db_path: Path | str | None = None) -> str:
+    """OCR corpus string, or empty when unavailable / schema-mismatched."""
+    row = read_perception_ocr(db_path=db_path)
     if not row:
         return ""
-    return str(row.get("value") or "").strip()
+    return str(row.get("text") or "").strip()
+
+
+def read_visual_state(*, db_path: Path | str | None = None) -> str:
+    """Chat ambient visual line — prefers typed objects, falls back to legacy key."""
+    row = read_perception_objects(db_path=db_path)
+    if row and str(row.get("text") or "").strip():
+        return str(row.get("text") or "").strip()
+    legacy = get_sensor_state(LATEST_VISUAL_CONTEXT_KEY, db_path=db_path)
+    if not legacy:
+        return ""
+    return str(legacy.get("value") or "").strip()
+
+
+def publish_heartbeat(
+    key: str,
+    *,
+    publisher: str,
+    pid: int | None = None,
+    ok: bool = True,
+    detail: str = "",
+    db_path: Path | str | None = None,
+) -> None:
+    """Write a middleware heartbeat topic for the sidekick supervisor."""
+    import os as _os
+
+    meta = {
+        "publisher": (publisher or "").strip() or "middleware",
+        "pid": int(pid if pid is not None else _os.getpid()),
+        "ok": bool(ok),
+        "detail": (detail or "").strip(),
+        "last_ok_at": _utc_now(),
+    }
+    set_sensor_state(key, "ok" if ok else "degraded", meta=meta, db_path=db_path)
+
+
+def read_heartbeat(
+    key: str,
+    *,
+    db_path: Path | str | None = None,
+    stale_s: float = HEARTBEAT_STALE_S,
+) -> dict[str, Any]:
+    """Return heartbeat health ``{alive, age_seconds, meta, value}``."""
+    row = get_sensor_state(key, db_path=db_path)
+    if not row:
+        return {"alive": False, "age_seconds": None, "meta": {}, "value": ""}
+    age = _parse_sensor_age_seconds(str(row.get("updated_at") or ""))
+    meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+    alive = bool(meta.get("ok", True)) and age is not None and float(age) <= float(stale_s)
+    return {
+        "alive": alive,
+        "age_seconds": age,
+        "meta": meta,
+        "value": str(row.get("value") or ""),
+    }
+
+
+def sidekick_health(*, db_path: Path | str | None = None) -> dict[str, Any]:
+    """Aggregate eyes/hands health for Chat degraded-mode messaging."""
+    vision = read_heartbeat(HEARTBEAT_VISION_KEY, db_path=db_path)
+    actuator = read_heartbeat(HEARTBEAT_ACTUATOR_KEY, db_path=db_path)
+    return {
+        "vision_alive": bool(vision.get("alive")),
+        "actuator_alive": bool(actuator.get("alive")),
+        "vision": vision,
+        "actuator": actuator,
+        "degraded": (not vision.get("alive")) or (not actuator.get("alive")),
+    }
+
+
+def get_voice_session_mode(*, db_path: Path | str | None = None) -> str:
+    """Durable conversational mode (not stolen by system job escalations)."""
+    row = get_sensor_state(VOICE_SESSION_MODE_KEY, db_path=db_path)
+    if not row:
+        return "chat"
+    mode = str(row.get("value") or "chat").strip().lower()
+    if mode == "agent":
+        return "developer"
+    if mode in {"chat", "developer", "vision", "research"}:
+        return mode
+    return "chat"
+
+
+def set_voice_session_mode(
+    mode: str,
+    *,
+    db_path: Path | str | None = None,
+) -> str:
+    """Persist the user's conversational mode on the Blackboard."""
+    raw = (mode or "").strip().lower()
+    if raw == "agent":
+        raw = "developer"
+    if raw not in {"chat", "developer", "vision", "research"}:
+        raw = "chat"
+    set_sensor_state(
+        VOICE_SESSION_MODE_KEY,
+        raw,
+        meta={"publisher": "mode_manager", "scope": "voice"},
+        db_path=db_path,
+    )
+    return raw
+
+
+def try_acquire_actuator_lease(
+    owner: str,
+    *,
+    ttl_s: float = ACTUATOR_LEASE_TTL_S,
+    db_path: Path | str | None = None,
+) -> bool:
+    """Single foreground desktop owner. Returns False if another lease is fresh."""
+    path = init_blackboard(db_path)
+    owner_s = (owner or "").strip() or "actuator"
+    now = _utc_now()
+    with _LOCK:
+        with sqlite3.connect(str(path), timeout=30.0) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT value, updated_at, meta_json FROM sensor_state WHERE key = ?",
+                (ACTUATOR_LEASE_KEY,),
+            ).fetchone()
+            if row is not None:
+                age = _parse_sensor_age_seconds(str(row["updated_at"] or ""))
+                try:
+                    meta = json.loads(row["meta_json"] or "{}")
+                except Exception:  # noqa: BLE001
+                    meta = {}
+                holder = str((meta or {}).get("owner") or row["value"] or "").strip()
+                if (
+                    holder
+                    and holder != owner_s
+                    and age is not None
+                    and float(age) < float(ttl_s)
+                ):
+                    return False
+            meta_json = json.dumps(
+                {"owner": owner_s, "acquired_at": now, "ttl_s": float(ttl_s)},
+                ensure_ascii=False,
+            )
+            conn.execute(
+                "INSERT INTO sensor_state (key, value, updated_at, meta_json) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET "
+                "value = excluded.value, "
+                "updated_at = excluded.updated_at, "
+                "meta_json = excluded.meta_json",
+                (ACTUATOR_LEASE_KEY, owner_s, now, meta_json),
+            )
+            conn.commit()
+    return True
+
+
+def release_actuator_lease(
+    owner: str,
+    *,
+    db_path: Path | str | None = None,
+) -> None:
+    """Release lease when ``owner`` still holds it."""
+    path = init_blackboard(db_path)
+    owner_s = (owner or "").strip() or "actuator"
+    with _LOCK:
+        with sqlite3.connect(str(path), timeout=30.0) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT meta_json FROM sensor_state WHERE key = ?",
+                (ACTUATOR_LEASE_KEY,),
+            ).fetchone()
+            if row is None:
+                return
+            try:
+                meta = json.loads(row["meta_json"] or "{}")
+            except Exception:  # noqa: BLE001
+                meta = {}
+            holder = str((meta or {}).get("owner") or "").strip()
+            if holder and holder != owner_s:
+                return
+            conn.execute(
+                "DELETE FROM sensor_state WHERE key = ?",
+                (ACTUATOR_LEASE_KEY,),
+            )
+            conn.commit()
 
 
 def is_heavy_actuator_tool(tool_name: str) -> bool:

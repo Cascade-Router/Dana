@@ -120,6 +120,16 @@ def press_key(key_name: str) -> str:
     return f"OK: press_key key={key_name!r} vk=0x{vk:02X}"
 
 
+def press_left_arrow() -> str:
+    """Send VK_LEFT (0x25) via SendInput with human pauses."""
+    return press_key("vk_left")
+
+
+def press_right_arrow() -> str:
+    """Send VK_RIGHT (0x27) via SendInput with human pauses."""
+    return press_key("vk_right")
+
+
 class KeystrokeOperator:
     """Thin wrapper for multi-key sequences (slide nav)."""
 
@@ -127,3 +137,9 @@ class KeystrokeOperator:
         obs = press_key(key_name)
         ok = str(obs).startswith("OK:")
         return {"ok": ok, "observation": obs, "key": key_name, "engine": "keystroke"}
+
+    def press_left(self) -> dict[str, Any]:
+        return self.press("vk_left")
+
+    def press_right(self) -> dict[str, Any]:
+        return self.press("vk_right")
