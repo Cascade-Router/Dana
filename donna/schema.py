@@ -142,3 +142,7 @@ class ReactGraphState(TypedDict, total=False):
     drafted_ticket: dict
     ticket_validated: bool
     ticket_validation_retries: int
+    # Pre-answer planning corridor (ephemeral Plan-Then-Execute).
+    execution_plan: dict
+    plan_index: int
+    env_context: dict

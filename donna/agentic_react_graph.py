@@ -674,12 +674,14 @@ def compile_donna_react_graph(
     ticket_approval_node_fn: Callable[..., Any] | None = None,
     jason_review_node_fn: Callable[..., Any] | None = None,
     ticket_validate_node_fn: Callable[..., Any] | None = None,
+    planner_node_fn: Callable[..., Any] | None = None,
+    executor_node_fn: Callable[..., Any] | None = None,
     checkpointer: Any | None = None,
 ) -> Any:
     """Compile the production ReAct StateGraph (same topology as live Donna).
 
     Topology:
-      START → agent ─(draft_cursor_prompt)→ ticket_validate
+      START → planner → executor → agent ─(draft_cursor_prompt)→ ticket_validate
                     ─(valid)→ jason_ticket_review → ticket_approval ─(approve)→ tools
                     ─(invalid, <3)→ agent
                     ─(max retries)→ END
@@ -687,6 +689,7 @@ def compile_donna_react_graph(
                     ╲(pending always_include / nudge)→ agent
                     ╲(halt/final)→ END
 
+    ``planner`` / ``executor`` enforce Plan-Then-Execute before the MoA agent.
     ``ticket_validate`` (Stage 8.9.6) runs Pydantic before Jason / HITL.
     ``jason_ticket_review`` (Stage 8.9) speaks a critique, then
     ``ticket_approval`` HITL-interrupts before heavy / ledger tool execution.
@@ -694,8 +697,12 @@ def compile_donna_react_graph(
     from langgraph.graph import END, START, StateGraph
 
     from donna import agentic as ag
+    from donna.agentic_planning import executor_node as _default_executor
+    from donna.agentic_planning import planner_node as _default_planner
 
     workflow = StateGraph(ReactGraphState)
+    workflow.add_node("planner", planner_node_fn or _default_planner)
+    workflow.add_node("executor", executor_node_fn or _default_executor)
     workflow.add_node("agent", agent_node)
     workflow.add_node(
         "ticket_validate",
@@ -710,7 +717,9 @@ def compile_donna_react_graph(
         ticket_approval_node_fn or ticket_approval_node,
     )
     workflow.add_node("tools", tools_node)
-    workflow.add_edge(START, "agent")
+    workflow.add_edge(START, "planner")
+    workflow.add_edge("planner", "executor")
+    workflow.add_edge("executor", "agent")
     workflow.add_conditional_edges(
         "agent",
         _route_after_agent,
@@ -2242,14 +2251,17 @@ async def run_react_langgraph(
                     "last_obs": last_obs,
                     "final_raw": ag._obs_fallback(last_obs, reply_lang),
                     "halt": True,
-                    "always_include": list(always),
+                    # Preserve planner/executor always_include across tool steps.
+                    "always_include": list(
+                        state.get("always_include") or always
+                    ),
                 }
         # Stage 3.3: bounce corridor narrows always_include to the failed tool
-        # only; successful / exhausted paths restore the original broker merge.
+        # only; otherwise keep planner/broker merge from state.
         if strict_retry_tool_id:
             always_out = validation_retry_tool_corridor(strict_retry_tool_id)
         else:
-            always_out = list(always)
+            always_out = list(state.get("always_include") or always)
         if step >= max_iters:
             extracted = ag._spoken_fact_from_search_obs(str(last_obs), user_text)
             if not extracted:
@@ -2266,7 +2278,9 @@ async def run_react_langgraph(
                 "last_obs": last_obs,
                 "final_raw": extracted or ag._obs_fallback(last_obs, reply_lang),
                 "halt": True,
-                "always_include": list(always),
+                "always_include": list(
+                    state.get("always_include") or always
+                ),
             }
         return {
             "messages": new_msgs,
@@ -2325,6 +2339,8 @@ async def run_react_langgraph(
             kind = str(event.get("event") or "")
             name = str(event.get("name") or "")
             if kind == "on_chain_start" and name in {
+                "planner",
+                "executor",
                 "agent",
                 "tools",
                 "ticket_approval",
@@ -2338,6 +2354,8 @@ async def run_react_langgraph(
                     mode=ag.get_donna_mode(),
                 )
             elif kind == "on_chain_end" and name in {
+                "planner",
+                "executor",
                 "agent",
                 "tools",
                 "ticket_approval",

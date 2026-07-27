@@ -196,7 +196,7 @@ def test_langchain_loop_with_mocked_llm(monkeypatch) -> None:
             return AIMessage(content="FINAL: Opened Notepad.")
 
     class _FakeLLM:
-        def bind_tools(self, _tools):
+        def bind_tools(self, _tools, **_kwargs):
             return _FakeBound()
 
     monkeypatch.setattr(

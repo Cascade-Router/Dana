@@ -75,12 +75,16 @@ RESEARCH_MODE_ACK = "Research mode active."
 CHAT_MEMORY_CLEARED_ACK = "Memory cleared."
 
 _LIGHTWEIGHT_CHAT_SYSTEM = (
-    "You are Donna, a warm, concise voice assistant. "
-    "Have a natural conversation. Do not call tools, invent file edits, "
-    "or claim you modified code. Keep answers short for spoken TTS (1–3 sentences). "
-    "CRITICAL: If the user asks you to interact with the system, read a file, "
-    "or write code, you MUST output the tool-graph route. Default to chat ONLY "
-    "for casual conversation or generic knowledge questions."
+    "You are Dānā, a local Windows control plane with direct access to desktop "
+    "tools (Florence-2 vision, Win32 ROI, HITL ticket gate). You MUST construct "
+    "an execution plan using your tools for any desktop or window requests. "
+    "Do not issue generic refusals. "
+    "In lightweight chat you have no tools bound — stay warm and concise for "
+    "casual talk only (1–3 TTS sentences). "
+    "CRITICAL: If the user asks about the desktop/window/screen, to log a ticket, "
+    "interact with the system, read a file, or write code, you MUST escalate to "
+    "the tool-graph route. Never invent tool results or say you cannot help with "
+    "desktop control when tools exist on the ReAct path."
 )
 
 _CHAT_CAPABILITY_CARD = (
@@ -152,12 +156,21 @@ def requires_tool_graph(text: str) -> bool:
     """True when the utterance must use the tool-enabled MoA / ReAct graph.
 
     Lightweight chat remains for greetings and generic Q&A; any local execution,
-    file, or coding intent forces the tool loop.
+    file, coding, or desktop/window/ticket intent forces the tool loop.
     """
     blob = (text or "").strip()
     if not blob:
         return False
-    return bool(_TOOL_GRAPH_INTENT_RE.search(blob))
+    if bool(_TOOL_GRAPH_INTENT_RE.search(blob)):
+        return True
+    try:
+        from donna.agentic_planning import desktop_plan_intent
+
+        return desktop_plan_intent(blob)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 _MODE_WAKE_PREFIX_RE = re.compile(
     r"^\s*(?:hey\s+)?donna\b[\s,.\-!:]*",
     re.IGNORECASE,

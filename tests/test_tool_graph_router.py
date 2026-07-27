@@ -31,6 +31,15 @@ def test_tool_graph_escalates_research_store_and_ollama() -> None:
     assert requires_tool_graph("Hello Donna, how are you?") is False
 
 
+def test_tool_graph_escalates_desktop_window_ticket() -> None:
+    assert (
+        requires_tool_graph(
+            "Summarize active window and create a desktop log ticket"
+        )
+        is True
+    )
+
+
 def test_cascade_chat_mode_escalates_on_tool_intent() -> None:
     set_donna_mode("chat")
     d = decide_route(
