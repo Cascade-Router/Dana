@@ -101,6 +101,56 @@ def _acquire_single_instance_lock() -> bool:
     return True
 
 
+# Must match the major of torch pinned in requirements.txt (2.13.0+cu126).
+_EXPECTED_TORCH_MAJOR = 2
+
+
+def verify_environment() -> None:
+    """Lightweight startup guard: CUDA visibility + torch major pin check.
+
+    Runs before ``donna.core_agent`` so transformers / Whisper / Florence stay
+    off the critical path until the environment looks sane.
+    """
+    try:
+        import torch
+    except ImportError as exc:
+        print(
+            "[Env] ERROR: PyTorch is not installed. "
+            "Install from requirements.txt (CUDA cu126 index).",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(1) from exc
+
+    version = getattr(torch, "__version__", "0")
+    try:
+        major = int(str(version).split(".", 1)[0].split("+", 1)[0])
+    except ValueError:
+        major = -1
+    if major != _EXPECTED_TORCH_MAJOR:
+        print(
+            f"[Env] ERROR: PyTorch major version drift: got {version!r}, "
+            f"expected major {_EXPECTED_TORCH_MAJOR} "
+            f"(see requirements.txt torch==2.13.0+cu126).",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(1)
+
+    if torch.cuda.is_available():
+        try:
+            name = torch.cuda.get_device_name(0)
+        except Exception:
+            name = "CUDA device 0"
+        print(f"[Env] CUDA available - using GPU ({name}).", flush=True)
+    else:
+        print(
+            "[Env] WARNING: CUDA not available - falling back to CPU. "
+            "Vision / Whisper will be slower.",
+            flush=True,
+        )
+
+
 if __name__ == "__main__":
     if _wants_no_gui():
         _configure_headless_logging()
@@ -114,6 +164,8 @@ if __name__ == "__main__":
         if _wants_no_gui():
             logging.getLogger("donna").error(msg)
         sys.exit(1)
+
+    verify_environment()
 
     # Defer core_agent import until launch so torch/transformers/YOLO stay off
     # the interpreter's critical path during ``run.py`` module load.

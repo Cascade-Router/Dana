@@ -1,0 +1,46 @@
+name: Sync
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  smoke-test:
+    name: Smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Core module import check
+        shell: bash
+        run: |
+          python - <<'PY'
+          import donna.paths
+          import donna.schema
+          import donna.stdio_boot
+          from donna.stdio_boot import ensure_stdio
+          assert callable(ensure_stdio)
+          print("smoke_import_ok")
+          PY
+
+  sync-to-hf:
+    name: Sync to Hugging Face
+    needs: smoke-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mirror to Hugging Face Space
+        uses: huggingface/hub-sync@v0.1.0
+        with:
+          github_repo_id: Cascade-Router/Donna
+          huggingface_repo_id: Cascade-Router/Donna
+          hf_token: ${{ secrets.HF_TOKEN }}
+          repo_type: space

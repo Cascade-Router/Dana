@@ -1,63 +1,66 @@
 # Donna production lock — pinned for reproducible deployments.
-# Prefer CUDA wheels when an NVIDIA GPU is present:
-#   pip install torch==2.13.0+cu126 torchvision==0.28.0+cu126 --index-url https://download.pytorch.org/whl/cu126
+# CUDA 12.6 wheels (matches torch 2.13.0+cu126 / torchvision 0.28.0+cu126).
+--extra-index-url https://download.pytorch.org/whl/cu126
 #
 # Debug OS typing without injecting keystrokes:
 #   set DONNA_OS_DRY_RUN=1
 # Production default is unset / 0 (real injection).
 
-torch==2.13.0
-torchvision==0.28.0
-# Silero hubconf imports torchaudio (PyPI may lag torch CUDA pins).
-torchaudio>=2.5.0
+torch==2.13.0+cu126
+torchvision==0.28.0+cu126
+# Silero hubconf imports torchaudio (cu126 latest published wheel lags torch 2.13).
+torchaudio==2.11.0+cu126
 transformers==5.13.0
 accelerate==1.14.0
-einops>=0.8.0
-timm>=1.0.0
+einops==0.8.2
+timm==1.0.28
 ultralytics==8.4.91
 opencv-python==5.0.0.93
 Pillow==12.3.0
+gradio==5.49.1
 numpy==2.5.1
 sounddevice==0.5.5
 soundfile==0.14.0
 piper-tts==1.4.2
 # Stage 8.1 — multi-voice mixer + Jason OS TTS (no VRAM)
-pygame>=2.5.0
-pyttsx3>=2.90
+pygame==2.6.1
+pyttsx3==2.99
 openwakeword==0.6.0
 onnxruntime==1.27.0
 # Silero VAD loads via torch.hub (snakers4/silero-vad); no webrtcvad.
-setuptools>=70,<81
+# Cap below 81 — pkg_resources / legacy plugin paths still used in places.
+setuptools==80.9.0
 mss==10.2.0
 requests==2.34.2
 cryptography==49.0.0
-keyring>=25.0.0
+keyring==25.7.0
 python-dotenv==1.2.2
 pystray==0.19.5
 customtkinter==6.0.0
 psutil==7.2.2
 PyAutoGUI==0.9.54
 pywin32==312; platform_system=="Windows"
-ddgs>=9.0.0
-tzdata>=2025.1
+ddgs==9.14.4
+tzdata==2026.3
 # Stage 6.2 — Jason bulk slide ingestion
-python-pptx>=1.0.0
+python-pptx==1.0.2
 # Out-of-process research swarm (cloud LLM — never Ollama)
-langgraph>=0.2.0
-langchain>=0.3.0
-langchain-core>=0.3.0
-langchain-ollama>=0.2.0
-langchain-openai>=0.2.0
-langchain-community>=0.3.0
-duckduckgo-search>=6.0.0
-langchain-groq>=0.2.0
-pycaw>=20251023; platform_system=="Windows"
-comtypes>=1.4.0; platform_system=="Windows"
+# Keep within deploy corridor: langgraph>=0.2,<0.4 / langchain>=0.3,<0.4
+langgraph==0.3.34
+langchain==0.3.27
+langchain-core==0.3.86
+langchain-ollama==0.2.3
+langchain-openai==0.3.35
+langchain-community==0.3.31
+duckduckgo-search==8.1.1
+langchain-groq==0.2.5
+pycaw==20251023; platform_system=="Windows"
+comtypes==1.4.16; platform_system=="Windows"
 # Stage 7.2 — global panic hotkey (hardware kill switch)
-keyboard>=0.13.5
+keyboard==0.13.5
 # Module 2 mailroom — ASR-tolerant command matching (Levenshtein / WRatio)
-rapidfuzz>=3.9.0
+rapidfuzz==3.14.5
 # Stage 4.3 — silent Windows toast callbacks (PowerShell fallback if absent)
-win11toast>=0.32; platform_system=="Windows"
+win11toast==0.36.3; platform_system=="Windows"
 # Optional: faster ToolRegistry vector search (falls back to NumPy cosine if absent)
 # faiss-cpu>=1.8.0
