@@ -133,7 +133,6 @@ REPO_AUDIT.md
 debug_*.py
 !donna/tools/debug_vision_live.py
 audio_diagnostics.py
-register_startup.py
 train_donna_local.py
 verify_agentic.py
 
