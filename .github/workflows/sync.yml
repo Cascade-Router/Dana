@@ -41,6 +41,6 @@ jobs:
         uses: huggingface/hub-sync@v0.1.0
         with:
           github_repo_id: Cascade-Router/Donna
-          huggingface_repo_id: Cascade-Router/Donna
+          huggingface_repo_id: AMIXXM/Donna
           hf_token: ${{ secrets.HF_TOKEN }}
           repo_type: space

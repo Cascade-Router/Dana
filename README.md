@@ -1,3 +1,15 @@
+---
+title: Dānā (دانا) · Cybernetic Agent Simulator
+emoji: ⚡
+colorFrom: blue
+colorTo: gray
+sdk: gradio
+sdk_version: 4.25.0
+app_file: app.py
+pinned: false
+license: agpl-3.0
+---
+
 # Donna: Local-First Agentic Voice OS
 
 **Bridge local LLMs (Llama 3.2), vision (YOLOv8), and Mixture-of-Agents reasoning (DeepSeek-R1) into a deterministic, low-latency voice operating system — with a CustomTkinter Live Trace UI that makes every graph transition observable.**
