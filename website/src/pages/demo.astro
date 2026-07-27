@@ -2,17 +2,57 @@
 import BaseLayout from "../layouts/BaseLayout.astro";
 import SiteHeader from "../components/SiteHeader.astro";
 import SiteFooter from "../components/SiteFooter.astro";
-import HfDemoPlaceholder from "../components/HfDemoPlaceholder.astro";
+
+const spaceEmbedUrl = "https://cascade-router-donna.hf.space";
+const spacePageUrl = "https://huggingface.co/spaces/Cascade-Router/Donna";
 ---
 
 <BaseLayout
   title="Dānā Demo — Hugging Face LangGraph"
-  description="Responsive placeholder for the Hugging Face deployment of the Dānā LangGraph backend."
+  description="Live Hugging Face Gradio Space embed for the Dānā LangGraph backend."
   path="/demo"
 >
   <SiteHeader />
   <main>
-    <HfDemoPlaceholder />
+    <section class="mx-auto max-w-6xl px-6 py-10 sm:py-14">
+      <div class="max-w-2xl">
+        <p class="text-xs font-semibold uppercase tracking-[0.2em] text-teal-soft">
+          /demo · Hugging Face
+        </p>
+        <h1 class="mt-3 text-3xl font-semibold text-white sm:text-4xl">
+          Live Dānā demo
+        </h1>
+        <p class="mt-3 text-slate-400">
+          Interact with the hosted Gradio Space below — or open it directly on Hugging
+          Face.
+        </p>
+      </div>
+
+      <p class="mt-8 text-sm text-slate-400">
+        <a
+          href={spacePageUrl}
+          class="font-medium text-teal-soft underline-offset-4 transition hover:underline"
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          Open directly on Hugging Face Spaces
+        </a>
+      </p>
+
+      <div
+        class="relative mt-4 overflow-hidden rounded-2xl border border-teal/40 bg-ink-900/80 shadow-teal-glow"
+      >
+        <iframe
+          title="Dānā live demo on Hugging Face Spaces"
+          src={spaceEmbedUrl}
+          class="block w-full border-0"
+          style="height: 850px;"
+          loading="lazy"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+          referrerpolicy="strict-origin-when-cross-origin"
+        ></iframe>
+      </div>
+    </section>
   </main>
   <SiteFooter />
 </BaseLayout>
