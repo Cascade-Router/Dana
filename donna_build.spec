@@ -111,6 +111,15 @@ except Exception as exc:  # noqa: BLE001
 _add_tree(ROOT / "donna" / "tools", os.path.join("donna", "tools"))
 _add_tree(ROOT / "tts_models", "tts_models")
 
+# Desktop / taskbar / shortcut branding (required for IconLocation + EXE icon).
+_ico = ROOT / "donna" / "assets" / "donna.ico"
+if _ico.is_file():
+    datas.append((str(_ico), os.path.join("donna", "assets")))
+else:
+    print(f"[donna_build.spec] WARNING: missing {_ico} — EXE/shortcut icon unavailable")
+_add_tree(ROOT / "donna" / "ui" / "assets", os.path.join("donna", "ui", "assets"))
+_add_tree(ROOT / "donna" / "assets", os.path.join("donna", "assets"))
+
 # Optional runtime assets (present when not gitignored / downloaded).
 for _name in ("donna.onnx", "yolov8n.pt", "settings.json"):
     _p = ROOT / _name
@@ -160,6 +169,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(_ico) if _ico.is_file() else None,
 )
 
 coll = COLLECT(

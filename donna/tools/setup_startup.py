@@ -75,8 +75,8 @@ def bat_path() -> Path:
 
 
 def app_icon_path() -> Path:
-    """Windows / desktop shortcut icon (``donna/assets/donna.ico``)."""
-    return project_root() / "donna" / "assets" / "donna.ico"
+    """Absolute path to ``donna/assets/donna.ico`` (Windows shortcut IconLocation)."""
+    return Path(os.path.abspath(str(project_root() / "donna" / "assets" / "donna.ico")))
 
 
 def desktop_shortcut_path() -> Path:
@@ -84,32 +84,47 @@ def desktop_shortcut_path() -> Path:
     return Path.home() / "Desktop" / "Donna.lnk"
 
 
-def write_desktop_shortcut() -> Path | None:
-    """Create/update a Desktop ``.lnk`` pointing at ``start_donna.bat`` with app icon.
+def startup_folder_shortcut_path() -> Path:
+    """``%APPDATA%\\...\\Startup\\Donna.lnk`` (Windows login Startup folder)."""
+    appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    return (
+        Path(appdata)
+        / "Microsoft"
+        / "Windows"
+        / "Start Menu"
+        / "Programs"
+        / "Startup"
+        / "Donna.lnk"
+    )
 
-    Returns the shortcut path on success, or ``None`` when unavailable (non-Windows
-    or COM failure). Does not raise.
-    """
+
+def _write_windows_shortcut(
+    *,
+    lnk: Path,
+    target: Path,
+    working_directory: str,
+    description: str,
+) -> Path | None:
+    """Create/update a ``.lnk`` with ``IconLocation`` → absolute ``donna.ico``."""
     if _system() != "Windows":
         return None
-    bat = write_start_bat()
     ico = app_icon_path()
-    lnk = desktop_shortcut_path()
+    ico_abs = os.path.abspath(str(ico))
     try:
-        # Prefer PowerShell COM — no pywin32 dependency.
         import subprocess
 
-        ico_arg = str(ico) if ico.is_file() else ""
+        lnk.parent.mkdir(parents=True, exist_ok=True)
         ps = (
             "$ws = New-Object -ComObject WScript.Shell; "
             f"$s = $ws.CreateShortcut({_ps_quote(str(lnk))}); "
-            f"$s.TargetPath = {_ps_quote(str(bat))}; "
-            f"$s.WorkingDirectory = {_ps_quote(absolute_workdir())}; "
+            f"$s.TargetPath = {_ps_quote(str(target))}; "
+            f"$s.WorkingDirectory = {_ps_quote(working_directory)}; "
             "$s.WindowStyle = 7; "
-            "$s.Description = 'Donna — local-first voice agent'; "
+            f"$s.Description = {_ps_quote(description)}; "
         )
-        if ico_arg:
-            ps += f"$s.IconLocation = {_ps_quote(ico_arg + ',0')}; "
+        if os.path.isfile(ico_abs):
+            # Explicit absolute IconLocation — required for Desktop / Startup .lnk icons.
+            ps += f"$s.IconLocation = {_ps_quote(ico_abs + ',0')}; "
         ps += "$s.Save()"
         creationflags = 0
         if hasattr(subprocess, "CREATE_NO_WINDOW"):
@@ -135,6 +150,32 @@ def write_desktop_shortcut() -> Path | None:
     except Exception:  # noqa: BLE001
         return None
     return None
+
+
+def write_desktop_shortcut() -> Path | None:
+    """Create/update Desktop ``Donna.lnk`` → ``start_donna.bat`` with ``donna.ico``."""
+    if _system() != "Windows":
+        return None
+    bat = write_start_bat()
+    return _write_windows_shortcut(
+        lnk=desktop_shortcut_path(),
+        target=Path(os.path.abspath(str(bat))),
+        working_directory=absolute_workdir(),
+        description="Donna — local-first voice agent",
+    )
+
+
+def write_startup_folder_shortcut() -> Path | None:
+    """Create/update Startup-folder ``Donna.lnk`` with ``donna.ico`` (login launch)."""
+    if _system() != "Windows":
+        return None
+    bat = write_start_bat()
+    return _write_windows_shortcut(
+        lnk=startup_folder_shortcut_path(),
+        target=Path(os.path.abspath(str(bat))),
+        working_directory=absolute_workdir(),
+        description="Donna — launch at Windows login",
+    )
 
 
 def _ps_quote(value: str) -> str:
@@ -245,12 +286,17 @@ def _enable_windows() -> int:
     print(f"[OK] Startup enabled: HKCU\\...\\Run\\{VALUE_NAME}")
     print(f"     Command: {command}")
     print(f"     Launcher: {bat}")
+    ico = app_icon_path()
+    if ico.is_file():
+        print(f"     Icon: {os.path.abspath(str(ico))}")
+    else:
+        print(f"     WARNING: icon missing at {ico}")
     lnk = write_desktop_shortcut()
     if lnk is not None:
         print(f"     Desktop shortcut: {lnk}")
-        ico = app_icon_path()
-        if ico.is_file():
-            print(f"     Icon: {ico}")
+    startup_lnk = write_startup_folder_shortcut()
+    if startup_lnk is not None:
+        print(f"     Startup-folder shortcut: {startup_lnk}")
     return 0
 
 

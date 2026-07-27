@@ -181,13 +181,12 @@ def test_write_desktop_shortcut_sets_icon(monkeypatch: pytest.MonkeyPatch, tmp_p
     (venv / "pythonw.exe").write_bytes(b"")
     ico = tmp_path / "donna" / "assets" / "donna.ico"
     ico.parent.mkdir(parents=True)
-    ico.write_bytes(b"\x00\x00\x01\x00")  # minimal placeholder; COM may still write lnk
+    ico.write_bytes(b"\x00\x00\x01\x00")
 
     calls: list[list[str]] = []
 
     def _fake_run(cmd, **kwargs):  # noqa: ANN001
         calls.append(list(cmd))
-        # Simulate successful shortcut creation.
         setup_startup.desktop_shortcut_path().write_text("lnk", encoding="utf-8")
         return type("R", (), {"returncode": 0})()
 
@@ -196,5 +195,17 @@ def test_write_desktop_shortcut_sets_icon(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert lnk is not None
     assert calls
     joined = " ".join(calls[0])
-    assert "IconLocation" in joined or str(ico) in joined
-    print("[PASS] desktop shortcut PowerShell includes icon")
+    assert "IconLocation" in joined
+    abs_ico = str(ico.resolve()) if ico.exists() else str(ico)
+    # PowerShell must receive an absolute IconLocation (...\donna.ico,0).
+    assert "donna.ico,0" in joined.replace("''", "'")
+    assert "donna" in joined.lower() and "assets" in joined.lower()
+    print("[PASS] desktop shortcut PowerShell includes absolute IconLocation")
+
+
+def test_app_icon_path_is_absolute() -> None:
+    path = setup_startup.app_icon_path()
+    assert path.is_absolute()
+    assert path.as_posix().endswith("donna/assets/donna.ico")
+    assert path.is_file()
+    print(f"[PASS] app_icon_path absolute: {path}")
