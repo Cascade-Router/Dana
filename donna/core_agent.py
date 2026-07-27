@@ -56,6 +56,17 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+# Windows taskbar identity — must run before CustomTkinter/Tk root creation.
+if sys.platform == "win32":
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "CascadeRouter.Donna.DesktopAgent.1.0"
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
 # Absolute Windows console kill-switch: CREATE_NO_WINDOW + STARTUPINFO hide +
 # mutate python.exe → pythonw.exe (class patch so asyncio can still subclass).
 if os.name == "nt":
@@ -7476,12 +7487,9 @@ class DonnaGUI(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
         self.withdraw()
         try:
-            from donna.ui.logo import resolve_app_icon_path
+            from donna.ui.logo import apply_window_icon
 
-            ico = resolve_app_icon_path()
-            if ico is not None:
-                # Windows taskbar / title-bar icon (multi-resolution .ico).
-                self.iconbitmap(str(ico))
+            apply_window_icon(self)
         except Exception:  # noqa: BLE001
             pass
         # Stage 8.7 — floating AssistiveTouch orb (supplements system tray).

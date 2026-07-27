@@ -139,11 +139,13 @@ def test_app_ico_multi_resolution_exists() -> None:
     """donna/assets/donna.ico must exist with standard Windows sizes."""
     import struct
 
+    from donna.paths import PROJECT_ROOT
     from donna.ui.logo import app_icon_path, load_app_icon_pil, resolve_app_icon_path
 
     ico = resolve_app_icon_path()
     assert ico is not None
     assert ico == app_icon_path()
+    assert ico == Path(PROJECT_ROOT) / "donna" / "assets" / "donna.ico"
     raw = ico.read_bytes()
     count = struct.unpack_from("<H", raw, 4)[0]
     assert count >= 6
@@ -151,6 +153,22 @@ def test_app_ico_multi_resolution_exists() -> None:
     assert img is not None
     assert img.size == (64, 64)
     print(f"[PASS] donna.ico entries={count} bytes={len(raw)}")
+
+
+def test_appusermodelid_helper_present_in_entrypoints() -> None:
+    """Entry points must set explicit AppUserModelID before GUI boot."""
+    root = Path(__file__).resolve().parents[1]
+    run_txt = (root / "run.py").read_text(encoding="utf-8")
+    core_txt = (root / "donna" / "core_agent.py").read_text(encoding="utf-8", errors="replace")
+    needle = "SetCurrentProcessExplicitAppUserModelID"
+    assert needle in run_txt
+    assert needle in core_txt
+    assert "CascadeRouter.Donna.DesktopAgent.1.0" in run_txt
+    assert "CascadeRouter.Donna.DesktopAgent.1.0" in core_txt
+    from donna.ui import logo as logo_mod
+
+    assert hasattr(logo_mod, "apply_window_icon")
+    print("[PASS] AppUserModelID wired in run.py + core_agent")
 
 
 def test_write_desktop_shortcut_sets_icon(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

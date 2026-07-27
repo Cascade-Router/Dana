@@ -30,14 +30,57 @@ def resolve_logo_path() -> Path | None:
 
 
 def app_icon_path() -> Path:
-    """Canonical Windows ``.ico`` path (``donna/assets/donna.ico``)."""
-    return Path(__file__).resolve().parents[1] / "assets" / "donna.ico"
+    """Canonical Windows ``.ico`` path (``donna/assets/donna.ico``).
+
+    Resolves via ``donna.paths.PROJECT_ROOT`` so packaged + repo launches agree.
+    """
+    try:
+        from donna.paths import PROJECT_ROOT
+
+        return Path(PROJECT_ROOT) / "donna" / "assets" / "donna.ico"
+    except Exception:  # noqa: BLE001
+        return Path(__file__).resolve().parents[1] / "assets" / "donna.ico"
 
 
 def resolve_app_icon_path() -> Path | None:
     """Return ``donna/assets/donna.ico`` when present."""
     path = app_icon_path()
     return path if path.is_file() else None
+
+
+def apply_window_icon(root: Any) -> bool:
+    """Bind ``donna.ico`` to a Tk / CustomTkinter root for taskbar + title bar.
+
+    Returns True when an icon was applied. Safe no-op on failure / non-Windows.
+    """
+    ico = resolve_app_icon_path()
+    if ico is None:
+        return False
+    ico_s = str(ico)
+    applied = False
+    try:
+        root.iconbitmap(ico_s)
+        applied = True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        root.wm_iconbitmap(ico_s)
+        applied = True
+    except Exception:  # noqa: BLE001
+        pass
+    # iconphoto helps some CTk / multi-monitor taskbar hosts prefer our bitmap.
+    try:
+        from PIL import Image, ImageTk
+
+        img = Image.open(ico).convert("RGBA")
+        photo = ImageTk.PhotoImage(img.resize((64, 64), Image.Resampling.LANCZOS))
+        root.iconphoto(True, photo)
+        # Keep a reference so Tk GC does not drop the PhotoImage.
+        root._donna_iconphoto = photo  # type: ignore[attr-defined]
+        applied = True
+    except Exception:  # noqa: BLE001
+        pass
+    return applied
 
 
 def load_app_icon_pil(size: tuple[int, int] = (64, 64)) -> Any | None:

@@ -10,6 +10,17 @@ import logging
 import os
 import sys
 
+# Windows taskbar: claim an explicit AppUserModelID BEFORE any Tk/CTk window.
+if sys.platform == "win32":
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "CascadeRouter.Donna.DesktopAgent.1.0"
+        )
+    except Exception:
+        pass
+
 _ROOT = os.path.abspath(os.path.dirname(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
