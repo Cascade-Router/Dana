@@ -9,6 +9,11 @@ Place your high-quality, artistically rendered logo here.
 3. `donna_logo.png`
 4. `orb_logo.png` — fallback seed
 
+Windows desktop / taskbar / tray branding also uses the multi-resolution
+ICO generated from the master PNG:
+
+- `donna/assets/donna.ico` — sizes 16 / 32 / 48 / 64 / 128 / 256
+
 ## Format notes
 
 - Prefer **transparent PNG** with clean anti-aliased edges.

@@ -74,6 +74,74 @@ def bat_path() -> Path:
     return project_root() / "start_donna.bat"
 
 
+def app_icon_path() -> Path:
+    """Windows / desktop shortcut icon (``donna/assets/donna.ico``)."""
+    return project_root() / "donna" / "assets" / "donna.ico"
+
+
+def desktop_shortcut_path() -> Path:
+    """``%USERPROFILE%\\Desktop\\Donna.lnk`` (Windows)."""
+    return Path.home() / "Desktop" / "Donna.lnk"
+
+
+def write_desktop_shortcut() -> Path | None:
+    """Create/update a Desktop ``.lnk`` pointing at ``start_donna.bat`` with app icon.
+
+    Returns the shortcut path on success, or ``None`` when unavailable (non-Windows
+    or COM failure). Does not raise.
+    """
+    if _system() != "Windows":
+        return None
+    bat = write_start_bat()
+    ico = app_icon_path()
+    lnk = desktop_shortcut_path()
+    try:
+        # Prefer PowerShell COM — no pywin32 dependency.
+        import subprocess
+
+        ico_arg = str(ico) if ico.is_file() else ""
+        ps = (
+            "$ws = New-Object -ComObject WScript.Shell; "
+            f"$s = $ws.CreateShortcut({_ps_quote(str(lnk))}); "
+            f"$s.TargetPath = {_ps_quote(str(bat))}; "
+            f"$s.WorkingDirectory = {_ps_quote(absolute_workdir())}; "
+            "$s.WindowStyle = 7; "
+            "$s.Description = 'Donna — local-first voice agent'; "
+        )
+        if ico_arg:
+            ps += f"$s.IconLocation = {_ps_quote(ico_arg + ',0')}; "
+        ps += "$s.Save()"
+        creationflags = 0
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            creationflags = int(subprocess.CREATE_NO_WINDOW)
+        subprocess.run(  # noqa: S603
+            [
+                "powershell",
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                ps,
+            ],
+            check=False,
+            capture_output=True,
+            timeout=30,
+            creationflags=creationflags,
+        )
+        if lnk.is_file():
+            return lnk
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _ps_quote(value: str) -> str:
+    """Single-quote a string for PowerShell (escape embedded quotes)."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 def write_start_bat() -> Path:
     """Create ``start_donna.bat``: abs ``cd``, GUI enabled (no ``--no-gui``)."""
     root = absolute_workdir()
@@ -142,6 +210,7 @@ def _write_linux_desktop() -> Path:
     py = str(python_launcher(headless=True))
     entry = str(entry_script())
     log_path = UNIX_STARTUP_LOG
+    icon = app_icon_path()
     # Desktop Entry Exec → bash -c with stdout/stderr piped to the startup log.
     inner = f"{shlex.quote(py)} {shlex.quote(entry)} --no-gui > {log_path} 2>&1"
     exec_cmd = f"/bin/bash -c {shlex.quote(inner)}"
@@ -156,6 +225,8 @@ def _write_linux_desktop() -> Path:
         "Terminal=false\n"
         "X-GNOME-Autostart-enabled=true\n"
     )
+    if icon.is_file():
+        body += f"Icon={icon.as_posix()}\n"
     path = linux_desktop_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
@@ -174,6 +245,12 @@ def _enable_windows() -> int:
     print(f"[OK] Startup enabled: HKCU\\...\\Run\\{VALUE_NAME}")
     print(f"     Command: {command}")
     print(f"     Launcher: {bat}")
+    lnk = write_desktop_shortcut()
+    if lnk is not None:
+        print(f"     Desktop shortcut: {lnk}")
+        ico = app_icon_path()
+        if ico.is_file():
+            print(f"     Icon: {ico}")
     return 0
 
 

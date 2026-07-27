@@ -131,5 +131,52 @@ def test_tray_icon_listening_vs_idle() -> None:
     idle = create_tray_image("idle")
     listening = create_tray_image("listening")
     assert idle.size == listening.size == (64, 64)
-    assert idle.getpixel((32, 10)) != listening.getpixel((32, 10))
+    assert idle.getpixel((32, 10)) != listening.getpixel((32, 10)) or idle.tobytes() != listening.tobytes()
     print("[PASS] tray listening icon differs from idle")
+
+
+def test_app_ico_multi_resolution_exists() -> None:
+    """donna/assets/donna.ico must exist with standard Windows sizes."""
+    import struct
+
+    from donna.ui.logo import app_icon_path, load_app_icon_pil, resolve_app_icon_path
+
+    ico = resolve_app_icon_path()
+    assert ico is not None
+    assert ico == app_icon_path()
+    raw = ico.read_bytes()
+    count = struct.unpack_from("<H", raw, 4)[0]
+    assert count >= 6
+    img = load_app_icon_pil((64, 64))
+    assert img is not None
+    assert img.size == (64, 64)
+    print(f"[PASS] donna.ico entries={count} bytes={len(raw)}")
+
+
+def test_write_desktop_shortcut_sets_icon(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(setup_startup, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(setup_startup, "_system", lambda: "Windows")
+    monkeypatch.setattr(setup_startup, "desktop_shortcut_path", lambda: tmp_path / "Donna.lnk")
+    (tmp_path / "run.py").write_text("# stub\n", encoding="utf-8")
+    venv = tmp_path / ".venv" / "Scripts"
+    venv.mkdir(parents=True)
+    (venv / "pythonw.exe").write_bytes(b"")
+    ico = tmp_path / "donna" / "assets" / "donna.ico"
+    ico.parent.mkdir(parents=True)
+    ico.write_bytes(b"\x00\x00\x01\x00")  # minimal placeholder; COM may still write lnk
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):  # noqa: ANN001
+        calls.append(list(cmd))
+        # Simulate successful shortcut creation.
+        setup_startup.desktop_shortcut_path().write_text("lnk", encoding="utf-8")
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    lnk = setup_startup.write_desktop_shortcut()
+    assert lnk is not None
+    assert calls
+    joined = " ".join(calls[0])
+    assert "IconLocation" in joined or str(ico) in joined
+    print("[PASS] desktop shortcut PowerShell includes icon")

@@ -29,6 +29,51 @@ def resolve_logo_path() -> Path | None:
     return None
 
 
+def app_icon_path() -> Path:
+    """Canonical Windows ``.ico`` path (``donna/assets/donna.ico``)."""
+    return Path(__file__).resolve().parents[1] / "assets" / "donna.ico"
+
+
+def resolve_app_icon_path() -> Path | None:
+    """Return ``donna/assets/donna.ico`` when present."""
+    path = app_icon_path()
+    return path if path.is_file() else None
+
+
+def load_app_icon_pil(size: tuple[int, int] = (64, 64)) -> Any | None:
+    """Load the multi-resolution app ``.ico`` (or PNG fallback) as RGBA PIL image."""
+    try:
+        from PIL import Image
+    except Exception:  # noqa: BLE001
+        return None
+    ico = resolve_app_icon_path()
+    try:
+        if ico is not None:
+            img = Image.open(ico)
+            # Prefer an exact frame when the ICO embeds multiple sizes.
+            target = (int(size[0]), int(size[1]))
+            best = None
+            try:
+                n = int(getattr(img, "n_frames", 1) or 1)
+            except Exception:  # noqa: BLE001
+                n = 1
+            for i in range(max(1, n)):
+                try:
+                    img.seek(i)
+                except EOFError:
+                    break
+                frame = img.convert("RGBA")
+                if frame.size == target:
+                    return frame
+                best = frame
+            if best is not None:
+                return best.resize(target, Image.Resampling.LANCZOS)
+            return img.convert("RGBA").resize(target, Image.Resampling.LANCZOS)
+        return load_premium_logo_pil(size)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _load_pil(path: Path):
     from PIL import Image
 
