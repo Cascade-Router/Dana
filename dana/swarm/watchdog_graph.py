@@ -470,7 +470,7 @@ def ast_static_analyzer(state: WatchdogState) -> dict[str, Any]:
 
 def titan_supervisor(state: WatchdogState, *, model: str = DEFAULT_MODEL) -> dict[str, Any]:
     """Titan supervises generated code — subjective logic / task-fit (LLM)."""
-    from donna_jason_loop.jason_critic import review_watchdog_code
+    from dana_jason_loop.jason_critic import review_watchdog_code
 
     task = state.get("task") or ""
     code = state.get("code") or ""
@@ -542,7 +542,7 @@ def repl_executor(
     on_process: Callable[[subprocess.Popen[str] | None], None] | None = None,
 ) -> dict[str, Any]:
     """Safely execute Titan-approved code in a timed subprocess + TTS bridge."""
-    from donna_jason_loop.jason_critic import static_code_safety_reject
+    from dana_jason_loop.jason_critic import static_code_safety_reject
 
     code = (state.get("code") or "").strip()
 

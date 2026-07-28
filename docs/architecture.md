@@ -131,7 +131,7 @@ Donna’s durable control plane lives on disk:
 |----------|-------------------------------|
 | `execution_jail/task_queue.json` | Double-drain, lost completions, corrupt JSON |
 | `execution_jail/input.txt` | Raced clear/ingest; duplicate or dropped tasks |
-| `donna_security/patch_ledger.md` | Interleaved ticket writes; `Errno 22` / failed drains |
+| `dana_security/patch_ledger.md` | Interleaved ticket writes; `Errno 22` / failed drains |
 | `memory/blackboard.db` | Concurrent SQLite writers / torn sessions |
 | `.trigger_ask` | Two Mains consuming one inject; duplicated sessions |
 

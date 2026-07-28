@@ -445,7 +445,7 @@ def _run_reflection_self_correction(client: VaultClient, report: E2EReport) -> N
 
 def _run_tool_synthesis(report: E2EReport) -> None:
     """Architect a reverse_string tool via sandbox → register → hot-reload broker."""
-    from donna_security import (
+    from dana_security import (
         GENERATED_TOOLS_PATH,
         TOOLS_JSON_PATH,
         architect_new_tool,

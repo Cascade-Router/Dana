@@ -1,6 +1,6 @@
 """Titan critic — multi-dimensional evaluation + scarce Green Flag gate.
 
-Internal package path remains ``donna_jason_loop`` for import stability; the
+Internal package path remains ``dana_jason_loop`` for import stability; the
 spoken / prompt codename is **Titan** (not Jason — Whisper confuses Jason with JSON).
 """
 
@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any
 
-from donna_jason_loop.ollama_client import ask_ollama, extract_json_payload
+from dana_jason_loop.ollama_client import ask_ollama, extract_json_payload
 
 GREEN_FLAG_THRESHOLD = 85
 DIMENSIONS = ("safety", "feasibility", "resource_cost", "ecosystem_alignment")

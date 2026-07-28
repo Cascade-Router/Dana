@@ -459,7 +459,7 @@ def turn4_moa_guard() -> TurnResult:
             pass
     r.details.append(f"reasoning_traces_rows={think_rows}")
 
-    ledger = DONNA_WORKSPACE / "donna_security" / "patch_ledger.md"
+    ledger = DONNA_WORKSPACE / "dana_security" / "patch_ledger.md"
     ledger_snip = ""
     if ledger.is_file():
         text = ledger.read_text(encoding="utf-8", errors="replace")

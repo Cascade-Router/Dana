@@ -167,11 +167,13 @@ def test_security_reviewer_json_schema(monkeypatch) -> None:
         "dana.swarm.tool_forge_graph._chat_ollama",
         lambda **_k: fake,
     )
+    # Clean AST short-circuits to APPROVED (deterministic gate). Use a
+    # network import so AST is fatal and the mocked LLM REJECTED is honored.
     out = security_reviewer_agent(
         {
             "query": "x",
             "tool_name": "t",
-            "code": "def t(text): return text\n",
+            "code": "import socket\ndef t(host):\n    return socket.gethostbyname(host)\n",
             "lint_errors": "",
             "security_feedback": "",
             "security_review": {},
@@ -232,16 +234,16 @@ def test_hot_load_registers_when_unlocked(monkeypatch, tmp_path) -> None:
     )
     # Avoid mutating real tools.json / broker.
     monkeypatch.setattr(
-        "donna_security.register_tool_schema",
+        "dana_security.register_tool_schema",
         lambda *a, **k: {"id": "reverse_string"},
         raising=False,
     )
     with patch("dana.tools.broker.reload_broker_registry", lambda: None):
-        # register_tool_schema import is inside hot_load — patch donna_security module attr
-        import donna_security
+        # register_tool_schema import is inside hot_load — patch dana_security module attr
+        import dana_security
 
         monkeypatch.setattr(
-            donna_security,
+            dana_security,
             "register_tool_schema",
             lambda *a, **k: {"id": "reverse_string"},
         )

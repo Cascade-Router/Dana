@@ -4767,7 +4767,7 @@ def execute_tool_call(tc: ToolCall) -> str:
                 return err_obs
 
             # Legacy path: caller supplied python_code directly.
-            from donna_security import architect_new_tool
+            from dana_security import architect_new_tool
 
             if not tool_name:
                 tool_name = "forged_tool"
@@ -4976,7 +4976,7 @@ def execute_tool_call(tc: ToolCall) -> str:
         return save_script_to_library_impl(str(script_name), str(code))
 
     def _handle_draft_cursor_prompt(call: ToolCall) -> str:
-        """Production path: append PENDING ticket to donna_security/patch_ledger.md."""
+        """Production path: append PENDING ticket to dana_security/patch_ledger.md."""
         from dana.tools.general.draft_cursor_prompt import draft_cursor_prompt
 
         return draft_cursor_prompt(
@@ -4985,7 +4985,7 @@ def execute_tool_call(tc: ToolCall) -> str:
         )
 
     def _handle_dynamic(call: ToolCall) -> str:
-        from donna_security import execute_dynamic_tool
+        from dana_security import execute_dynamic_tool
 
         text = str(call.arguments.get("text") or "")
         sand = execute_dynamic_tool(call.tool_id, text)

@@ -27,7 +27,7 @@ STRICT OUTPUT TEMPLATE (non-negotiable):
 
 Hard path constraints (when paths are discussed in context, not as primary output):
 - Any referenced paths MUST target the active workspace under: {DONNA_WORKSPACE}
-- Known workspace subdirs include execution_jail/, dana/, donna_security/,
+- Known workspace subdirs include execution_jail/, dana/, dana_security/,
   tracker/, logs/, custom_tools/, cursor_handoffs/, captures/.
 - NEVER assume a standard repository root layout (no /usr/src, no ~/projects,
   no generic "repo root" placeholders).

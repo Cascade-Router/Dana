@@ -37,7 +37,7 @@ def test_validation_bounce_not_logged_to_bug_tracker(tmp_path: Path, monkeypatch
 def test_draft_cursor_writes_ledger_with_makedirs(tmp_path: Path, monkeypatch) -> None:
     from dana.tools.general import draft_cursor_prompt as mod
 
-    ledger_dir = tmp_path / "donna_security"
+    ledger_dir = tmp_path / "dana_security"
     ledger = ledger_dir / "patch_ledger.md"
     # Parent missing until write — _append_ticket_to_ledger must mkdir.
     monkeypatch.setattr(mod, "_ledger_path", lambda: ledger)

@@ -219,7 +219,7 @@ def _dynamic_source_available(tool_id: str) -> bool:
     if not name:
         return False
     try:
-        from donna_security import load_dynamic_source
+        from dana_security import load_dynamic_source
 
         if load_dynamic_source(name):
             return True

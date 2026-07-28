@@ -216,7 +216,7 @@ def _worker(code: str, entry: str, args: tuple, kwargs: dict, queue: mp.Queue) -
             "None": None,
         }
         env: dict[str, Any] = {"__builtins__": safe_builtins}
-        compiled = compile(code, "<donna_security>", "exec")
+        compiled = compile(code, "<dana_security>", "exec")
         exec(compiled, env, env)  # noqa: S102 — intentional jail exec after AST gate
         fn = env.get(entry)
         if not callable(fn):
@@ -273,7 +273,7 @@ def _run_in_sandbox_subprocess(
     cmd = [
         sys.executable,
         "-c",
-        "from donna_security import _worker_stdio; _worker_stdio()",
+        "from dana_security import _worker_stdio; _worker_stdio()",
     ]
     try:
         proc = subprocess.Popen(

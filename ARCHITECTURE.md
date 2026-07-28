@@ -61,7 +61,7 @@ User query → System (SpatialIR + synthesis guide + protocol)
 | Episodic log | `docs/watchdog_history.db` via `experience_logger.py` |
 
 Watchdog scripts run with `cwd=execution_jail/` only (filesystem jail). The importable
-`donna_security` package is separate — AST/subprocess security + `patch_ledger.md`.
+`dana_security` package is separate — AST/subprocess security + `patch_ledger.md`.
 
 ## Request lifecycle
 

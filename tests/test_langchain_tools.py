@@ -108,7 +108,7 @@ def test_save_script_to_library_stays_in_sandbox(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(lt, "_REPO_ROOT", tmp_path.resolve())
     # Path-jail unit test — bypass Watchdog TTS policy (tested elsewhere).
     monkeypatch.setattr(
-        "donna_jason_loop.jason_critic.static_code_safety_reject",
+        "dana_jason_loop.jason_critic.static_code_safety_reject",
         lambda _c: None,
     )
 

@@ -487,7 +487,7 @@ def _run_forge_turn(
     from dana.tools.broker import IntentBroker
     from dana.tools.registry import get_tool_registry
     from dana.tools.schema import ToolCall
-    import donna_security
+    import dana_security
 
     image_path = DOCS_DIR / filepath_arg.split("/", 1)[-1]
     _make_sample_image(image_path, image_color)
@@ -538,7 +538,7 @@ def _run_forge_turn(
         ), patch(
             "dana.settings.is_dynamic_tool_synthesis_enabled", lambda: True
         ), patch.object(
-            donna_security, "register_tool_schema", lambda *a, **k: {"id": expected_tool_id}
+            dana_security, "register_tool_schema", lambda *a, **k: {"id": expected_tool_id}
         ), patch(
             "dana.tools.broker.reload_broker_registry", lambda *a, **k: None
         ):

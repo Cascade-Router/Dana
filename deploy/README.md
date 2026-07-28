@@ -52,7 +52,7 @@ Vision (`analyze_visual_context`, `ocr_with_region`) and desktop actuators
 `[CLOUD] … mocked` instead of touching a webcam / Win32 stack.
 
 `draft_cursor_prompt` still writes to the Space filesystem under
-`donna_security/patch_ledger.md` when validation passes.
+`dana_security/patch_ledger.md` when validation passes.
 
 ## Local smoke
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from donna_jason_loop.jason_critic import (
+from dana_jason_loop.jason_critic import (
     parse_titan_verdict,
     review_watchdog_code,
     static_code_safety_reject,
@@ -153,11 +153,11 @@ def test_titan_supervisor_approve_path(monkeypatch) -> None:
         monitor_loop="self.alert('monitor')",
     )
     monkeypatch.setattr(
-        "donna_jason_loop.jason_critic.static_code_safety_reject",
+        "dana_jason_loop.jason_critic.static_code_safety_reject",
         lambda _c: None,
     )
     with patch(
-        "donna_jason_loop.jason_critic.review_watchdog_code",
+        "dana_jason_loop.jason_critic.review_watchdog_code",
         return_value="APPROVED",
     ):
         out = titan_supervisor(
@@ -269,7 +269,7 @@ def test_repl_executor_uses_execution_jail_cwd(monkeypatch) -> None:
 
     sandbox = wg.ensure_watchdog_sandbox().resolve()
     monkeypatch.setattr(
-        "donna_jason_loop.jason_critic.static_code_safety_reject",
+        "dana_jason_loop.jason_critic.static_code_safety_reject",
         lambda _c: None,
     )
     code = assemble_watchdog_script(

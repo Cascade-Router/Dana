@@ -1,6 +1,6 @@
-# donna_security/ — security package + patch ledger
+# dana_security/ — security package + patch ledger
 
-Importable Python package (`from donna_security import …`) plus the async Cursor
+Importable Python package (`from dana_security import …`) plus the async Cursor
 ticket ledger. **Not** the same as `execution_jail/` (filesystem jail).
 
 | Path | Role |

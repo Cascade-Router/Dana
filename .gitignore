@@ -101,10 +101,10 @@ docs/*.db
 .shadow_state/
 
 # Watchdog REPL scratch files (keep package + ledger docs)
-donna_security/run_*_donna_watchdog.py
-donna_security/__pycache__/
-donna_security/patch_ledger.md
-donna_security/patch_ledger_archive.md
+dana_security/run_*_donna_watchdog.py
+dana_security/__pycache__/
+dana_security/patch_ledger.md
+dana_security/patch_ledger_archive.md
 
 # Optional in-repo custom mirror (gitignored except __init__.py)
 dana/tools/custom/*

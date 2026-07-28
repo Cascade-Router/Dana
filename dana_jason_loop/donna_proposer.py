@@ -6,7 +6,7 @@ import os
 import re
 from typing import Any
 
-from donna_jason_loop.ollama_client import ask_ollama, extract_json_payload
+from dana_jason_loop.ollama_client import ask_ollama, extract_json_payload
 
 PROPOSAL_REQUIRED_KEYS = (
     "proposed_id",

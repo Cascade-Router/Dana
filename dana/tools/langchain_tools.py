@@ -313,7 +313,7 @@ def save_script_to_library_impl(script_name: str, code: str) -> str:
         return "ERROR: missing code"
 
     try:
-        from donna_jason_loop.jason_critic import static_code_safety_reject
+        from dana_jason_loop.jason_critic import static_code_safety_reject
 
         blocked = static_code_safety_reject(body)
         if blocked:

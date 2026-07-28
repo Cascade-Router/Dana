@@ -22,7 +22,7 @@ def _ledger_paths() -> tuple[Path, Path]:
         archive = ledger.with_name("patch_ledger_archive.md")
         return ledger, archive
     except Exception:  # noqa: BLE001
-        root = Path(__file__).resolve().parents[2] / "donna_security"
+        root = Path(__file__).resolve().parents[2] / "dana_security"
         root.mkdir(parents=True, exist_ok=True)
         return root / "patch_ledger.md", root / "patch_ledger_archive.md"
 

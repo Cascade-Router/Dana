@@ -1257,7 +1257,7 @@
     },
     {
       "id": "draft_cursor_prompt",
-      "description_en": "USE THIS TOOL EXCLUSIVELY FOR ALL SYSTEM MODIFICATIONS, BUG FIXES, ARCHITECTURAL TICKETS, AND SELF-IMPROVEMENT REQUESTS. This is the only authorized tool for logging code changes. It APPENDS a PENDING ticket to CAMGRASPER/donna_security/patch_ledger.md for the human to execute in their IDE. Do not attempt to hot-patch live core memory.",
+      "description_en": "USE THIS TOOL EXCLUSIVELY FOR ALL SYSTEM MODIFICATIONS, BUG FIXES, ARCHITECTURAL TICKETS, AND SELF-IMPROVEMENT REQUESTS. This is the only authorized tool for logging code changes. It APPENDS a PENDING ticket to CAMGRASPER/dana_security/patch_ledger.md for the human to execute in their IDE. Do not attempt to hot-patch live core memory.",
       "ephemeral": false,
       "parameters": [
         {

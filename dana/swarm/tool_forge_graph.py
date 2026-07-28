@@ -831,7 +831,7 @@ def hot_load_forged_tool(state: ToolForgeState) -> dict[str, Any]:
 
     # Keep tools.json + broker in sync when possible.
     try:
-        from donna_security import register_tool_schema
+        from dana_security import register_tool_schema
         from dana.tools.broker import reload_broker_registry
 
         register_tool_schema(

@@ -14,7 +14,7 @@ from dana.tools.schema import ToolCall, ToolSpec, load_tool_registry, tool_schem
 
 # LLM-style tool call patterns (EN / FA / mixed).
 _TOOL_CALL_RE = re.compile(
-    r"(?:tool|call||)\s*[:=]\s*([a-zA-Z_][\w]*)\s*(?:\((.*)\)|\{(.*)\})?",
+    r"(?:tool|call)\s*[:=]\s*([a-zA-Z_][\w]*)\s*(?:\((.*)\)|\{(.*)\})?",
     re.IGNORECASE | re.DOTALL,
 )
 _KV_RE = re.compile(
@@ -282,7 +282,7 @@ _REPL_SUITE_HINT_RE = re.compile(
     r"\b(?:run|execute)\s+(?:the\s+|this\s+|it\b|them\b|(?:python\s+)?"
     r"(?:script|code|program))\b|"
     r"\b(?:then|and)\s+(?:read|open|check|inspect)\b|"
-    r"\bread\s+(?:the\s+)?(?:result|output|file|logfile)\b|"
+    r"\bread\s+(?:the\s+)?(?:result|output|logfile)\b|"
     r"\bwrite\b.+\b(?:run|execute)\b|\b(?:run|execute)\b.+\bread\b"
     r")",
     re.IGNORECASE | re.DOTALL,
@@ -422,9 +422,12 @@ def _looks_like_whisper_bias_echo(raw: str) -> bool:
     hits = _WHISPER_BIAS_ECHO_RE.findall(text)
     if len(hits) >= 2:
         return True
-    # Lone Omega "read the file …" with no extra user intent → bias echo.
+    # Lone Omega "read the file …" with no path / extra intent → bias echo.
+    # Explicit paths (e.g. docs/project_omega_status.txt) are real file reads.
     low = text.lower()
     if "project_omega" in low and re.search(r"\bread\s+(?:the\s+)?file\b", low):
+        if re.search(r"[\w./\\-]+\.(?:py|txt|md|json|log|csv)\b", low):
+            return False
         if not re.search(
             r"\b(summarize|explain|what\s+does|tell\s+me\s+about)\b", low
         ):
@@ -709,7 +712,7 @@ class IntentBroker:
             "voice topic map for Target Files only: audio/audio pipeline/glitches → "
             "dana/core_agent.py; cursor handling/deepseek navigation → "
             "dana/cascade_router.py and dana/agentic.py; patch ledger/cursor prompt "
-            "handling → donna_security/patch_ledger.md and dana/tools/broker.py. "
+            "handling → dana_security/patch_ledger.md and dana/tools/broker.py. "
             "Invent concrete refactoring steps from the user's specific request — "
             "never reuse generic template steps. Put paths + your dynamic steps into "
             "the `context` argument of `draft_cursor_prompt`."

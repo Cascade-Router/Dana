@@ -482,7 +482,7 @@ def turn4_moa_cross_agent() -> TurnResult:
     r.details.append(f"reasoning_traces_rows={think_rows}")
     r.details.append(f"bb_cascade_hits_total={len(think_hits)}")
 
-    ledger = DONNA_WORKSPACE / "donna_security" / "patch_ledger.md"
+    ledger = DONNA_WORKSPACE / "dana_security" / "patch_ledger.md"
     ledger_has_cascade = False
     ledger_has_rapid = False
     if ledger.is_file():
@@ -592,7 +592,7 @@ def turn5_chat_verify() -> TurnResult:
     for m in _bb_load(limit=20):
         if m.get("role") == "assistant" and m.get("content"):
             evidence.append(m["content"][:180])
-    ledger = DONNA_WORKSPACE / "donna_security" / "patch_ledger.md"
+    ledger = DONNA_WORKSPACE / "dana_security" / "patch_ledger.md"
     ledger_tail = ""
     if ledger.is_file():
         ledger_tail = ledger.read_text(encoding="utf-8", errors="replace")[-4000:]

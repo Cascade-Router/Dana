@@ -2,9 +2,9 @@
 
 Does not import or patch agent.py. Run from repo root:
 
-    python -m donna_jason_loop.simulate_loop
+    python -m dana_jason_loop.simulate_loop
     # or
-    python donna_jason_loop/simulate_loop.py
+    python dana_jason_loop/simulate_loop.py
 """
 
 from __future__ import annotations
@@ -15,14 +15,14 @@ import sys
 import traceback
 from typing import Any
 
-# Allow `python donna_jason_loop/simulate_loop.py` from repo root.
+# Allow `python dana_jason_loop/simulate_loop.py` from repo root.
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from donna_jason_loop.donna_proposer import generate_capability_pitches
-from donna_jason_loop.jason_critic import evaluate_proposals
-from donna_jason_loop.ledger import (
+from dana_jason_loop.donna_proposer import generate_capability_pitches
+from dana_jason_loop.jason_critic import evaluate_proposals
+from dana_jason_loop.ledger import (
     DEFAULT_ROADMAP_PATH,
     append_green_flag_to_roadmap,
     load_roadmap,

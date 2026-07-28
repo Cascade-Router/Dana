@@ -10,7 +10,7 @@ Layout:
   CAMGRASPER/logs/            ← runtime + conversation logs
   CAMGRASPER/tracker/         ← bug_tracker.json + pending_patches/
   CAMGRASPER/execution_jail/  ← FS jail (task_queue.json, library/, fixture copies)
-  CAMGRASPER/donna_security/  ← importable security package + patch_ledger.md
+  CAMGRASPER/dana_security/  ← importable security package + patch_ledger.md
                                   (do NOT merge with execution_jail/ — different roles)
   CAMGRASPER/_archive/        ← unused legacy snapshots (not on the runtime path)
 """
@@ -78,9 +78,9 @@ CAPTURES_DIR: Path = DONNA_WORKSPACE / "captures"
 # --- Repo-local (config / models / vault / async ledger) ---
 
 # Importable security package + unified patch ledger (async Cursor tickets).
-DONNA_SECURITY_DIR: Path = PROJECT_ROOT / "donna_security"
+DONNA_SECURITY_DIR: Path = PROJECT_ROOT / "dana_security"
 
-# Alias: historical name; always points at donna_security/.
+# Alias: historical name; always points at dana_security/.
 REPO_SANDBOX_DIR: Path = DONNA_SECURITY_DIR
 
 PATCH_LEDGER_PATH: Path = DONNA_SECURITY_DIR / "patch_ledger.md"

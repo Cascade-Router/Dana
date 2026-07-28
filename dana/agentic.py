@@ -417,7 +417,7 @@ _VOICE_SANITIZER_RULE = (
     "When the user omits file paths, use the voice topic map for Target Files only: "
     "audio/audio pipeline/glitches → dana/core_agent.py; "
     "cursor handling/deepseek navigation → dana/cascade_router.py and dana/agentic.py; "
-    "patch ledger/cursor prompt handling → donna_security/patch_ledger.md and "
+    "patch ledger/cursor prompt handling → dana_security/patch_ledger.md and "
     "dana/tools/broker.py. You must invent concrete refactoring steps from the user's "
     "specific request — never reuse generic template steps."
 )
@@ -445,7 +445,7 @@ _VOICE_TOPIC_FILE_MAP: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
             "cursor prompt handling",
             "draft cursor prompt handling",
         ),
-        ("donna_security/patch_ledger.md", "dana/tools/broker.py"),
+        ("dana_security/patch_ledger.md", "dana/tools/broker.py"),
     ),
 )
 
@@ -1072,16 +1072,16 @@ def _first_sentence(text: str, *, limit: int = 120) -> str:
 
 
 _FINAL_RE = re.compile(
-    r"^\s*(?:FINAL|Final|final| )\s*[:：]\s*(.*)\s*$",
+    r"^\s*(?:FINAL|Final|final)\s*[:：]\s*(.*)\s*$",
     re.DOTALL,
 )
 _TOOL_LINE_RE = re.compile(
-    r"^\s*(?:TOOL|Tool|tool|Action|ACTION||)\s*[:：]\s*(.+?)\s*$",
+    r"^\s*(?:TOOL|Tool|tool|Action|ACTION)\s*[:：]\s*(.+?)\s*$",
     re.DOTALL,
 )
 # TTS hygiene: models occasionally leak protocol markers into spoken text.
 _TTS_TOOL_LEAK_RE = re.compile(
-    r"(?:^|\s)(?:TOOL|Action|FINAL||| )\s*[:：]\s*.*$",
+    r"(?:^|\s)(?:TOOL|Action|FINAL)\s*[:：]\s*.*$",
     re.IGNORECASE | re.DOTALL,
 )
 _RAW_TOOL_OBS_RE = re.compile(
@@ -1534,7 +1534,7 @@ def extract_final(text: str) -> str | None:
         return m.group(1).strip()
     if _extract_json_object(raw) is not None:
         return None
-    if _TOOL_LINE_RE.match(raw) or re.match(r"^\s*(?:TOOL|Action||)\s*[:：]", raw, re.I):
+    if _TOOL_LINE_RE.match(raw) or re.match(r"^\s*(?:TOOL|Action)\s*[:：]", raw, re.I):
         return None
     return raw
 
