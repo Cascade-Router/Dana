@@ -2028,7 +2028,7 @@ def email_recovery_key(recovery_key: str) -> None:
             }
         ],
         "from": {"email": sendgrid_from_email},
-        "subject": "Donna: Secure Memory Recovery Key",
+        "subject": "Dānā: Secure Memory Recovery Key",
         "content": [
             {
                 "type": "text/plain",
@@ -2135,7 +2135,7 @@ def unlock_donna_memory() -> SecureMemory:
     # else: daemon locked → resolve credential (env → keyring → TTY prompt)
     from donna.tools.vault import VaultCredentialsMissing, _get_master_key
 
-    prompt = "Enter Master Password (or pasted Recovery Key) to unlock Donna: "
+    prompt = "Enter Master Password (or pasted Recovery Key) to unlock Dānā: "
     vault_exists = os.path.isfile(MEMORY_FILE)
 
     try:
@@ -2467,7 +2467,7 @@ def build_voice_prompt(yolo_labels: list[str], whisper_text: str) -> str:
     vision = format_vision_context_for_llm(yolo_labels)
     vision_line = f"{vision} " if vision else ""
     return (
-        "System context: You are Donna, a helpful AI assistant. "
+        "System context: You are Dānā, a helpful AI assistant. "
         f"{vision_line}"
         f"User asks: '{whisper_text}'. "
         "Respond in exactly one complete, natural sentence."
@@ -5646,7 +5646,7 @@ def conversation_worker(
             # Health check: fail closed with a spoken diagnosis (never silent).
             if not ollama_service_reachable():
                 answer = OLLAMA_UNREACHABLE_SPEECH
-                log("Conversation", f'Donna: "{answer}"')
+                log("Conversation", f'Dānā: "{answer}"')
                 log_conversation("Donna", answer)
                 emit_live_transcript("Donna", answer)
                 enqueue_speech(answer)
@@ -5797,7 +5797,7 @@ def conversation_worker(
             "Conversation",
             f"Ollama {brain_ms:.0f} ms | turn {latency_ms:.0f} ms",
         )
-        log("Conversation", f'Donna: "{answer}"')
+        log("Conversation", f'Dānā: "{answer}"')
         log_conversation("Donna", answer or "", extra=f"{latency_ms:.0f} ms")
         emit_live_transcript("Donna", answer)
         SPATIAL_AGGREGATOR.update_transcript(assistant=answer)
@@ -7200,7 +7200,7 @@ def update_tray_icon_for_state(state: str) -> None:
         return
     listening = state in _TRAY_LISTENING_STATES
     mode = "listening" if listening else "idle"
-    title = "Donna — Listening" if listening else "Donna Assistant"
+    title = "Dānā — Listening" if listening else "Dānā · Cybernetic Control Plane"
     try:
         icon.icon = create_tray_image(mode)
         icon.title = title
@@ -7356,14 +7356,24 @@ def run_system_tray(gui: "DonnaGUI") -> None:
     def open_settings(icon: pystray.Icon, _item: Any = None) -> None:
         gui.after(0, gui.show_window)
 
+    from donna.ui.startup_tray import (
+        check_startup_registry_status,
+        toggle_run_on_startup,
+    )
+
     menu = pystray.Menu(
         pystray.MenuItem("Open Settings", open_settings, default=True),
+        pystray.MenuItem(
+            "Run on Startup",
+            toggle_run_on_startup,
+            checked=lambda item: check_startup_registry_status(item),
+        ),
         pystray.MenuItem("Quit", request_donna_quit),
     )
     icon = pystray.Icon(
-        "Donna",
+        "Dana",
         create_tray_image("idle"),
-        "Donna Assistant",
+        "Dānā · Cybernetic Control Plane",
         menu,
     )
     _tray_icon = icon

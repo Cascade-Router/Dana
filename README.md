@@ -10,7 +10,7 @@ pinned: false
 license: agpl-3.0
 ---
 
-# Donna: Local-First Agentic Voice OS
+# Dānā: Local-First Agentic Voice OS
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
@@ -19,7 +19,7 @@ license: agpl-3.0
 
 **Bridge local LLMs (Llama 3.2), vision (YOLOv8), and Mixture-of-Agents reasoning (DeepSeek-R1) into a deterministic, low-latency voice operating system — with a CustomTkinter Live Trace UI that makes every graph transition observable.**
 
-Donna (Dānā) is an offline-first agentic control plane for the desktop: wake-word perception, strict mode-isolated cognition, filesystem-jailed tool execution, and thread-safe telemetry. It is engineered as infrastructure — not a chatbot shell.
+Dānā is an offline-first agentic control plane for the desktop: wake-word perception, strict mode-isolated cognition, filesystem-jailed tool execution, and thread-safe telemetry. It is engineered as infrastructure — not a chatbot shell.
 
 Try the Gradio simulator on Hugging Face: [AMIXXM/Donna](https://huggingface.co/spaces/AMIXXM/Donna).
 

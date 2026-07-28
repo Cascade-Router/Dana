@@ -83,7 +83,7 @@ class AssistiveTouchOrb:
         self._logo_mode = "png"  # "png" | "polygon"
 
         self.orb_window = tk.Toplevel(master)
-        self.orb_window.title("Donna Orb")
+        self.orb_window.title("Dānā Orb")
         self.orb_window.overrideredirect(True)
         try:
             self.orb_window.attributes("-topmost", True)

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-import json
+import copy
+import re
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import gradio as gr
@@ -89,6 +92,15 @@ button.dana-primary {
 }
 """
 
+DEFAULT_MEMORY_LEDGER: dict[str, Any] = {
+    "user_identity": "Amirhosein",
+    "active_project": "Dānā Agentic Architecture",
+    "stored_preferences": {"theme": "dark", "patch_style": "minimal_diff"},
+    "recent_context": "Validated e820f01 planner graph refactor",
+}
+
+_SAMPLE_PNG: Path | None = None
+
 
 def _sample_desktop() -> Image.Image:
     """Synthetic desktop screenshot for one-click demos."""
@@ -102,12 +114,73 @@ def _sample_desktop() -> Image.Image:
     draw.text((792, 106), "Save", fill="#ecfdf5")
     draw.rectangle((40, 160, 620, 420), fill="#0b1220", outline="#1f2937", width=1)
     draw.text((56, 180), "Active Window — Notepad", fill="#94a3b8")
-    draw.text((56, 220), "Summarize active window…", fill="#cbd5e1")
+    draw.text((56, 220), "ERROR: TypeError on line 42", fill="#fca5a5")
+    draw.text((56, 250), "WARNING: unused import json", fill="#fcd34d")
     return img
 
 
-def _empty_annotated() -> tuple[None, list]:
-    return None, []
+def _sample_desktop_path() -> str:
+    """Persist sample desktop PNG for ``gr.Examples`` image inputs."""
+    global _SAMPLE_PNG
+    if _SAMPLE_PNG is None or not _SAMPLE_PNG.is_file():
+        path = Path(tempfile.gettempdir()) / "dana_sample_desktop.png"
+        _sample_desktop().save(path, format="PNG")
+        _SAMPLE_PNG = path
+    return str(_SAMPLE_PNG)
+
+
+def _empty_annotated() -> None:
+    return None
+
+
+def _merge_memory_ledger(
+    ledger: dict[str, Any] | None,
+    command: str,
+    *,
+    vision_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update Active Memory Ledger for store / read / vision intents."""
+    out = copy.deepcopy(ledger if isinstance(ledger, dict) else DEFAULT_MEMORY_LEDGER)
+    prefs = dict(out.get("stored_preferences") or {})
+    low = (command or "").lower()
+    vision_meta = vision_meta or {}
+
+    store_match = re.search(
+        r"(?:store\s+preference|remember|save\s+preference)\s*:?\s*(.+)$",
+        command or "",
+        re.I,
+    )
+    if store_match:
+        pref_text = store_match.group(1).strip()
+        if "pep8" in low:
+            prefs["python_formatting"] = "PEP8"
+        prefs["last_stored"] = pref_text[:160]
+        out["stored_preferences"] = prefs
+        out["recent_context"] = f"Stored preference: {pref_text[:200]}"
+        return out
+
+    if any(k in low for k in ("read memory", "recall", "what do you know", "show memory")):
+        out["recent_context"] = (
+            f"Read ledger for {out.get('user_identity')}: "
+            f"project={out.get('active_project')}; prefs={prefs}"
+        )
+        return out
+
+    if any(k in low for k in ("summarize", "highlight", "active window", "ocr")):
+        bbox = vision_meta.get("bounding_box_xyxy")
+        out["recent_context"] = (
+            f"Vision grounding for: {(command or '')[:140]} | bbox={bbox}"
+        )
+        return out
+
+    if any(k in low for k in ("delete", "restart", "wipe", "rm -rf")):
+        out["recent_context"] = (
+            f"HITL-gated destructive intent (pending approval): {(command or '')[:160]}"
+        )
+        return out
+
+    out["recent_context"] = f"Last command: {(command or '')[:160]}"
+    return out
 
 
 @spaces.GPU
@@ -122,8 +195,13 @@ def florence_vision_infer(
         }
 
     width, height = image.size
-    x1, y1 = int(width * 0.25), int(height * 0.3)
-    x2, y2 = int(width * 0.75), int(height * 0.5)
+    # Bias box toward "error" lines when the prompt asks for errors.
+    if "error" in (target_prompt or "").lower() or "error" in str(target_prompt):
+        x1, y1 = int(width * 0.04), int(height * 0.38)
+        x2, y2 = int(width * 0.62), int(height * 0.52)
+    else:
+        x1, y1 = int(width * 0.25), int(height * 0.3)
+        x2, y2 = int(width * 0.75), int(height * 0.5)
     label = f"Target: '{target_prompt or 'UI Element'}'"
     annotations = [((x1, y1, x2, y2), label)]
     meta = {
@@ -136,34 +214,76 @@ def florence_vision_infer(
     return (image, annotations), meta
 
 
-def run_pipeline(
-    command: str, image: Image.Image | None, target_prompt: str
+def route_command(
+    command: str,
+    image: Image.Image | None,
+    target_prompt: str,
+    memory_ledger: dict[str, Any] | None = None,
 ) -> tuple[Any, ...]:
-    """Single submit: vision grounding → HITL ticket → LangGraph JSON trace."""
+    """Route a desktop command through vision → memory → HITL → LangGraph trace."""
     cmd = (command or "").strip()
+    ledger = copy.deepcopy(
+        memory_ledger if isinstance(memory_ledger, dict) else DEFAULT_MEMORY_LEDGER
+    )
     if not cmd:
         return (
             "⚪ Node: Idle — enter a desktop command",
-            _empty_annotated()[0],
+            _empty_annotated(),
             {},
             {"error": "empty_command"},
+            ledger,
             "Awaiting command.",
         )
 
-    # Stage 1 — vision
-    annotated, vision_meta = florence_vision_infer(image, target_prompt)
-    status_vision = "🟢 Node: Vision Grounding"
+    low = cmd.lower()
+    needs_vision = any(
+        k in low
+        for k in ("summarize", "highlight", "window", "screen", "ocr", "vision")
+    )
+    is_memory = any(
+        k in low for k in ("store preference", "remember", "read memory", "recall")
+    )
+    is_destructive = any(
+        k in low for k in ("delete", "restart", "wipe", "daemon", "rm ")
+    )
 
-    # Stage 2 — HITL interrupt
+    annotated: Any = None
+    vision_meta: dict[str, Any] = {}
+    if needs_vision:
+        # Auto-load sample desktop when vision examples omit an upload.
+        frame = image if image is not None else _sample_desktop()
+        target = target_prompt or (
+            "errors" if "error" in low else "active window text"
+        )
+        annotated, vision_meta = florence_vision_infer(frame, target)
+        status = "🟢 Node: Vision Grounding"
+    elif is_memory:
+        status = "🟢 Node: Memory Ledger Read/Write"
+        annotated = None
+        vision_meta = {"skipped": True, "reason": "memory_intent"}
+    else:
+        status = "🟡 Node: Intent Inspected"
+        annotated = None
+        vision_meta = {"skipped": True}
+
+    ledger = _merge_memory_ledger(ledger, cmd, vision_meta=vision_meta)
+
+    risk = "HIGH" if is_destructive else ("LOW" if is_memory and not needs_vision else "MEDIUM")
     ticket = {
         "ticket_id": "TICK-8042",
         "command": cmd,
         "ui_target": target_prompt or "UI Element",
-        "proposed_action": "win32_system_write / patch_ledger",
-        "risk_level": "MEDIUM",
+        "proposed_action": (
+            "vault_memory_write"
+            if is_memory and not is_destructive
+            else "win32_system_write / patch_ledger"
+        ),
+        "risk_level": risk,
         "requiring_approval": True,
         "status": "PENDING_USER_APPROVAL",
         "vision": vision_meta,
+        "memory_touch": is_memory
+        or any(k in low for k in ("store", "remember", "read memory", "recall")),
     }
     status_hitl = "🟡 Node: HITL Ticket Interrupted"
 
@@ -173,8 +293,12 @@ def run_pipeline(
             {"t": "0.1s", "node": "ROUTER", "detail": "Evaluating MoA corridor"},
             {
                 "t": "0.2s",
-                "node": "VISION",
-                "detail": "Florence-2 UI grounding (ZeroGPU)",
+                "node": "VISION" if needs_vision else "MEMORY",
+                "detail": (
+                    "Florence-2 UI grounding (ZeroGPU)"
+                    if needs_vision
+                    else "Active Memory Ledger touch"
+                ),
                 "bbox": vision_meta.get("bounding_box_xyxy"),
             },
             {
@@ -191,13 +315,19 @@ def run_pipeline(
         "active_intent": cmd,
         "halt": False,
         "ticket_validated": True,
+        "memory_keys": list((ledger.get("stored_preferences") or {}).keys()),
     }
 
     note = (
-        f"{status_vision} → {status_hitl}\n"
+        f"{status} → {status_hitl}\n"
+        f"Memory recent_context: {ledger.get('recent_context')}\n"
         "Review the HITL ticket card, then Approve or Deny."
     )
-    return status_hitl, annotated, ticket, trace, note
+    return status_hitl, annotated, ticket, trace, ledger, note
+
+
+# Back-compat alias used by older call sites / docs.
+run_pipeline = route_command
 
 
 def resolve_ticket(ticket: dict | None, decision: str) -> tuple[str, dict, str]:
@@ -293,7 +423,7 @@ Local by design. This Space is a ZeroGPU-backed preview; download the native Win
                 elem_classes=["dana-primary"],
             )
 
-        # ── RIGHT: status · HITL · LangGraph JSON ─────────────────────
+        # ── RIGHT: status · HITL · memory · LangGraph JSON ─────────────
         with gr.Column(scale=1, elem_classes=["dana-panel"]):
             gr.Markdown(
                 "### Pipeline · HITL Ticket · Live Trace",
@@ -304,6 +434,10 @@ Local by design. This Space is a ZeroGPU-backed preview; download the native Win
                 value="Ready.",
                 lines=3,
                 interactive=False,
+            )
+            memory_ledger = gr.JSON(
+                label="🧠 Active Memory Ledger",
+                value=copy.deepcopy(DEFAULT_MEMORY_LEDGER),
             )
             gr.Markdown("#### Interactive HITL ticket")
             ticket_card = gr.JSON(label="Ticket payload (Jason review)")
@@ -319,17 +453,48 @@ Local by design. This Space is a ZeroGPU-backed preview; download the native Win
             gr.Markdown("#### Live LangGraph state")
             trace_json = gr.JSON(label="State corridor JSON")
 
+    _pipeline_outputs = [
+        status_badge,
+        annotated_out,
+        ticket_card,
+        trace_json,
+        memory_ledger,
+        resolution_note,
+    ]
+    # 1-click presets under the command row — fill inputs + run corridor.
+    # Providing ``fn`` + ``outputs`` runs the corridor when a preset is clicked
+    # (Gradio 5 fills inputs, then invokes ``fn``).
+    gr.Examples(
+        examples=[
+            [
+                "Summarize active window text and highlight errors",
+                _sample_desktop_path(),
+                "errors",
+            ],
+            [
+                "Store preference: Always use PEP8 formatting for python patches",
+                None,
+                "",
+            ],
+            [
+                "Delete temporary build cache and restart daemon",
+                None,
+                "",
+            ],
+        ],
+        inputs=[command_input, img_input, target_input],
+        outputs=_pipeline_outputs,
+        fn=lambda c, i, t: route_command(c, i, t, None),
+        cache_examples=False,
+        examples_per_page=3,
+        label="1-click corridor presets",
+    )
+
     sample_btn.click(fn=_sample_desktop, outputs=[img_input])
     submit_btn.click(
-        fn=run_pipeline,
-        inputs=[command_input, img_input, target_input],
-        outputs=[
-            status_badge,
-            annotated_out,
-            ticket_card,
-            trace_json,
-            resolution_note,
-        ],
+        fn=route_command,
+        inputs=[command_input, img_input, target_input, memory_ledger],
+        outputs=_pipeline_outputs,
     )
     approve_btn.click(
         fn=lambda t: resolve_ticket(t, "Approve"),

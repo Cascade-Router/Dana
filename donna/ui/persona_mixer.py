@@ -49,7 +49,7 @@ class PersonaMixerApp(ctk.CTk):
 
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
-        self.title("Donna Persona Mixer")
+        self.title("Dānā Persona Mixer")
         self.geometry("320x360+80+80")
         self.minsize(280, 320)
         self.attributes("-topmost", True)

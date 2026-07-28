@@ -655,7 +655,7 @@ class LiveTraceWindow(ctk.CTkToplevel):
 
     def __init__(self, master: Any | None = None) -> None:
         super().__init__(master)
-        self.title("Donna — Live Trace")
+        self.title("Dānā — Live Trace")
         self.geometry("820x520")
         self.minsize(640, 400)
         ctk.set_appearance_mode("dark")

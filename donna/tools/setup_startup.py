@@ -330,6 +330,33 @@ def _status_windows() -> int:
         return 1
 
 
+def is_startup_enabled() -> bool:
+    """Quiet Boolean: True when login/startup registration is present."""
+    system = _system()
+    if system == "Windows":
+        import winreg
+
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ
+            ) as key:
+                winreg.QueryValueEx(key, VALUE_NAME)
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+    if system == "Darwin":
+        return macos_plist_path().is_file()
+    if system == "Linux":
+        return linux_desktop_path().is_file()
+    return False
+
+
+# Alias used by tray ``checked=`` bindings.
+check_startup_registry_status = is_startup_enabled
+
+
 def _enable_macos() -> int:
     path = _write_macos_plist()
     print(f"[OK] Startup enabled: {path}")
