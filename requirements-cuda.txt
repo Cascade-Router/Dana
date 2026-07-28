@@ -1,0 +1,10 @@
+# Local Windows / CUDA 12.6 PyTorch stack (NOT used by Hugging Face ZeroGPU Spaces).
+# Install after requirements.txt on developer machines and release builds:
+#   pip install -r requirements.txt -r requirements-cuda.txt
+#
+--extra-index-url https://download.pytorch.org/whl/cu126
+
+torch==2.13.0+cu126
+torchvision==0.28.0+cu126
+# Silero hubconf imports torchaudio (cu126 latest published wheel lags torch 2.13).
+torchaudio==2.11.0+cu126

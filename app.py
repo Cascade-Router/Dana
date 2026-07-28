@@ -2,6 +2,12 @@ import gradio as gr
 from PIL import Image
 import json
 
+# ZeroGPU Spaces preinstall `spaces`; local CPU simulator does not require it.
+try:
+    import spaces  # noqa: F401
+except ImportError:  # pragma: no cover - optional on non-HF runtimes
+    spaces = None
+
 # --- Tab 1: LangGraph Routing Logic & HITL Gate ---
 def simulate_routing(user_prompt):
     if not user_prompt.strip():

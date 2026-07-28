@@ -112,7 +112,7 @@ def _acquire_single_instance_lock() -> bool:
     return True
 
 
-# Must match the major of torch pinned in requirements.txt (2.13.0+cu126).
+# Must match the major of torch pinned in requirements-cuda.txt (2.13.0+cu126).
 _EXPECTED_TORCH_MAJOR = 2
 
 
@@ -127,7 +127,8 @@ def verify_environment() -> None:
     except ImportError as exc:
         print(
             "[Env] ERROR: PyTorch is not installed. "
-            "Install from requirements.txt (CUDA cu126 index).",
+            "Install from requirements-cuda.txt (CUDA cu126 index) after "
+            "requirements.txt.",
             file=sys.stderr,
             flush=True,
         )
@@ -142,7 +143,7 @@ def verify_environment() -> None:
         print(
             f"[Env] ERROR: PyTorch major version drift: got {version!r}, "
             f"expected major {_EXPECTED_TORCH_MAJOR} "
-            f"(see requirements.txt torch==2.13.0+cu126).",
+            f"(see requirements-cuda.txt torch==2.13.0+cu126).",
             file=sys.stderr,
             flush=True,
         )

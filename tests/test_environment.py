@@ -86,5 +86,5 @@ def test_verify_environment_fails_when_torch_missing(
 
 
 def test_expected_torch_major_matches_requirements_pin() -> None:
-    """Guard must stay aligned with the torch major in requirements.txt."""
+    """Guard must stay aligned with the torch major in requirements-cuda.txt."""
     assert donna_run._EXPECTED_TORCH_MAJOR == 2

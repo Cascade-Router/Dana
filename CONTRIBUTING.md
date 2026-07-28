@@ -34,6 +34,7 @@ python -m venv .venv
 .\.venv\Scripts\activate
 
 pip install -r requirements.txt
+pip install -r requirements-cuda.txt
 pip install -r requirements-dev.txt
 
 # Focused corridor / env guards (fast)

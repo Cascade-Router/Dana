@@ -1,15 +1,16 @@
 # Donna production lock — pinned for reproducible deployments.
-# CUDA 12.6 wheels (matches torch 2.13.0+cu126 / torchvision 0.28.0+cu126).
---extra-index-url https://download.pytorch.org/whl/cu126
+#
+# Hugging Face ZeroGPU Spaces: do NOT pin CUDA torch wheels or download.pytorch.org
+# indexes here. The Space runtime supplies a compatible PyTorch (>=2.8). Local
+# Windows CUDA installs should also run:
+#   pip install -r requirements-cuda.txt
 #
 # Debug OS typing without injecting keystrokes:
 #   set DONNA_OS_DRY_RUN=1
 # Production default is unset / 0 (real injection).
 
-torch==2.13.0+cu126
-torchvision==0.28.0+cu126
-# Silero hubconf imports torchaudio (cu126 latest published wheel lags torch 2.13).
-torchaudio==2.11.0+cu126
+# Torch is intentionally omitted from this file for ZeroGPU compatibility.
+# Prefer the preinstalled Space runtime, or install requirements-cuda.txt locally.
 transformers==5.13.0
 accelerate==1.14.0
 einops==0.8.2

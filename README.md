@@ -32,7 +32,7 @@ Try the Gradio simulator on Hugging Face: [AMIXXM/Donna](https://huggingface.co/
 | **OS** | Windows 10 / 11 (recommended for tray, Startup, and OS automation) |
 | **Python** | 3.10+ (3.11+ recommended) |
 | **GPU** | NVIDIA RTX with **8GB+ VRAM** recommended (Whisper / YOLO / vision) |
-| **CUDA** | **12.6** wheels (`torch==2.13.0+cu126` via the `cu126` index in `requirements.txt`) |
+| **CUDA** | **12.6** wheels via `requirements-cuda.txt` (`torch==2.13.0+cu126`); HF ZeroGPU Spaces omit CUDA pins and use the preinstalled runtime |
 | **CPU fallback** | Supported; vision / Whisper are slower (`run.py` warns and continues) |
 | **Storage** | ~15GB+ free for venv, PyTorch CUDA wheels, and local model weights |
 | **Runtime** | [Ollama](https://ollama.com/) with local models (e.g. `llama3.2`, `deepseek-r1:8b`) |
@@ -49,6 +49,7 @@ cd Donna
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
+pip install -r requirements-cuda.txt
 ollama pull llama3.2
 ollama pull deepseek-r1:8b
 python run.py
@@ -62,6 +63,7 @@ cd Donna
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+pip install -r requirements-cuda.txt
 ollama pull llama3.2
 ollama pull deepseek-r1:8b
 python run.py
