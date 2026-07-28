@@ -29,7 +29,7 @@ piper-tts==1.4.2
 pygame==2.6.1
 pyttsx3==2.99
 openwakeword==0.6.0
-onnxruntime==1.27.0
+onnxruntime>=1.20.0,<2.0.0
 # Silero VAD loads via torch.hub (snakers4/silero-vad); no webrtcvad.
 # Cap below 81 — pkg_resources / legacy plugin paths still used in places.
 setuptools==80.9.0
