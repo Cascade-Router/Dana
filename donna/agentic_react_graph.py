@@ -22,6 +22,7 @@ from donna.tools.schema import ToolCall
 __all__ = (
     "ReactGraphState",
     "compile_donna_react_graph",
+    "route_after_execution",
     "run_react_langgraph",
     "validation_retry_tool_corridor",
 )
@@ -656,15 +657,33 @@ def _route_after_ticket_approval(state: ReactGraphState) -> str:
     return "tools"
 
 
-def _route_after_tools(state: ReactGraphState) -> str:
-    """Conditional edge: tools → END (halt) or agent (continue ReAct)."""
+def route_after_execution(state: ReactGraphState) -> str:
+    """Conditional edge after tools (REPL execution): critic / fail_closed / agent / END.
+
+    python_repl failures set ``execution_error``; while ``retry_count < max_retries``
+    route to ``critic`` (then back to tools). Exhausted retries → ``fail_closed``.
+    Otherwise preserve the existing ReAct / HITL corridor (agent loop or END).
+    """
     from langgraph.graph import END
+
+    err = state.get("execution_error")
+    if err is not None and str(err).strip():
+        retry = int(state.get("retry_count") or 0)
+        max_r = state.get("max_retries")
+        max_retries = int(max_r) if max_r is not None else 3
+        if retry < max_retries:
+            return "critic"
+        return "fail_closed"
 
     if state.get("halt") and not pending_always_include_tools(state):
         return END
     if pending_always_include_tools(state):
         return "agent"
     return END if state.get("halt") else "agent"
+
+
+# Back-compat alias for callers / tests that still import the private name.
+_route_after_tools = route_after_execution
 
 
 def compile_donna_react_graph(
@@ -676,6 +695,8 @@ def compile_donna_react_graph(
     ticket_validate_node_fn: Callable[..., Any] | None = None,
     planner_node_fn: Callable[..., Any] | None = None,
     executor_node_fn: Callable[..., Any] | None = None,
+    critic_node_fn: Callable[..., Any] | None = None,
+    fail_closed_node_fn: Callable[..., Any] | None = None,
     checkpointer: Any | None = None,
 ) -> Any:
     """Compile the production ReAct StateGraph (same topology as live Donna).
@@ -685,7 +706,9 @@ def compile_donna_react_graph(
                     ─(valid)→ jason_ticket_review → ticket_approval ─(approve)→ tools
                     ─(invalid, <3)→ agent
                     ─(max retries)→ END
-                    ─(other tool_calls)→ tools ─(continue)→ agent
+                    ─(other tool_calls)→ tools ─(python_repl error)→ critic → tools
+                    ─(retries exhausted)→ fail_closed → END
+                    ─(continue)→ agent
                     ╲(pending always_include / nudge)→ agent
                     ╲(halt/final)→ END
 
@@ -693,12 +716,15 @@ def compile_donna_react_graph(
     ``ticket_validate`` (Stage 8.9.6) runs Pydantic before Jason / HITL.
     ``jason_ticket_review`` (Stage 8.9) speaks a critique, then
     ``ticket_approval`` HITL-interrupts before heavy / ledger tool execution.
+    ``critic`` / ``fail_closed`` bound python_repl self-heal (injectable for evals).
     """
     from langgraph.graph import END, START, StateGraph
 
     from donna import agentic as ag
     from donna.agentic_planning import executor_node as _default_executor
     from donna.agentic_planning import planner_node as _default_planner
+    from donna.graph.nodes.critic import critic_node as _default_critic
+    from donna.graph.nodes.critic import fail_closed_node as _default_fail_closed
 
     workflow = StateGraph(ReactGraphState)
     workflow.add_node("planner", planner_node_fn or _default_planner)
@@ -717,6 +743,8 @@ def compile_donna_react_graph(
         ticket_approval_node_fn or ticket_approval_node,
     )
     workflow.add_node("tools", tools_node)
+    workflow.add_node("critic", critic_node_fn or _default_critic)
+    workflow.add_node("fail_closed", fail_closed_node_fn or _default_fail_closed)
     workflow.add_edge(START, "planner")
     workflow.add_edge("planner", "executor")
     workflow.add_edge("executor", "agent")
@@ -751,9 +779,16 @@ def compile_donna_react_graph(
     )
     workflow.add_conditional_edges(
         "tools",
-        _route_after_tools,
-        {"agent": "agent", END: END},
+        route_after_execution,
+        {
+            "critic": "critic",
+            "fail_closed": "fail_closed",
+            "agent": "agent",
+            END: END,
+        },
     )
+    workflow.add_edge("critic", "tools")
+    workflow.add_edge("fail_closed", END)
     cp = checkpointer if checkpointer is not None else ag._react_checkpointer()
     # Checkpointer required for interrupt() resume; ticket_approval is the gate.
     return workflow.compile(checkpointer=cp)
@@ -1910,6 +1945,7 @@ async def run_react_langgraph(
             state_keys=("messages", "last_obs"),
         )
         new_msgs: list[Any] = []
+        repl_heal: dict[str, Any] = {}
         for tc_raw in tool_calls:
             tool_call = ag._tool_call_from_lc(tc_raw, raw_text=user_text)
             if not (tool_call.raw_text or "").strip():
@@ -2244,6 +2280,15 @@ async def run_react_langgraph(
                 }
             )
             new_msgs.append(ToolMessage(content=llm_obs, tool_call_id=call_id))
+            if tool_call.tool_id == "python_repl":
+                from donna.graph.nodes.critic import python_repl_state_patch
+
+                repl_heal.update(
+                    python_repl_state_patch(
+                        code=str((tool_call.arguments or {}).get("code") or ""),
+                        observation=str(last_obs),
+                    )
+                )
             if tool_call.tool_id == "evaluate_slide_and_type" and last_obs:
                 return {
                     "messages": new_msgs,
@@ -2255,6 +2300,7 @@ async def run_react_langgraph(
                     "always_include": list(
                         state.get("always_include") or always
                     ),
+                    **repl_heal,
                 }
         # Stage 3.3: bounce corridor narrows always_include to the failed tool
         # only; otherwise keep planner/broker merge from state.
@@ -2281,6 +2327,7 @@ async def run_react_langgraph(
                 "always_include": list(
                     state.get("always_include") or always
                 ),
+                **repl_heal,
             }
         return {
             "messages": new_msgs,
@@ -2289,6 +2336,7 @@ async def run_react_langgraph(
             "final_raw": "",
             "halt": False,
             "always_include": always_out,
+            **repl_heal,
         }
 
     graph = compile_donna_react_graph(
@@ -2315,6 +2363,11 @@ async def run_react_langgraph(
         "final_raw": "",
         "halt": False,
         "always_include": list(always),
+        "execution_error": None,
+        "critique_history": [],
+        "retry_count": 0,
+        "max_retries": 3,
+        "last_code_snippet": "",
     }
 
     final_state: dict[str, Any] = dict(inputs)

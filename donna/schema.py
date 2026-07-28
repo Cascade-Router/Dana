@@ -157,3 +157,9 @@ class ReactGraphState(TypedDict, total=False):
     execution_plan: dict
     plan_index: int
     env_context: dict
+    # Self-healing python_repl critic loop (ephemeral).
+    execution_error: str | None
+    critique_history: list[str]
+    retry_count: int
+    max_retries: int
+    last_code_snippet: str
