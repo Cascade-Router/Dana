@@ -9,6 +9,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from dana.memory.compaction import CompactionEngine
 from dana.memory.store import EpisodicMemoryStore, get_episodic_store
 from dana.schema import ReactGraphState
 
@@ -16,6 +17,30 @@ logger = logging.getLogger(__name__)
 
 # Optional injectable LLM: (user_text, assistant_text) -> list of fact dicts.
 ConsolidateLLM = Callable[[str, str], list[dict[str, Any]]]
+
+# Spatial / UI element location facts expire after 15 minutes.
+SPATIAL_FACT_TTL_SECONDS = 900
+_SPATIAL_KEY_MARKERS = (
+    "spatial",
+    "coord",
+    "ui_element",
+    "element_location",
+    "ui_location",
+    "screen_pos",
+    "bbox",
+    "click_target",
+)
+
+
+def _is_spatial_or_ui_location_fact(fact: dict[str, Any]) -> bool:
+    """True for spatial coordinate / UI element location facts."""
+    key = str(fact.get("key") or "").lower()
+    if any(marker in key for marker in _SPATIAL_KEY_MARKERS):
+        return True
+    meta = str(fact.get("fact_type") or fact.get("kind") or "").lower()
+    if meta in {"spatial", "spatial_coordinate", "ui_element", "ui_location"}:
+        return True
+    return False
 
 _PREF_PATTERNS: tuple[tuple[re.Pattern[str], str, Any], ...] = (
     (
@@ -146,6 +171,7 @@ def make_hydrate_memory_node(
 
     def hydrate_memory_node(state: ReactGraphState) -> dict[str, Any]:
         mem = store if store is not None else get_episodic_store(db_path)
+        mem.prune_expired_entries()
         query = _extract_user_text(state)
         matches = mem.search_facts(query) if query else []
         # Always staple active preferences so dark-mode etc. survive sparse queries.
@@ -210,15 +236,23 @@ def make_consolidate_memory_node(
                 if not key:
                     continue
                 conf = float(fact.get("confidence_score") or 0.8)
+                ttl = fact.get("ttl_seconds")
+                if ttl is None and _is_spatial_or_ui_location_fact(fact):
+                    ttl = SPATIAL_FACT_TTL_SECONDS
+                elif ttl is not None:
+                    ttl = int(ttl)
                 mem.add_fact(
                     cat,
                     key,
                     fact.get("value"),
                     confidence_score=conf,
+                    ttl_seconds=ttl,
                 )
                 written.append(key)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("add_fact skipped (%s): %s", fact, exc)
+
+        CompactionEngine(time_fn=getattr(mem, "_time_fn", None)).compact_memory(mem)
 
         ctx = dict(state.get("memory_context") or {})
         if written:
