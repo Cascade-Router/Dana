@@ -20,7 +20,8 @@ opencv-python==5.0.0.93
 Pillow==12.3.0
 # gradio is installed by the Hugging Face Space SDK (see README.md sdk_version).
 # Do not pin it here — duplicate pins collide with the Space container build.
-numpy==2.5.1
+# Compatible with HF Space Python 3.10 images (numpy 2.5.x needs newer CPython).
+numpy>=1.26.0,<2.3.0
 sounddevice==0.5.5
 soundfile==0.14.0
 piper-tts==1.4.2
