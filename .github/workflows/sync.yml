@@ -29,10 +29,10 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
-          import donna.paths
-          import donna.schema
-          import donna.stdio_boot
-          from donna.stdio_boot import ensure_stdio
+          import dana.paths
+          import dana.schema
+          import dana.stdio_boot
+          from dana.stdio_boot import ensure_stdio
           assert callable(ensure_stdio)
           print("smoke_import_ok")
           PY

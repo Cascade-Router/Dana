@@ -5,14 +5,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from donna.memory.blackboard import (
+from dana.memory.blackboard import (
     enqueue_action,
     get_action,
     init_blackboard,
     is_heavy_actuator_tool,
 )
-from donna.middleware.actuator_executor import process_action
-from donna.operators.ghost_typist import (
+from dana.middleware.actuator_executor import process_action
+from dana.operators.ghost_typist import (
     GhostTypistOperator,
     evaluate_visual_guard,
     type_stealth_text,
@@ -109,9 +109,9 @@ def test_actuator_dispatches_type_stealth_text(
     init_blackboard(db)
 
     monkeypatch.setattr(
-        "donna.middleware.actuator_executor.resolve_action",
+        "dana.middleware.actuator_executor.resolve_action",
         lambda action_id, status, result="", db_path=None, **kw: __import__(
-            "donna.memory.blackboard", fromlist=["resolve_action"]
+            "dana.memory.blackboard", fromlist=["resolve_action"]
         ).resolve_action(
             action_id,
             status=status,
@@ -127,7 +127,7 @@ def test_actuator_dispatches_type_stealth_text(
         session_id="ghost-test",
         db_path=db,
     )
-    from donna.memory.blackboard import claim_next_pending
+    from dana.memory.blackboard import claim_next_pending
 
     claimed = claim_next_pending(db_path=db)
     assert claimed is not None

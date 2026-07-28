@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from donna.agentic import run_lightweight_chat
-from donna.memory.blackboard import (
+from dana.agentic import run_lightweight_chat
+from dana.memory.blackboard import (
     enqueue_action,
     format_background_system_alert,
     get_action,
@@ -14,8 +14,8 @@ from donna.memory.blackboard import (
     init_blackboard,
     resolve_action,
 )
-from donna.middleware.actuator_executor import process_action
-from donna.middleware.toast_notify import format_actuator_toast
+from dana.middleware.actuator_executor import process_action
+from dana.middleware.toast_notify import format_actuator_toast
 
 
 def test_get_and_clear_unread_notifications(tmp_path: Path) -> None:
@@ -66,14 +66,14 @@ def test_actuator_emits_notification_toast(
 ) -> None:  # noqa: ANN001
     db = tmp_path / "bb.db"
     out = tmp_path / "donna_telemetry.jsonl"
-    monkeypatch.setattr("donna.telemetry.TELEMETRY_JSONL_PATH", out)
+    monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
     monkeypatch.setenv("DONNA_DISABLE_TOAST", "1")
     monkeypatch.setattr(
-        "donna.middleware.actuator_executor.execute_tool_payload",
+        "dana.middleware.actuator_executor.execute_tool_payload",
         lambda tool_name, arguments, **_kw: "OK: done",
     )
     monkeypatch.setattr(
-        "donna.middleware.actuator_executor.resolve_action",
+        "dana.middleware.actuator_executor.resolve_action",
         lambda action_id, status, result="", db_path=None, **kw: resolve_action(
             action_id,
             status=status,
@@ -88,12 +88,12 @@ def test_actuator_emits_notification_toast(
         shown.append((title, message))
         return True
 
-    import donna.middleware.toast_notify as tn
+    import dana.middleware.toast_notify as tn
 
     monkeypatch.setattr(tn, "show_silent_toast", _fake_toast)
 
     init_blackboard(db)
-    from donna.memory.blackboard import claim_next_pending
+    from dana.memory.blackboard import claim_next_pending
 
     aid = enqueue_action("draft_cursor_prompt", {"objective": "t"}, db_path=db)
     claimed = claim_next_pending(db_path=db)
@@ -115,13 +115,13 @@ def test_chat_piggyback_injects_alert(
 ) -> None:  # noqa: ANN001
     db = tmp_path / "bb.db"
     out = tmp_path / "donna_telemetry.jsonl"
-    monkeypatch.setattr("donna.telemetry.TELEMETRY_JSONL_PATH", out)
+    monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
     monkeypatch.setattr(
-        "donna.memory.blackboard.BLACKBOARD_DB_PATH",
+        "dana.memory.blackboard.BLACKBOARD_DB_PATH",
         db,
     )
     # Also patch the imported default path used by init via module attribute.
-    import donna.memory.blackboard as bb
+    import dana.memory.blackboard as bb
 
     monkeypatch.setattr(bb, "BLACKBOARD_DB_PATH", db)
     init_blackboard(db)

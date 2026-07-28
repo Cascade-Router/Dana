@@ -9,7 +9,7 @@ from donna_jason_loop.jason_critic import (
     review_watchdog_code,
     static_code_safety_reject,
 )
-from donna.swarm.watchdog_graph import (
+from dana.swarm.watchdog_graph import (
     WatchdogState,
     _route_after_ast,
     _route_after_titan,
@@ -22,7 +22,7 @@ from donna.swarm.watchdog_graph import (
     repl_executor,
     terminal_failure,
 )
-from donna.swarm.watchdog_template import (
+from dana.swarm.watchdog_template import (
     assemble_watchdog_script,
     parse_coder_payload,
 )
@@ -112,7 +112,7 @@ def test_donna_coder_assembles_from_json(monkeypatch) -> None:
     fake_llm = MagicMock()
     fake_llm.invoke.return_value = _Msg()
     monkeypatch.setattr(
-        "donna.swarm.watchdog_graph._chat_ollama",
+        "dana.swarm.watchdog_graph._chat_ollama",
         lambda **_k: fake_llm,
     )
     out = donna_coder(
@@ -208,13 +208,13 @@ def test_repl_executor_runs_safe_script_and_forwards_tts(monkeypatch) -> None:
 
     spoken: list[str] = []
 
-    fake_agent = types.ModuleType("donna.core_agent")
+    fake_agent = types.ModuleType("dana.core_agent")
 
     def _capture(phrase: str) -> None:
         spoken.append(phrase)
 
     fake_agent.enqueue_speech = _capture  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "donna.core_agent", fake_agent)
+    monkeypatch.setitem(sys.modules, "dana.core_agent", fake_agent)
 
     code = assemble_watchdog_script(
         run_self_test="assert True\nprint('self-test ok')",
@@ -243,7 +243,7 @@ def test_repl_executor_uses_execution_jail_cwd(monkeypatch) -> None:
     import os
     from pathlib import Path
 
-    import donna.swarm.watchdog_graph as wg
+    import dana.swarm.watchdog_graph as wg
 
     captured: dict[str, object] = {}
 
@@ -336,11 +336,11 @@ def test_terminal_failure_logs_root_cause(monkeypatch) -> None:
     spoken: list[str] = []
     logged: list[tuple[str, str]] = []
 
-    fake_agent = types.ModuleType("donna.core_agent")
+    fake_agent = types.ModuleType("dana.core_agent")
     fake_agent.enqueue_speech = lambda p: spoken.append(p)  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "donna.core_agent", fake_agent)
+    monkeypatch.setitem(sys.modules, "dana.core_agent", fake_agent)
 
-    fake_log = types.ModuleType("donna.logging")
+    fake_log = types.ModuleType("dana.logging")
 
     def _lex(thread: str, message: str, *, exc=None):  # noqa: ANN001
         logged.append((thread, message))
@@ -348,7 +348,7 @@ def test_terminal_failure_logs_root_cause(monkeypatch) -> None:
         assert "aborted" in str(exc).lower() or "revisions" in str(exc).lower()
 
     fake_log.log_exception = _lex  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "donna.logging", fake_log)
+    monkeypatch.setitem(sys.modules, "dana.logging", fake_log)
 
     out = terminal_failure(
         _state(

@@ -8,10 +8,10 @@ user message (recency bias), not the system prompt.
 from __future__ import annotations
 
 from test_support_react import patch_scripted_llm
-from donna.agentic import REACT_MAX_ITERS, run_react_loop, wrap_user_query_for_react
-from donna.tools.broker import IntentBroker
-from donna.tools.schema import ToolCall
-from donna.prompts.spatial_synthesis import (
+from dana.agentic import REACT_MAX_ITERS, run_react_loop, wrap_user_query_for_react
+from dana.tools.broker import IntentBroker
+from dana.tools.schema import ToolCall
+from dana.prompts.spatial_synthesis import (
     SPATIAL_AWARENESS,
     build_agent_system_prompt,
     format_recency_context_block,

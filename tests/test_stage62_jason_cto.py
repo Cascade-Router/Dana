@@ -12,14 +12,14 @@ pytest.importorskip("pptx")
 from pptx import Presentation  # type: ignore[import-untyped]
 from pptx.util import Inches, Pt  # type: ignore[import-untyped]
 
-from donna.management.jason_supervisor import (
+from dana.management.jason_supervisor import (
     bulk_evaluate_slides,
     load_progress,
     reset_bulk_progress,
     strip_evaluation_text,
 )
-from donna.memory.blackboard import get_action, init_blackboard
-from donna.tools.slide_parser import parse_slides_in_directory, parse_slides_json
+from dana.memory.blackboard import get_action, init_blackboard
+from dana.tools.slide_parser import parse_slides_in_directory, parse_slides_json
 
 
 def _make_dummy_deck(path: Path) -> None:

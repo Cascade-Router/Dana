@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 
-import donna.tools.os_control as osc
+import dana.tools.os_control as osc
 
 
 def test_no_pyautogui_or_pynput_in_os_control() -> None:

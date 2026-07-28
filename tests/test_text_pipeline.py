@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 
 
 def _ensure_runtime_log_clipped() -> None:
-    from donna.logging import (
+    from dana.logging import (
         RUNTIME_LOG_MAX_LINES,
         RUNTIME_LOG_PATH,
         _runtime_log_lock,
@@ -54,8 +54,8 @@ def _ensure_runtime_log_clipped() -> None:
 
 
 def _broker_route(text: str):
-    from donna.tools.broker import IntentBroker
-    from donna.tools.stt_corrector import correct_stt
+    from dana.tools.broker import IntentBroker
+    from dana.tools.stt_corrector import correct_stt
 
     cleaned = correct_stt(text)
     broker = IntentBroker()
@@ -101,10 +101,10 @@ def turn1_titan_watchdog() -> None:
             _fail("watchdog task lost Notepad / Titan context")
 
     # Mirror production fast-path: tool_router must agree after STT middleware.
-    from donna.core_agent import tool_router
+    from dana.core_agent import tool_router
 
-    with patch("donna.core_agent.speak_tool_working_ack", lambda *_a, **_k: None), patch(
-        "donna.core_agent.SPATIAL_AGGREGATOR"
+    with patch("dana.core_agent.speak_tool_working_ack", lambda *_a, **_k: None), patch(
+        "dana.core_agent.SPATIAL_AGGREGATOR"
     ) as _agg:
         _agg.update_transcript = MagicMock()
         text_out, deferred = tool_router(raw)
@@ -218,9 +218,9 @@ def turn2_deep_research_swarm() -> None:
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         db = Path(tmp) / "research_scratchpad.db"
-        from donna.swarm import scratchpad as sp
-        from donna.swarm import swarm_main as sm
-        from donna.swarm.web_search_tool import SearchSummary, WebSearchTool
+        from dana.swarm import scratchpad as sp
+        from dana.swarm import swarm_main as sm
+        from dana.swarm.web_search_tool import SearchSummary, WebSearchTool
 
         with patch.object(sm, "_build_llm", _fake_build_llm), patch.object(
             sm, "open_session", lambda q: sp.open_session(q, db_path=db)
@@ -318,10 +318,10 @@ def turn3_over_strict_broker_fallback() -> None:
         _fail("broker invented relationship_reflection.txt filepath")
 
     # Production entry: tool_router should leave this as chat (no deferred file tool).
-    from donna.core_agent import tool_router
+    from dana.core_agent import tool_router
 
-    with patch("donna.core_agent.speak_tool_working_ack", lambda *_a, **_k: None), patch(
-        "donna.core_agent.SPATIAL_AGGREGATOR"
+    with patch("dana.core_agent.speak_tool_working_ack", lambda *_a, **_k: None), patch(
+        "dana.core_agent.SPATIAL_AGGREGATOR"
     ) as _agg:
         _agg.update_transcript = MagicMock()
         _text, deferred = tool_router(raw)
@@ -329,10 +329,10 @@ def turn3_over_strict_broker_fallback() -> None:
         _fail("tool_router deferred read_local_file for relationship chat")
 
     # Core Ollama chat node: run_react_loop with no forced file tool.
-    from donna.agentic import REACT_MAX_ITERS, run_react_loop
-    from donna.prompts.spatial_synthesis import build_agent_system_prompt
-    from donna.tools.broker import IntentBroker
-    from donna.tools.schema import ToolCall
+    from dana.agentic import REACT_MAX_ITERS, run_react_loop
+    from dana.prompts.spatial_synthesis import build_agent_system_prompt
+    from dana.tools.broker import IntentBroker
+    from dana.tools.schema import ToolCall
 
     executed: list[str] = []
 
@@ -481,12 +481,12 @@ def _run_forge_turn(
     image_color: tuple[int, int, int],
     description_needle: str,
 ) -> None:
-    from donna.agentic import REACT_MAX_ITERS, run_react_loop
-    from donna.paths import DOCS_DIR, GENERATED_TOOLS_DIR
-    from donna.prompts.spatial_synthesis import build_agent_system_prompt
-    from donna.tools.broker import IntentBroker
-    from donna.tools.registry import get_tool_registry
-    from donna.tools.schema import ToolCall
+    from dana.agentic import REACT_MAX_ITERS, run_react_loop
+    from dana.paths import DOCS_DIR, GENERATED_TOOLS_DIR
+    from dana.prompts.spatial_synthesis import build_agent_system_prompt
+    from dana.tools.broker import IntentBroker
+    from dana.tools.registry import get_tool_registry
+    from dana.tools.schema import ToolCall
     import donna_security
 
     image_path = DOCS_DIR / filepath_arg.split("/", 1)[-1]
@@ -534,13 +534,13 @@ def _run_forge_turn(
 
     try:
         with patch("langchain_ollama.ChatOllama", lambda **_k: _ForgeReactLLM()), patch(
-            "donna.swarm.tool_forge_graph._chat_ollama", lambda **_k: _ForgeLLM()
+            "dana.swarm.tool_forge_graph._chat_ollama", lambda **_k: _ForgeLLM()
         ), patch(
-            "donna.settings.is_dynamic_tool_synthesis_enabled", lambda: True
+            "dana.settings.is_dynamic_tool_synthesis_enabled", lambda: True
         ), patch.object(
             donna_security, "register_tool_schema", lambda *a, **k: {"id": expected_tool_id}
         ), patch(
-            "donna.tools.broker.reload_broker_registry", lambda *a, **k: None
+            "dana.tools.broker.reload_broker_registry", lambda *a, **k: None
         ):
             result = run_react_loop(
                 user_text=raw,

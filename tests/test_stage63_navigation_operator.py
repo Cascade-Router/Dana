@@ -6,15 +6,15 @@ import json
 import math
 from pathlib import Path
 
-from donna.memory.blackboard import (
+from dana.memory.blackboard import (
     LATEST_VISUAL_CONTEXT_KEY,
     enqueue_action,
     init_blackboard,
     is_heavy_actuator_tool,
     set_sensor_state,
 )
-from donna.middleware.actuator_executor import process_action
-from donna.operators.nav_and_click import (
+from dana.middleware.actuator_executor import process_action
+from dana.operators.nav_and_click import (
     NavigationOperator,
     find_target_box,
     generate_bezier_path,
@@ -93,7 +93,7 @@ def test_navigation_emits_operator_telemetry(
 ) -> None:  # noqa: ANN001
     monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
     out = tmp_path / "donna_telemetry.jsonl"
-    monkeypatch.setattr("donna.telemetry.TELEMETRY_JSONL_PATH", out)
+    monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
     result = navigate_and_click("Target", visual_context=DUMMY_VISUAL)
     assert result.startswith("OK: navigate_and_click")
     tags = [
@@ -112,14 +112,14 @@ def test_actuator_navigate_and_click(
     init_blackboard(db)
     set_sensor_state(LATEST_VISUAL_CONTEXT_KEY, DUMMY_VISUAL, db_path=db)
     monkeypatch.setattr(
-        "donna.memory.blackboard.BLACKBOARD_DB_PATH",
+        "dana.memory.blackboard.BLACKBOARD_DB_PATH",
         db,
     )
-    import donna.memory.blackboard as bb
+    import dana.memory.blackboard as bb
 
     monkeypatch.setattr(bb, "BLACKBOARD_DB_PATH", db)
     monkeypatch.setattr(
-        "donna.middleware.actuator_executor.resolve_action",
+        "dana.middleware.actuator_executor.resolve_action",
         lambda action_id, status, result="", db_path=None, **kw: bb.resolve_action(
             action_id,
             status=status,

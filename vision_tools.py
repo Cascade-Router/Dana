@@ -1,8 +1,8 @@
-"""Compatibility shim — implementation lives in ``donna.vision_tools``."""
+"""Compatibility shim — implementation lives in ``dana.vision_tools``."""
 
 from __future__ import annotations
 
-from donna.vision_tools import (  # noqa: F401
+from dana.vision_tools import (  # noqa: F401
     FRAME_SIZE,
     ScreenAgent,
     VideoAgent,

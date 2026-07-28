@@ -7,8 +7,8 @@ def test_orb_icon_glyph_and_font_pulse() -> None:
     """Legacy name kept; asserts Stage 8.9.9 logo pipeline (no Unicode glyph)."""
     import customtkinter as ctk
 
-    from donna.audio.multi_voice_tts import PERSONA_COLORS, set_active_tts_agent
-    from donna.ui.assistive_orb import (
+    from dana.audio.multi_voice_tts import PERSONA_COLORS, set_active_tts_agent
+    from dana.ui.assistive_orb import (
         AssistiveTouchOrb,
         _ICON_SIZE_MAX,
         _ICON_SIZE_MIN,

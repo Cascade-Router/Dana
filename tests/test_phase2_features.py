@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from donna.swarm.multi_forge import looks_like_multi_forge, split_forge_goals
-from donna.tools.broker import _TOOL_FORGE_HINT_RE, get_broker
-from donna.telemetry import note_tool_event, write_dashboard
-from donna.paths import DASHBOARD_PATH
-from donna.audio.vad_consumer import SILERO_SPEECH_THRESHOLD, SILERO_WINDOW_SAMPLES
-from donna.core_agent import VAD_FRAME_SAMPLES, VAD_SILENCE_MS
+from dana.swarm.multi_forge import looks_like_multi_forge, split_forge_goals
+from dana.tools.broker import _TOOL_FORGE_HINT_RE, get_broker
+from dana.telemetry import note_tool_event, write_dashboard
+from dana.paths import DASHBOARD_PATH
+from dana.audio.vad_consumer import SILERO_SPEECH_THRESHOLD, SILERO_WINDOW_SAMPLES
+from dana.core_agent import VAD_FRAME_SAMPLES, VAD_SILENCE_MS
 
 
 MASS = (

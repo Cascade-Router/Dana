@@ -1,6 +1,6 @@
 """Pytest bootstrap: keep CAMGRASPER repo root on ``sys.path``.
 
-Tests live under ``tests/``; packages ``donna`` / ``donna_security`` stay at repo root.
+Tests live under ``tests/``; packages ``dana`` / ``donna_security`` stay at repo root.
 """
 
 from __future__ import annotations

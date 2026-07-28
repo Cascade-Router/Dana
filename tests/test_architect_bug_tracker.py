@@ -8,9 +8,9 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from donna.bug_tracker import load_bug_tracker, open_bugs
-from donna.tools.broker import IntentBroker
-from donna.tools.schema import ToolCall
+from dana.bug_tracker import load_bug_tracker, open_bugs
+from dana.tools.broker import IntentBroker
+from dana.tools.schema import ToolCall
 
 
 def test_broker_routes_build_a_tool_to_architect_with_goal() -> None:
@@ -41,7 +41,7 @@ def test_broker_never_vault_on_create_tool() -> None:
 
 
 def test_architect_empty_args_pulls_raw_text() -> None:
-    from donna.core_agent import execute_tool_call
+    from dana.core_agent import execute_tool_call
 
     call = ToolCall(
         tool_id="architect_new_tool",
@@ -49,16 +49,16 @@ def test_architect_empty_args_pulls_raw_text() -> None:
         raw_text="build a tool that adds two numbers",
     )
     with patch(
-        "donna.settings.is_dynamic_tool_synthesis_enabled", lambda: True
+        "dana.settings.is_dynamic_tool_synthesis_enabled", lambda: True
     ), patch(
-        "donna.swarm.tool_forge_graph.route_tool_not_found",
+        "dana.swarm.tool_forge_graph.route_tool_not_found",
         lambda q, missing_tool="", model="llama3.2": {
             "status": "loaded",
             "loaded_tool": "add_two_numbers",
             "feedback": "ok",
         },
     ), patch(
-        "donna.tools.broker.reload_broker_registry", lambda *a, **k: None
+        "dana.tools.broker.reload_broker_registry", lambda *a, **k: None
     ):
         obs = execute_tool_call(call)
     assert "OK:" in obs and "add_two_numbers" in obs, obs
@@ -68,7 +68,7 @@ def test_architect_empty_args_pulls_raw_text() -> None:
 def test_bug_tracker_append_roundtrip() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "bug_tracker.json"
-        from donna.bug_tracker import log_bug_to_tracker, list_todo_basket
+        from dana.bug_tracker import log_bug_to_tracker, list_todo_basket
 
         entry = log_bug_to_tracker(
             "ERROR: missing goal",
@@ -96,7 +96,7 @@ def test_list_todo_basket_broker_route() -> None:
 
 
 def test_titan_repair_graph_writes_pending_patch() -> None:
-    from donna.swarm import titan_repair as tr
+    from dana.swarm import titan_repair as tr
 
     bug = {
         "id": "bug_test_1",
@@ -104,7 +104,7 @@ def test_titan_repair_graph_writes_pending_patch() -> None:
         "error": "ValueError: boom",
         "traceback": (
             'Traceback (most recent call last):\n'
-            '  File "C:/Users/Example/Project/donna/agentic.py", line 1, in <module>\n'
+            '  File "C:/Users/Example/Project/dana/agentic.py", line 1, in <module>\n'
             "    raise ValueError('boom')\n"
             "ValueError: boom"
         ),
@@ -138,7 +138,7 @@ def test_titan_repair_graph_writes_pending_patch() -> None:
             return MagicMock(
                 content=json.dumps(
                     {
-                        "target_file": "donna/agentic.py",
+                        "target_file": "dana/agentic.py",
                         "summary": "guard empty text",
                         "code": safe_code,
                     }
@@ -151,13 +151,13 @@ def test_titan_repair_graph_writes_pending_patch() -> None:
         tracker = Path(tmp) / "bug_tracker.json"
         tracker.write_text(json.dumps([bug]), encoding="utf-8")
         with patch.object(tr, "PENDING_PATCHES_DIR", pending), patch(
-            "donna.swarm.tool_forge_graph._chat_ollama", lambda **k: _LLM()
+            "dana.swarm.tool_forge_graph._chat_ollama", lambda **k: _LLM()
         ), patch(
-            "donna.swarm.titan_repair._chat_ollama", lambda **k: _LLM()
+            "dana.swarm.titan_repair._chat_ollama", lambda **k: _LLM()
         ), patch(
-            "donna.swarm.titan_repair.open_bugs", lambda path=None: [bug]
+            "dana.swarm.titan_repair.open_bugs", lambda path=None: [bug]
         ), patch(
-            "donna.swarm.titan_repair.mark_bug_status", lambda *a, **k: True
+            "dana.swarm.titan_repair.mark_bug_status", lambda *a, **k: True
         ):
             summary = tr.run_titan_repair(query="fix bugs", model="llama3.2")
         files = list(pending.glob("*.json"))

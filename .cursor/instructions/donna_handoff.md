@@ -48,9 +48,9 @@ Review these under `C:\Users\Amix\Desktop\CAMGRASPER\tracker\pending_patches` be
 2. Read `tracker/bug_tracker.json` and the latest file in
    `tracker/pending_patches/`.
 3. Reproduce the failure with the headless harness if applicable:
-   `python -m donna.evals.headless_harness`
+   `python -m dana.evals.headless_harness`
 4. Apply a **minimal** fix to the implicated module(s); prefer tests in
-   `tests/` / `donna/evals/`.
+   `tests/` / `dana/evals/`.
 5. Do **not** weaken Tool Forge AST / security gates or production sandbox locks.
 6. Re-run focused unit tests, then the headless harness Pass@k suite.
 7. Summarize the diff and residual risks for the user.

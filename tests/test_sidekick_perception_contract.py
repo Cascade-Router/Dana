@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from donna.agentic import get_donna_mode, restore_voice_mode, set_donna_mode
-from donna.memory.blackboard import (
+from dana.agentic import get_donna_mode, restore_voice_mode, set_donna_mode
+from dana.memory.blackboard import (
     PERCEPTION_OBJECTS_KEY,
     PERCEPTION_OCR_KEY,
     SCHEMA_OBJECTS_V1,
@@ -23,7 +23,7 @@ from donna.memory.blackboard import (
     sidekick_health,
     try_acquire_actuator_lease,
 )
-from donna.tools.broker import IntentBroker
+from dana.tools.broker import IntentBroker
 
 
 def test_objects_and_ocr_are_separate_topics(tmp_path: Path) -> None:
@@ -56,7 +56,7 @@ def test_ocr_reader_rejects_vision_output_prose(tmp_path: Path) -> None:
     db = tmp_path / "bb.db"
     init_blackboard(db)
     # Manually poison OCR key with YOLO prose + wrong kind — should reject.
-    from donna.memory.blackboard import set_sensor_state
+    from dana.memory.blackboard import set_sensor_state
 
     set_sensor_state(
         PERCEPTION_OCR_KEY,
@@ -86,7 +86,7 @@ def test_voice_mode_not_stolen_by_job_escalation(tmp_path: Path, monkeypatch) ->
     db = tmp_path / "bb.db"
     init_blackboard(db)
     monkeypatch.setattr(
-        "donna.memory.blackboard.BLACKBOARD_DB_PATH",
+        "dana.memory.blackboard.BLACKBOARD_DB_PATH",
         db,
     )
     set_donna_mode("chat", as_voice=True)
@@ -113,7 +113,7 @@ def test_sidekick_health_degraded_without_heartbeats(tmp_path: Path) -> None:
     db = tmp_path / "bb.db"
     init_blackboard(db)
     # Point helpers at temp db via explicit path through sensor reads.
-    from donna.memory.blackboard import publish_heartbeat, HEARTBEAT_VISION_KEY
+    from dana.memory.blackboard import publish_heartbeat, HEARTBEAT_VISION_KEY
 
     h = sidekick_health(db_path=db)
     assert h["degraded"] is True

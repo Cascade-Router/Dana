@@ -8,20 +8,20 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from donna.agentic import get_donna_mode, set_donna_mode
-from donna.handoff import execute_handoff, parse_handoff_payload
-from donna.schema import Handoff
-from donna.tools.guards import (
+from dana.agentic import get_donna_mode, set_donna_mode
+from dana.handoff import execute_handoff, parse_handoff_payload
+from dana.schema import Handoff
+from dana.tools.guards import (
     DraftCursorTicketPayload,
     format_validation_bounce,
     guard_tool_call,
 )
-from donna.tools.general.draft_cursor_prompt import draft_cursor_prompt
+from dana.tools.general.draft_cursor_prompt import draft_cursor_prompt
 
 
 _GOOD_CTX = (
     "**Technical intent:** Harden MoA ticket CONTEXT validation.\n"
-    "**Target Files:** donna/moa_tool_shim.py, donna/tools/guards.py\n\n"
+    "**Target Files:** dana/moa_tool_shim.py, dana/tools/guards.py\n\n"
     "Root cause: Thin reasoner plans wrote intent-echo tickets.\n"
     "Step-by-step changes:\n"
     "1. Require Target files / Root cause / Steps / Acceptance in CONTEXT.\n"
@@ -46,7 +46,7 @@ def test_draft_cursor_payload_rejects_intent_echo() -> None:
     echo = (
         "**Technical intent:** improve cursor handling somehow across the MoA "
         "pipeline without concrete symbols or acceptance criteria yet provided.\n"
-        "**Target Files:** donna/agentic.py\n"
+        "**Target Files:** dana/agentic.py\n"
     )
     # Pad past min_length so model_validator (intent-echo) runs.
     echo = echo + (" padding" * 20)
@@ -88,7 +88,7 @@ def test_guard_tool_call_raises_and_bounce_prompt() -> None:
 def test_draft_cursor_prompt_returns_validation_error_string() -> None:
     out = draft_cursor_prompt(
         objective="improve cursor pro...",
-        context="**Technical intent:** x\n**Target Files:** donna/agentic.py",
+        context="**Technical intent:** x\n**Target Files:** dana/agentic.py",
     )
     assert out.startswith("ERROR:")
     assert "Validation Error" in out
@@ -116,7 +116,7 @@ def test_execute_handoff_switches_mode_and_emits_telemetry(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
     out = tmp_path / "donna_telemetry.jsonl"
-    monkeypatch.setattr("donna.telemetry.TELEMETRY_JSONL_PATH", out)
+    monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
     set_donna_mode("chat")
     ho = Handoff(
         target_agent="Vision_Agent",
@@ -142,7 +142,7 @@ def test_localized_rejection_loop_single_retry_semantics() -> None:
             "draft_cursor_prompt",
             {
                 "objective": "thin...",
-                "context": "**Technical intent:** x\n**Target Files:** donna/a.py",
+                "context": "**Technical intent:** x\n**Target Files:** dana/a.py",
             },
         )
         raise AssertionError("expected ValidationError")

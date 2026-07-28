@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import time
 
-from donna.middleware.human_yield import (
+from dana.middleware.human_yield import (
     note_physical_input,
     reset_physical_input_clock,
     yield_check,
 )
-from donna.operators.ghost_typist import GhostTypistOperator
+from dana.operators.ghost_typist import GhostTypistOperator
 
 
 def setup_function() -> None:  # noqa: D103
@@ -68,7 +68,7 @@ def test_ghost_typist_yields_mid_type(monkeypatch) -> None:  # noqa: ANN001
             note_physical_input(source="simulated_mouse")
         return True
 
-    import donna.middleware.human_yield as hy
+    import dana.middleware.human_yield as hy
 
     _orig = hy.yield_check
 

@@ -3,7 +3,7 @@
 Run once:
   python register_startup.py
 
-Also creates Desktop + Startup-folder shortcuts with ``donna/assets/donna.ico``.
+Also creates Desktop + Startup-folder shortcuts with ``dana/assets/donna.ico``.
 Uses ``pythonw.exe`` / ``start_donna.bat`` so no console window appears at logon.
 """
 
@@ -15,7 +15,7 @@ import sys
 
 def main() -> int:
     try:
-        from donna.stdio_boot import ensure_stdio
+        from dana.stdio_boot import ensure_stdio
 
         ensure_stdio()
     except Exception:
@@ -26,7 +26,7 @@ def main() -> int:
 
     # Canonical installer path — HKCU Run + Desktop/Startup .lnk with IconLocation.
     try:
-        from donna.tools.setup_startup import (
+        from dana.tools.setup_startup import (
             app_icon_path,
             enable_startup,
             write_desktop_shortcut,

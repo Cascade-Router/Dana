@@ -10,14 +10,14 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END
 
-from donna.agentic import requires_tool_graph, set_donna_mode
-from donna.agentic_planning import build_structured_plan, desktop_plan_intent
-from donna.agentic_react_graph import (
+from dana.agentic import requires_tool_graph, set_donna_mode
+from dana.agentic_planning import build_structured_plan, desktop_plan_intent
+from dana.agentic_react_graph import (
     _route_after_agent,
     compile_donna_react_graph,
 )
-from donna.schema import ReactGraphState
-from donna.tools.broker import merge_bound_tool_ids
+from dana.schema import ReactGraphState
+from dana.tools.broker import merge_bound_tool_ids
 
 
 # Catalog subset used by planner / binder evals (no disk registry dependency).

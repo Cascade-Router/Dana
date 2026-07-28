@@ -15,11 +15,11 @@ def _dry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_kill_donna_processes_launches_bat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from donna.core_agent import DonnaGUI
+    from dana.core_agent import DonnaGUI
 
     bat = tmp_path / "stop_donna.bat"
     bat.write_text("@echo off\n", encoding="utf-8")
-    monkeypatch.setattr("donna.paths.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("dana.paths.PROJECT_ROOT", tmp_path)
 
     launched: list[dict] = []
 
@@ -27,7 +27,7 @@ def test_kill_donna_processes_launches_bat(monkeypatch: pytest.MonkeyPatch, tmp_
         launched.append({"args": args, "kwargs": kwargs})
         return SimpleNamespace(pid=4242)
 
-    monkeypatch.setattr("donna.core_agent.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("dana.core_agent.subprocess.Popen", _fake_popen)
 
     app = DonnaGUI()
     app.update_idletasks()
@@ -45,9 +45,9 @@ def test_kill_donna_processes_launches_bat(monkeypatch: pytest.MonkeyPatch, tmp_
 
 
 def test_kill_donna_missing_bat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from donna.core_agent import DonnaGUI
+    from dana.core_agent import DonnaGUI
 
-    monkeypatch.setattr("donna.paths.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("dana.paths.PROJECT_ROOT", tmp_path)
     app = DonnaGUI()
     result = app.kill_donna_processes()
     assert result["ok"] is False
@@ -56,14 +56,14 @@ def test_kill_donna_missing_bat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
 
 
 def test_stop_button_shows_terminating(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from donna.core_agent import DonnaGUI
+    from dana.core_agent import DonnaGUI
 
     bat = tmp_path / "stop_donna.bat"
     bat.write_text("@echo off\n", encoding="utf-8")
-    monkeypatch.setattr("donna.paths.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("dana.paths.PROJECT_ROOT", tmp_path)
     calls: list[int] = []
     monkeypatch.setattr(
-        "donna.core_agent.subprocess.Popen",
+        "dana.core_agent.subprocess.Popen",
         lambda *a, **k: calls.append(1) or SimpleNamespace(pid=1),
     )
 
@@ -83,8 +83,8 @@ def test_live_trace_has_no_footer_kill_switch() -> None:
     """Stage 8.9.8 — footer KILL SWITCH removed; header STOP DONNA is sole exit."""
     import customtkinter as ctk
 
-    from donna.core_agent import DonnaGUI
-    from donna.ui.trace_window import LiveTracePanel
+    from dana.core_agent import DonnaGUI
+    from dana.ui.trace_window import LiveTracePanel
 
     root = ctk.CTk()
     root.withdraw()

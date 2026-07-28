@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def test_load_premium_logo_lanczos_ctkimage() -> None:
-    from donna.ui.logo import (
+    from dana.ui.logo import (
         load_premium_logo,
         load_premium_logo_pil,
         resolve_logo_path,
@@ -32,7 +32,7 @@ def test_load_premium_logo_lanczos_ctkimage() -> None:
 
 
 def test_gui_header_and_dashboard_use_ctkimage() -> None:
-    from donna.core_agent import DonnaGUI
+    from dana.core_agent import DonnaGUI
 
     app = DonnaGUI()
     try:
@@ -50,9 +50,9 @@ def test_gui_header_and_dashboard_use_ctkimage() -> None:
 def test_orb_uses_png_or_smooth_polygon_not_glyph() -> None:
     import customtkinter as ctk
 
-    from donna.audio.multi_voice_tts import PERSONA_COLORS, set_active_tts_agent
-    from donna.ui import assistive_orb as orb_mod
-    from donna.ui.assistive_orb import AssistiveTouchOrb, _ICON_SIZE_MAX, _ICON_SIZE_MIN
+    from dana.audio.multi_voice_tts import PERSONA_COLORS, set_active_tts_agent
+    from dana.ui import assistive_orb as orb_mod
+    from dana.ui.assistive_orb import AssistiveTouchOrb, _ICON_SIZE_MAX, _ICON_SIZE_MIN
 
     # Glyph remnants must be gone.
     assert not hasattr(orb_mod, "_ICON_GLYPH")

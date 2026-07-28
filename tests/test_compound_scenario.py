@@ -30,14 +30,14 @@ if str(_ROOT) not in sys.path:
 
 os.environ.setdefault("DONNA_DISABLE_TOAST", "0")
 
-from donna.paths import LOGS_DIR  # noqa: E402
+from dana.paths import LOGS_DIR  # noqa: E402
 
 SESSION_ID = "compound-scenario-stage5"
 MARKER = f"COMPOUND_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
 
 SEEDED_VISUAL = (
     "Detected: VSCode terminal showing 'RuntimeError: CUDA out of memory' "
-    "in donna/cascade_router.py during Florence-2 inference."
+    "in dana/cascade_router.py during Florence-2 inference."
 )
 
 TURN1 = "Donna, what error is currently on my screen?"
@@ -75,7 +75,7 @@ class StepResult:
 
 def _silence_tts() -> None:
     try:
-        import donna.core_agent as ca
+        import dana.core_agent as ca
 
         ca.enqueue_speech = lambda *a, **k: None  # type: ignore[assignment]
         ca.wait_for_speech_idle = lambda *a, **k: True  # type: ignore[assignment]
@@ -87,19 +87,19 @@ def _silence_tts() -> None:
 
 
 def _bind_session() -> None:
-    import donna.agentic as ag
+    import dana.agentic as ag
 
     ag._REACT_THREAD_ID = SESSION_ID
 
 
 def _telemetry_path() -> Path:
-    from donna.telemetry import TELEMETRY_JSONL_PATH
+    from dana.telemetry import TELEMETRY_JSONL_PATH
 
     return Path(TELEMETRY_JSONL_PATH)
 
 
 def _bb_path() -> Path:
-    from donna.memory.blackboard import BLACKBOARD_DB_PATH
+    from dana.memory.blackboard import BLACKBOARD_DB_PATH
 
     return Path(BLACKBOARD_DB_PATH)
 
@@ -125,7 +125,7 @@ def _mark_telemetry() -> int:
 
 
 def _bb_append(role: str, content: str, *, agent: str = "", intent: str = "") -> None:
-    from donna.memory import append_message, ensure_session, set_session_meta
+    from dana.memory import append_message, ensure_session, set_session_meta
 
     ensure_session(SESSION_ID, current_agent=agent, active_intent=intent)
     if agent or intent:
@@ -134,14 +134,14 @@ def _bb_append(role: str, content: str, *, agent: str = "", intent: str = "") ->
 
 
 def _bb_load(*, limit: int = 40) -> list[dict[str, Any]]:
-    from donna.memory import load_messages
+    from dana.memory import load_messages
 
     return list(load_messages(SESSION_ID, limit=limit))
 
 
 def _bb_snapshot() -> dict[str, Any]:
     """Final Blackboard state for the diagnostic report."""
-    from donna.memory import get_session_meta, load_messages, read_visual_state
+    from dana.memory import get_session_meta, load_messages, read_visual_state
 
     msgs = load_messages(SESSION_ID, limit=50)
     meta = get_session_meta(SESSION_ID) or {}
@@ -192,8 +192,8 @@ class _ActuatorDaemon:
         self._orig_execute_tool_payload: Any = None
 
     def start(self) -> None:
-        from donna.middleware import actuator_executor as ae
-        from donna.middleware.actuator_executor import poll_once
+        from dana.middleware import actuator_executor as ae
+        from dana.middleware.actuator_executor import poll_once
 
         # Prefer live web_search; if ddgs missing, return deterministic research.
         _orig = ae.execute_tool_payload
@@ -246,16 +246,16 @@ class _ActuatorDaemon:
             self._thread.join(timeout=5.0)
         # Prevent monkeypatch leak into later pytest modules.
         if self._orig_execute_tool_payload is not None:
-            from donna.middleware import actuator_executor as ae
+            from dana.middleware import actuator_executor as ae
 
             ae.execute_tool_payload = self._orig_execute_tool_payload
             self._orig_execute_tool_payload = None
 
 
 def step1_sensor_inject() -> StepResult:
-    from donna.memory.blackboard import publish_perception_objects
-    from donna.memory import read_visual_state
-    from donna.telemetry import log_sensor_vision
+    from dana.memory.blackboard import publish_perception_objects
+    from dana.memory import read_visual_state
+    from dana.telemetry import log_sensor_vision
 
     r = StepResult("Step 1 (Sensor Injection)", "(setup)", False)
     # read_visual_state prefers perception.objects over legacy latest_visual_context.
@@ -280,13 +280,13 @@ def step1_sensor_inject() -> StepResult:
 
 
 def step2_visual_awareness() -> StepResult:
-    from donna.agentic import (
+    from dana.agentic import (
         build_lightweight_chat_system_prompt,
         clear_chat_memory,
         run_lightweight_chat,
         set_donna_mode,
     )
-    from donna.memory import read_visual_state
+    from dana.memory import read_visual_state
 
     r = StepResult("Step 2 (Visual Awareness)", TURN1, False)
     clear_chat_memory()
@@ -298,7 +298,7 @@ def step2_visual_awareness() -> StepResult:
         raise RuntimeError("live vision forbidden in compound Step 2")
 
     try:
-        import donna.vision_tools as vt
+        import dana.vision_tools as vt
 
         vt.analyze_visual_context = _tripwire  # type: ignore[assignment]
     except Exception as exc:  # noqa: BLE001
@@ -307,7 +307,7 @@ def step2_visual_awareness() -> StepResult:
     visual = read_visual_state()
     answer = ""
     try:
-        from donna.core_agent import OLLAMA_MODEL, ask_ollama_messages
+        from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
 
         result = run_lightweight_chat(
             user_text=TURN1,
@@ -345,11 +345,11 @@ def step2_visual_awareness() -> StepResult:
 
 
 def step3_research_enqueue() -> StepResult:
-    from donna.agentic import run_react_loop, set_donna_mode
-    from donna.handoff import execute_handoff
-    from donna.schema import Handoff
-    from donna.tools.broker import IntentBroker
-    from donna.tools.schema import ToolCall
+    from dana.agentic import run_react_loop, set_donna_mode
+    from dana.handoff import execute_handoff
+    from dana.schema import Handoff
+    from dana.tools.broker import IntentBroker
+    from dana.tools.schema import ToolCall
 
     r = StepResult("Step 3 (Research Enqueue)", TURN2, False)
     set_donna_mode("research")
@@ -379,7 +379,7 @@ def step3_research_enqueue() -> StepResult:
     tool_trace: list[dict[str, Any]] = []
 
     def execute_fn(tc: ToolCall) -> str:
-        from donna.core_agent import execute_tool_call
+        from dana.core_agent import execute_tool_call
 
         return execute_tool_call(tc)
 
@@ -435,7 +435,7 @@ def step3_research_enqueue() -> StepResult:
         traceback.print_exc()
 
     if action_id is None:
-        from donna.memory.blackboard import enqueue_action
+        from dana.memory.blackboard import enqueue_action
 
         action_id = enqueue_action(
             "web_search",
@@ -462,7 +462,7 @@ def step3_research_enqueue() -> StepResult:
 def step4_actuator_wait(
     actuator: _ActuatorDaemon, search_action_id: int | None
 ) -> StepResult:
-    from donna.memory.blackboard import get_action
+    from dana.memory.blackboard import get_action
 
     r = StepResult("Step 4 (Actuator Wait)", "(wait)", False)
     if search_action_id is None:
@@ -504,11 +504,11 @@ def step4_actuator_wait(
 
 
 def step5_synthesis_draft(search_result: str) -> StepResult:
-    from donna.agentic import run_react_loop, set_donna_mode
-    from donna.handoff import execute_handoff
-    from donna.schema import Handoff
-    from donna.tools.broker import IntentBroker
-    from donna.tools.schema import ToolCall
+    from dana.agentic import run_react_loop, set_donna_mode
+    from dana.handoff import execute_handoff
+    from dana.schema import Handoff
+    from dana.tools.broker import IntentBroker
+    from dana.tools.schema import ToolCall
 
     r = StepResult("Step 5 (Synthesis & Draft)", TURN3, False)
     set_donna_mode("developer")
@@ -537,7 +537,7 @@ def step5_synthesis_draft(search_result: str) -> StepResult:
     # Structured context that passes Pydantic guards and embeds research facts.
     forced_context = (
         "Technical intent: Apply Florence-2 8GB VRAM OOM mitigations in cascade router.\n"
-        "Target Files: donna/cascade_router.py\n"
+        "Target Files: dana/cascade_router.py\n"
         "Root cause: Florence-2 inference during cascade routing allocates too much "
         "VRAM (batch>1 / full precision) causing CUDA OOM.\n"
         "Step-by-step changes: 1) Set Florence-2 batch_size=1. 2) Enable 4-bit NF4 "
@@ -554,7 +554,7 @@ def step5_synthesis_draft(search_result: str) -> StepResult:
     args_blob = ""
 
     def execute_fn(tc: ToolCall) -> str:
-        from donna.core_agent import execute_tool_call
+        from dana.core_agent import execute_tool_call
 
         return execute_tool_call(tc)
 
@@ -576,7 +576,7 @@ def step5_synthesis_draft(search_result: str) -> StepResult:
                 "You are Donna's MoA path. Call draft_cursor_prompt once. "
                 "Hydrate from Blackboard research: include batch_size=1 and "
                 "quantization (4-bit NF4 or 8-bit) for Florence-2 on 8GB VRAM. "
-                "Target donna/cascade_router.py.\n\n"
+                "Target dana/cascade_router.py.\n\n"
                 f"=== BLACKBOARD {SESSION_ID} ===\n{bb_brief}\n"
                 f"=== WEB_SEARCH RESULT ===\n{research[:1200]}\n=== END ==="
             ),
@@ -616,7 +616,7 @@ def step5_synthesis_draft(search_result: str) -> StepResult:
         traceback.print_exc()
 
     if action_id is None:
-        from donna.memory.blackboard import enqueue_action
+        from dana.memory.blackboard import enqueue_action
 
         action_id = enqueue_action(
             "draft_cursor_prompt",
@@ -658,12 +658,12 @@ def step5_synthesis_draft(search_result: str) -> StepResult:
 
 
 def step6_piggyback(actuator: _ActuatorDaemon, draft_action_id: int | None) -> StepResult:
-    from donna.agentic import (
+    from dana.agentic import (
         build_lightweight_chat_system_prompt,
         run_lightweight_chat,
         set_donna_mode,
     )
-    from donna.memory.blackboard import get_action
+    from dana.memory.blackboard import get_action
 
     r = StepResult("Step 6 (Piggyback Confirm)", TURN4, False)
     set_donna_mode("chat")
@@ -690,7 +690,7 @@ def step6_piggyback(actuator: _ActuatorDaemon, draft_action_id: int | None) -> S
                 "in the background. Ready when you are."
             )
         try:
-            from donna.core_agent import ask_ollama_messages
+            from dana.core_agent import ask_ollama_messages
 
             return ask_ollama_messages(messages, model=model)
         except Exception:  # noqa: BLE001
@@ -793,7 +793,7 @@ def run_suite() -> tuple[list[StepResult], dict[str, Any]]:
 
     _silence_tts()
     _bind_session()
-    from donna.memory import ensure_session
+    from dana.memory import ensure_session
 
     ensure_session(SESSION_ID, current_agent="Chat_Node", active_intent="compound")
     _mark_telemetry()

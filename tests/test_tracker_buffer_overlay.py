@@ -6,8 +6,8 @@ import time
 
 import numpy as np
 
-from donna import tracker as tr
-from donna.vision.overlay import RoiOverlay
+from dana import tracker as tr
+from dana.vision.overlay import RoiOverlay
 
 
 def test_rolling_buffer_maxlen_and_cadence() -> None:

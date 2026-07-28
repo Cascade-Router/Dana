@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def test_header_pill_only_and_accent() -> None:
-    from donna.core_agent import (
+    from dana.core_agent import (
         DonnaGUI,
         _UI_ACCENT,
         _TRACE_STATUS_ICONS,

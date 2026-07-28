@@ -10,7 +10,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END
 from langgraph.types import Command
 
-from donna.agentic_react_graph import (
+from dana.agentic_react_graph import (
     _route_after_agent,
     _route_after_jason_review,
     _route_after_ticket_approval,
@@ -19,11 +19,11 @@ from donna.agentic_react_graph import (
     extract_draft_cursor_payload,
     message_has_draft_cursor_prompt,
 )
-from donna.middleware import hitl_ticket as hitl
-from donna.schema import ReactGraphState
+from dana.middleware import hitl_ticket as hitl
+from dana.schema import ReactGraphState
 
 _VALID_CTX = (
-    "Target files: donna/middleware/hitl_ticket.py\n"
+    "Target files: dana/middleware/hitl_ticket.py\n"
     "Root cause: HITL must pause only on validated draft_cursor_prompt payloads.\n"
     "Step-by-step changes: 1) interrupt 2) GUI approve/deny 3) resume tools.\n"
     "Acceptance criteria: Approve runs tools; Deny halts without tool execution."
@@ -122,11 +122,11 @@ def test_langgraph_interrupt_approve_runs_tools(monkeypatch: pytest.MonkeyPatch)
         }
 
     monkeypatch.setattr(
-        "donna.agentic_react_graph.generate_jason_ticket_critique",
+        "dana.agentic_react_graph.generate_jason_ticket_critique",
         lambda *_a, **_k: "This ticket accurately captures the API constraints.",
     )
     monkeypatch.setattr(
-        "donna.core_agent.enqueue_speech",
+        "dana.core_agent.enqueue_speech",
         lambda *_a, **_k: None,
     )
 
@@ -165,11 +165,11 @@ def test_langgraph_interrupt_deny_skips_tools(monkeypatch: pytest.MonkeyPatch) -
         return {"halt": True, "final_raw": "should-not-run"}
 
     monkeypatch.setattr(
-        "donna.agentic_react_graph.generate_jason_ticket_critique",
+        "dana.agentic_react_graph.generate_jason_ticket_critique",
         lambda *_a, **_k: "Missing visual bounds — deny.",
     )
     monkeypatch.setattr(
-        "donna.core_agent.enqueue_speech",
+        "dana.core_agent.enqueue_speech",
         lambda *_a, **_k: None,
     )
 
@@ -210,8 +210,8 @@ def test_gui_hitl_buttons_toggle() -> None:
     os.environ.setdefault("DONNA_OS_DRY_RUN", "1")
     import customtkinter as ctk
 
-    from donna.ui.trace_window import LiveTracePanel
-    from donna.schema import TraceEvent
+    from dana.ui.trace_window import LiveTracePanel
+    from dana.schema import TraceEvent
 
     root = ctk.CTk()
     root.withdraw()

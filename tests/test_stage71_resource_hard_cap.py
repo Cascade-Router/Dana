@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from donna.middleware.resource_cap import (
+from dana.middleware.resource_cap import (
     apply_cpu_half_affinity,
     apply_torch_vram_half_cap,
     half_cpu_core_ids,
@@ -40,13 +40,13 @@ def test_apply_torch_vram_half_cap_smoke() -> None:
 
 
 def test_vision_poller_imports_resource_cap() -> None:
-    import donna.middleware.vision_poller as vp
+    import dana.middleware.vision_poller as vp
 
     assert hasattr(vp, "apply_cpu_half_affinity")
     assert hasattr(vp, "apply_torch_vram_half_cap")
 
 
 def test_actuator_imports_resource_cap() -> None:
-    import donna.middleware.actuator_executor as ae
+    import dana.middleware.actuator_executor as ae
 
     assert hasattr(ae, "apply_cpu_half_affinity")

@@ -13,7 +13,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"donna/core_agent.py" = ["E402", "F401"]
+"dana/core_agent.py" = ["E402", "F401"]
 "tests/test_e2e_lifecycle.py" = ["E402"]
 "verify_agentic.py" = ["E402"]
 
@@ -28,10 +28,10 @@ ignore_missing_imports = true
 warn_unused_ignores = false
 check_untyped_defs = true
 files = [
-  "donna",
+  "dana",
   "spatial_context.py",
 ]
 
 [[tool.mypy.overrides]]
-module = "donna.core_agent"
+module = "dana.core_agent"
 ignore_errors = true

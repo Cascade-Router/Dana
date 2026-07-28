@@ -10,11 +10,11 @@ import os
 import re
 import sys
 
-from donna.agentic import REACT_MAX_ITERS, run_react_loop
-from donna.os_automation import run_terminal_command
-from donna.tools.broker import IntentBroker
-from donna.tools.schema import ToolCall
-from donna.prompts.spatial_synthesis import build_agent_system_prompt
+from dana.agentic import REACT_MAX_ITERS, run_react_loop
+from dana.os_automation import run_terminal_command
+from dana.tools.broker import IntentBroker
+from dana.tools.schema import ToolCall
+from dana.prompts.spatial_synthesis import build_agent_system_prompt
 
 QUERY = (
     "Can you list the files in my current directory and tell me if there "
@@ -60,9 +60,9 @@ def _looks_like_raw_dump(final: str, observation: str) -> bool:
 
 def main() -> int:
     try:
-        import donna.core_agent as _agent  # noqa: F401 — ensure agent package loads (Ollama host)
+        import dana.core_agent as _agent  # noqa: F401 — ensure agent package loads (Ollama host)
     except ImportError as exc:
-        print(f"ERROR: could not import donna.core_agent: {exc}", file=sys.stderr)
+        print(f"ERROR: could not import dana.core_agent: {exc}", file=sys.stderr)
         return 1
 
     broker = IntentBroker()

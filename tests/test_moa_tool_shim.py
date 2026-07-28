@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
-from donna.moa_tool_shim import (
+from dana.moa_tool_shim import (
     defer_forced_tool_for_moa,
     enrich_forced_tool_from_plan,
     formatter_system_injection,
     parse_plan_fields,
     should_use_moa_tool_shim,
 )
-from donna.tools.schema import ToolCall
+from dana.tools.schema import ToolCall
 
 
 def test_parse_plan_fields() -> None:
     plan = (
         "INTENT: draft_cursor_prompt\n"
         "OBJECTIVE: improve deepseek tool binding with a two-stage MoA shim\n"
-        "CONTEXT: Target Files: donna/agentic_react_graph.py, donna/moa_tool_shim.py\n"
+        "CONTEXT: Target Files: dana/agentic_react_graph.py, dana/moa_tool_shim.py\n"
         "ARGS:\nNOTES: none\n"
     )
     fields = parse_plan_fields(plan)
@@ -30,7 +30,7 @@ def test_parse_plan_fields_markdown_bold() -> None:
     plan = (
         "**INTENT**: draft_cursor_prompt\n"
         "**OBJECTIVE**: improve deepseek tool binding\n"
-        "**CONTEXT**: Target files: donna/moa_tool_shim.py\n"
+        "**CONTEXT**: Target files: dana/moa_tool_shim.py\n"
     )
     fields = parse_plan_fields(plan)
     assert fields["intent"] == "draft_cursor_prompt"
@@ -48,7 +48,7 @@ def test_enrich_draft_cursor_prefers_longer_reasoner_text() -> None:
         "INTENT: draft_cursor_prompt\n"
         "OBJECTIVE: improve deepseek's MoA tool-binding shim so R1 plans and "
         "Llama formats draft_cursor_prompt without truncating ticket context\n"
-        "CONTEXT: Target Files: donna/moa_tool_shim.py and donna/agentic_react_graph.py. "
+        "CONTEXT: Target Files: dana/moa_tool_shim.py and dana/agentic_react_graph.py. "
         "Do not touch ToolForge gates.\n"
     )
     enriched = enrich_forced_tool_from_plan(thin, plan)

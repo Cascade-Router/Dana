@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
-from donna.paths import PROJECT_ROOT, TOOLS_JSON
+from dana.paths import PROJECT_ROOT, TOOLS_JSON
 
 _ROOT = str(PROJECT_ROOT)
 DEFAULT_ROADMAP_PATH = str(TOOLS_JSON.parent / "roadmap.json")

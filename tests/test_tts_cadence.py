@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from donna.core_agent import (
+from dana.core_agent import (
     PIPER_LENGTH_SCALE,
     _resample_pcm,
     sanitize_text_for_tts,

@@ -7,20 +7,20 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from donna.swarm.scratchpad import (
+from dana.swarm.scratchpad import (
     format_findings_for_writer,
     init_scratchpad,
     open_session,
     read_findings,
     write_finding,
 )
-from donna.swarm.swarm_main import (
+from dana.swarm.swarm_main import (
     _parse_plan,
     build_swarm_graph,
     planner_agent,
     search_agent,
 )
-from donna.swarm.web_search_tool import (
+from dana.swarm.web_search_tool import (
     WebSearchTool,
     build_web_search_tool,
     search_once,
@@ -113,11 +113,11 @@ def test_search_agent_binds_web_search_tool(monkeypatch, tmp_path: Path) -> None
             return msg
 
     monkeypatch.setattr(
-        "donna.swarm.swarm_main._build_llm",
+        "dana.swarm.swarm_main._build_llm",
         lambda **_k: _FakeLLM(),
     )
     monkeypatch.setattr(
-        "donna.swarm.swarm_main.search_once",
+        "dana.swarm.swarm_main.search_once",
         lambda q, **_k: MagicMock(
             ok=True,
             query=q,
@@ -126,11 +126,11 @@ def test_search_agent_binds_web_search_tool(monkeypatch, tmp_path: Path) -> None
         ),
     )
     monkeypatch.setattr(
-        "donna.swarm.swarm_main.write_finding",
+        "dana.swarm.swarm_main.write_finding",
         lambda *a, **k: 1,
     )
     monkeypatch.setattr(
-        "donna.swarm.swarm_main.read_findings",
+        "dana.swarm.swarm_main.read_findings",
         lambda *_a, **_k: [],
     )
 
@@ -156,11 +156,11 @@ def test_planner_agent_parses_objectives(monkeypatch) -> None:
             return MagicMock(content='["obj1", "obj2"]')
 
     monkeypatch.setattr(
-        "donna.swarm.swarm_main._build_llm",
+        "dana.swarm.swarm_main._build_llm",
         lambda **_k: _FakeLLM(),
     )
     monkeypatch.setattr(
-        "donna.swarm.swarm_main.open_session",
+        "dana.swarm.swarm_main.open_session",
         lambda _q: "sess123",
     )
     out = planner_agent(
@@ -178,7 +178,7 @@ def test_planner_agent_parses_objectives(monkeypatch) -> None:
 
 
 def test_broker_deep_research_routes_to_swarm() -> None:
-    from donna.tools.broker import IntentBroker
+    from dana.tools.broker import IntentBroker
 
     broker = IntentBroker()
     call = broker.parse_utterance("Deep research on solid-state batteries")
@@ -189,7 +189,7 @@ def test_broker_deep_research_routes_to_swarm() -> None:
 
 
 def test_broker_quick_research_still_web_search() -> None:
-    from donna.tools.broker import IntentBroker
+    from dana.tools.broker import IntentBroker
 
     broker = IntentBroker()
     call = broker.parse_utterance("look up the capital of France")

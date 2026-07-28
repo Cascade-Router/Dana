@@ -7,18 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from donna.agentic_react_graph import (
+from dana.agentic_react_graph import (
     _heuristic_jason_critique,
     generate_jason_ticket_critique,
     jason_ticket_review_node,
 )
-from donna.memory.feedback_log import (
+from dana.memory.feedback_log import (
     clear_feedback_logs,
     feedback_log_path,
     log_human_feedback,
 )
-from donna.middleware import hitl_ticket as hitl
-from donna.schema import ReactGraphState
+from dana.middleware import hitl_ticket as hitl
+from dana.schema import ReactGraphState
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ def test_generate_critique_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(*_a, **_k):  # noqa: ANN001
         raise ConnectionError("offline")
 
-    monkeypatch.setattr("donna.core_agent.ask_ollama_messages", _boom)
+    monkeypatch.setattr("dana.core_agent.ask_ollama_messages", _boom)
     c = generate_jason_ticket_critique(
         "Fix the API schema validation",
         objective="Harden draft_cursor_prompt against empty objective",
@@ -56,14 +56,14 @@ def test_jason_review_node_speaks_and_stores(
     spoken: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
-        "donna.agentic_react_graph.generate_jason_ticket_critique",
+        "dana.agentic_react_graph.generate_jason_ticket_critique",
         lambda *_a, **_k: "This ticket accurately captures the API constraints.",
     )
 
     def _speak(text: str, *, agent_id: str | None = None, **_kw) -> None:  # noqa: ANN001
         spoken.append((text, str(agent_id or "")))
 
-    monkeypatch.setattr("donna.core_agent.enqueue_speech", _speak)
+    monkeypatch.setattr("dana.core_agent.enqueue_speech", _speak)
 
     from langchain_core.messages import AIMessage, HumanMessage
 
@@ -97,7 +97,7 @@ def test_log_human_feedback_appends_jsonl(
 ) -> None:
     target = tmp_path / "feedback_logs.jsonl"
     monkeypatch.setattr(
-        "donna.memory.feedback_log.feedback_log_path",
+        "dana.memory.feedback_log.feedback_log_path",
         lambda: target,
     )
     path = log_human_feedback(
@@ -135,7 +135,7 @@ def test_submit_decision_writes_feedback(
 ) -> None:
     target = tmp_path / "feedback_logs.jsonl"
     monkeypatch.setattr(
-        "donna.memory.feedback_log.feedback_log_path",
+        "dana.memory.feedback_log.feedback_log_path",
         lambda: target,
     )
     monkeypatch.setenv("DONNA_HITL_REQUIRE_GUI", "1")
@@ -162,7 +162,7 @@ def test_clear_feedback_logs_truncates(
     target.write_text('{"human_decision":"approve"}\n', encoding="utf-8")
     assert target.stat().st_size > 0
     monkeypatch.setattr(
-        "donna.memory.feedback_log.feedback_log_path",
+        "dana.memory.feedback_log.feedback_log_path",
         lambda: target,
     )
     result = clear_feedback_logs()
@@ -173,7 +173,7 @@ def test_clear_feedback_logs_truncates(
 
     missing = tmp_path / "missing" / "feedback_logs.jsonl"
     monkeypatch.setattr(
-        "donna.memory.feedback_log.feedback_log_path",
+        "dana.memory.feedback_log.feedback_log_path",
         lambda: missing,
     )
     result2 = clear_feedback_logs()
@@ -184,7 +184,7 @@ def test_clear_feedback_logs_truncates(
 def test_dev_tools_clear_logs_button() -> None:
     import customtkinter as ctk
 
-    from donna.ui.trace_window import LiveTracePanel
+    from dana.ui.trace_window import LiveTracePanel
 
     root = ctk.CTk()
     root.withdraw()

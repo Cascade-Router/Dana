@@ -6,15 +6,15 @@ import json
 import threading
 from pathlib import Path
 
-from donna.memory.blackboard import (
+from dana.memory.blackboard import (
     LATEST_VISUAL_CONTEXT_KEY,
     get_sensor_state,
     init_blackboard,
     read_visual_state,
     set_sensor_state,
 )
-from donna.middleware.vision_poller import publish_visual_context
-from donna.tools.broker import merge_bound_tool_ids
+from dana.middleware.vision_poller import publish_visual_context
+from dana.tools.broker import merge_bound_tool_ids
 
 
 def test_sensor_state_upsert_and_read_visual_state(tmp_path: Path) -> None:
@@ -44,19 +44,19 @@ def test_sensor_state_upsert_and_read_visual_state(tmp_path: Path) -> None:
 def test_publish_emits_sensor_vision_telemetry(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
-    from donna.memory.blackboard import publish_perception_objects
+    from dana.memory.blackboard import publish_perception_objects
 
     db = tmp_path / "bb.db"
     out = tmp_path / "donna_telemetry.jsonl"
-    monkeypatch.setattr("donna.telemetry.TELEMETRY_JSONL_PATH", out)
+    monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
     monkeypatch.setattr(
-        "donna.middleware.vision_poller.publish_perception_objects",
+        "dana.middleware.vision_poller.publish_perception_objects",
         lambda text, **kwargs: publish_perception_objects(
             text, db_path=db, **{k: v for k, v in kwargs.items() if k != "db_path"}
         ),
     )
     monkeypatch.setattr(
-        "donna.middleware.vision_poller.publish_heartbeat",
+        "dana.middleware.vision_poller.publish_heartbeat",
         lambda *a, **k: None,
     )
     init_blackboard(db)

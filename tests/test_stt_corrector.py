@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from donna.tools.stt_corrector import (
+from dana.tools.stt_corrector import (
     correct_stt,
     correct_titan_codename_stt,
     reload_vocabulary,

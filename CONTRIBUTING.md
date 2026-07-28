@@ -10,7 +10,7 @@ Thank you for helping harden a local-first agentic voice OS. Donna prioritizes *
 2. **Respect mode isolation** — Chat mode must not gain tool-jail side effects; Developer paths must not leak into the chat memory buffer.
 3. **Tk is main-thread only** — Background workers update the Live Trace exclusively through `emit_trace()` → `gui_telemetry_queue` (see [`docs/telemetry_and_ui.md`](docs/telemetry_and_ui.md)).
 4. **Single instance** — Never run two `run.py` processes against the same workspace; the socket lock exists to protect the jail.
-5. **Do not modify** ToolForge security gates, offline routing structure, or `donna/paths.py` unless a maintainer explicitly assigns that work.
+5. **Do not modify** ToolForge security gates, offline routing structure, or `dana/paths.py` unless a maintainer explicitly assigns that work.
 
 ---
 

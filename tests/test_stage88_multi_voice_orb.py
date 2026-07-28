@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from donna.audio.multi_voice_tts import (
+from dana.audio.multi_voice_tts import (
     AGENT_VOICE_MAP,
     PERSONA_COLORS,
     get_active_tts_agent,
@@ -19,7 +19,7 @@ from donna.audio.multi_voice_tts import (
     uses_receptionist_piper,
     VOICE_PROFILE_LABELS,
 )
-from donna.core_agent import _parse_tts_spool_item, chunk_text_for_tts, enqueue_speech
+from dana.core_agent import _parse_tts_spool_item, chunk_text_for_tts, enqueue_speech
 
 
 @pytest.fixture(autouse=True)
@@ -30,8 +30,8 @@ def _dry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_agent_voice_map_and_profiles() -> None:
-    assert resolve_voice_id("broker") == "donna"
-    assert resolve_voice_id("llama") == "donna"
+    assert resolve_voice_id("broker") == "dana"
+    assert resolve_voice_id("llama") == "dana"
     assert resolve_voice_id("moa") == "moa"
     assert resolve_voice_id("MoA_Reasoner") == "moa"
     assert resolve_voice_id("deepseek") == "moa"
@@ -52,7 +52,7 @@ def test_agent_voice_map_and_profiles() -> None:
 
 def test_synthesize_speech_by_agent_id(tmp_path, monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setenv("DONNA_AUDIO_DRY_RUN", "1")
-    for agent, voice in (("broker", "donna"), ("moa", "moa"), ("vision", "vision")):
+    for agent, voice in (("broker", "dana"), ("moa", "moa"), ("vision", "vision")):
         out = synthesize_speech(
             f"Hello from {agent}.",
             agent_id=agent,
@@ -63,8 +63,8 @@ def test_synthesize_speech_by_agent_id(tmp_path, monkeypatch) -> None:  # noqa: 
 
 
 def test_enqueue_speech_carries_agent_id(monkeypatch) -> None:  # noqa: ANN001
-    from donna import core_agent as ca
-    from donna.agentic import StreamSentenceTtsBuffer, feed_stream_tts, reset_stream_sentence_tts
+    from dana import core_agent as ca
+    from dana.agentic import StreamSentenceTtsBuffer, feed_stream_tts, reset_stream_sentence_tts
 
     # Drain any leftovers.
     ca.flush_tts_queue()
@@ -89,7 +89,7 @@ def test_enqueue_speech_carries_agent_id(monkeypatch) -> None:  # noqa: ANN001
 
 
 def test_stream_tts_agent_helpers() -> None:
-    from donna.agentic import (
+    from dana.agentic import (
         agent_id_from_label,
         get_stream_tts_agent,
         set_stream_tts_agent,
@@ -106,7 +106,7 @@ def test_stream_tts_agent_helpers() -> None:
 def test_orb_pulse_animation_scales_and_colors() -> None:
     import customtkinter as ctk
 
-    from donna.ui.assistive_orb import (
+    from dana.ui.assistive_orb import (
         AssistiveTouchOrb,
         _ICON_SIZE_MAX,
         _ICON_SIZE_MIN,

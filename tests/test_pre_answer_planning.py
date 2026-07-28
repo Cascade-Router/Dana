@@ -8,22 +8,22 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
-from donna.agentic import requires_tool_graph
-from donna.agentic_planning import (
+from dana.agentic import requires_tool_graph
+from dana.agentic_planning import (
     build_structured_plan,
     desktop_plan_intent,
     executor_node,
     planner_node,
 )
-from donna.agentic_react_graph import compile_donna_react_graph
-from donna.schema import ReactGraphState
+from dana.agentic_react_graph import compile_donna_react_graph
+from dana.schema import ReactGraphState
 
 
 _DESKTOP_UTTERANCE = (
     "Summarize active window and create a desktop log ticket"
 )
 _VALID_CTX = (
-    "Target files: donna/agentic_planning.py\n"
+    "Target files: dana/agentic_planning.py\n"
     "Root cause: user asked for an active-window summary plus a desktop log ticket.\n"
     "Step-by-step changes: 1) vision summarize 2) draft_cursor_prompt 3) HITL gate.\n"
     "Acceptance criteria: Planner arms vision+ticket; Approve runs tools after HITL."
@@ -140,10 +140,10 @@ def test_compile_graph_planner_executor_before_hitl(monkeypatch) -> None:
         return {"halt": True, "final_raw": "queued", "last_obs": "ok"}
 
     monkeypatch.setattr(
-        "donna.agentic_react_graph.generate_jason_ticket_critique",
+        "dana.agentic_react_graph.generate_jason_ticket_critique",
         lambda *_a, **_k: "Critique ok for planning corridor.",
     )
-    monkeypatch.setattr("donna.core_agent.enqueue_speech", lambda *_a, **_k: None)
+    monkeypatch.setattr("dana.core_agent.enqueue_speech", lambda *_a, **_k: None)
 
     graph = compile_donna_react_graph(
         agent,

@@ -6,11 +6,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from donna.tools.swarm_dispatcher import dispatch_research_swarm
+from dana.tools.swarm_dispatcher import dispatch_research_swarm
 
 
 def test_dispatch_research_swarm_returns_ok_without_blocking() -> None:
-    with patch("donna.tools.swarm_dispatcher.threading.Thread") as mock_thread_cls:
+    with patch("dana.tools.swarm_dispatcher.threading.Thread") as mock_thread_cls:
         mock_thread = MagicMock()
         mock_thread_cls.return_value = mock_thread
 
@@ -38,7 +38,7 @@ def test_dispatch_research_swarm_missing_topic() -> None:
 
 
 def test_react_protocol_quick_vs_deep() -> None:
-    from donna.prompts.spatial_synthesis import REACT_PROTOCOL
+    from dana.prompts.spatial_synthesis import REACT_PROTOCOL
 
     assert "If the user asks for a quick fact, use `web_search`" in REACT_PROTOCOL
     assert "dispatch_research_swarm" in REACT_PROTOCOL

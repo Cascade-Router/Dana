@@ -1,4 +1,4 @@
-from donna.agentic import _obs_fallback
+from dana.agentic import _obs_fallback
 
 
 def test_forge_ok_not_fallback() -> None:

@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from donna.agentic import extract_r1_think_blocks, strip_r1_think_blocks
-from donna.memory import init_blackboard, load_reasoning_traces
-from donna.moa_tool_shim import _llm_text, run_moa_reasoner_stage
+from dana.agentic import extract_r1_think_blocks, strip_r1_think_blocks
+from dana.memory import init_blackboard, load_reasoning_traces
+from dana.moa_tool_shim import _llm_text, run_moa_reasoner_stage
 
 
 def test_extract_closed_think_block() -> None:
@@ -52,9 +52,9 @@ def test_moa_reasoner_files_think_and_returns_clean_only(
     db = tmp_path / "bb.db"
     init_blackboard(db)
     tel = tmp_path / "donna_telemetry.jsonl"
-    monkeypatch.setattr("donna.telemetry.TELEMETRY_JSONL_PATH", tel)
+    monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", tel)
     monkeypatch.setattr(
-        "donna.memory.blackboard.BLACKBOARD_DB_PATH",
+        "dana.memory.blackboard.BLACKBOARD_DB_PATH",
         db,
     )
 
@@ -64,7 +64,7 @@ def test_moa_reasoner_files_think_and_returns_clean_only(
         "INTENT: draft_cursor_prompt\n"
         "OBJECTIVE: Harden MoA think stripping\n"
         "CONTEXT:\n"
-        "Target files: donna/moa_tool_shim.py\n"
+        "Target files: dana/moa_tool_shim.py\n"
         "Root cause: think tags bloated formatter context\n"
         "Step-by-step changes: 1. extract 2. file 3. hand off clean text\n"
         "Acceptance criteria: clean plan has no think tags\n"
@@ -75,30 +75,30 @@ def test_moa_reasoner_files_think_and_returns_clean_only(
             return SimpleNamespace(content=payload)
 
     monkeypatch.setattr(
-        "donna.moa_tool_shim._build_reasoner_llm",
+        "dana.moa_tool_shim._build_reasoner_llm",
         lambda **_kwargs: _FakeLLM(),
     )
     monkeypatch.setattr(
-        "donna.moa_tool_shim.note_high_complexity_deepseek_latency",
+        "dana.moa_tool_shim.note_high_complexity_deepseek_latency",
         lambda *_a, **_k: None,
     )
     monkeypatch.setattr(
-        "donna.moa_tool_shim.reasoner_model_name",
+        "dana.moa_tool_shim.reasoner_model_name",
         lambda: "deepseek-r1:test",
     )
 
     # Force blackboard helpers to use tmp db.
     monkeypatch.setattr(
-        "donna.memory.blackboard.BLACKBOARD_DB_PATH",
+        "dana.memory.blackboard.BLACKBOARD_DB_PATH",
         db,
     )
 
-    from donna.memory import ensure_session
+    from dana.memory import ensure_session
 
     sid = ensure_session("m3-sess", current_agent="MoA_Reasoner", db_path=db)
     # Patch append path used inside moa_tool_shim (imports append_reasoning_trace
-    # from donna.memory which re-exports blackboard with default path).
-    import donna.memory.blackboard as bb
+    # from dana.memory which re-exports blackboard with default path).
+    import dana.memory.blackboard as bb
 
     monkeypatch.setattr(bb, "BLACKBOARD_DB_PATH", db)
 

@@ -5,6 +5,6 @@ Your task is to execute ONLY the tickets marked `[PENDING]`.
 CRITICAL SAFETY RULES:
 1. **Zero Hallucination:** If a ticket's "Context & Instructions" are vague, brief, or lack specific architectural details, DO NOT attempt to write the code. Mark the ticket as `[FAILED]` and write "Instructions too ambiguous" in the receipt.
 2. **Minimal Diffs:** Only modify the exact lines necessary to satisfy the objective. Do not refactor surrounding code, rename variables, or "clean up" the file.
-3. **Pipeline Integrity:** Under no circumstances should you modify ToolForge security gates, the offline routing structure, or `donna/paths.py`.
+3. **Pipeline Integrity:** Under no circumstances should you modify ToolForge security gates, the offline routing structure, or `dana/paths.py`.
 
 Once complete, punch the receipt in the ledger by changing the status to `[RESOLVED]` and adding a 1-sentence summary of the exact lines you changed.

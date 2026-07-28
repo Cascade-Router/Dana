@@ -7,12 +7,12 @@ TTS, or live network I/O.
 
 from __future__ import annotations
 
-import donna.core_agent as agent
+import dana.core_agent as agent
 from test_support_react import patch_scripted_llm
-from donna.agentic import REACT_MAX_ITERS, run_react_loop
-from donna.tools.broker import IntentBroker
-from donna.tools.schema import ToolCall
-from donna.prompts.spatial_synthesis import build_agent_system_prompt
+from dana.agentic import REACT_MAX_ITERS, run_react_loop
+from dana.tools.broker import IntentBroker
+from dana.tools.schema import ToolCall
+from dana.prompts.spatial_synthesis import build_agent_system_prompt
 
 FAVORITE_COLOR = "neon green"
 

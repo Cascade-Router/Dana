@@ -9,14 +9,14 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from donna.agentic_react_graph import compile_donna_react_graph
-from donna.graph.nodes.memory import (
+from dana.agentic_react_graph import compile_donna_react_graph
+from dana.graph.nodes.memory import (
     heuristic_extract_facts,
     make_consolidate_memory_node,
     make_hydrate_memory_node,
 )
-from donna.memory.store import EpisodicMemoryStore
-from donna.schema import ReactGraphState
+from dana.memory.store import EpisodicMemoryStore
+from dana.schema import ReactGraphState
 
 
 @pytest.fixture

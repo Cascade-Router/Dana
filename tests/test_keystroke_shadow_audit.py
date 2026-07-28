@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from donna.management.jason_supervisor import (
+from dana.management.jason_supervisor import (
     audit_mode_enabled,
     enqueue_stealth_evaluation,
     feather_project_rules_path,
@@ -14,12 +14,12 @@ from donna.management.jason_supervisor import (
     reason_slide_evaluation,
     reset_bulk_progress,
 )
-from donna.memory.blackboard import (
+from dana.memory.blackboard import (
     claim_next_pending,
     init_blackboard,
     is_heavy_actuator_tool,
 )
-from donna.operators.keystroke import (
+from dana.operators.keystroke import (
     press_key,
     press_left_arrow,
     press_right_arrow,
@@ -74,7 +74,7 @@ def test_reasoner_injects_feather_rules(monkeypatch) -> None:  # noqa: ANN001
         return "Meets word limit."
 
     monkeypatch.setattr(
-        "donna.management.jason_supervisor.load_feather_project_rules",
+        "dana.management.jason_supervisor.load_feather_project_rules",
         lambda: "Max 30 words per slide.",
     )
     out = reason_slide_evaluation(
@@ -98,7 +98,7 @@ def test_audit_mode_writes_shadow_file_not_queue(
     init_blackboard(db)
     audit = tmp_path / "shadow_run_audit.txt"
     monkeypatch.setattr(
-        "donna.management.jason_supervisor.shadow_run_audit_path",
+        "dana.management.jason_supervisor.shadow_run_audit_path",
         lambda: audit,
     )
 
@@ -125,7 +125,7 @@ def test_jason_bulk_audit_mode_no_pending_actions(
     from pptx import Presentation  # type: ignore[import-untyped]
     from pptx.util import Inches, Pt  # type: ignore[import-untyped]
 
-    from donna.management.jason_supervisor import bulk_evaluate_slides
+    from dana.management.jason_supervisor import bulk_evaluate_slides
 
     monkeypatch.setenv("DONNA_AUDIT_MODE", "1")
     monkeypatch.setenv("DONNA_JASON_DRY_REASONER", "1")
@@ -134,7 +134,7 @@ def test_jason_bulk_audit_mode_no_pending_actions(
     reset_bulk_progress(db_path=db)
     audit = tmp_path / "shadow_run_audit.txt"
     monkeypatch.setattr(
-        "donna.management.jason_supervisor.shadow_run_audit_path",
+        "dana.management.jason_supervisor.shadow_run_audit_path",
         lambda: audit,
     )
 

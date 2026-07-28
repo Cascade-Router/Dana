@@ -5,11 +5,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from donna.management.jason_supervisor import (
+from dana.management.jason_supervisor import (
     format_wake_cto_ticket,
     recovery_mode,
 )
-from donna.memory.blackboard import (
+from dana.memory.blackboard import (
     claim_next_pending,
     enqueue_action,
     get_action,
@@ -17,7 +17,7 @@ from donna.memory.blackboard import (
     init_blackboard,
     set_sensor_state,
 )
-from donna.middleware.actuator_executor import process_action
+from dana.middleware.actuator_executor import process_action
 
 
 def test_error_context_column_exists(tmp_path: Path) -> None:
@@ -37,7 +37,7 @@ def test_navigate_missing_target_pulls_andon(
     db = tmp_path / "bb.db"
     init_blackboard(db)
     # Screen has no matching Target box (typed OCR topic).
-    from donna.memory.blackboard import publish_perception_ocr
+    from dana.memory.blackboard import publish_perception_ocr
 
     publish_perception_ocr(
         "Florence-2 OCR: empty desktop, no Target, no Enter Comments.",
@@ -95,7 +95,7 @@ def test_navigate_missing_target_pulls_andon(
             break
         pending_tools.append(str(nxt.get("tool_name") or ""))
         # Resolve so we can drain without re-andon loops on retry failure.
-        from donna.memory.blackboard import resolve_action
+        from dana.memory.blackboard import resolve_action
 
         resolve_action(
             int(nxt["action_id"]),
@@ -114,7 +114,7 @@ def test_navigate_missing_target_pulls_andon(
 def test_recovery_mode_direct(tmp_path: Path) -> None:
     db = tmp_path / "bb.db"
     init_blackboard(db)
-    from donna.memory.blackboard import publish_perception_ocr
+    from dana.memory.blackboard import publish_perception_ocr
 
     publish_perception_ocr(
         "modal popup Close button [10,10,40,40]",

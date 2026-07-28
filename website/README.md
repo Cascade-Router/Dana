@@ -52,5 +52,5 @@ Workflow: `.github/workflows/deploy_website.yml` — builds on `website/**` push
 
 ## Assets
 
-- `public/dana-logo.png` — copy of `donna/ui/assets/dana_logo_highres.png`
+- `public/dana-logo.png` — copy of `dana/ui/assets/dana_logo_highres.png`
 - `public/favicon.svg` — teal DA mark

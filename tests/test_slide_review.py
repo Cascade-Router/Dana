@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from donna.cascade_router import (
+from dana.cascade_router import (
     decide_route,
     is_visual_task,
     reason_over_context,
     run_visual_moa,
 )
-from donna.tools.broker import _SLIDE_REVIEW_HINT_RE, get_broker, reload_broker_registry
-from donna.tools.slide_review import _format_comment, _parse_reasoner_output, evaluate_slide_and_type
+from dana.tools.broker import _SLIDE_REVIEW_HINT_RE, get_broker, reload_broker_registry
+from dana.tools.slide_review import _format_comment, _parse_reasoner_output, evaluate_slide_and_type
 
 
 INJECT = (
@@ -51,11 +51,11 @@ def test_pipeline_dry_run_moa(monkeypatch) -> None:
     monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
 
     monkeypatch.setattr(
-        "donna.tools.os_control.capture_screen_png_bytes",
+        "dana.tools.os_control.capture_screen_png_bytes",
         lambda: b"\x89PNG\r\n\x1a\nfake",
     )
     monkeypatch.setattr(
-        "donna.cascade_router.run_visual_moa",
+        "dana.cascade_router.run_visual_moa",
         lambda *_a, **_k: {
             "vision_text": "Title: Roadmap. Body: Ship fast.",
             "final": "VERDICT: PASS\nWORD_COUNT: 4\nCOMMENT: Clear title; under 30 words.",
@@ -84,8 +84,8 @@ def test_reasoner_fallback_string(monkeypatch) -> None:
             raise RuntimeError("deepseek missing")
         return "VERDICT: PASS\nWORD_COUNT: 3\nCOMMENT: ok"
 
-    monkeypatch.setattr("donna.cascade_router._ollama_chat", _chat)
-    monkeypatch.setattr("donna.cascade_router.local_model_name", lambda: "llama3.2")
+    monkeypatch.setattr("dana.cascade_router._ollama_chat", _chat)
+    monkeypatch.setattr("dana.cascade_router.local_model_name", lambda: "llama3.2")
     out = reason_over_context("Title: Hi", rule="clear title", model="deepseek-r1")
     assert "PASS" in out or "VERDICT" in out
     assert calls["n"] >= 2

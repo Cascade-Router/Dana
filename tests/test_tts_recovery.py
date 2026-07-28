@@ -6,40 +6,40 @@ import threading
 import time
 from unittest.mock import patch
 
-import donna.core_agent as donna
+import dana.core_agent as dana
 
 
 def test_reset_tts_audio_state_releases_wake_word_gates() -> None:
-    donna.speech_queue.put_nowait("stale")
-    donna.tts_busy.set()
-    donna.speech_idle.clear()
-    donna.vad_capture_active.set()
+    dana.speech_queue.put_nowait("stale")
+    dana.tts_busy.set()
+    dana.speech_idle.clear()
+    dana.vad_capture_active.set()
 
-    dropped = donna.reset_tts_audio_state("unit test", ui_state="idle")
+    dropped = dana.reset_tts_audio_state("unit test", ui_state="idle")
 
     assert dropped == 1
-    assert donna.speech_queue.empty()
-    assert not donna.tts_busy.is_set()
-    assert donna.speech_idle.is_set()
+    assert dana.speech_queue.empty()
+    assert not dana.tts_busy.is_set()
+    assert dana.speech_idle.is_set()
     # record_utterance may still own the mic — reset must not clear this flag.
-    assert donna.vad_capture_active.is_set()
-    donna.vad_capture_active.clear()
+    assert dana.vad_capture_active.is_set()
+    dana.vad_capture_active.clear()
     print("[PASS] reset_tts_audio_state releases gates")
 
 
 def test_wait_for_speech_idle_timeout_resets_state() -> None:
-    donna.tts_busy.set()
-    donna.speech_idle.clear()
-    donna.speech_queue.put_nowait("orphaned")
+    dana.tts_busy.set()
+    dana.speech_idle.clear()
+    dana.speech_queue.put_nowait("orphaned")
 
     t0 = time.perf_counter()
-    donna.wait_for_speech_idle(timeout=0.15)
+    dana.wait_for_speech_idle(timeout=0.15)
     elapsed = time.perf_counter() - t0
 
     assert elapsed < 1.0
-    assert donna.speech_idle.is_set()
-    assert not donna.tts_busy.is_set()
-    assert donna.speech_queue.empty()
+    assert dana.speech_idle.is_set()
+    assert not dana.tts_busy.is_set()
+    assert dana.speech_queue.empty()
     print(f"[PASS] wait_for_speech_idle timeout recovery ({elapsed:.2f}s)")
 
 
@@ -48,15 +48,15 @@ def test_speak_with_timeout_aborts_hung_utterance() -> None:
         # Real playback exits when barge-in latches; model that here.
         deadline = time.perf_counter() + 5.0
         while time.perf_counter() < deadline:
-            if donna.tts_interrupt_event.is_set():
+            if dana.tts_interrupt_event.is_set():
                 return True
             time.sleep(0.02)
         return False
 
-    donna.tts_interrupt_event.clear()
-    with patch.object(donna, "_synthesize_and_play", side_effect=_hang_until_barge):
+    dana.tts_interrupt_event.clear()
+    with patch.object(dana, "_synthesize_and_play", side_effect=_hang_until_barge):
         t0 = time.perf_counter()
-        interrupted = donna._speak_with_timeout("test", None, max_seconds=0.2)
+        interrupted = dana._speak_with_timeout("test", None, max_seconds=0.2)
         elapsed = time.perf_counter() - t0
 
     assert interrupted is True
@@ -65,27 +65,27 @@ def test_speak_with_timeout_aborts_hung_utterance() -> None:
 
 
 def test_portaudio_fault_signals_main_soft_restart() -> None:
-    donna.audio_hardware_fault.clear()
-    donna.consume_audio_hardware_fault()
+    dana.audio_hardware_fault.clear()
+    dana.consume_audio_hardware_fault()
 
     class _PaErr(Exception):
         pass
 
     _PaErr.__name__ = "PortAudioError"
     exc = _PaErr("Device unavailable [PaErrorCode -9999]")
-    donna.report_audio_hardware_fault(exc, where="unit-test")
+    dana.report_audio_hardware_fault(exc, where="unit-test")
 
-    assert donna.audio_hardware_fault.is_set()
-    detail = donna.consume_audio_hardware_fault()
+    assert dana.audio_hardware_fault.is_set()
+    detail = dana.consume_audio_hardware_fault()
     assert "PaErrorCode" in detail or "PortAudioError" in detail
-    assert not donna.audio_hardware_fault.is_set()
+    assert not dana.audio_hardware_fault.is_set()
 
     # Soft recover should clear TTS gates without raising.
-    donna.tts_busy.set()
-    donna.speech_idle.clear()
-    donna.soft_recover_audio_hardware(detail)
-    assert donna.speech_idle.is_set()
-    assert not donna.tts_busy.is_set()
+    dana.tts_busy.set()
+    dana.speech_idle.clear()
+    dana.soft_recover_audio_hardware(detail)
+    assert dana.speech_idle.is_set()
+    assert not dana.tts_busy.is_set()
     print("[PASS] PortAudio fault propagates to Main soft-restart")
 
 

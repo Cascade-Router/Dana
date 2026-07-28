@@ -100,15 +100,15 @@ BLOCKED_NAMES = frozenset(
 
 DEFAULT_TTL_MS = 2000
 
-# Resolve via donna.paths when available; fall back to package-relative repo root.
+# Resolve via dana.paths when available; fall back to package-relative repo root.
 try:
-    from donna.paths import PROJECT_ROOT as _REPO_ROOT
-    from donna.paths import TOOLS_JSON as _TOOLS_JSON
+    from dana.paths import PROJECT_ROOT as _REPO_ROOT
+    from dana.paths import TOOLS_JSON as _TOOLS_JSON
 except ImportError:  # pragma: no cover - bootstrap / partial installs
     _REPO_ROOT = Path(__file__).resolve().parent.parent
-    _TOOLS_JSON = _REPO_ROOT / "donna" / "tools" / "tools.json"
+    _TOOLS_JSON = _REPO_ROOT / "dana" / "tools" / "tools.json"
 
-DYNAMIC_DIR = _REPO_ROOT / "donna" / "tools" / "dynamic"
+DYNAMIC_DIR = _REPO_ROOT / "dana" / "tools" / "dynamic"
 GENERATED_TOOLS_PATH = DYNAMIC_DIR / "generated_tools.py"
 TOOLS_JSON_PATH = _TOOLS_JSON
 
@@ -422,7 +422,7 @@ def ensure_dynamic_package() -> None:
 
 
 def append_generated_function(tool_name: str, python_code: str) -> Path:
-    """Serialize verified code into donna/tools/dynamic/generated_tools.py."""
+    """Serialize verified code into dana/tools/dynamic/generated_tools.py."""
     ensure_dynamic_package()
     name = _safe_tool_name(tool_name)
     block = textwrap.dedent(
@@ -497,7 +497,7 @@ def architect_new_tool(
 ) -> dict[str, Any]:
     """Verify code in the sandbox; on success, persist + register the tool schema."""
     try:
-        from donna.settings import is_dynamic_tool_synthesis_enabled, synthesis_locked_message
+        from dana.settings import is_dynamic_tool_synthesis_enabled, synthesis_locked_message
 
         if not is_dynamic_tool_synthesis_enabled():
             return {

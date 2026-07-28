@@ -13,11 +13,11 @@ def _dry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_orb_frameless_topmost_drag_expand() -> None:
-    from donna.memory.blackboard import set_dictation_mode
+    from dana.memory.blackboard import set_dictation_mode
 
     set_dictation_mode(False)
 
-    from donna.core_agent import DonnaGUI
+    from dana.core_agent import DonnaGUI
 
     app = DonnaGUI()
     app.update_idletasks()

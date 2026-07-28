@@ -22,7 +22,7 @@ def test_predict_signature_and_cloud_env(monkeypatch) -> None:
 
 
 def test_cloud_execute_mocks_vision() -> None:
-    from donna.tools.schema import ToolCall
+    from dana.tools.schema import ToolCall
     from deploy.cloud_bridge import _cloud_execute
 
     obs = _cloud_execute(

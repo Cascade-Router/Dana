@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from donna.memory import append_message, ensure_session, init_blackboard
-from donna.moa_tool_shim import (
+from dana.memory import append_message, ensure_session, init_blackboard
+from dana.moa_tool_shim import (
     _REASONER_SYSTEM,
     format_blackboard_history_block,
     run_moa_reasoner_stage,
@@ -37,7 +37,7 @@ def test_format_blackboard_history_block_includes_entities(tmp_path: Path) -> No
     )
 
     # Point load_messages at tmp db.
-    import donna.memory.blackboard as bb
+    import dana.memory.blackboard as bb
 
     prev = bb.BLACKBOARD_DB_PATH
     bb.BLACKBOARD_DB_PATH = db
@@ -80,11 +80,11 @@ def test_run_moa_hydrates_system_without_leaking_into_plan(
         db_path=db,
     )
 
-    import donna.memory.blackboard as bb
+    import dana.memory.blackboard as bb
 
     monkeypatch.setattr(bb, "BLACKBOARD_DB_PATH", db)
     monkeypatch.setattr(
-        "donna.memory.blackboard.BLACKBOARD_DB_PATH",
+        "dana.memory.blackboard.BLACKBOARD_DB_PATH",
         db,
     )
 
@@ -103,7 +103,7 @@ def test_run_moa_hydrates_system_without_leaking_into_plan(
                     "INTENT: draft_cursor_prompt\n"
                     "OBJECTIVE: Fix Cascade Router latency spikes\n"
                     "CONTEXT:\n"
-                    "  Target files: donna/cascade_router.py\n"
+                    "  Target files: dana/cascade_router.py\n"
                     "  Root cause: message passing spikes\n"
                     "  Step-by-step changes: 1. profile 2. patch\n"
                     "  Acceptance criteria: RapidFuzz mailroom still works\n"
@@ -111,15 +111,15 @@ def test_run_moa_hydrates_system_without_leaking_into_plan(
             )
 
     monkeypatch.setattr(
-        "donna.moa_tool_shim._build_reasoner_llm",
+        "dana.moa_tool_shim._build_reasoner_llm",
         lambda **_k: _FakeLLM(),
     )
     monkeypatch.setattr(
-        "donna.moa_tool_shim.note_high_complexity_deepseek_latency",
+        "dana.moa_tool_shim.note_high_complexity_deepseek_latency",
         lambda *_a, **_k: None,
     )
     monkeypatch.setattr(
-        "donna.moa_tool_shim.reasoner_model_name",
+        "dana.moa_tool_shim.reasoner_model_name",
         lambda: "deepseek-r1:test",
     )
 

@@ -37,9 +37,9 @@ jobs:
         run: |
           python - <<'PY'
           import platform
-          import donna.tools.setup_startup as startup
-          import donna.tools.audio_switcher as audio
-          from donna.ui.logo import app_icon_path
+          import dana.tools.setup_startup as startup
+          import dana.tools.audio_switcher as audio
+          from dana.ui.logo import app_icon_path
 
           print("system=", platform.system())
           assert callable(startup.enable_startup)

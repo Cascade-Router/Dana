@@ -10,8 +10,8 @@ import psutil
 
 def test_daemon_modules_apply_below_normal_priority() -> None:
     # Importing the daemon modules runs the Stage 4.4 nice() side effect.
-    import donna.middleware.actuator_executor  # noqa: F401
-    import donna.middleware.vision_poller  # noqa: F401
+    import dana.middleware.actuator_executor  # noqa: F401
+    import dana.middleware.vision_poller  # noqa: F401
 
     nice = psutil.Process(os.getpid()).nice()
     # On Windows, BELOW_NORMAL is typically an int enum / priority class value.
@@ -32,13 +32,13 @@ def test_daemon_modules_apply_below_normal_priority() -> None:
 def test_vision_poller_limits_torch_threads() -> None:
     import torch
 
-    import donna.middleware.vision_poller  # noqa: F401
+    import dana.middleware.vision_poller  # noqa: F401
 
     assert int(torch.get_num_threads()) <= 2
 
 
 def test_toast_async_returns_immediately(monkeypatch) -> None:  # noqa: ANN001
-    from donna.middleware import toast_notify as tn
+    from dana.middleware import toast_notify as tn
 
     started = time.perf_counter()
     blocked = {"n": 0}

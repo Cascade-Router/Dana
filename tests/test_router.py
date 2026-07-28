@@ -1,7 +1,7 @@
 """LangGraph HITL routing corridor — unapproved tickets fail closed.
 
-Exercises production routing helpers in ``donna.agentic_react_graph`` and
-``donna.middleware.hitl_ticket.decision_is_approved`` so pending / denied /
+Exercises production routing helpers in ``dana.agentic_react_graph`` and
+``dana.middleware.hitl_ticket.decision_is_approved`` so pending / denied /
 missing decisions never route to tool execution.
 """
 
@@ -12,12 +12,12 @@ from typing import Any
 import pytest
 from langgraph.graph import END
 
-from donna.agentic_react_graph import (
+from dana.agentic_react_graph import (
     _route_after_jason_review,
     _route_after_ticket_approval,
     _route_after_ticket_validate,
 )
-from donna.middleware.hitl_ticket import decision_is_approved
+from dana.middleware.hitl_ticket import decision_is_approved
 
 
 @pytest.mark.parametrize(

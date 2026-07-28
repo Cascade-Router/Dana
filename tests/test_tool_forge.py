@@ -6,21 +6,21 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from donna.tools.registry import (
+from dana.tools.registry import (
     ToolRegistry,
     get_tool_registry,
     hash_embed,
     load_security_policy,
 )
-from donna.tools.sandbox_io import SandboxReadError, sandbox_read, sandbox_read_root
-from donna.swarm.tool_forge_graph import (
+from dana.tools.sandbox_io import SandboxReadError, sandbox_read, sandbox_read_root
+from dana.swarm.tool_forge_graph import (
     analyze_tool_ast,
     ast_gatekeeper_forge,
     build_tool_forge_graph,
     hot_load_forged_tool,
     security_reviewer_agent,
 )
-from donna.tools.schema import ToolSpec
+from dana.tools.schema import ToolSpec
 
 
 def test_hash_embed_stable() -> None:
@@ -80,7 +80,7 @@ def test_analyze_tool_ast_rejects_os_and_open() -> None:
     assert errs2 and any("open" in e.lower() for e in errs2)
 
     good = (
-        "from donna.tools.sandbox_io import sandbox_read\n"
+        "from dana.tools.sandbox_io import sandbox_read\n"
         "import math\n"
         "def count_pi(text):\n"
         "    return str(math.pi)\n"
@@ -90,7 +90,7 @@ def test_analyze_tool_ast_rejects_os_and_open() -> None:
 
 
 def test_assemble_forged_tool_topology() -> None:
-    from donna.swarm.tool_forge_template import assemble_forged_tool, extract_coder_json
+    from dana.swarm.tool_forge_template import assemble_forged_tool, extract_coder_json
 
     src = assemble_forged_tool(
         tool_name="reverse_string",
@@ -110,7 +110,7 @@ def test_assemble_forged_tool_topology() -> None:
 
 
 def test_ast_gatekeeper_json_brace_feedback() -> None:
-    from donna.swarm.tool_forge_template import JSON_SCHEMA_FAILURE
+    from dana.swarm.tool_forge_template import JSON_SCHEMA_FAILURE
 
     out = ast_gatekeeper_forge(
         {
@@ -164,7 +164,7 @@ def test_security_reviewer_json_schema(monkeypatch) -> None:
     fake = MagicMock()
     fake.invoke.return_value = _Msg()
     monkeypatch.setattr(
-        "donna.swarm.tool_forge_graph._chat_ollama",
+        "dana.swarm.tool_forge_graph._chat_ollama",
         lambda **_k: fake,
     )
     out = security_reviewer_agent(
@@ -190,7 +190,7 @@ def test_security_reviewer_json_schema(monkeypatch) -> None:
 
 def test_hot_load_respects_synthesis_lock(monkeypatch) -> None:
     monkeypatch.setattr(
-        "donna.settings.is_dynamic_tool_synthesis_enabled",
+        "dana.settings.is_dynamic_tool_synthesis_enabled",
         lambda: False,
     )
     out = hot_load_forged_tool(
@@ -215,7 +215,7 @@ def test_hot_load_respects_synthesis_lock(monkeypatch) -> None:
 
 def test_hot_load_registers_when_unlocked(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        "donna.settings.is_dynamic_tool_synthesis_enabled",
+        "dana.settings.is_dynamic_tool_synthesis_enabled",
         lambda: True,
     )
     # Isolate generated tools dir.
@@ -223,11 +223,11 @@ def test_hot_load_registers_when_unlocked(monkeypatch, tmp_path) -> None:
     gen.mkdir()
     (gen / "__init__.py").write_text("", encoding="utf-8")
     monkeypatch.setattr(
-        "donna.swarm.tool_forge_graph.GENERATED_TOOLS_DIR",
+        "dana.swarm.tool_forge_graph.CUSTOM_TOOLS_DIR",
         gen,
     )
     monkeypatch.setattr(
-        "donna.tools.registry.GENERATED_TOOLS_DIR",
+        "dana.tools.registry.CUSTOM_TOOLS_DIR",
         gen,
     )
     # Avoid mutating real tools.json / broker.
@@ -236,7 +236,7 @@ def test_hot_load_registers_when_unlocked(monkeypatch, tmp_path) -> None:
         lambda *a, **k: {"id": "reverse_string"},
         raising=False,
     )
-    with patch("donna.tools.broker.reload_broker_registry", lambda: None):
+    with patch("dana.tools.broker.reload_broker_registry", lambda: None):
         # register_tool_schema import is inside hot_load — patch donna_security module attr
         import donna_security
 
@@ -272,7 +272,7 @@ def test_sandbox_read_jail(tmp_path, monkeypatch) -> None:
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "note.txt").write_text("hello jail", encoding="utf-8")
-    monkeypatch.setattr("donna.tools.sandbox_io._SANDBOX_READ_ROOT", docs.resolve())
+    monkeypatch.setattr("dana.tools.sandbox_io._SANDBOX_READ_ROOT", docs.resolve())
     assert sandbox_read("note.txt") == "hello jail"
     with pytest.raises(SandboxReadError):
         sandbox_read("../../etc/passwd")

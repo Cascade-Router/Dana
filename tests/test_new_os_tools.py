@@ -7,13 +7,13 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from donna.os_automation import (
+from dana.os_automation import (
     MAX_LOCAL_FILE_CHARS,
     TRUNCATION_SUFFIX,
     open_application,
     read_local_file,
 )
-from donna.prompts.spatial_synthesis import REACT_PROTOCOL
+from dana.prompts.spatial_synthesis import REACT_PROTOCOL
 
 
 def test_os_automation_rules_mention_new_tools() -> None:
@@ -39,7 +39,7 @@ def test_os_automation_rules_mention_new_tools() -> None:
 
 
 def test_open_application_chrome_mocked_popen() -> None:
-    with patch("donna.os_automation.subprocess.Popen") as mock_popen:
+    with patch("dana.os_automation.subprocess.Popen") as mock_popen:
         result = open_application("chrome")
         mock_popen.assert_called_once()
     assert result == "OK: Launched chrome."

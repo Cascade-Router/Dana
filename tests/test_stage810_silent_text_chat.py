@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def test_chat_bar_widgets_and_standby_guard() -> None:
-    from donna.core_agent import (
+    from dana.core_agent import (
         DonnaGUI,
         clear_injected_question,
         pop_injected_question_ex,
@@ -57,7 +57,7 @@ def test_chat_bar_widgets_and_standby_guard() -> None:
 
 
 def test_submit_text_command_injects_when_engaged() -> None:
-    from donna.core_agent import (
+    from dana.core_agent import (
         DonnaGUI,
         clear_injected_question,
         is_recording,

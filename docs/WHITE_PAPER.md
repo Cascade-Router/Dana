@@ -1,6 +1,6 @@
 # Dānā: A Cybernetic Local Control Plane for Autonomous Desktop Actuation, Vision Grounding, and Self-Healing Execution
 
-**Package:** `donna` · **Product:** Dānā · **Eval snapshot:** `tests/evals/latest_eval_report.json` (2026-07-28)
+**Package:** `dana` · **Product:** Dānā · **Eval snapshot:** `tests/evals/latest_eval_report.json` (2026-07-28)
 
 ---
 
@@ -16,7 +16,7 @@ Three invariants structure the system:
 | **Zero Cloud Latency (control plane)** | Plan-Then-Execute, Mailroom RapidFuzz short-circuits, and heuristic critic / consolidate fallbacks keep decision edges offline-capable. Heavy models load JIT; the graph itself does not wait on remote APIs. |
 | **Fail-Closed HITL Safety** | Destructive / ledger-mutating intents route through `draft_cursor_prompt` → `ticket_validate` → `jason_ticket_review` → `ticket_approval` (interrupt). Deny / exhausted validation / REPL self-heal exhaustion halt without consolidating bad preferences into memory. |
 
-The product brand is **Dānā**; the Python package remains `donna`. This paper describes the live ReAct architecture as implemented in `donna/agentic_react_graph.py`, `donna/schema.py`, `donna/graph/nodes/*`, `donna/macros/`, `donna/memory/`, and `donna/ui/watchdog.py`.
+The product brand is **Dānā**; the Python package remains `dana`. This paper describes the live ReAct architecture as implemented in `dana/agentic_react_graph.py`, `dana/schema.py`, `dana/graph/nodes/*`, `dana/macros/`, `dana/memory/`, and `dana/ui/watchdog.py`.
 
 ---
 
@@ -56,7 +56,7 @@ ticket_approval                   │
 flowchart TB
   subgraph Ambient["Ambient plane"]
     WD[ShellWatchdog<br/>stdout/stderr text feed]
-    TOAST[Windows toast tickets<br/>donna.ui.notifications]
+    TOAST[Windows toast tickets<br/>dana.ui.notifications]
     WD --> TOAST
     TOAST -.->|build_structured_plan| PL
   end
@@ -103,7 +103,7 @@ flowchart TB
 
 ### 2.3 Control-plane state (minimal)
 
-Durable pointers live in graph state; chat history / CoT live on the Blackboard keyed by `session_id` (`donna/schema.py:ReactGraphState`):
+Durable pointers live in graph state; chat history / CoT live on the Blackboard keyed by `session_id` (`dana/schema.py:ReactGraphState`):
 
 | Field group | Examples | Lifetime |
 |-------------|----------|----------|
@@ -113,7 +113,7 @@ Durable pointers live in graph state; chat history / CoT live on the Blackboard 
 | HITL ticket | `drafted_ticket`, `ticket_validated`, `jason_critique`, `consecutive_denials` | Until approve/deny |
 | Memory hydrate | `memory_context` | Per turn |
 
-Nodes such as `execute_macro` are packaged for injectable wiring (`donna.graph.nodes.execute_macro`); the live corridor defaults to planner → executor → agent → tools, with macros invoked via tool / node injection rather than a hard-coded edge in `compile_donna_react_graph`.
+Nodes such as `execute_macro` are packaged for injectable wiring (`dana.graph.nodes.execute_macro`); the live corridor defaults to planner → executor → agent → tools, with macros invoked via tool / node injection rather than a hard-coded edge in `compile_donna_react_graph`.
 
 ---
 
@@ -121,7 +121,7 @@ Nodes such as `execute_macro` are packaged for injectable wiring (`donna.graph.n
 
 ### 3.1 Self-Healing REPL Critic Loop
 
-**Modules:** `donna/graph/nodes/critic.py`, `route_after_execution` in `donna/agentic_react_graph.py`, state fields in `ReactGraphState`.
+**Modules:** `dana/graph/nodes/critic.py`, `route_after_execution` in `dana/agentic_react_graph.py`, state fields in `ReactGraphState`.
 
 **Detection.** After `python_repl` tool observations, `python_repl_state_patch` sets `execution_error` when the observation matches failure markers (`ERROR:` prefix, timeout warning, nonzero `exit_code`, Traceback / common exception types).
 
@@ -144,7 +144,7 @@ This is error-trajectory reflection without unbounded loops: each critic pass in
 
 ### 3.2 Spatial Vision Grounding & Task Macro Engine
 
-**Vision.** Florence-2 (`microsoft/Florence-2-base`) runs via `donna.vision.florence_engine.run_ocr_with_region` and the tool `ocr_with_region` (`donna.tools.visual_tools`). Post-process yields labels + `boxes_xyxy_norm`.
+**Vision.** Florence-2 (`microsoft/Florence-2-base`) runs via `dana.vision.florence_engine.run_ocr_with_region` and the tool `ocr_with_region` (`dana.tools.visual_tools`). Post-process yields labels + `boxes_xyxy_norm`.
 
 **Coordinate contract (as implemented).** Florence’s default box space is **0–1000 normalized**. `norm_box_to_screen` detects this by span:
 
@@ -153,7 +153,7 @@ This is error-trajectory reflection without unbounded loops: each critic pass in
 
 Design target and live code agree on Florence’s **0–1000** box convention; the implementation additionally accepts already-pixel boxes for robustness after `post_process(..., image_size=…)`.
 
-**Macro engine.** `donna.macros.engine.MacroEngine` records UI steps with a Florence phrase-grounding prompt (`visual_context_prompt`), persists `MacroSequence` JSON under `donna/macros/<macro_id>.json`, and on replay:
+**Macro engine.** `dana.macros.engine.MacroEngine` records UI steps with a Florence phrase-grounding prompt (`visual_context_prompt`), persists `MacroSequence` JSON under `dana/macros/<macro_id>.json`, and on replay:
 
 1. Captures a fresh screenshot,
 2. Re-grounds the phrase to a ROI,
@@ -163,7 +163,7 @@ Design target and live code agree on Florence’s **0–1000** box convention; t
 
 ### 3.3 Ambient Shell Watchdog
 
-**Module:** `donna/ui/watchdog.py` (+ `donna/ui/notifications.py`).
+**Module:** `dana/ui/watchdog.py` (+ `dana/ui/notifications.py`).
 
 The watchdog is an **opt-in** (default **off**) ambient listener over terminal / log text—not a GUI dependency. Producers feed stdout/stderr-style buffers via `feed_line` / `feed_text` / `process_buffer`.
 
@@ -173,15 +173,15 @@ The watchdog is an **opt-in** (default **off**) ambient listener over terminal /
 | Context | Up to 15-line trace window around the match; rolling buffer capped ~200 lines |
 | Dedupe | Fingerprint of matched line + trace (cap 64) |
 | Notification | `make_watchdog_error_handler` → Windows toast (`Dānā Shell Watchdog`) + best-effort `build_structured_plan` handoff |
-| Preference | Persisted under `%APPDATA%/Donna/shell_watchdog.json` (does not use `donna.paths`) |
+| Preference | Persisted under `%APPDATA%/Dana/shell_watchdog.json` (legacy `%APPDATA%/Donna/` read fallback; does not use `dana.paths`) |
 
 Tray toggle (`Enable Shell Watchdog`) flips persistence and the shared singleton.
 
 ### 3.4 Persistent Episodic Memory Graph
 
-**Store:** `donna.memory.store.EpisodicMemoryStore` — SQLite table `episodic_facts` with categories `user_preference` | `environment_fact` | `task_outcome`, unique on `(category, key)`, confidence ∈ [0, 1].
+**Store:** `dana.memory.store.EpisodicMemoryStore` — SQLite table `episodic_facts` with categories `user_preference` | `environment_fact` | `task_outcome`, unique on `(category, key)`, confidence ∈ [0, 1].
 
-**Corridor nodes** (`donna/graph/nodes/memory.py`):
+**Corridor nodes** (`dana/graph/nodes/memory.py`):
 
 | Node | Role |
 |------|------|
@@ -296,13 +296,13 @@ Dānā’s corridor is intentionally **injectable**: production defaults bind re
 ```python
 from typing import Any
 
-from donna.agentic_react_graph import compile_donna_react_graph
-from donna.graph.nodes.critic import critic_node, fail_closed_node
-from donna.graph.nodes.memory import (
+from dana.agentic_react_graph import compile_donna_react_graph
+from dana.graph.nodes.critic import critic_node, fail_closed_node
+from dana.graph.nodes.memory import (
     consolidate_memory_node,
     hydrate_memory_node,
 )
-from donna.schema import ReactGraphState
+from dana.schema import ReactGraphState
 
 
 def my_agent_node(state: ReactGraphState) -> dict[str, Any]:
@@ -321,7 +321,7 @@ def my_planner(state: ReactGraphState) -> dict[str, Any]:
 graph = compile_donna_react_graph(
     my_agent_node,
     my_tools_node,
-    planner_node_fn=my_planner,              # or None → donna.agentic_planning.planner_node
+    planner_node_fn=my_planner,              # or None → dana.agentic_planning.planner_node
     critic_node_fn=critic_node,              # injectable self-heal
     fail_closed_node_fn=fail_closed_node,
     hydrate_memory_node_fn=hydrate_memory_node,
@@ -335,24 +335,24 @@ Injectable slots on `compile_donna_react_graph`:
 
 | Parameter | Default module |
 |-----------|----------------|
-| `planner_node_fn` / `executor_node_fn` | `donna.agentic_planning` |
-| `critic_node_fn` / `fail_closed_node_fn` | `donna.graph.nodes.critic` |
-| `hydrate_memory_node_fn` / `consolidate_memory_node_fn` | `donna.graph.nodes.memory` |
-| `ticket_validate_node_fn` / `jason_review_node_fn` / `ticket_approval_node_fn` | HITL corridor in `donna.agentic_react_graph` |
+| `planner_node_fn` / `executor_node_fn` | `dana.agentic_planning` |
+| `critic_node_fn` / `fail_closed_node_fn` | `dana.graph.nodes.critic` |
+| `hydrate_memory_node_fn` / `consolidate_memory_node_fn` | `dana.graph.nodes.memory` |
+| `ticket_validate_node_fn` / `jason_review_node_fn` / `ticket_approval_node_fn` | HITL corridor in `dana.agentic_react_graph` |
 
 ### 5.2 Custom tools (bind inside the tools / agent nodes)
 
-Tools remain package-local (`donna.tools.*`, broker registry). A minimal pattern for a new actuator consumed by your `tools_node`:
+Tools remain package-local (`dana.tools.*`, broker registry). A minimal pattern for a new actuator consumed by your `tools_node`:
 
 ```python
-# donna/tools/my_actuator.py
+# dana/tools/my_actuator.py
 def ping_workspace(path: str = ".") -> str:
     """Return a grounded observation string for the ReAct loop."""
     return f"[ping_workspace] ok path={path!r}"
 
 
 # Inside your tools_node / execute_fn dispatcher:
-from donna.tools.my_actuator import ping_workspace
+from dana.tools.my_actuator import ping_workspace
 
 DISPATCH = {
     "ping_workspace": lambda args: ping_workspace(**args),
@@ -360,14 +360,14 @@ DISPATCH = {
 }
 ```
 
-Register the tool id with the Intent Broker / MoA bind list the same way existing tools (`python_repl`, `ocr_with_region`, `draft_cursor_prompt`) are foresight-cascaded—without modifying ToolForge security gates or `donna/paths.py`.
+Register the tool id with the Intent Broker / MoA bind list the same way existing tools (`python_repl`, `ocr_with_region`, `draft_cursor_prompt`) are foresight-cascaded—without modifying ToolForge security gates or `dana/paths.py`.
 
 ### 5.3 Macros as injectable actuation
 
 ```python
-from donna.graph.nodes.execute_macro import execute_macro_node
-from donna.macros.engine import MacroEngine
-from donna.schema import ReactGraphState
+from dana.graph.nodes.execute_macro import execute_macro_node
+from dana.macros.engine import MacroEngine
+from dana.schema import ReactGraphState
 
 def macro_tools_shim(state: ReactGraphState) -> dict:
     # Optional: inject a MacroEngine with mocked grounding_fn for offline tests
@@ -377,8 +377,8 @@ def macro_tools_shim(state: ReactGraphState) -> dict:
 ### 5.4 Episodic store injection
 
 ```python
-from donna.graph.nodes.memory import make_hydrate_memory_node, make_consolidate_memory_node
-from donna.memory.store import EpisodicMemoryStore
+from dana.graph.nodes.memory import make_hydrate_memory_node, make_consolidate_memory_node
+from dana.memory.store import EpisodicMemoryStore
 
 store = EpisodicMemoryStore(db_path=":memory:")  # or a temp path in evals
 hydrate = make_hydrate_memory_node(store)
@@ -391,15 +391,15 @@ consolidate = make_consolidate_memory_node(store)
 
 | Concern | Primary paths |
 |---------|----------------|
-| Graph compile & routing | `donna/agentic_react_graph.py` |
-| Shared state / Handoff | `donna/schema.py` |
-| Critic / fail-closed | `donna/graph/nodes/critic.py` |
-| Memory hydrate/consolidate | `donna/graph/nodes/memory.py` |
-| Episodic SQLite | `donna/memory/store.py` |
-| Macro record/replay | `donna/macros/engine.py`, `donna/macros/schema.py` |
-| Macro graph node | `donna/graph/nodes/execute_macro.py` |
-| Florence grounding | `donna/vision/florence_engine.py` |
-| Shell watchdog | `donna/ui/watchdog.py`, `donna/ui/notifications.py` |
+| Graph compile & routing | `dana/agentic_react_graph.py` |
+| Shared state / Handoff | `dana/schema.py` |
+| Critic / fail-closed | `dana/graph/nodes/critic.py` |
+| Memory hydrate/consolidate | `dana/graph/nodes/memory.py` |
+| Episodic SQLite | `dana/memory/store.py` |
+| Macro record/replay | `dana/macros/engine.py`, `dana/macros/schema.py` |
+| Macro graph node | `dana/graph/nodes/execute_macro.py` |
+| Florence grounding | `dana/vision/florence_engine.py` |
+| Shell watchdog | `dana/ui/watchdog.py`, `dana/ui/notifications.py` |
 | Golden eval report | `tests/evals/latest_eval_report.json` |
 
 ---

@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from donna.tools.broker import IntentBroker
-from donna.tools.task_queue import (
+from dana.tools.broker import IntentBroker
+from dana.tools.task_queue import (
     load_task_queue,
     migrate_legacy_input_txt,
     pending_count,

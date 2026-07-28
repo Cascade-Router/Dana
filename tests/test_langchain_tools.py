@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from test_support_react import patch_scripted_llm
-from donna.agentic import REACT_MAX_ITERS, run_react_loop
-from donna.tools.broker import IntentBroker
-from donna.tools.langchain_tools import build_langchain_tools
-from donna.tools.schema import ToolCall
+from dana.agentic import REACT_MAX_ITERS, run_react_loop
+from dana.tools.broker import IntentBroker
+from dana.tools.langchain_tools import build_langchain_tools
+from dana.tools.schema import ToolCall
 
 
 def test_build_langchain_tools_from_registry() -> None:
@@ -40,12 +40,12 @@ def test_dispatch_watchdog_is_fire_and_forget(monkeypatch) -> None:
     import threading
     import time
 
-    from donna.tools import langchain_tools as lt
+    from dana.tools import langchain_tools as lt
 
     started = threading.Event()
     release = threading.Event()
 
-    def _slow(task_id: str, _task: str) -> None:
+    def _slow(task_id: str, _task: str, _tts_callback=None) -> None:
         started.set()
         release.wait(timeout=2.0)
         with lt._watchdog_lock:
@@ -74,11 +74,11 @@ def test_kill_watchdog_stops_registered_job(monkeypatch) -> None:
     import re
     import threading
 
-    from donna.tools import langchain_tools as lt
+    from dana.tools import langchain_tools as lt
 
     release = threading.Event()
 
-    def _slow(task_id: str, _task: str) -> None:
+    def _slow(task_id: str, _task: str, _tts_callback=None) -> None:
         entry = lt.active_watchdogs.get(task_id) or {}
         stop = entry.get("stop")
         while stop is not None and not stop.is_set():
@@ -100,7 +100,7 @@ def test_kill_watchdog_stops_registered_job(monkeypatch) -> None:
 
 
 def test_save_script_to_library_stays_in_sandbox(tmp_path, monkeypatch) -> None:
-    from donna.tools import langchain_tools as lt
+    from dana.tools import langchain_tools as lt
 
     lib = tmp_path / "execution_jail" / "library"
     lib.mkdir(parents=True)
@@ -131,8 +131,8 @@ def test_save_script_to_library_stays_in_sandbox(tmp_path, monkeypatch) -> None:
 
 
 def test_active_watchdogs_xml_in_recency_block(monkeypatch) -> None:
-    from donna.tools import langchain_tools as lt
-    from donna.prompts.spatial_synthesis import format_recency_context_block
+    from dana.tools import langchain_tools as lt
+    from dana.prompts.spatial_synthesis import format_recency_context_block
 
     with lt._watchdog_lock:
         lt.active_watchdogs.clear()

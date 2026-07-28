@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from donna.memory.blackboard import (
+from dana.memory.blackboard import (
     PERSONA_MIXER_DEFAULTS,
     append_persona_mixer_override,
     format_persona_mixer_override,
@@ -78,7 +78,7 @@ def test_lightweight_chat_injects_persona(tmp_path: Path, monkeypatch) -> None: 
         db_path=db,
     )
     monkeypatch.setattr(
-        "donna.memory.blackboard.BLACKBOARD_DB_PATH",
+        "dana.memory.blackboard.BLACKBOARD_DB_PATH",
         db,
     )
     captured: list[list[dict[str, str]]] = []
@@ -87,7 +87,7 @@ def test_lightweight_chat_injects_persona(tmp_path: Path, monkeypatch) -> None: 
         captured.append(list(messages))
         return "hey cutie — short punchline."
 
-    from donna.agentic import (
+    from dana.agentic import (
         build_lightweight_chat_system_prompt,
         run_lightweight_chat,
     )
@@ -120,7 +120,7 @@ def test_persona_mixer_gui_writes_on_apply(tmp_path: Path, monkeypatch) -> None:
     init_blackboard(db)
     monkeypatch.setenv("DONNA_DISABLE_TOAST", "1")
     try:
-        from donna.ui.persona_mixer import PersonaMixerApp
+        from dana.ui.persona_mixer import PersonaMixerApp
     except Exception as exc:  # noqa: BLE001
         # customtkinter / display unavailable in some CI shells
         import pytest

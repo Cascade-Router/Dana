@@ -14,8 +14,8 @@ if str(ROOT) not in sys.path:
 
 @pytest.fixture()
 def custom_dir(tmp_path, monkeypatch):
-    from donna import paths as paths_mod
-    from donna.tools import registry as reg_mod
+    from dana import paths as paths_mod
+    from dana.tools import registry as reg_mod
 
     custom = tmp_path / "custom_tools"
     custom.mkdir()
@@ -49,8 +49,8 @@ def test_wipe_custom_tools_deletes_py_keeps_init(custom_dir, monkeypatch):
     sys.modules["custom_tools.echo_demo"] = type(sys)("custom_tools.echo_demo")
     sys.modules["custom_tools"] = type(sys)("custom_tools")
 
-    from donna.tools.registry import get_tool_registry, wipe_custom_tools
-    from donna.tools.schema import ToolSpec
+    from dana.tools.registry import get_tool_registry, wipe_custom_tools
+    from dana.tools.schema import ToolSpec
 
     reg = get_tool_registry()
     reg.register(
@@ -78,7 +78,7 @@ def test_publish_tool_to_general_skip_llm(custom_dir, monkeypatch):
         encoding="utf-8",
     )
 
-    from donna.tools import promotion as promo
+    from dana.tools import promotion as promo
 
     monkeypatch.setattr(promo, "CUSTOM_TOOLS_DIR", custom)
     monkeypatch.setattr(promo, "GENERAL_TOOLS_DIR", general)
@@ -99,7 +99,7 @@ def test_publish_tool_to_general_skip_llm(custom_dir, monkeypatch):
     assert "Users\\Alice" not in body or "<USER_HOME>" in body
     assert result.get("ephemeral") is False
 
-    from donna.tools.registry import get_tool_registry
+    from dana.tools.registry import get_tool_registry
 
     entry = get_tool_registry().get("reverse_demo")
     assert entry is not None

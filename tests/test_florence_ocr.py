@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from donna.tools.visual_tools import _pick_region
-from donna.vision.florence_engine import (
+from dana.tools.visual_tools import _pick_region
+from dana.vision.florence_engine import (
     _normalize_parsed,
     _quad_to_xyxy,
     norm_box_to_screen,

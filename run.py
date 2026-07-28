@@ -31,7 +31,7 @@ except OSError:
 
 # pythonw.exe leaves stdout/stderr as None — patch before any library prints/tqdm.
 try:
-    from donna.stdio_boot import ensure_stdio
+    from dana.stdio_boot import ensure_stdio
 
     ensure_stdio()
 except Exception:
@@ -42,7 +42,7 @@ except Exception:
 
 # Ensure workspace dirs exist + migrate legacy artifacts before agent boot.
 try:
-    from donna.workspace import ensure_donna_workspace
+    from dana.workspace import ensure_donna_workspace
 
     ensure_donna_workspace(migrate=True)
 except Exception as exc:  # noqa: BLE001
@@ -81,7 +81,7 @@ def _configure_headless_logging() -> str | None:
         root.addHandler(handler)
         root.setLevel(logging.DEBUG)
         logging.captureWarnings(True)
-        logging.getLogger("donna").info(
+        logging.getLogger("dana").info(
             "Headless file logging active → %s (cwd=%s)",
             log_path,
             os.path.abspath(os.getcwd()),
@@ -119,7 +119,7 @@ _EXPECTED_TORCH_MAJOR = 2
 def verify_environment() -> None:
     """Lightweight startup guard: CUDA visibility + torch major pin check.
 
-    Runs before ``donna.core_agent`` so transformers / Whisper / Florence stay
+    Runs before ``dana.core_agent`` so transformers / Whisper / Florence stay
     off the critical path until the environment looks sane.
     """
     try:
@@ -174,7 +174,7 @@ if __name__ == "__main__":
         )
         print(msg, flush=True)
         if _wants_no_gui():
-            logging.getLogger("donna").error(msg)
+            logging.getLogger("dana").error(msg)
         sys.exit(1)
 
     verify_environment()
@@ -182,10 +182,10 @@ if __name__ == "__main__":
     # Defer core_agent import until launch so torch/transformers/YOLO stay off
     # the interpreter's critical path during ``run.py`` module load.
     try:
-        from donna.core_agent import main  # noqa: E402
+        from dana.core_agent import main  # noqa: E402
     except Exception:
         if _wants_no_gui():
-            logging.getLogger("donna").exception("Failed importing donna.core_agent")
+            logging.getLogger("dana").exception("Failed importing dana.core_agent")
         raise
 
     try:
@@ -193,7 +193,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         # Closing the GUI / Ctrl+C should exit quietly (workers log "Stopped.").
         try:
-            from donna.core_agent import _shutdown_agent_threads
+            from dana.core_agent import _shutdown_agent_threads
 
             _shutdown_agent_threads(join_timeout=5.0)
         except Exception:
@@ -201,5 +201,5 @@ if __name__ == "__main__":
         raise SystemExit(130)
     except Exception:
         if _wants_no_gui():
-            logging.getLogger("donna").exception("Unhandled exception in headless boot")
+            logging.getLogger("dana").exception("Unhandled exception in headless boot")
         raise

@@ -9,11 +9,11 @@ import json
 import re
 import sys
 
-from donna.agentic import REACT_MAX_ITERS, run_react_loop
-from donna.tools.broker import IntentBroker
-from donna.tools.schema import ToolCall
-from donna.web_search import format_search_observation, web_search
-from donna.prompts.spatial_synthesis import build_agent_system_prompt
+from dana.agentic import REACT_MAX_ITERS, run_react_loop
+from dana.tools.broker import IntentBroker
+from dana.tools.schema import ToolCall
+from dana.web_search import format_search_observation, web_search
+from dana.prompts.spatial_synthesis import build_agent_system_prompt
 
 QUERY = "Research the latest updates on the LangGraph library."
 
@@ -63,9 +63,9 @@ def execute_tool_call(tc: ToolCall) -> str:
 
 def main() -> int:
     try:
-        import donna.core_agent as _agent  # noqa: F401 — ensure agent package loads (Ollama host)
+        import dana.core_agent as _agent  # noqa: F401 — ensure agent package loads (Ollama host)
     except ImportError as exc:
-        print(f"ERROR: could not import donna.core_agent: {exc}", file=sys.stderr)
+        print(f"ERROR: could not import dana.core_agent: {exc}", file=sys.stderr)
         return 1
 
     broker = IntentBroker()

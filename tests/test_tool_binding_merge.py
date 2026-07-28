@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from donna.tools.broker import explicit_tool_ids_in_text, merge_bound_tool_ids
+from dana.tools.broker import explicit_tool_ids_in_text, merge_bound_tool_ids
 
 _KNOWN = (
     "analyze_visual_context",

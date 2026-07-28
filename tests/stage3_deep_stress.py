@@ -22,7 +22,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from donna.paths import DONNA_WORKSPACE, LOGS_DIR  # noqa: E402
+from dana.paths import DONNA_WORKSPACE, LOGS_DIR  # noqa: E402
 
 SESSION_ID = "deep-stress-stage3"
 MARKER = f"DEEP_STRESS_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
@@ -58,7 +58,7 @@ class TurnResult:
 
 def _silence_tts() -> None:
     try:
-        import donna.core_agent as ca
+        import dana.core_agent as ca
 
         ca.enqueue_speech = lambda *a, **k: None  # type: ignore[assignment]
         ca.wait_for_speech_idle = lambda *a, **k: True  # type: ignore[assignment]
@@ -71,19 +71,19 @@ def _silence_tts() -> None:
 
 def _bind_session() -> None:
     """Pin ReAct / MoA Blackboard writes to the deep-stress session."""
-    import donna.agentic as ag
+    import dana.agentic as ag
 
     ag._REACT_THREAD_ID = SESSION_ID
 
 
 def _telemetry_path() -> Path:
-    from donna.telemetry import TELEMETRY_JSONL_PATH
+    from dana.telemetry import TELEMETRY_JSONL_PATH
 
     return Path(TELEMETRY_JSONL_PATH)
 
 
 def _bb_path() -> Path:
-    from donna.memory.blackboard import BLACKBOARD_DB_PATH
+    from dana.memory.blackboard import BLACKBOARD_DB_PATH
 
     return Path(BLACKBOARD_DB_PATH)
 
@@ -126,7 +126,7 @@ def _jsonl_since(start_lines: int) -> list[dict[str, Any]]:
 
 
 def _bb_append(role: str, content: str, *, agent: str = "", intent: str = "") -> None:
-    from donna.memory import append_message, ensure_session, set_session_meta
+    from dana.memory import append_message, ensure_session, set_session_meta
 
     ensure_session(SESSION_ID, current_agent=agent, active_intent=intent)
     if agent or intent:
@@ -135,7 +135,7 @@ def _bb_append(role: str, content: str, *, agent: str = "", intent: str = "") ->
 
 
 def _bb_load(*, limit: int = 40) -> list[dict[str, Any]]:
-    from donna.memory import load_messages
+    from dana.memory import load_messages
 
     return list(load_messages(SESSION_ID, limit=limit))
 
@@ -199,7 +199,7 @@ def _tags(events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
 
 
 def turn1_memory_ingest() -> TurnResult:
-    from donna.agentic import (
+    from dana.agentic import (
         build_lightweight_chat_system_prompt,
         clear_chat_memory,
         get_donna_mode,
@@ -212,7 +212,7 @@ def turn1_memory_ingest() -> TurnResult:
     set_donna_mode("chat")
     _bb_append("user", TURN1, agent="Chat_Node", intent="memory_ingest")
     try:
-        from donna.core_agent import OLLAMA_MODEL, ask_ollama_messages
+        from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
 
         result = run_lightweight_chat(
             user_text=TURN1,
@@ -244,11 +244,11 @@ def turn1_memory_ingest() -> TurnResult:
 
 
 def turn2_mailroom_vision() -> TurnResult:
-    from donna.agentic import get_donna_mode, set_donna_mode
-    from donna.cascade_router import decide_route, fuzzy_match_command
-    from donna.handoff import execute_handoff
-    from donna.schema import Handoff
-    from donna.telemetry import log_router
+    from dana.agentic import get_donna_mode, set_donna_mode
+    from dana.cascade_router import decide_route, fuzzy_match_command
+    from dana.handoff import execute_handoff
+    from dana.schema import Handoff
+    from dana.telemetry import log_router
 
     r = TurnResult("Turn 2 Mailroom Handoff → Vision", TURN2, False)
     words = len(TURN2.split())
@@ -318,7 +318,7 @@ def turn2_mailroom_vision() -> TurnResult:
 
 
 def turn3_vision_distraction() -> TurnResult:
-    from donna.agentic import get_donna_mode, set_donna_mode
+    from dana.agentic import get_donna_mode, set_donna_mode
 
     r = TurnResult("Turn 3 Context Distraction (Vision)", TURN3, False)
     set_donna_mode("vision")
@@ -351,12 +351,12 @@ def turn3_vision_distraction() -> TurnResult:
 
 
 def turn4_moa_cross_agent() -> TurnResult:
-    from donna.agentic import REACT_MAX_ITERS, run_react_loop, set_donna_mode
-    from donna.cascade_router import fuzzy_match_command
-    from donna.handoff import execute_handoff
-    from donna.schema import Handoff
-    from donna.tools.broker import IntentBroker
-    from donna.tools.schema import ToolCall
+    from dana.agentic import REACT_MAX_ITERS, run_react_loop, set_donna_mode
+    from dana.cascade_router import fuzzy_match_command
+    from dana.handoff import execute_handoff
+    from dana.schema import Handoff
+    from dana.tools.broker import IntentBroker
+    from dana.tools.schema import ToolCall
 
     r = TurnResult("Turn 4 Cross-Agent Recall + Tool Guard", TURN4, False)
     set_donna_mode("developer")
@@ -397,7 +397,7 @@ def turn4_moa_cross_agent() -> TurnResult:
     rapidfuzz_in_plan = False
 
     def execute_fn(tc: ToolCall) -> str:
-        from donna.core_agent import execute_tool_call
+        from dana.core_agent import execute_tool_call
 
         return execute_tool_call(tc)
 
@@ -516,7 +516,7 @@ def turn4_moa_cross_agent() -> TurnResult:
 
 
 def turn5_chat_verify() -> TurnResult:
-    from donna.agentic import (
+    from dana.agentic import (
         build_lightweight_chat_system_prompt,
         get_donna_mode,
         mode_switch_spoken_ack,
@@ -524,9 +524,9 @@ def turn5_chat_verify() -> TurnResult:
         run_lightweight_chat,
         set_donna_mode,
     )
-    from donna.cascade_router import decide_route, fuzzy_match_command
-    from donna.handoff import execute_handoff
-    from donna.schema import Handoff
+    from dana.cascade_router import decide_route, fuzzy_match_command
+    from dana.handoff import execute_handoff
+    from dana.schema import Handoff
 
     r = TurnResult("Turn 5 Final Verification (Chat)", TURN5, False)
 
@@ -610,7 +610,7 @@ def turn5_chat_verify() -> TurnResult:
 
     answer = ""
     try:
-        from donna.core_agent import OLLAMA_MODEL, ask_ollama_messages
+        from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
 
         result = run_lightweight_chat(
             user_text=residual + "\n\n" + context_block,

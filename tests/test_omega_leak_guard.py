@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from donna.agentic import looks_like_confidential_fixture_leak, sanitize_spoken_reply
-from donna.core_agent import is_whisper_hallucination, is_whisper_prompt_echo
-from donna.tools.broker import IntentBroker
+from dana.agentic import looks_like_confidential_fixture_leak, sanitize_spoken_reply
+from dana.core_agent import is_whisper_hallucination, is_whisper_prompt_echo
+from dana.tools.broker import IntentBroker
 
 
 def test_whisper_omega_bias_echo_is_hallucination() -> None:

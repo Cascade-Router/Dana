@@ -2,7 +2,7 @@
 """PyInstaller spec for Donna (entry: run.py).
 
 Bundles CustomTkinter / Torch / Whisper-related packages and ships
-``donna/tools`` + ``tts_models`` as runtime data.
+``dana/tools`` + ``tts_models`` as runtime data.
 
 PyInstaller injects Analysis / EXE / PYZ / COLLECT / BUNDLE into this namespace.
 """
@@ -32,12 +32,12 @@ hiddenimports: list[str] = [
     "transformers",
     "pycaw",
     "comtypes",
-    "donna",
-    "donna.core_agent",
-    "donna.agentic",
-    "donna.tools",
-    "donna.tools.setup_startup",
-    "donna.tools.audio_switcher",
+    "dana",
+    "dana.core_agent",
+    "dana.agentic",
+    "dana.tools",
+    "dana.tools.setup_startup",
+    "dana.tools.audio_switcher",
     "openwakeword",
     "sounddevice",
     "soundfile",
@@ -45,10 +45,10 @@ hiddenimports: list[str] = [
     "ultralytics",
     "cv2",
     "mss",
-    "donna.vision_tools",
-    "donna.ui",
-    "donna.ui.trace_bus",
-    "donna.ui.trace_window",
+    "dana.vision_tools",
+    "dana.ui",
+    "dana.ui.trace_bus",
+    "dana.ui.trace_window",
     "vision_tools",
     "PIL",
     "langchain_ollama",
@@ -100,7 +100,7 @@ for _pkg in (
 ):
     _safe_collect_all(_pkg)
 
-for _pkg in ("donna", "donna.tools", "pycaw", "comtypes"):
+for _pkg in ("dana", "dana.tools", "pycaw", "comtypes"):
     _safe_collect_submodules(_pkg)
 
 try:
@@ -108,17 +108,17 @@ try:
 except Exception as exc:  # noqa: BLE001
     print(f"[donna_build.spec] customtkinter data skipped: {exc}")
 
-_add_tree(ROOT / "donna" / "tools", os.path.join("donna", "tools"))
+_add_tree(ROOT / "dana" / "tools", os.path.join("dana", "tools"))
 _add_tree(ROOT / "tts_models", "tts_models")
 
 # Desktop / taskbar / shortcut branding (required for IconLocation + EXE icon).
-_ico = ROOT / "donna" / "assets" / "donna.ico"
+_ico = ROOT / "dana" / "assets" / "donna.ico"
 if _ico.is_file():
-    datas.append((str(_ico), os.path.join("donna", "assets")))
+    datas.append((str(_ico), os.path.join("dana", "assets")))
 else:
     print(f"[donna_build.spec] WARNING: missing {_ico} — EXE/shortcut icon unavailable")
-_add_tree(ROOT / "donna" / "ui" / "assets", os.path.join("donna", "ui", "assets"))
-_add_tree(ROOT / "donna" / "assets", os.path.join("donna", "assets"))
+_add_tree(ROOT / "dana" / "ui" / "assets", os.path.join("dana", "ui", "assets"))
+_add_tree(ROOT / "dana" / "assets", os.path.join("dana", "assets"))
 
 # Optional runtime assets (present when not gitignored / downloaded).
 for _name in ("donna.onnx", "yolov8n.pt", "settings.json"):
@@ -189,7 +189,7 @@ if sys.platform == "darwin" and BUNDLE is not None:
         coll,
         name="Donna.app",
         icon=None,
-        bundle_identifier="com.donna.agent",
+        bundle_identifier="com.dana.agent",
         info_plist={
             "CFBundleName": "Donna",
             "CFBundleDisplayName": "Donna",

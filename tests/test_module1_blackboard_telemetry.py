@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from donna.memory import (
+from dana.memory import (
     append_message,
     append_reasoning_trace,
     ensure_session,
@@ -15,8 +15,8 @@ from donna.memory import (
     load_reasoning_traces,
     set_session_meta,
 )
-from donna.schema import ReactGraphState
-from donna.telemetry import (
+from dana.schema import ReactGraphState
+from dana.telemetry import (
     TELEMETRY_JSONL_PATH,
     emit_tagged,
     log_handoff,
@@ -40,11 +40,11 @@ def test_blackboard_sqlite_standing(tmp_path: Path) -> None:
     )
     assert sid == "sess-demo"
     append_message(sid, "user", "hello blackboard", db_path=db)
-    append_message(sid, "assistant", "hi from donna", db_path=db)
+    append_message(sid, "assistant", "hi from dana", db_path=db)
     msgs = load_messages(sid, db_path=db)
     assert len(msgs) == 2
     assert msgs[0]["role"] == "user"
-    assert msgs[1]["content"] == "hi from donna"
+    assert msgs[1]["content"] == "hi from dana"
 
     set_session_meta(sid, current_agent="MoA_Reasoner", active_intent="draft_cursor_prompt", db_path=db)
     meta = get_session_meta(sid, db_path=db)
@@ -65,7 +65,7 @@ def test_blackboard_sqlite_standing(tmp_path: Path) -> None:
 
 def test_tagged_telemetry_jsonl(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
     out = tmp_path / "donna_telemetry.jsonl"
-    monkeypatch.setattr("donna.telemetry.TELEMETRY_JSONL_PATH", out)
+    monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
 
     log_voice_asr("hello donna", session_id="s1")
     log_router("route=local", session_id="s1", current_agent="ReAct_Agent", active_intent="general")

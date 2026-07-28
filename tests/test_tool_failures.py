@@ -9,10 +9,10 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from test_support_react import patch_scripted_llm
-from donna.agentic import REACT_MAX_ITERS, run_react_loop
-from donna.tools.broker import IntentBroker
-from donna.tools.schema import ToolCall
-from donna.prompts.spatial_synthesis import build_agent_system_prompt
+from dana.agentic import REACT_MAX_ITERS, run_react_loop
+from dana.tools.broker import IntentBroker
+from dana.tools.schema import ToolCall
+from dana.prompts.spatial_synthesis import build_agent_system_prompt
 
 NETWORK_ERROR = "Error: Network timeout. Cannot reach search API."
 KEY_NOT_FOUND = "KeyNotFound"
@@ -32,7 +32,7 @@ def test_offline_mode_web_search_network_timeout(monkeypatch) -> None:
     broker = IntentBroker()
     query = "Research the latest news on AI"
 
-    with patch("donna.web_search.web_search") as mock_search:
+    with patch("dana.web_search.web_search") as mock_search:
         mock_search.return_value = {
             "ok": False,
             "error": NETWORK_ERROR,
@@ -43,7 +43,7 @@ def test_offline_mode_web_search_network_timeout(monkeypatch) -> None:
         def execute_fn(tc: ToolCall) -> str:
             if tc.tool_id != "web_search":
                 return f"ERROR: unexpected tool {tc.tool_id}"
-            from donna.web_search import format_search_observation, web_search
+            from dana.web_search import format_search_observation, web_search
 
             payload = web_search(str(tc.arguments.get("query") or ""))
             err = str(payload.get("error") or NETWORK_ERROR)
@@ -104,7 +104,7 @@ def test_empty_vault_partner_name_unknown(monkeypatch) -> None:
     mock_vault.profile = {}
     mock_vault.read_memory.side_effect = KeyError(KEY_NOT_FOUND)
 
-    with patch("donna.core_agent.vault_client", mock_vault):
+    with patch("dana.core_agent.vault_client", mock_vault):
 
         def execute_fn(tc: ToolCall) -> str:
             if tc.tool_id != "read_vault_memory":

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from donna.cascade_router import decide_route
-from donna.management.dictation import (
+from dana.cascade_router import decide_route
+from dana.management.dictation import (
     handle_dictation,
     mentions_dictate,
     should_handle_dictation,
     strip_dictate_wrapper,
     toggle_dictation_mode,
 )
-from donna.memory.blackboard import (
+from dana.memory.blackboard import (
     behavior_mixer_prompt_weights,
     init_blackboard,
     is_dictation_mode,
@@ -30,11 +30,11 @@ def test_record_dictation_with_ocr_ref(tmp_path: Path, monkeypatch) -> None:  # 
     db = tmp_path / "bb.db"
     init_blackboard(db)
     monkeypatch.setattr(
-        "donna.management.dictation.read_perception_ocr_text",
+        "dana.management.dictation.read_perception_ocr_text",
         lambda **_k: "OCR: Enter Comments [10,20,100,40]",
     )
     monkeypatch.setattr(
-        "donna.management.dictation._capture_visual_reference",
+        "dana.management.dictation._capture_visual_reference",
         lambda **_k: "OCR: Enter Comments [10,20,100,40]",
     )
     out = handle_dictation(

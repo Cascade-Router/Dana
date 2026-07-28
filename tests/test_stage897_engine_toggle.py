@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def test_engine_engage_standby_locks_behavior() -> None:
-    from donna.core_agent import (
+    from dana.core_agent import (
         DonnaGUI,
         is_engine_engaged,
         set_engine_engaged,
@@ -45,7 +45,7 @@ def test_engine_engage_standby_locks_behavior() -> None:
 
 
 def test_standby_blocks_chat_and_dictation() -> None:
-    from donna.core_agent import DonnaGUI, set_engine_engaged
+    from dana.core_agent import DonnaGUI, set_engine_engaged
 
     set_engine_engaged(False)
     app = DonnaGUI()
@@ -72,7 +72,7 @@ def test_standby_blocks_chat_and_dictation() -> None:
 
 def test_stop_donna_still_independent() -> None:
     """Kill switch remains a separate hard-exit path."""
-    from donna.core_agent import DonnaGUI, set_engine_engaged
+    from dana.core_agent import DonnaGUI, set_engine_engaged
 
     set_engine_engaged(False)
     app = DonnaGUI()

@@ -78,8 +78,8 @@ def apply_cloud_mode() -> None:
         _BOOTSTRAPPED = True
 
         try:
-            from donna.agentic import set_donna_mode
-            from donna.core_agent import set_engine_engaged
+            from dana.agentic import set_donna_mode
+            from dana.core_agent import set_engine_engaged
 
             set_donna_mode("developer", as_voice=False)
             set_engine_engaged(True)
@@ -143,8 +143,8 @@ def _build_cloud_chat_model(*, temperature: float = 0.2) -> Any:
 
 def _install_cloud_llm_patches() -> Callable[[], None]:
     """Patch cascade + Ollama preflight for cloud LLM. Returns restore fn."""
-    import donna.agentic as ag
-    import donna.cascade_router as cr
+    import dana.agentic as ag
+    import dana.cascade_router as cr
 
     orig_resolve = cr.resolve_chat_model
     orig_reachable = ag.ollama_service_reachable
@@ -179,7 +179,7 @@ def _cloud_execute(tool_call: Any) -> str:
 
     if tid == "draft_cursor_prompt":
         try:
-            from donna.tools.general.draft_cursor_prompt import draft_cursor_prompt
+            from dana.tools.general.draft_cursor_prompt import draft_cursor_prompt
 
             return str(
                 draft_cursor_prompt(
@@ -192,7 +192,7 @@ def _cloud_execute(tool_call: Any) -> str:
 
     # Prefer production tool executor when importable; else soft stub.
     try:
-        from donna.core_agent import execute_tool_call
+        from dana.core_agent import execute_tool_call
 
         return str(execute_tool_call(tool_call))
     except Exception as exc:  # noqa: BLE001
@@ -201,7 +201,7 @@ def _cloud_execute(tool_call: Any) -> str:
 
 def _system_prompt(user_text: str) -> str:
     try:
-        from donna.core_agent import build_donna_system_prompt
+        from dana.core_agent import build_donna_system_prompt
 
         return build_donna_system_prompt([], user_text=user_text)
     except Exception:  # noqa: BLE001
@@ -228,8 +228,8 @@ def run_text_command(message: str, *, history: list | None = None) -> str:
 
     restore: Callable[[], None] | None = None
     try:
-        from donna.agentic import run_react_loop
-        from donna.tools.broker import IntentBroker, get_broker
+        from dana.agentic import run_react_loop
+        from dana.tools.broker import IntentBroker, get_broker
 
         if use_cloud_llm():
             restore = _install_cloud_llm_patches()

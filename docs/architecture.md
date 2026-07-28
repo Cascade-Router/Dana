@@ -47,7 +47,7 @@ input.txt ──► InputIngest ──► task_queue.json ──► drain on ses
 
 ## 2. Cascade Router, Mailroom & Mode Map
 
-The **Cascade Router** (`donna/cascade_router.py`) classifies complexity and selects local backends. Modes (`donna/agentic.py`) are a hard process-wide switch that changes which graph edges are legal.
+The **Cascade Router** (`dana/cascade_router.py`) classifies complexity and selects local backends. Modes (`dana/agentic.py`) are a hard process-wide switch that changes which graph edges are legal.
 
 ### 2.1 Mailroom (RapidFuzz — Stage 3 Module 2)
 
@@ -76,10 +76,10 @@ Mode switches (mailroom ≥80% or exact phrase) and `clear chat memory` short-ci
 
 1. Intent Broker may force-route tools such as `draft_cursor_prompt`.
 2. Cascade foresight tags high-complexity → `route=moa` with DeepSeek-R1 as reasoner (**Stage-1**, no tools bound).
-3. **Think extractor** (`extract_r1_think_blocks` in `donna/agentic.py`): R1 `<think>...</think>` (including unclosed / multi-block) is filed to the Blackboard + `[REASONING_TRACE]`; **only sanitized text** reaches the Stage-2 Llama `bind_tools` formatter.
+3. **Think extractor** (`extract_r1_think_blocks` in `dana/agentic.py`): R1 `<think>...</think>` (including unclosed / multi-block) is filed to the Blackboard + `[REASONING_TRACE]`; **only sanitized text** reaches the Stage-2 Llama `bind_tools` formatter.
 4. Bound-tools ReAct iterations stay on the fast local chat model for reliable `bind_tools` on Ollama.
-5. **Pydantic guards** (`donna/tools/guards.py`) validate tool payloads before execution; `ValidationError` triggers **exactly one** local bounce/retry — no supervisor LLM.
-6. Capability switches use the structured **`Handoff`** schema (`donna/schema.py` / `donna/handoff.py`), not raw prose intents.
+5. **Pydantic guards** (`dana/tools/guards.py`) validate tool payloads before execution; `ValidationError` triggers **exactly one** local bounce/retry — no supervisor LLM.
+6. Capability switches use the structured **`Handoff`** schema (`dana/schema.py` / `dana/handoff.py`), not raw prose intents.
 
 ---
 
@@ -87,7 +87,7 @@ Mode switches (mailroom ≥80% or exact phrase) and `clear chat memory` short-ci
 
 ### 3.1 Bureaucratic graph state
 
-`ReactGraphState` (`donna/schema.py`) is **strictly minimized** for durable control:
+`ReactGraphState` (`dana/schema.py`) is **strictly minimized** for durable control:
 
 | Field | Role |
 |-------|------|
@@ -102,7 +102,7 @@ Ephemeral turn scratch (`messages`, `iterations`, `last_obs`, …) exists **only
 | Concern | Path / API |
 |---------|------------|
 | Database | `memory/blackboard.db` (runtime artifact under workspace) |
-| Package | `donna/memory/blackboard.py` |
+| Package | `dana/memory/blackboard.py` |
 | Tables | `sessions`, `messages`, `reasoning_traces` |
 | APIs | `ensure_session`, `append_message`, `load_messages`, `append_reasoning_trace`, `load_reasoning_traces` |
 

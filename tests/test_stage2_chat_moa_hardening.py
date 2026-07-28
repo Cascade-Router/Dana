@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from donna.agentic import (
+from dana.agentic import (
     append_chat_memory_turn,
     build_lightweight_chat_system_prompt,
     chat_memory_as_role_messages,
@@ -13,10 +13,10 @@ from donna.agentic import (
     requires_tool_graph,
     run_lightweight_chat,
 )
-from donna.cascade_router import match_state_toggle
-from donna.moa_tool_shim import parse_plan_fields, plan_has_structured_context
-from donna.tools.broker import parse_draft_cursor_prompt_args
-from donna.tools.general.draft_cursor_prompt import (
+from dana.cascade_router import match_state_toggle
+from dana.moa_tool_shim import parse_plan_fields, plan_has_structured_context
+from dana.tools.broker import parse_draft_cursor_prompt_args
+from dana.tools.general.draft_cursor_prompt import (
     _context_is_sufficiently_specific,
     draft_cursor_prompt,
 )
@@ -140,7 +140,7 @@ def test_parse_plan_fields_markdown_headings() -> None:
         "**INTENT**: draft_cursor_prompt\n\n"
         "**OBJECTIVE**: Harden MoA ticket formatting for Cursor.\n\n"
         "**CONTEXT**:\n"
-        "Target files: donna/moa_tool_shim.py\n"
+        "Target files: dana/moa_tool_shim.py\n"
         "Root cause: markdown headings broke parsers\n"
         "Step-by-step changes: 1. normalize headings 2. reject thin plans\n"
         "Acceptance criteria: parse_plan_fields reads INTENT from **INTENT**:\n"
@@ -165,7 +165,7 @@ def test_unstructured_plan_rejected() -> None:
 def test_ledger_rejects_intent_echo_only() -> None:
     echo = (
         "**Technical intent:** improve cursor handling in the deepseek pipeline\n"
-        "**Target Files:** donna/agentic.py"
+        "**Target Files:** dana/agentic.py"
     )
     assert _context_is_sufficiently_specific(echo) is False
     result = draft_cursor_prompt(
@@ -185,21 +185,21 @@ def test_ledger_accepts_structured_context(tmp_path, monkeypatch) -> None:  # no
         return ledger
 
     monkeypatch.setattr(
-        "donna.tools.general.draft_cursor_prompt._ledger_path",
+        "dana.tools.general.draft_cursor_prompt._ledger_path",
         _fake_ledger_path,
     )
     # Bypass enrich auto-map so we test the gate + write path directly.
     monkeypatch.setattr(
-        "donna.agentic.enrich_draft_cursor_args",
+        "dana.agentic.enrich_draft_cursor_args",
         lambda **kwargs: {
             "objective": kwargs.get("objective") or "",
             "context": kwargs.get("context") or "",
-            "target_files": "donna/moa_tool_shim.py",
+            "target_files": "dana/moa_tool_shim.py",
         },
     )
     ctx = (
         "**Technical intent:** Harden MoA ticket CONTEXT validation.\n"
-        "**Target Files:** donna/moa_tool_shim.py, donna/tools/general/draft_cursor_prompt.py\n\n"
+        "**Target Files:** dana/moa_tool_shim.py, dana/tools/general/draft_cursor_prompt.py\n\n"
         "Root cause: Thin reasoner plans wrote intent-echo tickets Cursor rejected.\n"
         "Step-by-step changes:\n"
         "1. Require Target files / Root cause / Steps / Acceptance in CONTEXT.\n"

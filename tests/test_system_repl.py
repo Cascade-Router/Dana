@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from donna.tools.system_repl import file_editor, python_repl, shell_execute
+from dana.tools.system_repl import file_editor, python_repl, shell_execute
 
 
 def test_file_editor_blocks_windows_hosts() -> None:
@@ -40,9 +40,9 @@ def test_output_truncation() -> None:
 
 
 def test_file_editor_denies_write_to_donna_core() -> None:
-    out = file_editor("write", "donna/tools/system_repl.py", content="hacked")
+    out = file_editor("write", "dana/tools/system_repl.py", content="hacked")
     assert out.startswith("ERROR:"), out
-    assert "donna" in out.lower()
+    assert "dana" in out.lower()
     assert "denied" in out.lower()
 
 
@@ -53,7 +53,7 @@ def test_file_editor_denies_write_to_git() -> None:
 
 
 def test_file_editor_allows_read_donna() -> None:
-    out = file_editor("read", "donna/tools/system_repl.py")
+    out = file_editor("read", "dana/tools/system_repl.py")
     assert out.startswith("OK: read"), out
 
 

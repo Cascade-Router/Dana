@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from donna.core_agent import pop_text_injection
+from dana.core_agent import pop_text_injection
 
 
 def test_pop_text_injection_reads_and_clears(tmp_path: Path) -> None:

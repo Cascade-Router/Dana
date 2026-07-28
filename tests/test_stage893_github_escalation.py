@@ -6,8 +6,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from donna.middleware import hitl_ticket as hitl
-from donna.ui.github_escalation import (
+from dana.middleware import hitl_ticket as hitl
+from dana.ui.github_escalation import (
     build_github_issue_url,
     github_issues_new_base_url,
     open_github_issue,
@@ -70,9 +70,9 @@ def test_new_distinct_task_resets_denials() -> None:
 
 def test_github_issue_url_encodes_critique_and_ticket(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_REPO_OWNER", "acme")
-    monkeypatch.setenv("GITHUB_REPO_NAME", "donna")
+    monkeypatch.setenv("GITHUB_REPO_NAME", "dana")
     base = github_issues_new_base_url()
-    assert base == "https://github.com/acme/donna/issues/new"
+    assert base == "https://github.com/acme/dana/issues/new"
     url = build_github_issue_url(
         {
             "objective": "Fix OCR bounds",
@@ -95,9 +95,9 @@ def test_github_issue_url_encodes_critique_and_ticket(monkeypatch: pytest.Monkey
 def test_open_github_issue_calls_webbrowser(monkeypatch: pytest.MonkeyPatch) -> None:
     opened: list[str] = []
     monkeypatch.setenv("GITHUB_REPO_OWNER", "acme")
-    monkeypatch.setenv("GITHUB_REPO_NAME", "donna")
+    monkeypatch.setenv("GITHUB_REPO_NAME", "dana")
     monkeypatch.setattr(
-        "donna.ui.github_escalation.webbrowser.open",
+        "dana.ui.github_escalation.webbrowser.open",
         lambda url: opened.append(url) or True,
     )
     url = open_github_issue({"objective": "O", "context": "C"}, "Critique here")
@@ -110,8 +110,8 @@ def test_open_github_issue_calls_webbrowser(monkeypatch: pytest.MonkeyPatch) -> 
 def test_hitl_bar_shows_github_when_denials_ge_2() -> None:
     import customtkinter as ctk
 
-    from donna.schema import TraceEvent
-    from donna.ui.trace_window import LiveTracePanel
+    from dana.schema import TraceEvent
+    from dana.ui.trace_window import LiveTracePanel
 
     hitl.reset_consecutive_denials()
     # Seed two denials on a stable fingerprint.

@@ -9,16 +9,16 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
-from donna.agentic_planning import executor_node, planner_node
-from donna.agentic_react_graph import (
+from dana.agentic_planning import executor_node, planner_node
+from dana.agentic_react_graph import (
     _route_after_agent,
     _route_after_jason_review,
     _route_after_ticket_approval,
     _route_after_ticket_validate,
     compile_donna_react_graph,
 )
-from donna.middleware import hitl_ticket as hitl
-from donna.schema import ReactGraphState
+from dana.middleware import hitl_ticket as hitl
+from dana.schema import ReactGraphState
 
 
 _REQUIRED_CONTROL_PLANE = frozenset(
@@ -26,7 +26,7 @@ _REQUIRED_CONTROL_PLANE = frozenset(
 )
 
 _VALID_CTX = (
-    "Target files: donna/agentic_react_graph.py\n"
+    "Target files: dana/agentic_react_graph.py\n"
     "Root cause: HITL must freeze graph until operator approves draft ticket.\n"
     "Step-by-step changes: 1) validate 2) jason 3) interrupt 4) tools.\n"
     "Acceptance criteria: interrupt pending; Approve resumes tools; Deny halts."
@@ -154,10 +154,10 @@ def test_hitl_ticket_node_halts_pending_approval(monkeypatch: pytest.MonkeyPatch
         }
 
     monkeypatch.setattr(
-        "donna.agentic_react_graph.generate_jason_ticket_critique",
+        "dana.agentic_react_graph.generate_jason_ticket_critique",
         lambda *_a, **_k: "Critique ok — HITL pending approval eval.",
     )
-    monkeypatch.setattr("donna.core_agent.enqueue_speech", lambda *_a, **_k: None)
+    monkeypatch.setattr("dana.core_agent.enqueue_speech", lambda *_a, **_k: None)
 
     graph = compile_donna_react_graph(
         agent,

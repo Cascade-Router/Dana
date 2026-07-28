@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from donna.stdio_boot import NullStdio, ensure_stdio
+from dana.stdio_boot import NullStdio, ensure_stdio
 
 
 def test_ensure_stdio_replaces_none(monkeypatch) -> None:

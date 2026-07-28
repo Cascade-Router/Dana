@@ -9,7 +9,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from donna.agentic_react_graph import (
+from dana.agentic_react_graph import (
     _MAX_TICKET_VALIDATION_RETRIES,
     _route_after_agent,
     _route_after_ticket_validate,
@@ -18,11 +18,11 @@ from donna.agentic_react_graph import (
     ticket_approval_node,
     ticket_validate_node,
 )
-from donna.middleware import hitl_ticket as hitl
-from donna.schema import ReactGraphState
+from dana.middleware import hitl_ticket as hitl
+from dana.schema import ReactGraphState
 
 _VALID_CONTEXT = (
-    "Target files: donna/agentic_react_graph.py, donna/tools/guards.py\n"
+    "Target files: dana/agentic_react_graph.py, dana/tools/guards.py\n"
     "Root cause: Intent-echo contexts were reaching HITL before Pydantic ran.\n"
     "Step-by-step changes: 1) validate payload 2) bounce MoA up to 3 times "
     "3) only then Jason/HITL.\n"
@@ -91,7 +91,7 @@ def test_validate_failure_routes_back_to_agent() -> None:
         "messages": [
             _ai_draft(
                 "thin obj",
-                "**Technical intent:** thin obj\n**Target Files:** donna/x.py",
+                "**Technical intent:** thin obj\n**Target Files:** dana/x.py",
             )
         ],
         "session_id": "bad",
@@ -114,7 +114,7 @@ def test_validate_max_retries_yields_to_user() -> None:
         "messages": [
             _ai_draft(
                 "still thin",
-                "**Technical intent:** still thin\n**Target Files:** donna/x.py",
+                "**Technical intent:** still thin\n**Target Files:** dana/x.py",
             )
         ],
         "session_id": "max",
@@ -139,7 +139,7 @@ def test_invalid_never_hits_hitl_interrupt(monkeypatch: pytest.MonkeyPatch) -> N
                 _ai_draft(
                     "enhance cursor rendering palette",
                     "**Technical intent:** enhance cursor rendering palette\n"
-                    "**Target Files:** donna/agentic.py",
+                    "**Target Files:** dana/agentic.py",
                     call_id=f"call-{attempts['n']}",
                 )
             ]
@@ -152,7 +152,7 @@ def test_invalid_never_hits_hitl_interrupt(monkeypatch: pytest.MonkeyPatch) -> N
         return {"halt": True, "final_raw": "should-not-run"}
 
     monkeypatch.setattr(
-        "donna.core_agent.enqueue_speech",
+        "dana.core_agent.enqueue_speech",
         lambda *_a, **_k: None,
     )
 
@@ -224,11 +224,11 @@ def test_valid_hits_hitl_with_full_payload(monkeypatch: pytest.MonkeyPatch) -> N
         return {"halt": True, "final_raw": "queued"}
 
     monkeypatch.setattr(
-        "donna.agentic_react_graph.generate_jason_ticket_critique",
+        "dana.agentic_react_graph.generate_jason_ticket_critique",
         lambda *_a, **_k: "Looks solid — approve if you agree.",
     )
     monkeypatch.setattr(
-        "donna.core_agent.enqueue_speech",
+        "dana.core_agent.enqueue_speech",
         lambda *_a, **_k: None,
     )
 
@@ -259,19 +259,19 @@ def test_valid_hits_hitl_with_full_payload(monkeypatch: pytest.MonkeyPatch) -> N
 def test_format_and_orb_ticket_widgets() -> None:
     import customtkinter as ctk
 
-    from donna.ui.assistive_orb import AssistiveTouchOrb
+    from dana.ui.assistive_orb import AssistiveTouchOrb
 
     text = hitl.format_ticket_payload(
         {
             "objective": "Fix validation loop",
             "context": _VALID_CONTEXT,
             "jason_critique": "Approve.",
-            "files": "donna/tools/guards.py",
+            "files": "dana/tools/guards.py",
         }
     )
     assert "Objective:\nFix validation loop" in text
     assert "Files:" in text
-    assert "donna/tools/guards.py" in text or "donna/agentic_react_graph.py" in text
+    assert "dana/tools/guards.py" in text or "dana/agentic_react_graph.py" in text
 
     root = ctk.CTk()
     root.withdraw()

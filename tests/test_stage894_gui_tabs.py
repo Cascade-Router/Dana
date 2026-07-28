@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def test_tab_order_and_dashboard_widgets() -> None:
-    from donna.core_agent import DonnaGUI
+    from dana.core_agent import DonnaGUI
 
     app = DonnaGUI()
     try:
@@ -48,7 +48,7 @@ def test_tab_order_and_dashboard_widgets() -> None:
 
 
 def test_behavior_lock_survives_tab_reorder() -> None:
-    from donna.core_agent import DonnaGUI
+    from dana.core_agent import DonnaGUI
 
     app = DonnaGUI()
     try:

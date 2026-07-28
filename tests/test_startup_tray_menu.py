@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from donna.tools import setup_startup
-from donna.ui import startup_tray
+from dana.tools import setup_startup
+from dana.ui import startup_tray
 
 
 def test_is_startup_enabled_windows_on(monkeypatch) -> None:
@@ -38,15 +38,15 @@ def test_toggle_run_on_startup_flips_and_updates_menu(monkeypatch) -> None:
         lambda _item=None: False,
     )
     monkeypatch.setattr(
-        "donna.tools.setup_startup.is_startup_enabled",
+        "dana.tools.setup_startup.is_startup_enabled",
         lambda: False,
     )
     monkeypatch.setattr(
-        "donna.tools.setup_startup.enable_startup",
+        "dana.tools.setup_startup.enable_startup",
         lambda: calls.append("enable") or 0,
     )
     monkeypatch.setattr(
-        "donna.tools.setup_startup.disable_startup",
+        "dana.tools.setup_startup.disable_startup",
         lambda: calls.append("disable") or 0,
     )
     icon = MagicMock()

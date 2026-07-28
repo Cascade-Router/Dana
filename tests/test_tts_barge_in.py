@@ -8,44 +8,44 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-import donna.core_agent as donna
-from donna.audio.tts_worker import TtsWorker, get_tts_worker
-from donna.audio.vad_consumer import trigger_tts_barge_in
+import dana.core_agent as dana
+from dana.audio.tts_worker import TtsWorker, get_tts_worker
+from dana.audio.vad_consumer import trigger_tts_barge_in
 
 
 def test_interrupt_flushes_queue_and_sets_event() -> None:
-    donna._bind_tts_barge_controller()
-    donna.tts_interrupt_event.clear()
-    donna._tts_barge.end_playback()
-    donna._tts_barge.begin_playback(interruptible=True)
-    donna.speech_queue.put_nowait(("chunk-a", True))
-    donna.speech_queue.put_nowait(("chunk-b", True))
-    donna.tts_busy.set()
+    dana._bind_tts_barge_controller()
+    dana.tts_interrupt_event.clear()
+    dana._tts_barge.end_playback()
+    dana._tts_barge.begin_playback(interruptible=True)
+    dana.speech_queue.put_nowait(("chunk-a", True))
+    dana.speech_queue.put_nowait(("chunk-b", True))
+    dana.tts_busy.set()
 
     dropped = trigger_tts_barge_in(reason="unit-test")
 
-    assert donna.tts_interrupt_event.is_set()
+    assert dana.tts_interrupt_event.is_set()
     assert dropped >= 2
-    assert donna.speech_queue.empty()
-    donna._tts_barge.end_playback()
+    assert dana.speech_queue.empty()
+    dana._tts_barge.end_playback()
     print("[PASS] interrupt flushes spool + latches barge-in event")
 
 
 def test_uninterruptible_ux_ack_ignores_barge_in() -> None:
-    donna._bind_tts_barge_controller()
-    donna.tts_interrupt_event.clear()
-    donna.speech_queue.put_nowait(("Yes?", False))
-    donna._tts_barge.begin_playback(interruptible=False)
-    donna.tts_busy.set()
+    dana._bind_tts_barge_controller()
+    dana.tts_interrupt_event.clear()
+    dana.speech_queue.put_nowait(("Yes?", False))
+    dana._tts_barge.begin_playback(interruptible=False)
+    dana.tts_busy.set()
 
     dropped = trigger_tts_barge_in(reason="self-bleed")
 
     assert dropped == 0
-    assert not donna.tts_interrupt_event.is_set()
-    assert not donna.speech_queue.empty()
-    donna._tts_barge.end_playback()
-    donna.flush_tts_queue()
-    donna.tts_busy.clear()
+    assert not dana.tts_interrupt_event.is_set()
+    assert not dana.speech_queue.empty()
+    dana._tts_barge.end_playback()
+    dana.flush_tts_queue()
+    dana.tts_busy.clear()
     print("[PASS] uninterruptible UX ack ignores barge-in")
 
 
@@ -67,40 +67,40 @@ def test_playback_grace_suppresses_onset_window() -> None:
     assert worker.in_playback_grace(grace_s=0.4) is False
     worker.end_playback()
     assert worker.in_playback_grace(grace_s=0.4) is False
-    assert donna.BARGE_IN_PLAYBACK_GRACE_MS == 400.0
+    assert dana.BARGE_IN_PLAYBACK_GRACE_MS == 400.0
     print("[PASS] playback grace window")
 
 
 def test_half_duplex_mic_drop_does_not_interrupt() -> None:
     """While TTS is busy, half-duplex drop must flush mic and never latch barge-in."""
-    donna._bind_tts_barge_controller()
-    donna.tts_interrupt_event.clear()
-    donna.stop_event.clear()
-    donna.tts_busy.set()
-    donna.vad_capture_active.clear()
-    donna._tts_barge.begin_playback(interruptible=True)
+    dana._bind_tts_barge_controller()
+    dana.tts_interrupt_event.clear()
+    dana.stop_event.clear()
+    dana.tts_busy.set()
+    dana.vad_capture_active.clear()
+    dana._tts_barge.begin_playback(interruptible=True)
     # Poison the mic queue with "speech-like" frames.
     for _ in range(8):
-        donna.audio_buffer_queue.put_nowait(np.ones(donna.VAD_FRAME_SAMPLES, dtype=np.float32) * 0.2)
+        dana.audio_buffer_queue.put_nowait(np.ones(dana.VAD_FRAME_SAMPLES, dtype=np.float32) * 0.2)
     stop_flag = threading.Event()
 
     def _stop_soon() -> None:
         time.sleep(0.15)
-        donna.tts_busy.clear()
+        dana.tts_busy.clear()
         stop_flag.set()
 
     threading.Thread(target=_stop_soon, daemon=True).start()
-    donna.half_duplex_mic_drop(stop_flag)
-    assert not donna.tts_interrupt_event.is_set()
-    donna._tts_barge.end_playback()
+    dana.half_duplex_mic_drop(stop_flag)
+    assert not dana.tts_interrupt_event.is_set()
+    dana._tts_barge.end_playback()
     print("[PASS] half-duplex mic drop does not interrupt TTS")
 
 
 def test_active_stream_abort_on_interrupt() -> None:
     stream = MagicMock()
-    worker = get_tts_worker(barge_in_event=donna.tts_interrupt_event)
-    donna._bind_tts_barge_controller()
-    donna.tts_interrupt_event.clear()
+    worker = get_tts_worker(barge_in_event=dana.tts_interrupt_event)
+    dana._bind_tts_barge_controller()
+    dana.tts_interrupt_event.clear()
     worker.register_output_stream(stream)
 
     worker.interrupt(reason="abort-stream")
@@ -112,9 +112,9 @@ def test_active_stream_abort_on_interrupt() -> None:
 
 def test_play_pcm_respects_barge_in_quickly() -> None:
     """Simulate long PCM; interrupt from another thread mid-playback."""
-    donna._bind_tts_barge_controller()
-    donna.tts_interrupt_event.clear()
-    donna.stop_event.clear()
+    dana._bind_tts_barge_controller()
+    dana.tts_interrupt_event.clear()
+    dana.stop_event.clear()
 
     # ~2s of silence @ 16 kHz — interrupt should cut well before full duration.
     audio = np.zeros(32000, dtype=np.float32)
@@ -126,7 +126,7 @@ def test_play_pcm_respects_barge_in_quickly() -> None:
 
     threading.Thread(target=_barge, daemon=True).start()
     # Use fallback path if OutputStream unavailable in CI — still checks event.
-    interrupted = donna._play_pcm_interruptible(audio, 16000, None)
+    interrupted = dana._play_pcm_interruptible(audio, 16000, None)
     elapsed = time.perf_counter() - t0
 
     assert interrupted is True

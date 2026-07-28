@@ -8,16 +8,16 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from donna.agentic import set_donna_mode
-from donna.agentic_react_graph import compile_donna_react_graph, route_after_execution
-from donna.graph.nodes.critic import (
+from dana.agentic import set_donna_mode
+from dana.agentic_react_graph import compile_donna_react_graph, route_after_execution
+from dana.graph.nodes.critic import (
     fail_closed_node,
     heuristic_critique,
     is_python_repl_failure,
     make_critic_node,
     python_repl_state_patch,
 )
-from donna.schema import ReactGraphState
+from dana.schema import ReactGraphState
 
 
 @pytest.fixture(autouse=True)

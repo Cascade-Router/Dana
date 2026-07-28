@@ -14,7 +14,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
-from donna.tools.broker import IntentBroker, get_broker
+from dana.tools.broker import IntentBroker, get_broker
 
 ScriptFn = Callable[[list[dict[str, str]]], str]
 ScriptSource = Sequence[str] | ScriptFn | list[str]

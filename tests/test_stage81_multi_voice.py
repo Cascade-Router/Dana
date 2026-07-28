@@ -5,18 +5,18 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from donna.audio.multi_voice_tts import (
+from dana.audio.multi_voice_tts import (
     JASON_ANDON_LINE,
     synthesize_speech,
     write_tone_wav,
 )
-from donna.ui import audio_mixer
+from dana.ui import audio_mixer
 
 
 def test_synthesize_speech_voice_id(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setenv("DONNA_AUDIO_DRY_RUN", "1")
     # Force silence/placeholder path (no pygame device required).
-    out_d = synthesize_speech("Hello receptionist.", voice_id="donna", out_path=tmp_path / "d.wav")
+    out_d = synthesize_speech("Hello receptionist.", voice_id="dana", out_path=tmp_path / "d.wav")
     out_j = synthesize_speech(JASON_ANDON_LINE, voice_id="jason", out_path=tmp_path / "j.wav")
     assert out_d.is_file() and out_d.stat().st_size > 44
     assert out_j.is_file() and out_j.stat().st_size > 44
@@ -54,8 +54,8 @@ def test_jason_ducks_donna_then_restores(tmp_path: Path, monkeypatch) -> None:  
 def test_recovery_mode_triggers_jason_voice(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setenv("DONNA_AUDIO_DRY_RUN", "1")
     monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    from donna.management.jason_supervisor import recovery_mode
-    from donna.memory.blackboard import init_blackboard, publish_perception_ocr
+    from dana.management.jason_supervisor import recovery_mode
+    from dana.memory.blackboard import init_blackboard, publish_perception_ocr
 
     db = tmp_path / "bb.db"
     init_blackboard(db)
@@ -68,7 +68,7 @@ def test_recovery_mode_triggers_jason_voice(tmp_path: Path, monkeypatch) -> None
         return {"ok": True, "line": JASON_ANDON_LINE, "path": str(tmp_path / "j.wav")}
 
     monkeypatch.setattr(
-        "donna.management.jason_supervisor.announce_jason_andon_override",
+        "dana.management.jason_supervisor.announce_jason_andon_override",
         _announce,
     )
     result = recovery_mode(

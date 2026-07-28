@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from donna.tools import vault
+from dana.tools import vault
 
 
 def test_env_var_takes_precedence(monkeypatch: pytest.MonkeyPatch) -> None:

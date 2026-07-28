@@ -6,14 +6,14 @@ import time
 import unittest
 from pathlib import Path
 
-from donna.tools.broker import get_broker, reload_broker_registry
-from donna.tools.plugins.file_jail_enforcer import (
+from dana.tools.broker import get_broker, reload_broker_registry
+from dana.tools.plugins.file_jail_enforcer import (
     DOCS_JAIL,
     file_jail_enforcer,
     handle_tool_call,
     resolve_jailed_path,
 )
-from donna.tools.schema import ToolCall
+from dana.tools.schema import ToolCall
 
 
 class FileJailEnforcerTests(unittest.TestCase):

@@ -1,6 +1,6 @@
 """Regression: clipboard must never leak into ReAct on a research query.
 
-Proves the hard gate in ``donna.agentic.run_react_loop`` blocks
+Proves the hard gate in ``dana.agentic.run_react_loop`` blocks
 ``read_clipboard_context`` unless the user explicitly asks about the clipboard,
 even when a poisoned OS clipboard (or a hallucinated TOOL call) is present.
 """
@@ -10,15 +10,15 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from test_support_react import patch_scripted_llm
-from donna.agentic import REACT_MAX_ITERS, run_react_loop
-from donna.tools.broker import IntentBroker
-from donna.tools.schema import ToolCall
-from donna.prompts.spatial_synthesis import build_agent_system_prompt
+from dana.agentic import REACT_MAX_ITERS, run_react_loop
+from dana.tools.broker import IntentBroker
+from dana.tools.schema import ToolCall
+from dana.prompts.spatial_synthesis import build_agent_system_prompt
 
 # Irrelevant raw terminal dump — large enough to poison an LLM context window.
 CLIPBOARD_POISON = (
     "PS C:\\Users\\Example> Traceback (most recent call last):\n"
-    "  File \"donna.core_agent.py\", line 9999, in <module>\n"
+    "  File \"dana.core_agent.py\", line 9999, in <module>\n"
     "RuntimeError: simulated kernel panic dump\n"
     "FATAL: orphaned socket 0xDEADBEEF\n"
 ) * 40  # >> 1000 characters
@@ -56,7 +56,7 @@ def test_clipboard_trap_does_not_leak_into_research(monkeypatch) -> None:
     def execute_fn(tc: ToolCall) -> str:
         executed.append(tc.tool_id)
         if tc.tool_id == "read_clipboard_context":
-            from donna.os_automation import read_clipboard_context
+            from dana.os_automation import read_clipboard_context
 
             result = read_clipboard_context()
             text = result.get("text") or ""
@@ -78,7 +78,7 @@ def test_clipboard_trap_does_not_leak_into_research(monkeypatch) -> None:
     }
 
     with patch(
-        "donna.os_automation.read_clipboard_context",
+        "dana.os_automation.read_clipboard_context",
         return_value=poison_clipboard,
     ) as mock_clip:
         result = run_react_loop(

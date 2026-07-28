@@ -7,7 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from donna.memory.blackboard import (
+from dana.memory.blackboard import (
     claim_next_pending,
     enqueue_action,
     get_action,
@@ -15,7 +15,7 @@ from donna.memory.blackboard import (
     is_heavy_actuator_tool,
     resolve_action,
 )
-from donna.middleware.actuator_executor import poll_once, process_action
+from dana.middleware.actuator_executor import poll_once, process_action
 
 
 def test_heavy_tool_classification() -> None:
@@ -79,21 +79,21 @@ def test_actuator_processes_pending_in_background(
 ) -> None:  # noqa: ANN001
     db = tmp_path / "bb.db"
     out = tmp_path / "donna_telemetry.jsonl"
-    monkeypatch.setattr("donna.telemetry.TELEMETRY_JSONL_PATH", out)
+    monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
     monkeypatch.setenv("DONNA_DISABLE_TOAST", "1")
     init_blackboard(db)
 
     monkeypatch.setattr(
-        "donna.middleware.actuator_executor.execute_tool_payload",
+        "dana.middleware.actuator_executor.execute_tool_payload",
         lambda tool_name, arguments, **_kw: f"OK: ran {tool_name}",
     )
     # Bind claim/resolve/process to this temp DB.
     monkeypatch.setattr(
-        "donna.middleware.actuator_executor.claim_next_pending",
+        "dana.middleware.actuator_executor.claim_next_pending",
         lambda db_path=None: claim_next_pending(db_path=db),
     )
     monkeypatch.setattr(
-        "donna.middleware.actuator_executor.resolve_action",
+        "dana.middleware.actuator_executor.resolve_action",
         lambda action_id, status, result="", db_path=None, **kw: resolve_action(
             action_id,
             status=status,
@@ -137,11 +137,11 @@ def test_process_action_failure_marks_failed(
     monkeypatch.setenv("DONNA_DISABLE_TOAST", "1")
     init_blackboard(db)
     monkeypatch.setattr(
-        "donna.middleware.actuator_executor.execute_tool_payload",
+        "dana.middleware.actuator_executor.execute_tool_payload",
         lambda tool_name, arguments, **_kw: "ERROR: boom",
     )
     monkeypatch.setattr(
-        "donna.middleware.actuator_executor.resolve_action",
+        "dana.middleware.actuator_executor.resolve_action",
         lambda action_id, status, result="", db_path=None, **kw: resolve_action(
             action_id,
             status=status,

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from donna.agentic import sanitize_spoken_reply, strip_simulated_dialog_leaks
-from donna.tools.broker import IntentBroker
+from dana.agentic import sanitize_spoken_reply, strip_simulated_dialog_leaks
+from dana.tools.broker import IntentBroker
 
 
 def test_strip_user_prefix_and_arrow_speak() -> None:
@@ -29,7 +29,7 @@ def test_strip_me_and_answer_labels() -> None:
 
 
 def test_strip_raw_json_tool_call_speech() -> None:
-    from donna.agentic import looks_like_raw_json_speech, sanitize_spoken_reply
+    from dana.agentic import looks_like_raw_json_speech, sanitize_spoken_reply
 
     leak = '{"name": "read_local_file", "parameters": {"path": "tools.json"}}'
     assert looks_like_raw_json_speech(leak)
@@ -41,7 +41,7 @@ def test_strip_raw_json_tool_call_speech() -> None:
 
 
 def test_memory_key_miss_fallback_is_natural() -> None:
-    from donna.agentic import _obs_fallback
+    from dana.agentic import _obs_fallback
 
     spoken = _obs_fallback("Error: Memory key not found in vault.", "en")
     assert "don't know" in spoken.lower() or "referring" in spoken.lower()

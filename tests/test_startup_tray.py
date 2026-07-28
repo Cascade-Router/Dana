@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from donna.tools import setup_startup
+from dana.tools import setup_startup
 
 
 def test_write_start_bat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -112,7 +112,7 @@ def test_enable_disable_linux(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
 def test_audio_switcher_imports_cleanly() -> None:
     """Module must import on every OS without raising at import time."""
-    import donna.tools.audio_switcher as audio_switcher
+    import dana.tools.audio_switcher as audio_switcher
 
     assert hasattr(audio_switcher, "toggle_audio_endpoint")
     if audio_switcher._WINDOWS is False:
@@ -124,7 +124,7 @@ def test_audio_switcher_imports_cleanly() -> None:
 def test_tray_icon_listening_vs_idle() -> None:
     pytest.importorskip("PIL")
     try:
-        from donna.core_agent import create_tray_image
+        from dana.core_agent import create_tray_image
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"core_agent unavailable in this environment: {exc}")
 
@@ -136,16 +136,16 @@ def test_tray_icon_listening_vs_idle() -> None:
 
 
 def test_app_ico_multi_resolution_exists() -> None:
-    """donna/assets/donna.ico must exist with standard Windows sizes."""
+    """dana/assets/donna.ico must exist with standard Windows sizes."""
     import struct
 
-    from donna.paths import PROJECT_ROOT
-    from donna.ui.logo import app_icon_path, load_app_icon_pil, resolve_app_icon_path
+    from dana.paths import PROJECT_ROOT
+    from dana.ui.logo import app_icon_path, load_app_icon_pil, resolve_app_icon_path
 
     ico = resolve_app_icon_path()
     assert ico is not None
     assert ico == app_icon_path()
-    assert ico == Path(PROJECT_ROOT) / "donna" / "assets" / "donna.ico"
+    assert ico == Path(PROJECT_ROOT) / "dana" / "assets" / "donna.ico"
     raw = ico.read_bytes()
     count = struct.unpack_from("<H", raw, 4)[0]
     assert count >= 6
@@ -159,13 +159,13 @@ def test_appusermodelid_helper_present_in_entrypoints() -> None:
     """Entry points must set explicit AppUserModelID before GUI boot."""
     root = Path(__file__).resolve().parents[1]
     run_txt = (root / "run.py").read_text(encoding="utf-8")
-    core_txt = (root / "donna" / "core_agent.py").read_text(encoding="utf-8", errors="replace")
+    core_txt = (root / "dana" / "core_agent.py").read_text(encoding="utf-8", errors="replace")
     needle = "SetCurrentProcessExplicitAppUserModelID"
     assert needle in run_txt
     assert needle in core_txt
     assert "CascadeRouter.Donna.DesktopAgent.1.0" in run_txt
     assert "CascadeRouter.Donna.DesktopAgent.1.0" in core_txt
-    from donna.ui import logo as logo_mod
+    from dana.ui import logo as logo_mod
 
     assert hasattr(logo_mod, "apply_window_icon")
     print("[PASS] AppUserModelID wired in run.py + core_agent")
@@ -179,7 +179,7 @@ def test_write_desktop_shortcut_sets_icon(monkeypatch: pytest.MonkeyPatch, tmp_p
     venv = tmp_path / ".venv" / "Scripts"
     venv.mkdir(parents=True)
     (venv / "pythonw.exe").write_bytes(b"")
-    ico = tmp_path / "donna" / "assets" / "donna.ico"
+    ico = tmp_path / "dana" / "assets" / "donna.ico"
     ico.parent.mkdir(parents=True)
     ico.write_bytes(b"\x00\x00\x01\x00")
 
@@ -199,13 +199,13 @@ def test_write_desktop_shortcut_sets_icon(monkeypatch: pytest.MonkeyPatch, tmp_p
     abs_ico = str(ico.resolve()) if ico.exists() else str(ico)
     # PowerShell must receive an absolute IconLocation (...\donna.ico,0).
     assert "donna.ico,0" in joined.replace("''", "'")
-    assert "donna" in joined.lower() and "assets" in joined.lower()
+    assert "dana" in joined.lower() and "assets" in joined.lower()
     print("[PASS] desktop shortcut PowerShell includes absolute IconLocation")
 
 
 def test_app_icon_path_is_absolute() -> None:
     path = setup_startup.app_icon_path()
     assert path.is_absolute()
-    assert path.as_posix().endswith("donna/assets/donna.ico")
+    assert path.as_posix().endswith("dana/assets/donna.ico")
     assert path.is_file()
     print(f"[PASS] app_icon_path absolute: {path}")

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from donna.swarm.tool_forge_graph import security_reviewer_agent
-from donna.swarm.tool_forge_template import assemble_forged_tool
+from dana.swarm.tool_forge_graph import security_reviewer_agent
+from dana.swarm.tool_forge_template import assemble_forged_tool
 
 
 def test_security_short_circuit_approves_psutil() -> None:

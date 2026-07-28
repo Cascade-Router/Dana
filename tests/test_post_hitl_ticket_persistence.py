@@ -6,8 +6,8 @@ from pathlib import Path
 
 
 def test_validation_bounce_not_logged_to_bug_tracker(tmp_path: Path, monkeypatch) -> None:
-    from donna import agentic as ag
-    from donna import bug_tracker as bt
+    from dana import agentic as ag
+    from dana import bug_tracker as bt
 
     target = tmp_path / "bug_tracker.json"
     monkeypatch.setattr(bt, "BUG_TRACKER_PATH", target)
@@ -35,7 +35,7 @@ def test_validation_bounce_not_logged_to_bug_tracker(tmp_path: Path, monkeypatch
 
 
 def test_draft_cursor_writes_ledger_with_makedirs(tmp_path: Path, monkeypatch) -> None:
-    from donna.tools.general import draft_cursor_prompt as mod
+    from dana.tools.general import draft_cursor_prompt as mod
 
     ledger_dir = tmp_path / "donna_security"
     ledger = ledger_dir / "patch_ledger.md"
@@ -45,7 +45,7 @@ def test_draft_cursor_writes_ledger_with_makedirs(tmp_path: Path, monkeypatch) -
     # Already-enriched shape so enrich_draft_cursor_args does not flatten paths.
     ctx = (
         "**Technical intent:** Persist approved HITL tickets to the patch ledger\n"
-        "**Target Files:** donna/agentic_react_graph.py, donna/tools/guards.py\n"
+        "**Target Files:** dana/agentic_react_graph.py, dana/tools/guards.py\n"
         "\n"
         "Root cause: Forced broker exec skipped HITL and wrote nowhere useful.\n"
         "Step-by-step changes: 1) defer draft_cursor_prompt force-exec "
@@ -65,6 +65,6 @@ def test_draft_cursor_writes_ledger_with_makedirs(tmp_path: Path, monkeypatch) -
 
 
 def test_defer_forced_tool_covers_draft_cursor() -> None:
-    from donna.moa_tool_shim import defer_forced_tool_for_moa
+    from dana.moa_tool_shim import defer_forced_tool_for_moa
 
     assert defer_forced_tool_for_moa("draft_cursor_prompt") is True

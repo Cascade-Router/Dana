@@ -7,12 +7,12 @@ from typing import Any
 
 import pytest
 
-from donna.graph.nodes.execute_macro import (
+from dana.graph.nodes.execute_macro import (
     execute_macro_node,
     parse_macro_command,
 )
-from donna.macros.engine import MacroEngine, bbox_center, sanitize_macro_id
-from donna.macros.schema import MacroSequence, MacroStep
+from dana.macros.engine import MacroEngine, bbox_center, sanitize_macro_id
+from dana.macros.schema import MacroSequence, MacroStep
 
 
 def test_sanitize_macro_id() -> None:

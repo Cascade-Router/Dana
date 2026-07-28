@@ -2,7 +2,7 @@
 
 Donna’s operator UI is a **decoupled CustomTkinter surface**. Perception, cognition, and tool workers must never call Tk APIs directly. All Live Trace updates cross a single thread-safe queue and are applied on the GUI main thread.
 
-**Stage 3 also adds a structured JSONL logger** (`donna/telemetry.py` → `logs/donna_telemetry.jsonl`) for forensic / queryable bureaucracy events. Live Trace and JSONL are complementary: UI for operators, JSONL for diagnostics and soak tests.
+**Stage 3 also adds a structured JSONL logger** (`dana/telemetry.py` → `logs/donna_telemetry.jsonl`) for forensic / queryable bureaucracy events. Live Trace and JSONL are complementary: UI for operators, JSONL for diagnostics and soak tests.
 
 ---
 
@@ -19,11 +19,11 @@ Donna’s operator UI is a **decoupled CustomTkinter surface**. Perception, cogn
 
 | Symbol | Location | Role |
 |--------|----------|------|
-| `gui_telemetry_queue` | `donna/core_agent.py` | Process-wide `queue.Queue` of trace event dicts |
-| `emit_trace(...)` | `donna/core_agent.py` | Safe producer API for any thread |
-| `DonnaGUI.process_telemetry` | `donna/core_agent.py` | Consumer: `get_nowait` + `after(100, ...)` |
-| `TraceCell` | `donna/core_agent.py` | One stage row (icon + message + border pulse) |
-| `emit_tagged` / helpers | `donna/telemetry.py` | Structured JSONL writer (Stage 3) |
+| `gui_telemetry_queue` | `dana/core_agent.py` | Process-wide `queue.Queue` of trace event dicts |
+| `emit_trace(...)` | `dana/core_agent.py` | Safe producer API for any thread |
+| `DonnaGUI.process_telemetry` | `dana/core_agent.py` | Consumer: `get_nowait` + `after(100, ...)` |
+| `TraceCell` | `dana/core_agent.py` | One stage row (icon + message + border pulse) |
+| `emit_tagged` / helpers | `dana/telemetry.py` | Structured JSONL writer (Stage 3) |
 | `TELEMETRY_JSONL_PATH` | `logs/donna_telemetry.jsonl` | Append-only forensic event stream |
 
 ```text
@@ -97,7 +97,7 @@ Implementation notes for contributors:
 - Prefer `put_nowait` semantics (already used inside `emit_trace`) so a stalled UI cannot block audio/LLM threads.
 - Invalid `status` values coerce to `"active"`.
 - Do **not** hold references to `DonnaGUI` widgets from worker code; only call `emit_trace`.
-- For FSM / soak diagnostics, also emit the matching JSONL tag via `donna.telemetry` helpers.
+- For FSM / soak diagnostics, also emit the matching JSONL tag via `dana.telemetry` helpers.
 
 ---
 

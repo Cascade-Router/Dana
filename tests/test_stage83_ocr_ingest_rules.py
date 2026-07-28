@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from donna.management.ingest_rules import (
+from dana.management.ingest_rules import (
     ACK_LINE,
     clean_ocr_with_llm,
     ingest_rules,
@@ -15,7 +15,7 @@ from donna.management.ingest_rules import (
     wait_for_fresh_ocr,
     write_feather_rules,
 )
-from donna.memory.blackboard import (
+from dana.memory.blackboard import (
     PERCEPTION_OCR_KEY,
     init_blackboard,
     publish_perception_ocr,
@@ -37,7 +37,7 @@ def test_read_latest_ocr_from_sensor_state(tmp_path: Path) -> None:
 
 def test_rejects_yolo_objects_as_ocr(tmp_path: Path) -> None:
     """Sidekick contract: YOLO prose must never feed rule ingestion."""
-    from donna.memory.blackboard import publish_perception_objects
+    from dana.memory.blackboard import publish_perception_objects
 
     db = tmp_path / "bb.db"
     init_blackboard(db)
@@ -106,15 +106,15 @@ def test_clean_ocr_uses_local_llama_not_reasoner(monkeypatch) -> None:  # noqa: 
 
     monkeypatch.delenv("DONNA_INGEST_DRY_LLM", raising=False)
     monkeypatch.setattr(
-        "donna.cascade_router.local_model_name",
+        "dana.cascade_router.local_model_name",
         lambda: "llama3.2:latest",
     )
     monkeypatch.setattr(
-        "donna.core_agent.ask_ollama_messages",
+        "dana.core_agent.ask_ollama_messages",
         _fake_ask,
     )
     monkeypatch.setattr(
-        "donna.management.ingest_rules.time.sleep",
+        "dana.management.ingest_rules.time.sleep",
         _fake_sleep,
     )
 
@@ -164,10 +164,10 @@ def test_wait_for_fresh_ocr_rejects_stale_then_accepts(
         return ""
 
     monkeypatch.delenv("DONNA_INGEST_SKIP_FRESHNESS", raising=False)
-    monkeypatch.setattr("donna.management.ingest_rules.time.sleep", _fake_sleep)
+    monkeypatch.setattr("dana.management.ingest_rules.time.sleep", _fake_sleep)
     # Avoid GPU Florence in unit test — exercise poll path only.
     monkeypatch.setattr(
-        "donna.management.ingest_rules._force_florence_ocr",
+        "dana.management.ingest_rules._force_florence_ocr",
         _no_force,
     )
 

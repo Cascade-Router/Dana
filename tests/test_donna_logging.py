@@ -1,11 +1,11 @@
-"""Smoke checks for donna.logging (runtime vs conversation isolation)."""
+"""Smoke checks for dana.logging (runtime vs conversation isolation)."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from donna.logging import (
+from dana.logging import (
     CONVERSATION_LOG_PATH,
     RUNTIME_LOG_PATH,
     debug_logging_enabled,
@@ -16,7 +16,7 @@ from donna.logging import (
     log_exception,
     reset_conversation_log,
 )
-import donna.logging as donna_logging
+import dana.logging as donna_logging
 
 
 def test_conversation_log_clears_on_reset() -> None:

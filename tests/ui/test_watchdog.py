@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from donna.ui import notifications, watchdog
-from donna.ui.watchdog import ShellWatchdog, extract_trace_window, summarize_error
+from dana.ui import notifications, watchdog
+from dana.ui.watchdog import ShellWatchdog, extract_trace_window, summarize_error
 
 
 PYTEST_FAIL_STDERR = """\
@@ -177,7 +177,7 @@ def test_submit_to_planner_resilient(monkeypatch: pytest.MonkeyPatch) -> None:
         raise RuntimeError("no planner")
 
     monkeypatch.setattr(
-        "donna.agentic_planning.build_structured_plan",
+        "dana.agentic_planning.build_structured_plan",
         _boom,
         raising=False,
     )

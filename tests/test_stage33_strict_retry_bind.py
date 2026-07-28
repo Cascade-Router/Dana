@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from donna.agentic_react_graph import validation_retry_tool_corridor
+from dana.agentic_react_graph import validation_retry_tool_corridor
 
 
 def test_validation_retry_corridor_is_exactly_failed_tool() -> None:

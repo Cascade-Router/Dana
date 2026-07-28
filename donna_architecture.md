@@ -2,7 +2,7 @@
 
 Native export from the production ReAct ``StateGraph`` via
 ``CompiledGraph.get_graph().draw_mermaid()``
-(``donna.agentic_react_graph.compile_donna_react_graph``).
+(``dana.agentic_react_graph.compile_donna_react_graph``).
 
 ## Graph
 
@@ -42,7 +42,7 @@ graph TD;
 These policies run **before** or **inside** node bodies - they do not add extra
 LangGraph nodes, but matter when auditing starvation / vision bugs:
 
-- **Mode foresight** (`donna.agentic.get_donna_mode`): chat bypasses this graph;
+- **Mode foresight** (`dana.agentic.get_donna_mode`): chat bypasses this graph;
   vision/research keep ReAct and may force ``analyze_visual_context`` into the
   bind set via ``merge_bound_tool_ids``.
 - **Broker foresight** (`IntentBroker.parse_utterance`): may seed a forced tool
@@ -55,5 +55,5 @@ LangGraph nodes, but matter when auditing starvation / vision bugs:
 Regenerate with:
 
 ```bash
-python -m donna.tools.export_graph
+python -m dana.tools.export_graph
 ```

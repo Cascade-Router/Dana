@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from donna.memory.blackboard import (
+from dana.memory.blackboard import (
     enqueue_action,
     get_action,
     init_blackboard,
@@ -14,8 +14,8 @@ from donna.memory.blackboard import (
     resolve_action,
     set_is_typing,
 )
-from donna.memory.garbage_collector import prune_action_queue
-from donna.operators.ghost_typist import GhostTypistOperator
+from dana.memory.garbage_collector import prune_action_queue
+from dana.operators.ghost_typist import GhostTypistOperator
 
 
 def test_system_state_is_typing_roundtrip(tmp_path: Path) -> None:
@@ -41,7 +41,7 @@ def test_ghost_typist_sets_is_typing_flag(tmp_path: Path, monkeypatch) -> None: 
     db = tmp_path / "bb.db"
     init_blackboard(db)
     monkeypatch.setattr(
-        "donna.memory.blackboard.BLACKBOARD_DB_PATH",
+        "dana.memory.blackboard.BLACKBOARD_DB_PATH",
         db,
     )
     seen: list[bool] = []
@@ -97,10 +97,10 @@ def test_jason_finalize_runs_gc(tmp_path: Path, monkeypatch) -> None:  # noqa: A
         return out
 
     monkeypatch.setattr(
-        "donna.memory.garbage_collector.run_blackboard_gc",
+        "dana.memory.garbage_collector.run_blackboard_gc",
         _gc,
     )
-    from donna.management.jason_supervisor import build_bulk_evaluate_slides_graph
+    from dana.management.jason_supervisor import build_bulk_evaluate_slides_graph
 
     graph = build_bulk_evaluate_slides_graph(db_path=db)
     final = graph.invoke(

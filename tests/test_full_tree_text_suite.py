@@ -30,7 +30,7 @@ if str(_ROOT) not in sys.path:
 # Allow toasts during live diagnostic (tests may override).
 os.environ.setdefault("DONNA_DISABLE_TOAST", "0")
 
-from donna.paths import DONNA_WORKSPACE, LOGS_DIR  # noqa: E402
+from dana.paths import DONNA_WORKSPACE, LOGS_DIR  # noqa: E402
 
 SESSION_ID = "full-tree-text-suite"
 MARKER = f"FULL_TREE_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
@@ -83,7 +83,7 @@ class BranchResult:
 
 def _silence_tts() -> None:
     try:
-        import donna.core_agent as ca
+        import dana.core_agent as ca
 
         ca.enqueue_speech = lambda *a, **k: None  # type: ignore[assignment]
         ca.wait_for_speech_idle = lambda *a, **k: True  # type: ignore[assignment]
@@ -95,19 +95,19 @@ def _silence_tts() -> None:
 
 
 def _bind_session() -> None:
-    import donna.agentic as ag
+    import dana.agentic as ag
 
     ag._REACT_THREAD_ID = SESSION_ID
 
 
 def _telemetry_path() -> Path:
-    from donna.telemetry import TELEMETRY_JSONL_PATH
+    from dana.telemetry import TELEMETRY_JSONL_PATH
 
     return Path(TELEMETRY_JSONL_PATH)
 
 
 def _bb_path() -> Path:
-    from donna.memory.blackboard import BLACKBOARD_DB_PATH
+    from dana.memory.blackboard import BLACKBOARD_DB_PATH
 
     return Path(BLACKBOARD_DB_PATH)
 
@@ -150,7 +150,7 @@ def _jsonl_since(start_lines: int) -> list[dict[str, Any]]:
 
 
 def _bb_append(role: str, content: str, *, agent: str = "", intent: str = "") -> None:
-    from donna.memory import append_message, ensure_session, set_session_meta
+    from dana.memory import append_message, ensure_session, set_session_meta
 
     ensure_session(SESSION_ID, current_agent=agent, active_intent=intent)
     if agent or intent:
@@ -180,7 +180,7 @@ def _bb_search(needle: str) -> list[str]:
 
 
 def _get_session_meta() -> dict[str, Any]:
-    from donna.memory import get_session_meta
+    from dana.memory import get_session_meta
 
     return get_session_meta(SESSION_ID) or {}
 
@@ -192,12 +192,12 @@ def _get_session_meta() -> dict[str, Any]:
 
 def _seed_vision_sensor() -> None:
     """Simulate vision_poller publishing perception.objects (+ legacy mirror)."""
-    from donna.memory.blackboard import (
+    from dana.memory.blackboard import (
         LATEST_VISUAL_CONTEXT_KEY,
         PERCEPTION_OBJECTS_KEY,
         publish_perception_objects,
     )
-    from donna.telemetry import log_sensor_vision
+    from dana.telemetry import log_sensor_vision
 
     # read_visual_state prefers perception.objects over legacy latest_visual_context.
     publish_perception_objects(
@@ -226,7 +226,7 @@ class _ActuatorDaemon:
         self.processed = 0
 
     def start(self) -> None:
-        from donna.middleware.actuator_executor import poll_once
+        from dana.middleware.actuator_executor import poll_once
 
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ft-act")
         inflight: set = set()
@@ -258,11 +258,11 @@ class _ActuatorDaemon:
 
 
 def branch1_mailroom() -> BranchResult:
-    from donna.agentic import get_donna_mode, set_donna_mode
-    from donna.cascade_router import decide_route, fuzzy_match_command
-    from donna.handoff import execute_handoff
-    from donna.schema import Handoff
-    from donna.telemetry import log_router
+    from dana.agentic import get_donna_mode, set_donna_mode
+    from dana.cascade_router import decide_route, fuzzy_match_command
+    from dana.handoff import execute_handoff
+    from dana.schema import Handoff
+    from dana.telemetry import log_router
 
     r = BranchResult("Branch 1 (Mailroom Switch)", BRANCH1, False)
     set_donna_mode("chat")
@@ -325,12 +325,12 @@ def branch1_mailroom() -> BranchResult:
 
 
 def branch2_vision_sensor_read() -> BranchResult:
-    from donna.agentic import (
+    from dana.agentic import (
         build_lightweight_chat_system_prompt,
         run_lightweight_chat,
         set_donna_mode,
     )
-    from donna.memory import read_visual_state
+    from dana.memory import read_visual_state
 
     r = BranchResult("Branch 2 (Vision Sensor Read)", BRANCH2, False)
     set_donna_mode("vision")
@@ -343,7 +343,7 @@ def branch2_vision_sensor_read() -> BranchResult:
         raise RuntimeError("YOLO must not run on Branch 2 sensor-read path")
 
     try:
-        import donna.vision_tools as vt
+        import dana.vision_tools as vt
 
         vt.analyze_visual_context = _yolo_tripwire  # type: ignore[assignment]
     except Exception as exc:  # noqa: BLE001
@@ -356,7 +356,7 @@ def branch2_vision_sensor_read() -> BranchResult:
 
     answer = ""
     try:
-        from donna.core_agent import OLLAMA_MODEL, ask_ollama_messages
+        from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
 
         # Stage 4.1 contract: answer from BB sensor topic, no live vision tool.
         result = run_lightweight_chat(
@@ -402,16 +402,16 @@ def branch2_vision_sensor_read() -> BranchResult:
 
 
 def branch3_chat_ingest() -> BranchResult:
-    from donna.agentic import (
+    from dana.agentic import (
         build_lightweight_chat_system_prompt,
         clear_chat_memory,
         get_donna_mode,
         run_lightweight_chat,
         set_donna_mode,
     )
-    from donna.cascade_router import decide_route, fuzzy_match_command
-    from donna.handoff import execute_handoff
-    from donna.schema import Handoff
+    from dana.cascade_router import decide_route, fuzzy_match_command
+    from dana.handoff import execute_handoff
+    from dana.schema import Handoff
 
     r = BranchResult("Branch 3 (Chat Ingest)", BRANCH3, False)
     clear_chat_memory()
@@ -453,7 +453,7 @@ def branch3_chat_ingest() -> BranchResult:
     _bb_append("user", fact, agent="Chat_Node", intent="memory_ingest")
 
     try:
-        from donna.core_agent import OLLAMA_MODEL, ask_ollama_messages
+        from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
 
         result = run_lightweight_chat(
             user_text=fact,
@@ -492,7 +492,7 @@ def branch3_chat_ingest() -> BranchResult:
 
 
 def branch4_chat_recall() -> BranchResult:
-    from donna.agentic import (
+    from dana.agentic import (
         build_lightweight_chat_system_prompt,
         get_donna_mode,
         run_lightweight_chat,
@@ -506,10 +506,10 @@ def branch4_chat_recall() -> BranchResult:
 
     answer = ""
     try:
-        from donna.core_agent import OLLAMA_MODEL, ask_ollama_messages
+        from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
 
         # Hydrate with Blackboard history (session_id path).
-        from donna.memory import load_messages
+        from dana.memory import load_messages
 
         hist = load_messages(SESSION_ID, limit=12)
         brief = "\n".join(
@@ -549,12 +549,12 @@ def branch4_chat_recall() -> BranchResult:
 
 
 def branch5_research_moa() -> BranchResult:
-    from donna.agentic import REACT_MAX_ITERS, run_react_loop, set_donna_mode
-    from donna.cascade_router import fuzzy_match_command
-    from donna.handoff import execute_handoff
-    from donna.schema import Handoff
-    from donna.tools.broker import IntentBroker
-    from donna.tools.schema import ToolCall
+    from dana.agentic import REACT_MAX_ITERS, run_react_loop, set_donna_mode
+    from dana.cascade_router import fuzzy_match_command
+    from dana.handoff import execute_handoff
+    from dana.schema import Handoff
+    from dana.tools.broker import IntentBroker
+    from dana.tools.schema import ToolCall
 
     r = BranchResult("Branch 5 (Research / MoA Reasoning)", BRANCH5, False)
     set_donna_mode("research")
@@ -578,7 +578,7 @@ def branch5_research_moa() -> BranchResult:
     except Exception as exc:  # noqa: BLE001
         r.errors.append(f"handoff: {exc}")
 
-    from donna.memory import load_messages
+    from dana.memory import load_messages
 
     prior = [
         {"role": m["role"], "content": m["content"]}
@@ -594,7 +594,7 @@ def branch5_research_moa() -> BranchResult:
     executed = False
 
     def execute_fn(tc: ToolCall) -> str:
-        from donna.core_agent import execute_tool_call
+        from dana.core_agent import execute_tool_call
 
         return execute_tool_call(tc)
 
@@ -693,18 +693,18 @@ def branch5_research_moa() -> BranchResult:
 
 
 def branch6_async_queue_callback(actuator: _ActuatorDaemon) -> BranchResult:
-    from donna.agentic import (
+    from dana.agentic import (
         build_lightweight_chat_system_prompt,
         run_lightweight_chat,
         run_react_loop,
         set_donna_mode,
     )
-    from donna.memory.blackboard import (
+    from dana.memory.blackboard import (
         enqueue_action,
         get_action,
     )
-    from donna.tools.broker import IntentBroker
-    from donna.tools.schema import ToolCall
+    from dana.tools.broker import IntentBroker
+    from dana.tools.schema import ToolCall
 
     r = BranchResult("Branch 6 (Async Queue & Callback)", BRANCH6_ENQUEUE, False)
     set_donna_mode("developer")
@@ -715,7 +715,7 @@ def branch6_async_queue_callback(actuator: _ActuatorDaemon) -> BranchResult:
     tool_trace: list[dict[str, Any]] = []
 
     def execute_fn(tc: ToolCall) -> str:
-        from donna.core_agent import execute_tool_call
+        from dana.core_agent import execute_tool_call
 
         return execute_tool_call(tc)
 
@@ -730,7 +730,7 @@ def branch6_async_queue_callback(actuator: _ActuatorDaemon) -> BranchResult:
                 ),
                 "context": (
                     "Technical intent: Reduce WAL growth and reader stalls.\n"
-                    "Target Files: donna/memory/blackboard.py\n"
+                    "Target Files: dana/memory/blackboard.py\n"
                     "Root cause: Aggressive or unbounded WAL checkpoint timing "
                     "under concurrent vision/actuator writers.\n"
                     "Step-by-step changes: 1) Measure current WAL size under "
@@ -783,7 +783,7 @@ def branch6_async_queue_callback(actuator: _ActuatorDaemon) -> BranchResult:
                 ),
                 "context": (
                     "Technical intent: Reduce WAL growth and reader stalls.\n"
-                    "Target Files: donna/memory/blackboard.py\n"
+                    "Target Files: dana/memory/blackboard.py\n"
                     "Root cause: Aggressive or unbounded WAL checkpoint timing "
                     "under concurrent vision/actuator writers.\n"
                     "Step-by-step changes: 1) Measure current WAL size under "
@@ -827,7 +827,7 @@ def branch6_async_queue_callback(actuator: _ActuatorDaemon) -> BranchResult:
                 "I'm ready for the next task."
             )
         try:
-            from donna.core_agent import ask_ollama_messages
+            from dana.core_agent import ask_ollama_messages
 
             return ask_ollama_messages(messages, model=model)
         except Exception:  # noqa: BLE001
@@ -972,7 +972,7 @@ def run_suite() -> tuple[list[BranchResult], dict[str, Any]]:
 
     _silence_tts()
     _bind_session()
-    from donna.memory import ensure_session
+    from dana.memory import ensure_session
 
     ensure_session(SESSION_ID, current_agent="Chat_Node", active_intent="full_tree")
     start_lines = _mark_telemetry()

@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from donna.agentic import parse_mode_switch, set_donna_mode
-from donna.cascade_router import (
+from dana.agentic import parse_mode_switch, set_donna_mode
+from dana.cascade_router import (
     COMMAND_DICTIONARY,
     FUZZY_MATCH_THRESHOLD,
     decide_route,
@@ -59,7 +59,7 @@ def test_fallthrough_below_threshold_emits_voice_asr(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
     out = tmp_path / "donna_telemetry.jsonl"
-    monkeypatch.setattr("donna.telemetry.TELEMETRY_JSONL_PATH", out)
+    monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
     set_donna_mode("chat")
     # Clearly not a command — must fall through mailroom.
     d = decide_route("what is the weather in seattle today")
@@ -76,7 +76,7 @@ def test_mailroom_hit_emits_router_telemetry(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
     out = tmp_path / "donna_telemetry.jsonl"
-    monkeypatch.setattr("donna.telemetry.TELEMETRY_JSONL_PATH", out)
+    monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
     decide_route("switch to vision")
     lines = [json.loads(x) for x in out.read_text(encoding="utf-8").strip().splitlines()]
     router = [r for r in lines if r.get("tag") == "[ROUTER]"]
@@ -89,7 +89,7 @@ def test_mailroom_hit_emits_router_telemetry(
 
 def test_length_guard_skips_fuzzy_on_long_utterances() -> None:
     """Stage 3.1: >8 words must not fuzzy-hijack MoA / draft_cursor prompts."""
-    from donna.cascade_router import MAILROOM_MAX_WORDS
+    from dana.cascade_router import MAILROOM_MAX_WORDS
 
     long_prompt = (
         "Donna, use the draft_cursor_prompt tool to log a self-improvement ticket "
@@ -104,7 +104,7 @@ def test_length_guard_skips_fuzzy_on_long_utterances() -> None:
 
 
 def test_residual_after_compound_mode_switch() -> None:
-    from donna.cascade_router import strip_mailroom_residual
+    from dana.cascade_router import strip_mailroom_residual
 
     hit = fuzzy_match_command(
         "Switch back to chat mode. My favorite color is cobalt blue."

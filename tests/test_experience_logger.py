@@ -5,12 +5,12 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from donna.swarm.experience_logger import (
+from dana.swarm.experience_logger import (
     count_episodes,
     init_db,
     log_watchdog_episode,
 )
-from donna.swarm.watchdog_graph import log_episode
+from dana.swarm.watchdog_graph import log_episode
 
 
 def test_log_watchdog_episode_writes_row(tmp_path: Path) -> None:
@@ -56,7 +56,7 @@ def test_log_watchdog_episode_writes_row(tmp_path: Path) -> None:
 def test_log_episode_node_is_best_effort(monkeypatch, tmp_path: Path) -> None:
     db = tmp_path / "ep.db"
     monkeypatch.setattr(
-        "donna.swarm.experience_logger.DEFAULT_DB_PATH",
+        "dana.swarm.experience_logger.DEFAULT_DB_PATH",
         db,
     )
     out = log_episode(

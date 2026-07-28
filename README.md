@@ -73,7 +73,7 @@ python run.py
 `run.py` is the local entry point for Dānā. First launch configures mic/speaker into `settings.json` (gitignored). Optional Windows logon autostart:
 
 ```bash
-python -m donna.tools.setup_startup install
+python -m dana.tools.setup_startup install
 ```
 
 Open the Live Trace window from the system tray (**Open Settings**).

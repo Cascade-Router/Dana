@@ -79,9 +79,9 @@ logs/
 memory/
 /memory/
 # Keep Dānā package + tests source trackable (runtime *.db still ignored above).
-!donna/memory/
-!donna/memory/**/
-!donna/memory/**/*.py
+!dana/memory/
+!dana/memory/**/
+!dana/memory/**/*.py
 !tests/memory/
 !tests/memory/**/
 !tests/memory/**/*.py
@@ -107,9 +107,9 @@ donna_security/patch_ledger.md
 donna_security/patch_ledger_archive.md
 
 # Optional in-repo custom mirror (gitignored except __init__.py)
-donna/tools/custom/*
-!donna/tools/custom/__init__.py
-# General tools are tracked — do not ignore donna/tools/general/
+dana/tools/custom/*
+!dana/tools/custom/__init__.py
+# General tools are tracked — do not ignore dana/tools/general/
 
 # Model weights / caches (GitHub size + local-only assets)
 *.pt
@@ -138,7 +138,7 @@ REPO_AUDIT.md
 
 # Debug and local testing utilities
 debug_*.py
-!donna/tools/debug_vision_live.py
+!dana/tools/debug_vision_live.py
 audio_diagnostics.py
 train_donna_local.py
 verify_agentic.py

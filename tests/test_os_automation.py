@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from donna.os_automation import TERMINAL_COMMAND_TIMEOUT_SEC, run_terminal_command
+from dana.os_automation import TERMINAL_COMMAND_TIMEOUT_SEC, run_terminal_command
 
 
 def test_run_terminal_command_success_echo() -> None:
@@ -53,7 +53,7 @@ def test_run_terminal_command_timeout_protection() -> None:
     """Timeout protection: TimeoutExpired → graceful string, no crash."""
     import subprocess
 
-    with patch("donna.os_automation.subprocess.run") as mock_run:
+    with patch("dana.os_automation.subprocess.run") as mock_run:
         mock_run.side_effect = subprocess.TimeoutExpired(
             cmd="sleep 999",
             timeout=TERMINAL_COMMAND_TIMEOUT_SEC,

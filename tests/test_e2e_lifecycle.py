@@ -49,20 +49,20 @@ class _MiniMonkey:
 
 def _install_script(script) -> None:  # noqa: ANN001
     patch_scripted_llm(_MiniMonkey(), script)
-from donna.agentic import REACT_MAX_ITERS, run_react_loop  # noqa: E402
-from donna.os_automation import inject_keystrokes, sanitize_keystroke_text  # noqa: E402
-from donna.sanitize import sanitize_log_message, sanitize_tool_trace  # noqa: E402
-from donna.tools.broker import IntentBroker  # noqa: E402
-from donna.tools.ipc import VaultRequest, VaultResponse  # noqa: E402
-from donna.tools.schema import ToolCall  # noqa: E402
-from donna.vault_service import (  # noqa: E402
+from dana.agentic import REACT_MAX_ITERS, run_react_loop  # noqa: E402
+from dana.os_automation import inject_keystrokes, sanitize_keystroke_text  # noqa: E402
+from dana.sanitize import sanitize_log_message, sanitize_tool_trace  # noqa: E402
+from dana.tools.broker import IntentBroker  # noqa: E402
+from dana.tools.ipc import VaultRequest, VaultResponse  # noqa: E402
+from dana.tools.schema import ToolCall  # noqa: E402
+from dana.vault_service import (  # noqa: E402
     VaultClient,
     VaultKeyDaemon,
     _META_KEY,
     _vault_port,
     consolidate_vault_memory,
     memory_value)
-from donna.prompts.spatial_synthesis import build_agent_system_prompt  # noqa: E402
+from dana.prompts.spatial_synthesis import build_agent_system_prompt  # noqa: E402
 from spatial_context import SPATIAL_AGGREGATOR  # noqa: E402
 
 
@@ -121,7 +121,7 @@ def _start_daemon(vault_path: str) -> tuple[VaultKeyDaemon, threading.Thread]:
     deadline = time.time() + 5.0
     while time.time() < deadline:
         try:
-            from donna.vault_service import _rpc
+            from dana.vault_service import _rpc
 
             if _rpc({"op": "ping"}, timeout=0.3).get("ok"):
                 return daemon, thread
@@ -367,7 +367,7 @@ def _assert_local_compaction_unit() -> None:
 
 def _run_reflection_self_correction(client: VaultClient, report: E2EReport) -> None:
     """Force a tool failure → Reflector lesson → next prompt injects the lesson."""
-    from donna.reflector import load_lessons
+    from dana.reflector import load_lessons
 
     broker = IntentBroker()
 
@@ -451,9 +451,9 @@ def _run_tool_synthesis(report: E2EReport) -> None:
         architect_new_tool,
         execute_dynamic_tool,
         validate_ast)
-    from donna.settings import load_donna_settings
-    from donna.tools.broker import IntentBroker, reload_broker_registry
-    from donna.tools.schema import ToolCall
+    from dana.settings import load_donna_settings
+    from dana.tools.broker import IntentBroker, reload_broker_registry
+    from dana.tools.schema import ToolCall
 
     # Production lock must block synthesis when flag is false.
     load_donna_settings(force_reload=True)
@@ -469,7 +469,7 @@ def _run_tool_synthesis(report: E2EReport) -> None:
     report.add("Production synthesis lock active (architect_new_tool blocked)")
 
     # Temporarily enable for sandbox verification, then restore.
-    import donna.settings as ds
+    import dana.settings as ds
 
     prev = dict(ds.load_donna_settings())
     ds._CACHE = {**prev, "enable_dynamic_tool_synthesis": True}
@@ -499,7 +499,7 @@ def _run_tool_synthesis(report: E2EReport) -> None:
     assert "reverse_string" in broker.registry
     report.add("Broker hot-reloaded tools.json — reverse_string registered")
 
-    sand = execute_dynamic_tool("reverse_string", "donna")
+    sand = execute_dynamic_tool("reverse_string", "dana")
     assert sand.ok and sand.result == "annod"
     report.add("Dynamic reverse_string sandbox execution OK")
 

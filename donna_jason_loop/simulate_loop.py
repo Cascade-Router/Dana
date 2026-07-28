@@ -223,7 +223,7 @@ def print_final_report(
     if winner:
         print(
             f"   GREEN → {winner['proposed_id']} "
-            f"(total={winner['total_score']}) written to donna/tools/roadmap.json"
+            f"(total={winner['total_score']}) written to dana/tools/roadmap.json"
         )
     else:
         print("   No proposal cleared the Green Flag gate; roadmap items empty.")

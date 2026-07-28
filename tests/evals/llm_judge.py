@@ -38,11 +38,11 @@ if str(_ROOT) not in sys.path:
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 from langgraph.checkpoint.memory import MemorySaver  # noqa: E402
 
-from donna.agentic import requires_tool_graph, set_donna_mode  # noqa: E402
-from donna.agentic_planning import desktop_plan_intent  # noqa: E402
-from donna.agentic_react_graph import compile_donna_react_graph  # noqa: E402
-from donna.schema import ReactGraphState  # noqa: E402
-from donna.tools.broker import (  # noqa: E402
+from dana.agentic import requires_tool_graph, set_donna_mode  # noqa: E402
+from dana.agentic_planning import desktop_plan_intent  # noqa: E402
+from dana.agentic_react_graph import compile_donna_react_graph  # noqa: E402
+from dana.schema import ReactGraphState  # noqa: E402
+from dana.tools.broker import (  # noqa: E402
     explicit_tool_ids_in_text,
     merge_bound_tool_ids,
 )
@@ -145,7 +145,7 @@ def _broker_tool(query: str) -> tuple[str | None, dict[str, Any]]:
         return None, {}
     try:
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
-        from donna.tools.broker import IntentBroker
+        from dana.tools.broker import IntentBroker
 
         def _run() -> tuple[str | None, dict[str, Any]]:
             call = IntentBroker().parse_utterance(query)
@@ -314,7 +314,7 @@ def execute_case_offline(case: dict[str, Any]) -> Trajectory:
                 "always_include": [],
             }
         # Skip already-invoked tools so HITL + always_include cannot loop forever.
-        from donna.agentic_react_graph import _invoked_tool_ids_from_messages
+        from dana.agentic_react_graph import _invoked_tool_ids_from_messages
 
         invoked = _invoked_tool_ids_from_messages(state.get("messages") or [])
         remaining = [(tid, args) for tid, args in picks if tid not in invoked]
@@ -365,7 +365,7 @@ def execute_case_offline(case: dict[str, Any]) -> Trajectory:
     # HITL stubs — validate auto-pass; approval auto-approve for offline bench.
     def ticket_validate(state: ReactGraphState) -> dict[str, Any]:
         path.append("ticket_validate")
-        from donna.agentic_react_graph import extract_draft_cursor_payload
+        from dana.agentic_react_graph import extract_draft_cursor_payload
 
         payload = extract_draft_cursor_payload(state)
         return {
@@ -735,7 +735,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from dotenv import load_dotenv
 
-        from donna.paths import ENV_PATH
+        from dana.paths import ENV_PATH
 
         load_dotenv(ENV_PATH)
     except Exception:  # noqa: BLE001

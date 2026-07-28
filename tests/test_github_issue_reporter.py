@@ -8,14 +8,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from donna.tools.general.github_issue_reporter import (
+from dana.tools.general.github_issue_reporter import (
     _MISSING_CONFIG_MSG,
     _format_issue_body,
     report_github_issue,
 )
-from donna.tools.registry import get_tool_registry, load_general_tools_from_disk
-from donna.tools.schema import ToolCall
-from donna.tools.broker import IntentBroker
+from dana.tools.registry import get_tool_registry, load_general_tools_from_disk
+from dana.tools.schema import ToolCall
+from dana.tools.broker import IntentBroker
 
 
 def test_format_issue_body_markdown() -> None:
@@ -31,7 +31,7 @@ def test_missing_config_returns_friendly_message(monkeypatch: pytest.MonkeyPatch
     monkeypatch.delenv("GITHUB_REPO_OWNER", raising=False)
     monkeypatch.delenv("GITHUB_REPO_NAME", raising=False)
     with patch(
-        "donna.tools.general.github_issue_reporter._load_local_config",
+        "dana.tools.general.github_issue_reporter._load_local_config",
         return_value={},
     ):
         msg = report_github_issue("Crash on launch", "It dies immediately")
@@ -41,7 +41,7 @@ def test_missing_config_returns_friendly_message(monkeypatch: pytest.MonkeyPatch
 def test_empty_title_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_ACCESS_TOKEN", "tok")
     monkeypatch.setenv("GITHUB_REPO_OWNER", "acme")
-    monkeypatch.setenv("GITHUB_REPO_NAME", "donna")
+    monkeypatch.setenv("GITHUB_REPO_NAME", "dana")
     assert report_github_issue("  ", "body").startswith("ERROR:")
 
 
@@ -58,7 +58,7 @@ def _mock_urlopen_response(payload: dict, status: int = 201) -> MagicMock:
 def test_successful_201_payload_and_tts_string(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_ACCESS_TOKEN", "test-token")
     monkeypatch.setenv("GITHUB_REPO_OWNER", "camgrasper")
-    monkeypatch.setenv("GITHUB_REPO_NAME", "donna")
+    monkeypatch.setenv("GITHUB_REPO_NAME", "dana")
 
     captured: dict = {}
 
@@ -70,12 +70,12 @@ def test_successful_201_payload_and_tts_string(monkeypatch: pytest.MonkeyPatch) 
         return _mock_urlopen_response(
             {
                 "number": 42,
-                "html_url": "https://github.com/camgrasper/donna/issues/42",
+                "html_url": "https://github.com/camgrasper/dana/issues/42",
             }
         )
 
     with patch(
-        "donna.tools.general.github_issue_reporter.urllib.request.urlopen",
+        "dana.tools.general.github_issue_reporter.urllib.request.urlopen",
         side_effect=fake_urlopen,
     ):
         msg = report_github_issue(
@@ -86,9 +86,9 @@ def test_successful_201_payload_and_tts_string(monkeypatch: pytest.MonkeyPatch) 
 
     assert "Issue #42" in msg
     assert "successfully submitted" in msg
-    assert "https://github.com/camgrasper/donna/issues/42" in msg
+    assert "https://github.com/camgrasper/dana/issues/42" in msg
     assert captured["method"] == "POST"
-    assert captured["url"].endswith("/repos/camgrasper/donna/issues")
+    assert captured["url"].endswith("/repos/camgrasper/dana/issues")
     assert captured["body"]["title"] == "Wake word false positive"
     assert captured["body"]["body"].startswith("## Bug report\n")
     assert "Heard Donna when TV was on" in captured["body"]["body"]
@@ -99,12 +99,12 @@ def test_successful_201_payload_and_tts_string(monkeypatch: pytest.MonkeyPatch) 
 def test_connection_error_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_ACCESS_TOKEN", "tok")
     monkeypatch.setenv("GITHUB_REPO_OWNER", "acme")
-    monkeypatch.setenv("GITHUB_REPO_NAME", "donna")
+    monkeypatch.setenv("GITHUB_REPO_NAME", "dana")
 
     import urllib.error
 
     with patch(
-        "donna.tools.general.github_issue_reporter.urllib.request.urlopen",
+        "dana.tools.general.github_issue_reporter.urllib.request.urlopen",
         side_effect=urllib.error.URLError("Connection refused"),
     ):
         msg = report_github_issue("Title", "Body")
@@ -114,19 +114,19 @@ def test_connection_error_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_bad_credentials_does_not_raise(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_ACCESS_TOKEN", "bad")
     monkeypatch.setenv("GITHUB_REPO_OWNER", "acme")
-    monkeypatch.setenv("GITHUB_REPO_NAME", "donna")
+    monkeypatch.setenv("GITHUB_REPO_NAME", "dana")
 
     import urllib.error
 
     err = urllib.error.HTTPError(
-        url="https://api.github.com/repos/acme/donna/issues",
+        url="https://api.github.com/repos/acme/dana/issues",
         code=401,
         msg="Unauthorized",
         hdrs=None,
         fp=io.BytesIO(b'{"message":"Bad credentials"}'),
     )
     with patch(
-        "donna.tools.general.github_issue_reporter.urllib.request.urlopen",
+        "dana.tools.general.github_issue_reporter.urllib.request.urlopen",
         side_effect=err,
     ):
         msg = report_github_issue("Title", "Body")
@@ -154,16 +154,16 @@ def test_broker_dispatches_via_registry_not_sandbox(
 ) -> None:
     monkeypatch.setenv("GITHUB_ACCESS_TOKEN", "tok")
     monkeypatch.setenv("GITHUB_REPO_OWNER", "acme")
-    monkeypatch.setenv("GITHUB_REPO_NAME", "donna")
+    monkeypatch.setenv("GITHUB_REPO_NAME", "dana")
 
     reg = get_tool_registry(reload=True)
     load_general_tools_from_disk()
     assert reg.get("github_issue_reporter") is not None
 
     with patch(
-        "donna.tools.general.github_issue_reporter.urllib.request.urlopen",
+        "dana.tools.general.github_issue_reporter.urllib.request.urlopen",
         return_value=_mock_urlopen_response(
-            {"number": 7, "html_url": "https://github.com/acme/donna/issues/7"}
+            {"number": 7, "html_url": "https://github.com/acme/dana/issues/7"}
         ),
     ):
         broker = IntentBroker()

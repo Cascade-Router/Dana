@@ -4,19 +4,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from donna.memory.blackboard import (
+from dana.memory.blackboard import (
     enqueue_action,
     get_action,
     init_blackboard,
 )
-from donna.middleware.kill_switch import (
+from dana.middleware.kill_switch import (
     GLOBAL_HALT_EVENT,
     clear_global_halt,
     start_kill_switch_listener,
     trigger_halt,
 )
-from donna.operators.ghost_typist import GhostTypistOperator
-from donna.operators.nav_and_click import NavigationOperator
+from dana.operators.ghost_typist import GhostTypistOperator
+from dana.operators.nav_and_click import NavigationOperator
 
 
 def setup_function() -> None:  # noqa: D103
@@ -33,7 +33,7 @@ def test_trigger_halt_cancels_pending_and_running(tmp_path: Path) -> None:
     a1 = enqueue_action("navigate_and_click", {"query": "X"}, db_path=db)
     a2 = enqueue_action("type_stealth_text", {"text": "hi"}, db_path=db)
     # Simulate in-flight claim.
-    from donna.memory.blackboard import claim_next_pending
+    from dana.memory.blackboard import claim_next_pending
 
     claimed = claim_next_pending(db_path=db)
     assert claimed is not None
@@ -100,7 +100,7 @@ def test_navigation_aborts_on_halt(monkeypatch) -> None:  # noqa: ANN001
 def test_start_listener_idempotent(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setenv("DONNA_DISABLE_KILL_SWITCH", "1")
     # Force re-entry path for disabled flag.
-    import donna.middleware.kill_switch as ks
+    import dana.middleware.kill_switch as ks
 
     ks._LISTENER_STARTED = False
     assert start_kill_switch_listener() is False

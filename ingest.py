@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
-    from donna.paths import EXECUTION_JAIL_DIR, PROJECT_ROOT, TEXT_INJECTION_PATH
+    from dana.paths import EXECUTION_JAIL_DIR, PROJECT_ROOT, TEXT_INJECTION_PATH
 
     _ROOT = Path(PROJECT_ROOT).resolve()
     INPUT_FILE = Path(TEXT_INJECTION_PATH).resolve()
@@ -91,7 +91,7 @@ def ingest_text_to_queue(*, empty_sleep: float = 0.0) -> int:
 
         # 4. Generate structured JSON objects for each task (10s dedupe + pending/running).
         try:
-            from donna.tools.task_queue import (
+            from dana.tools.task_queue import (
                 normalize_command_key,
                 shadow_backup_before_write,
                 try_record_command,
@@ -171,7 +171,7 @@ def watch_input_txt(*, empty_sleep: float = EMPTY_POLL_SLEEP_S) -> None:
 
 if __name__ == "__main__":
     try:
-        from donna.stdio_boot import ensure_stdio
+        from dana.stdio_boot import ensure_stdio
 
         ensure_stdio()
     except Exception:

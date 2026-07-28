@@ -10,7 +10,7 @@ import pytest
 
 
 def test_check_for_updates_detects_mismatch(tmp_path: Path) -> None:
-    from donna.utils import updater as up
+    from dana.utils import updater as up
 
     calls: list[tuple[str, ...]] = []
 
@@ -37,7 +37,7 @@ def test_check_for_updates_detects_mismatch(tmp_path: Path) -> None:
 
 
 def test_check_for_updates_current(tmp_path: Path) -> None:
-    from donna.utils import updater as up
+    from dana.utils import updater as up
 
     def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN003
         args = tuple(cmd)
@@ -57,7 +57,7 @@ def test_check_for_updates_current(tmp_path: Path) -> None:
 
 
 def test_check_for_updates_fetch_failure_returns_false(tmp_path: Path) -> None:
-    from donna.utils import updater as up
+    from dana.utils import updater as up
 
     def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN003
         raise subprocess.CalledProcessError(1, cmd, stderr="network down")
@@ -67,7 +67,7 @@ def test_check_for_updates_fetch_failure_returns_false(tmp_path: Path) -> None:
 
 
 def test_apply_update_pull_conflict_does_not_restart(tmp_path: Path) -> None:
-    from donna.utils import updater as up
+    from dana.utils import updater as up
 
     def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN003
         args = tuple(cmd)
@@ -91,7 +91,7 @@ def test_apply_update_pull_conflict_does_not_restart(tmp_path: Path) -> None:
 
 
 def test_apply_update_pip_failure_does_not_restart(tmp_path: Path) -> None:
-    from donna.utils import updater as up
+    from dana.utils import updater as up
 
     (tmp_path / "requirements.txt").write_text("pytest\n", encoding="utf-8")
 
@@ -120,7 +120,7 @@ def test_apply_update_pip_failure_does_not_restart(tmp_path: Path) -> None:
 
 
 def test_settings_tab_has_update_widgets() -> None:
-    from donna.core_agent import DonnaGUI
+    from dana.core_agent import DonnaGUI
 
     app = DonnaGUI()
     try:
