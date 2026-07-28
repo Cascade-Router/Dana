@@ -97,6 +97,7 @@ docs/*.db
 /dashboard.md
 .donna_workspace_migrated
 .donna_sandbox.py
+.dana_scratch/
 /_archive/
 .shadow_state/
 

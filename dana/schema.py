@@ -163,5 +163,7 @@ class ReactGraphState(TypedDict, total=False):
     retry_count: int
     max_retries: int
     last_code_snippet: str
+    # Fatal OS / dependency blocks — bypass critic retries → fail_closed + ticket draft.
+    fatal_block: bool
     # Episodic memory hydrate (preferences / matched facts for this turn).
     memory_context: dict

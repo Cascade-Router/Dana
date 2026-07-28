@@ -257,6 +257,25 @@ def file_editor(action: str, filepath: str, content: str | None = None) -> str:
     if content is None:
         return f"ERROR: content is required for {act}"
     try:
+        from dana.exec.shadow_workspace import get_active_shadow
+
+        shadow = get_active_shadow()
+        if shadow is not None:
+            # Transactional staging: never mutate destinations until commit().
+            if act == "append":
+                prior = ""
+                staged = shadow.map_path(target)
+                if staged.is_file():
+                    prior = staged.read_text(encoding="utf-8")
+                elif target.is_file():
+                    prior = target.read_text(encoding="utf-8", errors="replace")
+                shadow.stage_write(target, prior + str(content))
+            else:
+                shadow.stage_write(target, str(content))
+            return (
+                f"OK: {act} {len(str(content))} chars to "
+                f"{target.relative_to(_ROOT).as_posix()} (shadow staged)"
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         if act == "append" and target.is_file():
             with target.open("a", encoding="utf-8") as fh:
@@ -280,6 +299,9 @@ def python_repl(code: str) -> str:
     try:
         _SANDBOX_PATH.write_text(src, encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
+        from dana.exec.shadow_workspace import apply_repl_shadow_outcome, get_active_shadow
+
+        apply_repl_shadow_outcome(get_active_shadow(), exit_code=1, error=exc)
         return f"ERROR: failed to write sandbox script: {exc}"
 
     popen_kwargs = _popen_kwargs()
@@ -293,6 +315,9 @@ def python_repl(code: str) -> str:
             **popen_kwargs,
         )
     except Exception as exc:  # noqa: BLE001
+        from dana.exec.shadow_workspace import apply_repl_shadow_outcome, get_active_shadow
+
+        apply_repl_shadow_outcome(get_active_shadow(), exit_code=1, error=exc)
         try:
             if _SANDBOX_PATH.exists():
                 _SANDBOX_PATH.unlink()
@@ -311,6 +336,9 @@ def python_repl(code: str) -> str:
         except Exception:  # noqa: BLE001
             stdout, stderr = "", ""
     except Exception as exc:  # noqa: BLE001
+        from dana.exec.shadow_workspace import apply_repl_shadow_outcome, get_active_shadow
+
+        apply_repl_shadow_outcome(get_active_shadow(), exit_code=1, error=exc)
         _kill_process_tree(proc.pid)
         try:
             if _SANDBOX_PATH.exists():
@@ -326,6 +354,13 @@ def python_repl(code: str) -> str:
             pass
 
     if timed_out:
+        from dana.exec.shadow_workspace import apply_repl_shadow_outcome, get_active_shadow
+
+        apply_repl_shadow_outcome(
+            get_active_shadow(),
+            exit_code=None,
+            error=TimeoutError("python_repl timed out"),
+        )
         partial = ""
         if isinstance(stdout, str) and stdout.strip():
             partial = f"\npartial_stdout:\n{_truncate_tail(stdout)}"
@@ -338,8 +373,12 @@ def python_repl(code: str) -> str:
 
     out = _truncate_tail((stdout or "").rstrip())
     err = _truncate_tail((stderr or "").rstrip())
+    code = int(proc.returncode or 0)
+    from dana.exec.shadow_workspace import apply_repl_shadow_outcome, get_active_shadow
+
+    apply_repl_shadow_outcome(get_active_shadow(), exit_code=code)
     parts = [
-        f"exit_code={int(proc.returncode or 0)}",
+        f"exit_code={code}",
         f"stdout:\n{out or '(empty)'}",
     ]
     if err:

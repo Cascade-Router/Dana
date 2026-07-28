@@ -662,12 +662,18 @@ def route_after_execution(state: ReactGraphState) -> str:
 
     python_repl failures set ``execution_error``; while ``retry_count < max_retries``
     route to ``critic`` (then back to tools). Exhausted retries → ``fail_closed``.
+    Fatal OS / dependency blocks (``fatal_block``) bypass Critic and go straight to
+    ``fail_closed`` (ticket draft on the existing HITL corridor fields).
     Otherwise preserve the existing ReAct / HITL corridor (agent loop or END).
     """
     from langgraph.graph import END
 
+    from dana.graph.nodes.critic import is_fatal_execution_error
+
     err = state.get("execution_error")
     if err is not None and str(err).strip():
+        if state.get("fatal_block") or is_fatal_execution_error(err):
+            return "fail_closed"
         retry = int(state.get("retry_count") or 0)
         max_r = state.get("max_retries")
         max_retries = int(max_r) if max_r is not None else 3
@@ -710,6 +716,7 @@ def compile_donna_react_graph(
                     ─(invalid, <3)→ agent
                     ─(max retries)→ END
                     ─(other tool_calls)→ tools ─(python_repl error)→ critic → tools
+                    ─(fatal_block)→ fail_closed → END  (+ drafted_ticket)
                     ─(retries exhausted)→ fail_closed → END
                     ─(continue)→ agent
                     ╲(pending always_include / nudge)→ agent
@@ -720,6 +727,7 @@ def compile_donna_react_graph(
     ``jason_ticket_review`` (Stage 8.9) speaks a critique, then
     ``ticket_approval`` HITL-interrupts before heavy / ledger tool execution.
     ``critic`` / ``fail_closed`` bound python_repl self-heal (injectable for evals).
+    Fatal OS blocks skip Critic and land on ``fail_closed`` with a ticket draft.
     ``hydrate_memory`` / ``consolidate_memory`` are injectable episodic nodes;
     HITL deny / fail_closed / ticket halt paths skip consolidation.
     """
@@ -2393,6 +2401,7 @@ async def run_react_langgraph(
         "retry_count": 0,
         "max_retries": 3,
         "last_code_snippet": "",
+        "fatal_block": False,
     }
 
     final_state: dict[str, Any] = dict(inputs)

@@ -16,6 +16,76 @@ CriticLLM = Callable[[str, str], str]
 
 _DEFAULT_MAX_RETRIES = 3
 
+# OS / env / missing-dependency blocks — never self-heal; HITL ticket corridor.
+FATAL_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    PermissionError,
+    FileNotFoundError,
+    ModuleNotFoundError,
+    ConnectionRefusedError,
+    TimeoutError,
+    OSError,
+)
+
+FATAL_OS_BLOCK_MSG = (
+    "Fatal OS Block: Missing dependency or permission denied"
+)
+
+_FATAL_TYPE_NAMES: tuple[str, ...] = (
+    "PermissionError",
+    "FileNotFoundError",
+    "ModuleNotFoundError",
+    "ConnectionRefusedError",
+    "TimeoutError",
+    "OSError",
+    "WinError",
+)
+
+# Code-level faults the Critic may attempt to patch.
+_FIXABLE_TYPE_NAMES: tuple[str, ...] = (
+    "SyntaxError",
+    "NameError",
+    "KeyError",
+    "ValueError",
+    "ZeroDivisionError",
+    "TypeError",
+    "AttributeError",
+    "IndentationError",
+)
+
+
+def is_fatal_execution_error(error: BaseException | str | None) -> bool:
+    """True for fatal OS / permission / missing-dependency execution errors."""
+    if error is None:
+        return False
+    if isinstance(error, BaseException):
+        # ModuleNotFoundError is ImportError subclass; keep before generic OSError.
+        if isinstance(error, FATAL_EXCEPTIONS):
+            return True
+        return False
+    text = str(error or "")
+    if not text.strip():
+        return False
+    # Explicit type tokens (fatal wins over overlapping fixable noise).
+    for name in _FATAL_TYPE_NAMES:
+        if re.search(rf"\b{re.escape(name)}\b", text):
+            return True
+    lower = text.lower()
+    if "missing dependency" in lower or "no module named" in lower:
+        return True
+    return False
+
+
+def is_fixable_execution_error(error: BaseException | str | None) -> bool:
+    """True when the error looks like a Critic-healable code fault (not fatal)."""
+    if is_fatal_execution_error(error):
+        return False
+    if error is None:
+        return False
+    if isinstance(error, BaseException):
+        return type(error).__name__ in _FIXABLE_TYPE_NAMES
+    text = str(error or "")
+    return any(re.search(rf"\b{re.escape(n)}\b", text) for n in _FIXABLE_TYPE_NAMES)
+
 
 def is_python_repl_failure(observation: str) -> bool:
     """True when a python_repl observation indicates a code-execution failure."""
@@ -43,6 +113,10 @@ def is_python_repl_failure(observation: str) -> bool:
         "OSError",
         "WinError",
         "PermissionError",
+        "FileNotFoundError",
+        "ConnectionRefusedError",
+        "TimeoutError",
+        "KeyError",
     )
     return any(marker in text for marker in failure_markers)
 
@@ -52,13 +126,39 @@ def python_repl_state_patch(*, code: str, observation: str) -> dict[str, Any]:
     src = code if isinstance(code, str) else str(code or "")
     obs = str(observation or "")
     if is_python_repl_failure(obs):
+        fatal = is_fatal_execution_error(obs)
         return {
             "execution_error": obs[:2000],
             "last_code_snippet": src,
+            "fatal_block": fatal,
         }
     return {
         "execution_error": None,
         "last_code_snippet": src,
+        "fatal_block": False,
+    }
+
+
+def _fatal_ticket_draft(error: str, *, session_id: str = "") -> dict[str, Any]:
+    """Structured ticket payload for the existing HITL corridor (fail_closed path)."""
+    err = str(error or "")[:1500]
+    context = (
+        "Root cause: Fatal OS / environment block during python_repl "
+        "(permission denied, missing dependency, or OS error).\n"
+        f"Error detail:\n{err}\n"
+        "Step-by-step changes: resolve the missing package or filesystem "
+        "permission on the host; do not retry the Critic self-heal loop.\n"
+        "Acceptance criteria: dependency/permission fixed; repl exits with "
+        "exit_code=0 without fatal_block.\n"
+        "Target files: dana/graph/nodes/critic.py, dana/exec/shadow_workspace.py\n"
+    )
+    return {
+        "type": "ticket_approval",
+        "tool": "draft_cursor_prompt",
+        "objective": FATAL_OS_BLOCK_MSG,
+        "context": context,
+        "session_id": str(session_id or ""),
+        "active_intent": "fatal_os_block",
     }
 
 
@@ -133,6 +233,19 @@ def make_critic_node(critic_llm: CriticLLM | None = None) -> Callable[[ReactGrap
 
     def critic_node(state: ReactGraphState) -> dict[str, Any]:
         error = str(state.get("execution_error") or "")
+        # Fatal OS / dependency blocks: never invoke Critic LLM or retry tools.
+        if state.get("fatal_block") or is_fatal_execution_error(error):
+            sid = str(state.get("session_id") or "")
+            return {
+                "fatal_block": True,
+                "halt": True,
+                "final_raw": FATAL_OS_BLOCK_MSG,
+                "last_obs": FATAL_OS_BLOCK_MSG,
+                "current_agent": "Critic",
+                "execution_error": error or FATAL_OS_BLOCK_MSG,
+                "drafted_ticket": _fatal_ticket_draft(error, session_id=sid),
+                "always_include": [],
+            }
         code = _extract_last_code(state)
         if critic_llm is not None:
             try:
@@ -180,7 +293,25 @@ critic_node = make_critic_node()
 
 
 def fail_closed_node(state: ReactGraphState) -> dict[str, Any]:
-    """Halt after exhausted REPL self-heal attempts; log critique summary."""
+    """Halt after exhausted REPL self-heal attempts; log critique summary.
+
+    Fatal OS blocks skip the Critic loop entirely and land here with a
+    drafted HITL ticket payload (existing ticket corridor fields).
+    """
+    error = str(state.get("execution_error") or "")
+    if state.get("fatal_block") or is_fatal_execution_error(error):
+        sid = str(state.get("session_id") or "")
+        logger.error("fail_closed: fatal_block — %s", error[:400])
+        return {
+            "halt": True,
+            "fatal_block": True,
+            "final_raw": FATAL_OS_BLOCK_MSG,
+            "last_obs": FATAL_OS_BLOCK_MSG,
+            "current_agent": "FailClosed",
+            "drafted_ticket": _fatal_ticket_draft(error, session_id=sid),
+            "always_include": [],
+        }
+
     history = [str(x) for x in (state.get("critique_history") or [])]
     retry = int(state.get("retry_count") or 0)
     summary = " | ".join(h[:200] for h in history) if history else "(no critiques)"
