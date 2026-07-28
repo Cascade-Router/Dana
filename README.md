@@ -16,6 +16,7 @@ license: agpl-3.0
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![OS: Windows 10/11](https://img.shields.io/badge/OS-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
 [![Hugging Face Space](https://img.shields.io/badge/%F0%9F%A4%97%20Space-AMIXXM%2FDonna-yellow)](https://huggingface.co/spaces/AMIXXM/Donna)
+[![White Paper](https://img.shields.io/badge/docs-White%20Paper-0B7285)](docs/WHITE_PAPER.md)
 
 **Bridge local LLMs (Llama 3.2), vision (YOLOv8), and Mixture-of-Agents reasoning (DeepSeek-R1) into a deterministic, low-latency voice operating system — with a CustomTkinter Live Trace UI that makes every graph transition observable.**
 
@@ -120,13 +121,14 @@ Mic / .trigger_ask / input.txt
          JSONL telemetry + gui_telemetry_queue → Live Trace UI
 ```
 
-Deep dive: [`docs/architecture.md`](docs/architecture.md) · Telemetry contract: [`docs/telemetry_and_ui.md`](docs/telemetry_and_ui.md) · Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) · Security: [`SECURITY.md`](SECURITY.md)
+Deep dive: [`docs/WHITE_PAPER.md`](docs/WHITE_PAPER.md) · [`docs/architecture.md`](docs/architecture.md) · Telemetry contract: [`docs/telemetry_and_ui.md`](docs/telemetry_and_ui.md) · Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) · Security: [`SECURITY.md`](SECURITY.md)
 
 ---
 
 ## Documentation / Operator Guide
 
 - **[User Handbook](User%20Handbook.md)** — operating modes, wake/voice commands, and automated system behaviors for day-to-day use of Dānā.
+- **White Paper:** [`docs/WHITE_PAPER.md`](docs/WHITE_PAPER.md) — cybernetic control plane, ReAct corridor, vision/macros/memory, and golden-eval benchmarks
 - Architecture: [`docs/architecture.md`](docs/architecture.md)
 - Telemetry & UI contract: [`docs/telemetry_and_ui.md`](docs/telemetry_and_ui.md)
 - Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
