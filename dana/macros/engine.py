@@ -97,7 +97,12 @@ def _pick_box_for_prompt(
 
 
 def default_grounding_fn(screenshot: Any, prompt: str) -> dict[str, Any]:
-    """Florence-2 OCR/region grounding; graceful when Florence/GPU missing."""
+    """Hybrid UIA + Florence crop-and-zoom grounding (screen-pixel bbox).
+
+    Routes through ``HybridVisionGrounding`` / ``locate_ui_element`` when
+    available, then maps the ``[0,1000]`` result to screen pixels for clicks.
+    Falls back to plain Florence OCR matching if hybrid is unavailable.
+    """
     frame = _as_bgr_frame(screenshot)
     if frame is None:
         return {
@@ -108,6 +113,54 @@ def default_grounding_fn(screenshot: Any, prompt: str) -> dict[str, Any]:
             "picked_xyxy": None,
             "image_wh": (0, 0),
         }
+
+    image_wh = (int(frame.shape[1]), int(frame.shape[0]))
+
+    # Prefer hybrid Win32 UIA → coarse Florence → crop&zoom fine pass.
+    try:
+        from dana.graph.nodes.vision import locate_ui_element
+        from dana.vision.florence_engine import norm_box_to_screen
+
+        norm_box = locate_ui_element(frame, prompt)
+        if norm_box is not None and len(norm_box) >= 4:
+            xyxy = (
+                float(norm_box[0]),
+                float(norm_box[1]),
+                float(norm_box[2]),
+                float(norm_box[3]),
+            )
+            mapped = norm_box_to_screen(xyxy, image_wh=image_wh)
+            if mapped is not None:
+                picked = (
+                    float(mapped[0]),
+                    float(mapped[1]),
+                    float(mapped[2]),
+                    float(mapped[3]),
+                )
+            else:
+                # Map 0–1000 → frame pixels when monitor geometry is absent.
+                iw, ih = image_wh
+                picked = (
+                    xyxy[0] / 1000.0 * iw,
+                    xyxy[1] / 1000.0 * ih,
+                    xyxy[2] / 1000.0 * iw,
+                    xyxy[3] / 1000.0 * ih,
+                )
+            return {
+                "ok": True,
+                "error": "",
+                "labels": [prompt],
+                "boxes_xyxy": [picked],
+                "picked_xyxy": picked,
+                "matched_label": prompt,
+                "image_wh": image_wh,
+                "bbox_norm": list(norm_box),
+            }
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("hybrid grounding skipped: %s", exc)
+
     try:
         from dana.vision.florence_engine import (
             norm_box_to_screen,
@@ -147,7 +200,7 @@ def default_grounding_fn(screenshot: Any, prompt: str) -> dict[str, Any]:
 
     labels = [str(x) for x in (result.get("labels") or [])]
     raw_boxes = list(result.get("boxes_xyxy_norm") or [])
-    image_wh = tuple(result.get("image_wh") or (int(frame.shape[1]), int(frame.shape[0])))
+    image_wh = tuple(result.get("image_wh") or image_wh)
     screen_boxes: list[tuple[float, float, float, float]] = []
     for box in raw_boxes:
         if not box or len(box) < 4:
