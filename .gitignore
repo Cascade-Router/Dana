@@ -78,6 +78,13 @@ logs/
 *.db-shm
 memory/
 /memory/
+# Keep Dānā package + tests source trackable (runtime *.db still ignored above).
+!donna/memory/
+!donna/memory/**/
+!donna/memory/**/*.py
+!tests/memory/
+!tests/memory/**/
+!tests/memory/**/*.py
 /tracker/
 docs/*.db
 

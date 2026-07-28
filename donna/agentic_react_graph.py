@@ -697,12 +697,15 @@ def compile_donna_react_graph(
     executor_node_fn: Callable[..., Any] | None = None,
     critic_node_fn: Callable[..., Any] | None = None,
     fail_closed_node_fn: Callable[..., Any] | None = None,
+    hydrate_memory_node_fn: Callable[..., Any] | None = None,
+    consolidate_memory_node_fn: Callable[..., Any] | None = None,
     checkpointer: Any | None = None,
 ) -> Any:
     """Compile the production ReAct StateGraph (same topology as live Donna).
 
     Topology:
-      START → planner → executor → agent ─(draft_cursor_prompt)→ ticket_validate
+      START → hydrate_memory → planner → executor → agent
+                    ─(draft_cursor_prompt)→ ticket_validate
                     ─(valid)→ jason_ticket_review → ticket_approval ─(approve)→ tools
                     ─(invalid, <3)→ agent
                     ─(max retries)→ END
@@ -710,13 +713,15 @@ def compile_donna_react_graph(
                     ─(retries exhausted)→ fail_closed → END
                     ─(continue)→ agent
                     ╲(pending always_include / nudge)→ agent
-                    ╲(halt/final)→ END
+                    ╲(halt/final)→ consolidate_memory → END
 
     ``planner`` / ``executor`` enforce Plan-Then-Execute before the MoA agent.
     ``ticket_validate`` (Stage 8.9.6) runs Pydantic before Jason / HITL.
     ``jason_ticket_review`` (Stage 8.9) speaks a critique, then
     ``ticket_approval`` HITL-interrupts before heavy / ledger tool execution.
     ``critic`` / ``fail_closed`` bound python_repl self-heal (injectable for evals).
+    ``hydrate_memory`` / ``consolidate_memory`` are injectable episodic nodes;
+    HITL deny / fail_closed / ticket halt paths skip consolidation.
     """
     from langgraph.graph import END, START, StateGraph
 
@@ -725,8 +730,16 @@ def compile_donna_react_graph(
     from donna.agentic_planning import planner_node as _default_planner
     from donna.graph.nodes.critic import critic_node as _default_critic
     from donna.graph.nodes.critic import fail_closed_node as _default_fail_closed
+    from donna.graph.nodes.memory import (
+        consolidate_memory_node as _default_consolidate,
+    )
+    from donna.graph.nodes.memory import hydrate_memory_node as _default_hydrate
 
     workflow = StateGraph(ReactGraphState)
+    workflow.add_node(
+        "hydrate_memory",
+        hydrate_memory_node_fn or _default_hydrate,
+    )
     workflow.add_node("planner", planner_node_fn or _default_planner)
     workflow.add_node("executor", executor_node_fn or _default_executor)
     workflow.add_node("agent", agent_node)
@@ -745,7 +758,13 @@ def compile_donna_react_graph(
     workflow.add_node("tools", tools_node)
     workflow.add_node("critic", critic_node_fn or _default_critic)
     workflow.add_node("fail_closed", fail_closed_node_fn or _default_fail_closed)
-    workflow.add_edge(START, "planner")
+    workflow.add_node(
+        "consolidate_memory",
+        consolidate_memory_node_fn or _default_consolidate,
+    )
+    # Corridor entry: hydrate episodic prefs before planner/supervisor.
+    workflow.add_edge(START, "hydrate_memory")
+    workflow.add_edge("hydrate_memory", "planner")
     workflow.add_edge("planner", "executor")
     workflow.add_edge("executor", "agent")
     workflow.add_conditional_edges(
@@ -755,7 +774,8 @@ def compile_donna_react_graph(
             "ticket_validate": "ticket_validate",
             "tools": "tools",
             "agent": "agent",
-            END: END,
+            # Successful / normal halt → consolidate before END.
+            END: "consolidate_memory",
         },
     )
     workflow.add_conditional_edges(
@@ -764,6 +784,7 @@ def compile_donna_react_graph(
         {
             "jason_ticket_review": "jason_ticket_review",
             "agent": "agent",
+            # Validation exhausted / halted — skip consolidate.
             END: END,
         },
     )
@@ -775,6 +796,7 @@ def compile_donna_react_graph(
     workflow.add_conditional_edges(
         "ticket_approval",
         _route_after_ticket_approval,
+        # Deny / halt → END without consolidating bad prefs.
         {"tools": "tools", END: END},
     )
     workflow.add_conditional_edges(
@@ -784,11 +806,14 @@ def compile_donna_react_graph(
             "critic": "critic",
             "fail_closed": "fail_closed",
             "agent": "agent",
-            END: END,
+            # Successful tool halt → consolidate before END.
+            END: "consolidate_memory",
         },
     )
     workflow.add_edge("critic", "tools")
+    # Failures never consolidate.
     workflow.add_edge("fail_closed", END)
+    workflow.add_edge("consolidate_memory", END)
     cp = checkpointer if checkpointer is not None else ag._react_checkpointer()
     # Checkpointer required for interrupt() resume; ticket_approval is the gate.
     return workflow.compile(checkpointer=cp)

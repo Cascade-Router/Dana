@@ -1,7 +1,12 @@
-"""Decoupled session memory (Blackboard) — durable store outside LangGraph state."""
+"""Decoupled session memory (Blackboard) — durable store outside LangGraph state.
+
+Also exports ``EpisodicMemoryStore`` for persistent preferences / facts
+(coexists with vault tools; does not replace Blackboard or ``donna.paths``).
+"""
 
 from __future__ import annotations
 
+from donna.memory.store import EpisodicMemoryStore, get_episodic_store
 from donna.memory.blackboard import (
     ACTUATOR_LEASE_KEY,
     BLACKBOARD_DB_PATH,
@@ -65,6 +70,8 @@ from donna.memory.blackboard import (
 )
 
 __all__ = [
+    "EpisodicMemoryStore",
+    "get_episodic_store",
     "ACTUATOR_LEASE_KEY",
     "BLACKBOARD_DB_PATH",
     "DICTATION_MODE_KEY",
