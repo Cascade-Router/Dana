@@ -73,7 +73,10 @@ def apply_window_icon(root: Any) -> bool:
         from PIL import Image, ImageTk
 
         img = Image.open(ico).convert("RGBA")
-        photo = ImageTk.PhotoImage(img.resize((64, 64), Image.Resampling.LANCZOS))
+        photo = ImageTk.PhotoImage(
+            img.resize((64, 64), Image.Resampling.LANCZOS),
+            master=root,
+        )
         root.iconphoto(True, photo)
         # Keep a reference so Tk GC does not drop the PhotoImage.
         root._donna_iconphoto = photo  # type: ignore[attr-defined]
@@ -176,8 +179,16 @@ def load_premium_logo(size: tuple[int, int]) -> Any | None:
     if img is None:
         return None
     try:
+        import tkinter as tk
+
         import customtkinter as ctk
 
+        # CTkImage builds PhotoImage against the default root. Keep a withdrawn
+        # sentinel root alive so images survive across DonnaGUI destroy cycles.
+        if getattr(tk, "_default_root", None) is None:
+            sentinel = ctk.CTk()
+            sentinel.withdraw()
+            tk._donna_logo_sentinel = sentinel  # type: ignore[attr-defined]
         return ctk.CTkImage(light_image=img, dark_image=img, size=size)
     except Exception:  # noqa: BLE001
         return None

@@ -243,16 +243,23 @@ def _fuzzy_score(a: str, b: str) -> float:
     if not left or not right:
         return 0.0
     # ``a`` is ASR blob, ``b`` is dictionary phrase.
+    # Prefer ratio / token_set — WRatio alone false-positives free-form prompts
+    # that merely share a token with a command (e.g. "Research the latest…"
+    # vs "switch to research mode"). partial_ratio is only safe when the ASR
+    # blob is about the same length as the dictionary phrase (Whisper garble);
+    # on longer free-form text it matches lead tokens like "research …".
     long_utterance = len(left) > max(48, len(right) + 24)
     if long_utterance:
-        return float(max(fuzz.ratio(left, right), fuzz.WRatio(left, right)))
-    return float(
-        max(
-            fuzz.ratio(left, right),
-            fuzz.partial_ratio(left, right),
-            fuzz.WRatio(left, right),
+        return float(
+            max(fuzz.ratio(left, right), fuzz.token_set_ratio(left, right))
         )
-    )
+    scores = [
+        fuzz.ratio(left, right),
+        fuzz.token_set_ratio(left, right),
+    ]
+    if len(left) <= len(right) + 12:
+        scores.append(fuzz.partial_ratio(left, right))
+    return float(max(scores))
 
 
 def fuzzy_match_command(

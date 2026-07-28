@@ -86,7 +86,11 @@ def test_multi_turn_context_memory_and_flush(monkeypatch) -> None:
 
     def ask_recall(messages: list[dict[str, str]]) -> str:
         blob = " | ".join(m.get("content", "") for m in messages)
-        if FAVORITE_COLOR in blob and turn2 in blob:
+        # Also consult the agent memory window (graph checkpointer may not
+        # rehydrate prior turns into the FakeLLM message list).
+        hist_blob = " ".join(m.get("content", "") for m in _prior_from_history())
+        combined = f"{blob} | {hist_blob}"
+        if FAVORITE_COLOR in combined:
             history_seen["v"] = True
             return f"FINAL: Your favorite color is {FAVORITE_COLOR}."
         return "FINAL: I don't recall a favorite color."

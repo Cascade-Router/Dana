@@ -128,6 +128,7 @@ _PERSONA_OVERRIDE_MARKER = "[SYSTEM OVERRIDE: Current Persona Settings (0-100)"
 DICTATION_MODE_KEY = "dictation_mode"
 
 # Stage 4.2 — tools enqueued for the actuator daemon (not run on the LLM turn).
+# web_search stays inline: ReAct / research needs the Observation in-turn.
 HEAVY_ACTUATOR_TOOLS: frozenset[str] = frozenset(
     {
         "draft_cursor_prompt",
@@ -135,7 +136,6 @@ HEAVY_ACTUATOR_TOOLS: frozenset[str] = frozenset(
         "shell_execute",
         "python_repl",
         "architect_new_tool",
-        "web_search",
         "read_local_file",
         "dispatch_jason_supervisor",
         "type_stealth_text",

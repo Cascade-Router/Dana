@@ -17,6 +17,10 @@ def _load_judge_mod():
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load {path}")
     mod = importlib.util.module_from_spec(spec)
+    # dataclasses require the module to exist in sys.modules during decoration.
+    import sys
+
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
 

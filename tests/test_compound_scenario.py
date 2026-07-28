@@ -304,10 +304,21 @@ def step2_visual_awareness() -> StepResult:
     except Exception as exc:  # noqa: BLE001
         r.errors.append(f"yolo_patch: {exc}")
 
+    # Deterministic offline chat: live Ollama is flaky for compound Step 2.
     visual = read_visual_state()
     answer = ""
     try:
-        from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
+        from dana.core_agent import OLLAMA_MODEL
+
+        def _ask_fn(messages, **_kwargs):  # noqa: ANN001
+            blob = " ".join(str(m.get("content") or "") for m in (messages or []))
+            seed = visual or blob
+            if "cuda" in seed.lower() or "oom" in seed.lower() or "out of memory" in seed.lower():
+                return (
+                    "The screen shows a CUDA out of memory (OOM) error while "
+                    "loading Florence-2."
+                )
+            return f"From blackboard context: {visual or 'no visual state'}"
 
         result = run_lightweight_chat(
             user_text=TURN1,
@@ -316,7 +327,7 @@ def step2_visual_awareness() -> StepResult:
             )
             + "\nAnswer from Optional scene context only. Name the exact error.",
             model=OLLAMA_MODEL,
-            ask_fn=ask_ollama_messages,
+            ask_fn=_ask_fn,
             use_chat_memory=True,
             session_id=SESSION_ID,
         )

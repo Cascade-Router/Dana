@@ -1756,7 +1756,12 @@ def wait_for_speech_idle(timeout: float = 20.0) -> None:
     """Block until queued TTS has finished playing (or timeout + hard recovery)."""
     if speech_idle.wait(timeout=timeout):
         return
-    reset_tts_audio_state(f"timed out waiting for TTS after {timeout:.1f}s")
+    try:
+        reset_tts_audio_state(f"timed out waiting for TTS after {timeout:.1f}s")
+    finally:
+        # Guarantee wake-word gates even if interrupt/flush races a worker.
+        tts_busy.clear()
+        speech_idle.set()
 
 
 def report_audio_hardware_fault(exc: BaseException, *, where: str = "audio") -> None:
@@ -7608,13 +7613,17 @@ class DonnaGUI(ctk.CTk):
         except Exception:  # noqa: BLE001
             self._header_logo_img = None
         if self._header_logo_img is not None:
-            self._header_logo_lbl = ctk.CTkLabel(
-                header,
-                text="",
-                image=self._header_logo_img,
-                fg_color="transparent",
-            )
-            self._header_logo_lbl.pack(side="left", padx=(16, 8), pady=10)
+            try:
+                self._header_logo_lbl = ctk.CTkLabel(
+                    header,
+                    text="",
+                    image=self._header_logo_img,
+                    fg_color="transparent",
+                )
+                self._header_logo_lbl.pack(side="left", padx=(16, 8), pady=10)
+            except Exception:  # noqa: BLE001 — Tk pyimage race across roots
+                self._header_logo_img = None
+                self._header_logo_lbl = None
         else:
             self._header_logo_lbl = None
         self.mode_badge = ctk.CTkLabel(
@@ -7774,12 +7783,15 @@ class DonnaGUI(ctk.CTk):
         except Exception:  # noqa: BLE001
             self._dash_logo_img = None
         if self._dash_logo_img is not None:
-            ctk.CTkLabel(
-                center,
-                text="",
-                image=self._dash_logo_img,
-                fg_color="transparent",
-            ).pack(pady=(2, 4))
+            try:
+                ctk.CTkLabel(
+                    center,
+                    text="",
+                    image=self._dash_logo_img,
+                    fg_color="transparent",
+                ).pack(pady=(2, 4))
+            except Exception:  # noqa: BLE001 — Tk pyimage race across roots
+                self._dash_logo_img = None
         ctk.CTkLabel(
             center,
             text="Donna is online",

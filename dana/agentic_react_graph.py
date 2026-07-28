@@ -1265,7 +1265,7 @@ async def run_react_langgraph(
                 else "        ."
             )
         if re.match(
-            r"^\s*(?:TOOL|Action|FINAL||| )\s*[:：]",
+            r"^\s*(?:TOOL|Action|FINAL)\s*[:：]",
             spoken or "",
             re.I,
         ):

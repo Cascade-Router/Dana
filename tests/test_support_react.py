@@ -20,7 +20,7 @@ ScriptFn = Callable[[list[dict[str, str]]], str]
 ScriptSource = Sequence[str] | ScriptFn | list[str]
 
 _TOOL_HEAD_RE = re.compile(
-    r"^\s*(?:TOOL|Tool|tool|Action|ACTION||)\s*[:：]\s*(.+?)\s*$",
+    r"^\s*(?:TOOL|Tool|tool|Action|ACTION)\s*[:：]\s*(.+?)\s*$",
     re.DOTALL,
 )
 
@@ -65,7 +65,7 @@ def script_line_to_aimessage(
         return AIMessage(content="")
 
     # Explicit FINAL → conversational content (prefix stripped later by loop).
-    if re.match(r"^\s*(?:FINAL|Final|final| )\s*[:：]", text):
+    if re.match(r"^\s*(?:FINAL|Final|final)\s*[:：]", text):
         return AIMessage(content=text)
 
     # JSON tool object (legacy test scripts only).

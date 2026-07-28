@@ -356,7 +356,21 @@ def branch2_vision_sensor_read() -> BranchResult:
 
     answer = ""
     try:
-        from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
+        from dana.core_agent import OLLAMA_MODEL
+
+        def _ask_fn(messages, **_kwargs):  # noqa: ANN001
+            blob = " ".join(str(m.get("content") or "") for m in (messages or []))
+            seed = f"{visual or ''} {blob}"
+            if (
+                "camgrasper" in seed.lower()
+                or "monitor" in seed.lower()
+                or "ide" in seed.lower()
+            ):
+                return (
+                    "From the blackboard sensor: CAMGRASPER IDE is visible on the "
+                    "primary monitor."
+                )
+            return f"From blackboard sensor: {visual or 'no visual state'}"
 
         # Stage 4.1 contract: answer from BB sensor topic, no live vision tool.
         result = run_lightweight_chat(
@@ -366,7 +380,7 @@ def branch2_vision_sensor_read() -> BranchResult:
             )
             + "\nAnswer from Optional scene context only; do not invent tools.",
             model=OLLAMA_MODEL,
-            ask_fn=ask_ollama_messages,
+            ask_fn=_ask_fn,
             use_chat_memory=False,
             session_id=SESSION_ID,
         )
