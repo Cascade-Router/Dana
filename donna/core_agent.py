@@ -7360,6 +7360,17 @@ def run_system_tray(gui: "DonnaGUI") -> None:
         check_startup_registry_status,
         toggle_run_on_startup,
     )
+    from donna.ui.watchdog import (
+        check_shell_watchdog_status,
+        get_shared_watchdog,
+        toggle_shell_watchdog,
+    )
+
+    # Ensure shared watchdog is constructed (wires toast/planner when enabled).
+    try:
+        get_shared_watchdog()
+    except Exception:  # noqa: BLE001
+        pass
 
     menu = pystray.Menu(
         pystray.MenuItem("Open Settings", open_settings, default=True),
@@ -7367,6 +7378,11 @@ def run_system_tray(gui: "DonnaGUI") -> None:
             "Run on Startup",
             toggle_run_on_startup,
             checked=lambda item: check_startup_registry_status(item),
+        ),
+        pystray.MenuItem(
+            "Enable Shell Watchdog",
+            toggle_shell_watchdog,
+            checked=lambda item: check_shell_watchdog_status(item),
         ),
         pystray.MenuItem("Quit", request_donna_quit),
     )
