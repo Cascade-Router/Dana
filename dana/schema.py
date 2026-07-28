@@ -167,3 +167,8 @@ class ReactGraphState(TypedDict, total=False):
     fatal_block: bool
     # Episodic memory hydrate (preferences / matched facts for this turn).
     memory_context: dict
+    # Zero-copy diagnostic buffer (full raw traces; never LLM-truncated).
+    raw_state_buffer: dict[str, Any]
+    # Autonomous sub-graph local retries (bypass supervisor until exhausted).
+    subgraph_retry_count: int
+    max_subgraph_retries: int
