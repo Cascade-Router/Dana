@@ -510,6 +510,8 @@ BARGE_IN_SILERO_CONSEC_FRAMES = 4
 # Sharp RMS spike retained as diagnostic floor only (not used to interrupt).
 STREAM_BARGE_RMS = 0.09
 MIC_AMBIENT_DEAD_RMS = 1e-4  # probe below this → soft gain / adaptive floors
+# Skip OpenWakeWord predict() on near-silence / dead virtual mics (phantom wakes).
+DEAD_MIC_RMS_FLOOR = 0.0001
 # TTS recovery: max wait for queue drain; hard cap per Piper utterance (synth+play).
 # Long vision/OCR summaries need headroom — 18s was aborting mid-sentence.
 TTS_IDLE_WAIT_TIMEOUT = 12.0
@@ -621,6 +623,10 @@ from dana.audio.tts_worker import get_tts_worker as _get_tts_worker  # noqa: E40
 _tts_barge = _get_tts_worker(barge_in_event=tts_interrupt_event)
 # True while ``record_utterance`` owns the microphone (barge-in watcher must stand down).
 vad_capture_active = threading.Event()
+# Set by text/chat ingest to abort active Silero VAD without waiting for max_timeout.
+vad_abort_event = threading.Event()
+# Set when startup mic probe is below DEAD_MIC_RMS_FLOOR (Text-Only / Quiet Mic).
+quiet_mic_mode = threading.Event()
 # Cleared until conversation_worker's Ollama warm-up finishes (gates wake-word arming).
 ollama_ready = threading.Event()
 # Boot coordination: ready audio plays only when all three are set.
@@ -809,6 +815,37 @@ def set_subtitle(text: str) -> None:
         log_debug("UI", f"Subtitle -> {text}")
 
 
+def audio_buffer_rms(samples: np.ndarray | None) -> float:
+    """RMS of a float PCM buffer; ``0.0`` for empty / None."""
+    if samples is None:
+        return 0.0
+    x = np.asarray(samples, dtype=np.float32).reshape(-1)
+    if x.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(np.square(x))))
+
+
+def should_skip_wake_predict(
+    rms: float,
+    *,
+    floor: float = DEAD_MIC_RMS_FLOOR,
+) -> bool:
+    """True when chunk RMS is below the dead-mic floor (skip OpenWakeWord predict)."""
+    return float(rms) < float(floor)
+
+
+def abort_vad_listening(*, reason: str = "text_override") -> None:
+    """Abort active Silero VAD so text/chat can run without the 10s audio timeout."""
+    vad_abort_event.set()
+    if vad_capture_active.is_set():
+        log("Audio", f"VAD abort requested ({reason}) — resetting voice to standby")
+
+
+def prioritize_text_input(*, reason: str = "text") -> None:
+    """Text-chat override: abort VAD listening immediately (queue/inject still processed)."""
+    abort_vad_listening(reason=reason)
+
+
 def set_injected_question(
     text: str,
     *,
@@ -821,6 +858,8 @@ def set_injected_question(
     ``already_logged=True`` skips a second Live Transcript echo.
     """
     global injected_question, _injected_source, _injected_already_logged
+    # Text always preempts an in-flight mic listen (no 10s VAD wait).
+    prioritize_text_input(reason=f"inject:{source or 'inject'}")
     with injected_question_lock:
         injected_question = text
         _injected_source = (source or "inject").strip() or "inject"
@@ -2876,8 +2915,16 @@ def wakeword_worker() -> None:
             "WARNING: Ollama warm-up not signaled after 180s — arming wake-word anyway",
         )
         ollama_ready.set()
-    log("WakeWord", "Ollama ready — wake-word listener armed")
-    wakeword_armed.set()
+    if quiet_mic_mode.is_set():
+        log(
+            "WakeWord",
+            "Quiet Mic / Text-Only mode — wake-word polling disarmed "
+            "(awaiting physical mic energy or text trigger)",
+        )
+        wakeword_armed.clear()
+    else:
+        log("WakeWord", "Ollama ready — wake-word listener armed")
+        wakeword_armed.set()
     maybe_play_boot_ready_audio()
 
     cooldown_until = 0.0
@@ -2949,12 +2996,28 @@ def wakeword_worker() -> None:
             continue
 
         audio_ring.append(audio.copy())
-        chunk_rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+        chunk_rms = audio_buffer_rms(audio)
 
         now = time.monotonic()
         if now >= next_rms_log:
             log_debug("Debug", f"Live Mic RMS: {chunk_rms:.6f}")
             next_rms_log = now + 3.0
+
+        # Dead / virtual mic silence: skip OpenWakeWord to prevent phantom wakes.
+        if should_skip_wake_predict(chunk_rms):
+            consecutive_hits = 0
+            continue
+
+        # Quiet-mic fallback: stay disarmed until physical energy (or text) arrives.
+        if quiet_mic_mode.is_set():
+            quiet_mic_mode.clear()
+            wakeword_armed.set()
+            log(
+                "WakeWord",
+                f"Physical mic energy detected (rms={chunk_rms:.6f}) — "
+                "re-arming wake-word polling",
+            )
+            maybe_play_boot_ready_audio()
 
         pcm = np.clip(audio * 32767.0, -32768, 32767).astype(np.int16)
         try:
@@ -3635,14 +3698,23 @@ def ensure_live_mic(
     """Warn / optionally auto-fallback when the selected mic looks muted or silent."""
     global _mic_ambient_rms
     try:
-        rms = probe_mic_rms(device_idx, rate)
+        # ~500 ms probe distinguishes dead/virtual endpoints from live ambient.
+        rms = probe_mic_rms(device_idx, rate, seconds=0.5)
     except Exception as exc:  # noqa: BLE001
         log("Audio", f"WARNING: mic RMS probe failed on [{device_idx}]: {exc}")
         rms = 0.0
 
     _mic_ambient_rms = float(rms)
     log("Audio", f"Mic RMS probe [{device_idx}]: {rms:.6f}")
-    if rms < MIC_AMBIENT_DEAD_RMS:
+    if rms < DEAD_MIC_RMS_FLOOR:
+        quiet_mic_mode.set()
+        wakeword_armed.clear()
+        msg = (
+            "[Audio] No active physical mic detected — falling back to "
+            "Text-Only / Quiet Mic mode"
+        )
+        print(msg, flush=True)
+        log("Audio", msg)
         # Soft normalization hint for Whisper / VAD on near-silent probes (e.g. 0.000015).
         log(
             "Audio",
@@ -3650,6 +3722,8 @@ def ensure_live_mic(
             "enabling quiet-mic adaptive VAD floors + Whisper gain. "
             "Speak into the headset to verify the endpoint is live.",
         )
+    else:
+        quiet_mic_mode.clear()
     if rms >= min_rms:
         return device_idx, rate
 
@@ -3923,6 +3997,8 @@ def input_txt_ingest_worker() -> None:
                     continue
                 log("Ingest", f"Queued {n} task(s) from input.txt")
                 print(f"[Ingest] Queued {n} task(s) from input.txt", flush=True)
+                # Abort any in-flight VAD listen so text drains without a 10s wait.
+                prioritize_text_input(reason="input_txt")
                 # Ensure the conversation loop can drain: escalate process mode
                 # without stealing the user's durable voice_session_mode.
                 try:
@@ -4226,12 +4302,20 @@ def record_utterance(
         audio = np.zeros(VAD_FRAME_SAMPLES, dtype=np.float32)
         return audio, 0.0, "mic_ingest_not_ready", False
 
+    vad_abort_event.clear()
     vad_capture_active.set()
     log_debug("Conversation", "VAD consumer attached to audio_buffer_queue")
     try:
         for frame_idx in range(max_frames):
             if stop_event.is_set():
                 stop_reason = "shutdown"
+                break
+            if vad_abort_event.is_set():
+                stop_reason = "text_override"
+                log(
+                    "Conversation",
+                    "VAD aborted for text/chat override — returning to standby",
+                )
                 break
             samples_16k = get_mic_frame(timeout=0.35)
             if samples_16k is None:
@@ -6027,6 +6111,15 @@ def conversation_worker(
                         end_session_to_idle("Standing by.")
                         break
 
+                    # Text/chat override: skip Whisper / 10s timeout; process inject/queue.
+                    if stop_reason == "text_override":
+                        log(
+                            "Conversation",
+                            "Follow-up VAD aborted for text — processing chat override",
+                        )
+                        set_ui_state("idle")
+                        continue
+
                     # Empty-room timeout: no speech → silent disarm (no "Standing by.").
                     if (not speech_started) and stop_reason in (
                         "max_timeout",
@@ -6074,6 +6167,15 @@ def conversation_worker(
                         log("Conversation", f"ERROR recording audio: {exc}")
                         end_session_to_idle()
                         break
+
+                    # Text/chat override: skip Whisper / 10s timeout; process inject/queue.
+                    if stop_reason == "text_override":
+                        log(
+                            "Conversation",
+                            "Wake VAD aborted for text — processing chat override",
+                        )
+                        set_ui_state("idle")
+                        continue
 
                     # Empty-room timeout after wake: silent disarm (no TTS announce).
                     if (not speech_started) and stop_reason in (
