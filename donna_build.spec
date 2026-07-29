@@ -111,6 +111,14 @@ except Exception as exc:  # noqa: BLE001
 _add_tree(ROOT / "dana" / "tools", os.path.join("dana", "tools"))
 _add_tree(ROOT / "tts_models", "tts_models")
 
+# Silent shutdown runners (stop_dana.vbs hides the console; bat does PID filtering).
+for _stop in ("stop_dana.bat", "stop_dana.vbs"):
+    _sp = ROOT / _stop
+    if _sp.is_file():
+        datas.append((str(_sp), "."))
+    else:
+        print(f"[donna_build.spec] WARNING: missing {_sp}")
+
 # Desktop / taskbar / shortcut branding (required for IconLocation + EXE icon).
 _ico = ROOT / "dana" / "assets" / "donna.ico"
 if _ico.is_file():

@@ -1,4 +1,4 @@
-"""Stage 8.9.2 — STOP DONNA / KILL SWITCH launches stop_donna.bat."""
+"""Stage 8.9.2 — STOP DONNA / KILL SWITCH launches stop_dana.vbs / stop_dana.bat."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def _dry(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_kill_donna_processes_launches_bat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from dana.core_agent import DonnaGUI
 
-    bat = tmp_path / "stop_donna.bat"
+    bat = tmp_path / "stop_dana.bat"
     bat.write_text("@echo off\n", encoding="utf-8")
     monkeypatch.setattr("dana.paths.PROJECT_ROOT", tmp_path)
 
@@ -35,12 +35,34 @@ def test_kill_donna_processes_launches_bat(monkeypatch: pytest.MonkeyPatch, tmp_
     assert result["ok"] is True
     assert result["pid"] == 4242
     assert launched
-    assert "stop_donna.bat" in str(launched[0]["args"][0])
+    assert "stop_dana.bat" in str(launched[0]["args"][0])
     assert launched[0]["kwargs"].get("shell") is True
     if os.name == "nt":
         flags = int(launched[0]["kwargs"].get("creationflags") or 0)
         no_window = int(getattr(__import__("subprocess"), "CREATE_NO_WINDOW", 0x08000000))
         assert flags & no_window, f"CREATE_NO_WINDOW missing from flags={flags:#x}"
+    app.destroy()
+
+
+def test_kill_donna_processes_prefers_vbs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from dana.core_agent import DonnaGUI
+
+    (tmp_path / "stop_dana.bat").write_text("@echo off\n", encoding="utf-8")
+    (tmp_path / "stop_dana.vbs").write_text("' silent\n", encoding="utf-8")
+    monkeypatch.setattr("dana.paths.PROJECT_ROOT", tmp_path)
+
+    launched: list[dict] = []
+
+    def _fake_popen(*args, **kwargs):  # noqa: ANN001
+        launched.append({"args": args, "kwargs": kwargs})
+        return SimpleNamespace(pid=99)
+
+    monkeypatch.setattr("dana.core_agent.subprocess.Popen", _fake_popen)
+
+    app = DonnaGUI()
+    result = app.kill_donna_processes()
+    assert result["ok"] is True
+    assert "stop_dana.vbs" in str(launched[0]["args"][0])
     app.destroy()
 
 
@@ -58,7 +80,7 @@ def test_kill_donna_missing_bat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
 def test_stop_button_shows_terminating(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from dana.core_agent import DonnaGUI
 
-    bat = tmp_path / "stop_donna.bat"
+    bat = tmp_path / "stop_dana.bat"
     bat.write_text("@echo off\n", encoding="utf-8")
     monkeypatch.setattr("dana.paths.PROJECT_ROOT", tmp_path)
     calls: list[int] = []

@@ -193,7 +193,7 @@ def write_start_bat() -> Path:
     lines = [
         "@echo off",
         f'cd /d "{root}"',
-        "REM GUI enabled (CustomTkinter). Use stop_donna.bat before relaunch.",
+        "REM GUI enabled (CustomTkinter). Use stop_dana.bat / stop_dana.vbs before relaunch.",
         f'start "Donna" "{py}" "{entry}"',
         "",
     ]

@@ -7631,7 +7631,7 @@ class DonnaGUI(ctk.CTk):
             pady=4,
         )
         self.mode_badge.pack(side="left", padx=(8, 12), pady=12)
-        # Stage 8.9.2 — emergency kill switch (runs stop_donna.bat).
+        # Stage 8.9.2 — emergency kill switch (runs stop_dana.vbs / stop_dana.bat).
         self.stop_donna_btn = ctk.CTkButton(
             header,
             text="STOP DONNA",
@@ -9163,10 +9163,10 @@ class DonnaGUI(ctk.CTk):
             log("UI", f"WARNING: could not save open_window_on_startup ({exc})")
 
     def kill_donna_processes(self) -> dict[str, Any]:
-        """Stage 8.9.2 — launch ``stop_donna.bat`` (non-blocking) to terminate Donna.
+        """Stage 8.9.2 — launch ``stop_dana.vbs`` / ``stop_dana.bat`` (non-blocking).
 
-        Uses a detached ``subprocess.Popen`` so the batch can finish even after
-        this GUI process is killed. Path errors are caught and returned.
+        Prefers the VBS silent runner (no console flash). Uses a detached
+        ``subprocess.Popen`` so teardown can finish after this GUI process dies.
         """
         try:
             from dana.paths import PROJECT_ROOT
@@ -9174,19 +9174,26 @@ class DonnaGUI(ctk.CTk):
             root = Path(PROJECT_ROOT)
         except Exception:  # noqa: BLE001
             root = Path(__file__).resolve().parents[1]
-        bat = root / "stop_donna.bat"
-        if not bat.is_file():
-            msg = f"stop_donna.bat not found at {bat}"
+        vbs = root / "stop_dana.vbs"
+        bat = root / "stop_dana.bat"
+        runner = vbs if vbs.is_file() else bat
+        if not runner.is_file():
+            msg = f"stop_dana.vbs / stop_dana.bat not found under {root}"
             log("UI", f"WARNING: {msg}")
             return {"ok": False, "error": "FileNotFoundError", "message": msg}
         try:
             creationflags = 0
             startupinfo = None
             if sys.platform == "win32":
-                # Hide cmd.exe host for stop_donna.bat (no flashing console).
-                creationflags |= int(
-                    getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
-                )
+                # Hide wscript/cmd host for stop_dana (no flashing console).
+                try:
+                    from dana.vault_service import windows_no_window_creationflags
+
+                    creationflags |= windows_no_window_creationflags()
+                except Exception:  # noqa: BLE001
+                    creationflags |= int(
+                        getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                    )
                 if hasattr(subprocess, "DETACHED_PROCESS"):
                     creationflags |= int(subprocess.DETACHED_PROCESS)
                 if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
@@ -9194,9 +9201,9 @@ class DonnaGUI(ctk.CTk):
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startupinfo.wShowWindow = int(getattr(subprocess, "SW_HIDE", 0))
-            # shell=True + absolute path — matches Windows .bat launch semantics.
+            # shell=True + absolute path — matches Windows .vbs/.bat launch semantics.
             proc = subprocess.Popen(  # noqa: S603
-                f'"{bat}"',
+                f'"{runner}"',
                 cwd=str(root),
                 shell=True,
                 creationflags=creationflags,
@@ -9206,14 +9213,14 @@ class DonnaGUI(ctk.CTk):
                 stderr=subprocess.DEVNULL,
                 close_fds=True,
             )
-            log("UI", f"STOP DONNA — launched stop_donna.bat pid={proc.pid}")
-            return {"ok": True, "pid": int(proc.pid), "path": str(bat)}
+            log("UI", f"STOP DONNA — launched {runner.name} pid={proc.pid}")
+            return {"ok": True, "pid": int(proc.pid), "path": str(runner)}
         except FileNotFoundError as exc:
-            msg = f"Failed to launch stop_donna.bat: {exc}"
+            msg = f"Failed to launch {runner.name}: {exc}"
             log("UI", f"WARNING: {msg}")
             return {"ok": False, "error": "FileNotFoundError", "message": msg}
         except OSError as exc:
-            msg = f"Failed to launch stop_donna.bat: {exc}"
+            msg = f"Failed to launch {runner.name}: {exc}"
             log("UI", f"WARNING: {msg}")
             return {"ok": False, "error": type(exc).__name__, "message": msg}
 

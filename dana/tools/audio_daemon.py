@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
 
 from dana.tools.audio_switcher import toggle_audio_endpoint
@@ -19,18 +20,29 @@ _PS_BLUETOOTH_CHECK = (
 def is_bluetooth_connected() -> bool:
     """Return True when a Bluetooth audio device is present and Status is OK."""
     try:
+        run_kwargs: dict = {
+            "capture_output": True,
+            "text": True,
+            "timeout": 15,
+            "check": False,
+        }
+        if sys.platform == "win32":
+            run_kwargs["creationflags"] = int(
+                getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            )
         completed = subprocess.run(
             [
                 "powershell",
                 "-NoProfile",
                 "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
                 "-Command",
                 _PS_BLUETOOTH_CHECK,
             ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
+            **run_kwargs,
         )
     except (OSError, subprocess.SubprocessError, TimeoutError):
         return False

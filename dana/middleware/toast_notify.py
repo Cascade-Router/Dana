@@ -109,6 +109,16 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Donna').Show($toast)
 """
     try:
+        run_kwargs: dict = {
+            "capture_output": True,
+            "text": True,
+            "timeout": 15,
+            "check": False,
+        }
+        if sys.platform == "win32":
+            run_kwargs["creationflags"] = int(
+                getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            )
         completed = subprocess.run(
             [
                 "powershell",
@@ -119,10 +129,7 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
                 "-Command",
                 ps,
             ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
+            **run_kwargs,
         )
         return int(completed.returncode) == 0
     except Exception:  # noqa: BLE001

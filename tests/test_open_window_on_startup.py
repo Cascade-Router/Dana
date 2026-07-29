@@ -39,8 +39,13 @@ def test_open_window_on_startup_persist(tmp_path: Path, monkeypatch: pytest.Monk
     assert raw.get("open_window_on_startup") is True
 
 
-def test_stop_donna_bat_hides_powershell() -> None:
-    bat = Path(__file__).resolve().parents[1] / "stop_donna.bat"
+def test_stop_dana_bat_hides_powershell() -> None:
+    root = Path(__file__).resolve().parents[1]
+    bat = root / "stop_dana.bat"
+    vbs = root / "stop_dana.vbs"
     text = bat.read_text(encoding="utf-8", errors="replace")
+    assert bat.is_file()
+    assert vbs.is_file()
     assert "-WindowStyle Hidden" in text
-    assert text.count("-WindowStyle Hidden") >= 2
+    assert ">nul" in text.lower() or "2>&1" in text
+    assert "stop_dana.bat" in vbs.read_text(encoding="utf-8", errors="replace")
