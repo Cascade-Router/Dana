@@ -1,4 +1,4 @@
-"""Cross-platform Donna login/startup registration.
+"""Cross-platform Dana login/startup registration.
 
 Windows: HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run
 macOS:   ~/Library/LaunchAgents/com.dana.agent.plist
@@ -19,12 +19,13 @@ import shlex
 import sys
 from pathlib import Path
 
-VALUE_NAME = "DonnaAssistant"
+VALUE_NAME = "DanaAssistant"
+LEGACY_VALUE_NAME = "DonnaAssistant"
 MACOS_LABEL = "com.dana.agent"
 MACOS_PLIST_NAME = f"{MACOS_LABEL}.plist"
 LINUX_DESKTOP_NAME = "dana.desktop"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-UNIX_STARTUP_LOG = "/tmp/donna_startup.log"
+UNIX_STARTUP_LOG = "/tmp/dana_startup.log"
 
 
 def project_root() -> Path:
@@ -34,7 +35,7 @@ def project_root() -> Path:
 
 
 def absolute_workdir() -> str:
-    """Absolute Donna repo path for WorkingDirectory / batch ``cd``."""
+    """Absolute Dana repo path for WorkingDirectory / batch ``cd``."""
     try:
         return os.path.abspath(str(project_root()))
     except Exception:  # noqa: BLE001
@@ -71,7 +72,7 @@ def entry_script() -> Path:
 
 
 def bat_path() -> Path:
-    return project_root() / "start_donna.bat"
+    return project_root() / "start_dana.bat"
 
 
 def app_icon_path() -> Path:
@@ -80,12 +81,29 @@ def app_icon_path() -> Path:
 
 
 def desktop_shortcut_path() -> Path:
-    """``%USERPROFILE%\\Desktop\\Donna.lnk`` (Windows)."""
-    return Path.home() / "Desktop" / "Donna.lnk"
+    """``%USERPROFILE%\\Desktop\\Dana.lnk`` (Windows)."""
+    return Path.home() / "Desktop" / "Dana.lnk"
 
 
 def startup_folder_shortcut_path() -> Path:
-    """``%APPDATA%\\...\\Startup\\Donna.lnk`` (Windows login Startup folder)."""
+    """``%APPDATA%\\...\\Startup\\Dana.lnk`` (Windows login Startup folder)."""
+    appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    return (
+        Path(appdata)
+        / "Microsoft"
+        / "Windows"
+        / "Start Menu"
+        / "Programs"
+        / "Startup"
+        / "Dana.lnk"
+    )
+
+
+def _legacy_desktop_shortcut_path() -> Path:
+    return Path.home() / "Desktop" / "Donna.lnk"
+
+
+def _legacy_startup_folder_shortcut_path() -> Path:
     appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
     return (
         Path(appdata)
@@ -96,6 +114,33 @@ def startup_folder_shortcut_path() -> Path:
         / "Startup"
         / "Donna.lnk"
     )
+
+
+def _remove_path_quiet(path: Path) -> None:
+    try:
+        if path.is_file():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def _migrate_legacy_windows_artifacts() -> None:
+    """Drop pre-rename Run key / shortcuts / launcher bat so Dana names win."""
+    _remove_path_quiet(project_root() / "start_donna.bat")
+    _remove_path_quiet(_legacy_desktop_shortcut_path())
+    _remove_path_quiet(_legacy_startup_folder_shortcut_path())
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE
+        ) as key:
+            try:
+                winreg.DeleteValue(key, LEGACY_VALUE_NAME)
+            except FileNotFoundError:
+                pass
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _write_windows_shortcut(
@@ -153,28 +198,30 @@ def _write_windows_shortcut(
 
 
 def write_desktop_shortcut() -> Path | None:
-    """Create/update Desktop ``Donna.lnk`` → ``start_donna.bat`` with ``donna.ico``."""
+    """Create/update Desktop ``Dana.lnk`` → ``start_dana.bat`` with ``donna.ico``."""
     if _system() != "Windows":
         return None
     bat = write_start_bat()
+    _remove_path_quiet(_legacy_desktop_shortcut_path())
     return _write_windows_shortcut(
         lnk=desktop_shortcut_path(),
         target=Path(os.path.abspath(str(bat))),
         working_directory=absolute_workdir(),
-        description="Donna — local-first voice agent",
+        description="Dana — local-first voice agent",
     )
 
 
 def write_startup_folder_shortcut() -> Path | None:
-    """Create/update Startup-folder ``Donna.lnk`` with ``donna.ico`` (login launch)."""
+    """Create/update Startup-folder ``Dana.lnk`` with ``donna.ico`` (login launch)."""
     if _system() != "Windows":
         return None
     bat = write_start_bat()
+    _remove_path_quiet(_legacy_startup_folder_shortcut_path())
     return _write_windows_shortcut(
         lnk=startup_folder_shortcut_path(),
         target=Path(os.path.abspath(str(bat))),
         working_directory=absolute_workdir(),
-        description="Donna — launch at Windows login",
+        description="Dana — launch at Windows login",
     )
 
 
@@ -184,7 +231,7 @@ def _ps_quote(value: str) -> str:
 
 
 def write_start_bat() -> Path:
-    """Create ``start_donna.bat``: abs ``cd``, GUI enabled (no ``--no-gui``)."""
+    """Create ``start_dana.bat``: abs ``cd``, GUI enabled (no ``--no-gui``)."""
     root = absolute_workdir()
     # Prefer pythonw for a windowed GUI launch (no console flash).
     py = str(python_launcher(headless=False))
@@ -194,11 +241,12 @@ def write_start_bat() -> Path:
         "@echo off",
         f'cd /d "{root}"',
         "REM GUI enabled (CustomTkinter). Use stop_dana.bat / stop_dana.vbs before relaunch.",
-        f'start "Donna" "{py}" "{entry}"',
+        f'start "Dana" "{py}" "{entry}"',
         "",
     ]
     path = bat_path()
     path.write_text("\n".join(lines), encoding="utf-8", newline="\r\n")
+    _remove_path_quiet(project_root() / "start_donna.bat")
     return path
 
 
@@ -259,8 +307,8 @@ def _write_linux_desktop() -> Path:
         "[Desktop Entry]\n"
         "Type=Application\n"
         "Version=1.0\n"
-        "Name=Donna\n"
-        "Comment=Donna local-first voice agent (headless)\n"
+        "Name=Dana\n"
+        "Comment=Dana local-first voice agent (headless)\n"
         f"Exec={exec_cmd}\n"
         f"Path={root}\n"
         "Terminal=false\n"
@@ -277,6 +325,7 @@ def _write_linux_desktop() -> Path:
 def _enable_windows() -> int:
     import winreg
 
+    _migrate_legacy_windows_artifacts()
     bat = write_start_bat()
     command = f'"{bat}"'
     with winreg.OpenKey(
@@ -303,6 +352,7 @@ def _enable_windows() -> int:
 def _disable_windows() -> int:
     import winreg
 
+    _migrate_legacy_windows_artifacts()
     try:
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE
@@ -326,6 +376,18 @@ def _status_windows() -> int:
         print(f"[ON] {VALUE_NAME} = {value} (type={regtype})")
         return 0
     except FileNotFoundError:
+        pass
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ
+        ) as key:
+            value, regtype = winreg.QueryValueEx(key, LEGACY_VALUE_NAME)
+        print(
+            f"[ON] legacy {LEGACY_VALUE_NAME} = {value} (type={regtype}); "
+            "re-run install to migrate to DanaAssistant"
+        )
+        return 0
+    except FileNotFoundError:
         print(f"[OFF] {VALUE_NAME} is not in HKCU Run")
         return 1
 
@@ -340,10 +402,16 @@ def is_startup_enabled() -> bool:
             with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ
             ) as key:
-                winreg.QueryValueEx(key, VALUE_NAME)
-            return True
-        except FileNotFoundError:
-            return False
+                try:
+                    winreg.QueryValueEx(key, VALUE_NAME)
+                    return True
+                except FileNotFoundError:
+                    pass
+                try:
+                    winreg.QueryValueEx(key, LEGACY_VALUE_NAME)
+                    return True
+                except FileNotFoundError:
+                    return False
         except OSError:
             return False
     if system == "Darwin":
@@ -409,7 +477,7 @@ def _status_linux() -> int:
 
 
 def enable_startup() -> int:
-    """Register Donna to launch at user login on the current OS."""
+    """Register Dana to launch at user login on the current OS."""
     system = _system()
     if system == "Windows":
         return _enable_windows()
@@ -422,7 +490,7 @@ def enable_startup() -> int:
 
 
 def disable_startup() -> int:
-    """Remove Donna from login/startup on the current OS."""
+    """Remove Dana from login/startup on the current OS."""
     system = _system()
     if system == "Windows":
         return _disable_windows()
@@ -435,7 +503,7 @@ def disable_startup() -> int:
 
 
 def startup_status() -> int:
-    """Print whether Donna is registered for login/startup (0=on, 1=off)."""
+    """Print whether Dana is registered for login/startup (0=on, 1=off)."""
     system = _system()
     if system == "Windows":
         return _status_windows()
@@ -463,7 +531,7 @@ def status() -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Add or remove Donna from user login/startup "
+            "Add or remove Dana from user login/startup "
             "(Windows Run key, macOS LaunchAgent, or Linux autostart)."
         )
     )

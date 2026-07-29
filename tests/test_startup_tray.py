@@ -21,19 +21,19 @@ def test_write_start_bat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     # GUI launcher prefers pythonw when present.
     (venv_scripts / "pythonw.exe").write_bytes(b"")
     bat = setup_startup.write_start_bat()
-    assert bat == tmp_path / "start_donna.bat"
+    assert bat == tmp_path / "start_dana.bat"
     text = bat.read_text(encoding="utf-8")
     assert "run.py" in text
     assert "core_agent.py" not in text
     assert "pythonw.exe" in text
     assert "--no-gui" not in text
     assert "cd /d" in text
-    assert "start \"Donna\"" in text or 'start "Donna"' in text
-    print(f"[PASS] start_donna.bat written: {bat}")
+    assert "start \"Dana\"" in text or 'start "Dana"' in text
+    print(f"[PASS] start_dana.bat written: {bat}")
 
 
 def test_enable_disable_windows_mocked() -> None:
-    fake_bat = Path("C:/fake/start_donna.bat")
+    fake_bat = Path("C:/fake/start_dana.bat")
     fake_winreg = MagicMock()
     fake_winreg.HKEY_CURRENT_USER = object()
     fake_winreg.KEY_SET_VALUE = 2
@@ -46,13 +46,15 @@ def test_enable_disable_windows_mocked() -> None:
     with (
         patch.object(setup_startup, "_system", return_value="Windows"),
         patch.object(setup_startup, "write_start_bat", return_value=fake_bat),
+        patch.object(setup_startup, "_migrate_legacy_windows_artifacts", lambda: None),
         patch.dict("sys.modules", {"winreg": fake_winreg}),
     ):
         assert setup_startup.enable_startup() == 0
         fake_winreg.SetValueEx.assert_called_once()
         args = fake_winreg.SetValueEx.call_args[0]
         assert args[1] == setup_startup.VALUE_NAME
-        assert "start_donna.bat" in str(args[4])
+        assert args[1] == "DanaAssistant"
+        assert "start_dana.bat" in str(args[4])
 
         assert setup_startup.startup_status() == 0
         assert setup_startup.disable_startup() == 0
@@ -78,7 +80,7 @@ def test_enable_disable_macos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert "WorkingDirectory" in text
     assert "StandardOutPath" in text
     assert "StandardErrorPath" in text
-    assert "/tmp/donna_startup.log" in text
+    assert "/tmp/dana_startup.log" in text
     assert setup_startup.startup_status() == 0
     assert setup_startup.disable_startup() == 0
     assert not plist.exists()
@@ -98,10 +100,11 @@ def test_enable_disable_linux(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert desktop.is_file()
     text = desktop.read_text(encoding="utf-8")
     assert "[Desktop Entry]" in text
+    assert "Name=Dana" in text
     assert "run.py" in text
     assert "--no-gui" in text
     assert f"Path={tmp_path.resolve()}" in text or "Path=" in text
-    assert "/tmp/donna_startup.log" in text
+    assert "/tmp/dana_startup.log" in text
     assert "2>&1" in text
     assert "/bin/bash -c" in text
     assert setup_startup.startup_status() == 0
@@ -174,7 +177,7 @@ def test_appusermodelid_helper_present_in_entrypoints() -> None:
 def test_write_desktop_shortcut_sets_icon(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(setup_startup, "project_root", lambda: tmp_path)
     monkeypatch.setattr(setup_startup, "_system", lambda: "Windows")
-    monkeypatch.setattr(setup_startup, "desktop_shortcut_path", lambda: tmp_path / "Donna.lnk")
+    monkeypatch.setattr(setup_startup, "desktop_shortcut_path", lambda: tmp_path / "Dana.lnk")
     (tmp_path / "run.py").write_text("# stub\n", encoding="utf-8")
     venv = tmp_path / ".venv" / "Scripts"
     venv.mkdir(parents=True)

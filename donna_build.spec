@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for Donna (entry: run.py).
+"""PyInstaller spec for Dana (entry: run.py).
 
 Bundles CustomTkinter / Torch / Whisper-related packages and ships
 ``dana/tools`` + ``tts_models`` as runtime data.
@@ -119,6 +119,13 @@ for _stop in ("stop_dana.bat", "stop_dana.vbs"):
     else:
         print(f"[donna_build.spec] WARNING: missing {_sp}")
 
+# GUI launcher (generated on install; ship if present in tree).
+_start_bat = ROOT / "start_dana.bat"
+if _start_bat.is_file():
+    datas.append((str(_start_bat), "."))
+else:
+    print(f"[donna_build.spec] WARNING: missing {_start_bat}")
+
 # Desktop / taskbar / shortcut branding (required for IconLocation + EXE icon).
 _ico = ROOT / "dana" / "assets" / "donna.ico"
 if _ico.is_file():
@@ -166,7 +173,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Donna",
+    name="Dana",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -188,21 +195,21 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="Donna",
+    name="Dana",
 )
 
 # macOS .app bundle (no-op import on other platforms — only emit on Darwin).
 if sys.platform == "darwin" and BUNDLE is not None:
     app = BUNDLE(
         coll,
-        name="Donna.app",
+        name="Dana.app",
         icon=None,
         bundle_identifier="com.dana.agent",
         info_plist={
-            "CFBundleName": "Donna",
-            "CFBundleDisplayName": "Donna",
+            "CFBundleName": "Dana",
+            "CFBundleDisplayName": "Dana",
             "CFBundleShortVersionString": "1.0.0",
             "NSHighResolutionCapable": True,
-            "NSMicrophoneUsageDescription": "Donna needs the microphone for wake-word and STT.",
+            "NSMicrophoneUsageDescription": "Dana needs the microphone for wake-word and STT.",
         },
     )

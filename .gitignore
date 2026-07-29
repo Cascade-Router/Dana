@@ -59,6 +59,7 @@ dist/
 
 # Headless / login-startup debug logs
 donna_headless.log
+start_dana.bat
 start_donna.bat
 
 # Regenerable pyreverse UML dumps (do not clutter production tree)

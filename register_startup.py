@@ -1,10 +1,10 @@
-"""Register Donna in the current user's Windows Startup (HKCU Run key).
+"""Register Dana in the current user's Windows Startup (HKCU Run key).
 
 Run once:
   python register_startup.py
 
 Also creates Desktop + Startup-folder shortcuts with ``dana/assets/donna.ico``.
-Uses ``pythonw.exe`` / ``start_donna.bat`` so no console window appears at logon.
+Uses ``pythonw.exe`` / ``start_dana.bat`` so no console window appears at logon.
 """
 
 from __future__ import annotations

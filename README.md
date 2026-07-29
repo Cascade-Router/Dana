@@ -78,7 +78,7 @@ python run.py
 python -m dana.tools.setup_startup install
 ```
 
-Silent teardown (no console flash): run `stop_dana.vbs` (or `stop_dana.bat`).
+That writes `start_dana.bat`, Desktop `Dana.lnk`, and the `DanaAssistant` HKCU Run key (migrating any legacy `Donna*` names). Silent teardown (no console flash): run `stop_dana.vbs` (or `stop_dana.bat`).
 
 Open the Live Trace window from the system tray (**Open Settings**).
 
