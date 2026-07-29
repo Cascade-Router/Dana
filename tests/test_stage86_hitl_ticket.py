@@ -114,8 +114,23 @@ def test_langgraph_interrupt_approve_runs_tools(monkeypatch: pytest.MonkeyPatch)
     tools_ran = {"n": 0}
 
     def tools(state: ReactGraphState) -> dict[str, Any]:
+        # Resolve draft tool_calls so completion_gate does not bounce back to agent.
+        from langchain_core.messages import ToolMessage
+
         tools_ran["n"] += 1
+        out: list[Any] = []
+        for msg in reversed(list(state.get("messages") or [])):
+            tcs = getattr(msg, "tool_calls", None) or []
+            if not tcs:
+                continue
+            for tc in tcs:
+                cid = str((tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", "")) or "call-draft-1")
+                out.append(
+                    ToolMessage(content="Action queued successfully.", tool_call_id=cid)
+                )
+            break
         return {
+            "messages": out,
             "halt": True,
             "final_raw": "queued",
             "last_obs": "Action queued successfully.",

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 
 def test_predict_signature_and_cloud_env(monkeypatch) -> None:
     monkeypatch.setenv("DONNA_CLOUD", "1")
@@ -34,6 +36,7 @@ def test_cloud_execute_mocks_vision() -> None:
 
 def test_hf_app_predict_is_str_to_str(monkeypatch) -> None:
     """Gradio Interface schema requires predict(str) -> str for {"data":[prompt]}."""
+    pytest.importorskip("gradio")
     monkeypatch.setenv("DONNA_CLOUD", "1")
     monkeypatch.setenv("DONNA_VAULT_KEY", "test-key")
 

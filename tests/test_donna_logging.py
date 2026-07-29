@@ -23,20 +23,20 @@ def test_conversation_log_clears_on_reset() -> None:
     path = Path(reset_conversation_log())
     assert path.is_file()
     text = path.read_text(encoding="utf-8")
-    assert "Donna conversation session" in text
+    assert "Dana conversation session" in text
     assert "system noise excluded" in text.lower() or "Latest User" in text
 
     log_conversation("User", "Hello Donna")
     log_conversation("Donna", "Hi there.")
     body = path.read_text(encoding="utf-8")
     assert "User: Hello Donna" in body
-    assert "Donna: Hi there." in body
+    assert "Dana: Hi there." in body
 
     # New run clears previous turns.
     reset_conversation_log()
     cleared = path.read_text(encoding="utf-8")
     assert "Hello Donna" not in cleared
-    assert "Donna conversation session" in cleared
+    assert "Dana conversation session" in cleared
     print("[PASS] conversation log clears on reset")
 
 

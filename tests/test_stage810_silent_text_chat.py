@@ -17,14 +17,14 @@ def test_chat_bar_widgets_and_standby_guard() -> None:
     try:
         assert app.chat_entry is not None
         assert app._chat_send_btn is not None
-        assert "Type below or say Donna" in str(app.chat_entry.cget("placeholder_text"))
+        assert "Type below or say Dana" in str(app.chat_entry.cget("placeholder_text"))
         accent = str(app._chat_send_btn.cget("fg_color")).lower()
-        assert "#00adb5" in accent
+        assert "#0ea5e9" in accent
 
         # Welcome banner once at build; Start Chat must not re-append it.
         box = app.transcript_box
         assert box is not None
-        welcome = "Type below or say Donna, then speak."
+        welcome = "Type below or say Dana, then speak."
         initial = str(box.get("1.0", "end"))
         assert welcome in initial
         assert initial.count(welcome) == 1
