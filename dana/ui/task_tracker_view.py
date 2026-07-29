@@ -11,22 +11,15 @@ from dana.graph.task_tracker import (
     TaskTracker,
     get_shared_task_tracker,
 )
-
-# Unified dark slate (matches dashboard chrome).
-_BG = "#0F172A"
-_CARD = "#1E293B"
-_BORDER = "#334155"
-_MUTED = "#94A3B8"
-_TEXT = "#F1F5F9"
-_ACCENT = "#0EA5E9"
+from dana.ui import theme as T
 
 _STATUS_PILLS: dict[str, tuple[str, str]] = {
-    TaskStatus.RECEIVED.value: ("RECEIVED", "#64748B"),  # slate
-    TaskStatus.IN_PROGRESS.value: ("IN PROGRESS", "#F59E0B"),  # amber
-    TaskStatus.TOOL_EXECUTING.value: ("IN PROGRESS", "#F59E0B"),
-    TaskStatus.COMPLETED.value: ("COMPLETED", "#10B981"),  # emerald
-    TaskStatus.FAILED.value: ("FAILED", "#F43F5E"),  # rose
-    TaskStatus.DROPPED.value: ("FAILED", "#F43F5E"),
+    TaskStatus.RECEIVED.value: ("RECEIVED", T.BORDER),
+    TaskStatus.IN_PROGRESS.value: ("IN PROGRESS", T.AMBER),
+    TaskStatus.TOOL_EXECUTING.value: ("IN PROGRESS", T.AMBER),
+    TaskStatus.COMPLETED.value: ("COMPLETED", T.EMERALD),
+    TaskStatus.FAILED.value: ("FAILED", T.ROSE),
+    TaskStatus.DROPPED.value: ("FAILED", T.ROSE),
 }
 
 
@@ -42,7 +35,7 @@ class TaskTrackerView(ctk.CTkFrame):
         poll_ms: int = 400,
         max_rows: int = 48,
     ) -> None:
-        super().__init__(master, fg_color=_BG, corner_radius=12)
+        super().__init__(master, fg_color=T.BG, corner_radius=12)
         self._tracker = tracker
         self._tracker_factory = tracker_factory or get_shared_task_tracker
         self._poll_ms = max(100, int(poll_ms))
@@ -64,20 +57,20 @@ class TaskTrackerView(ctk.CTkFrame):
         self.refresh()
 
     def _build(self) -> None:
-        header = ctk.CTkFrame(self, fg_color=_CARD, corner_radius=10)
+        header = ctk.CTkFrame(self, fg_color=T.CARD, corner_radius=10)
         header.pack(fill="x", padx=8, pady=(8, 4))
         ctk.CTkLabel(
             header,
             text="Task Tracker",
             font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=_TEXT,
+            text_color=T.TEXT,
             anchor="w",
         ).pack(side="left", padx=12, pady=8)
         self._empty_lbl = ctk.CTkLabel(
             header,
             text="No active tasks",
             font=ctk.CTkFont(size=11),
-            text_color=_MUTED,
+            text_color=T.MUTED,
             anchor="e",
         )
         self._empty_lbl.pack(side="right", padx=12, pady=8)
@@ -140,17 +133,17 @@ class TaskTrackerView(ctk.CTkFrame):
 
     def _pill_style(self, status: str) -> tuple[str, str]:
         key = str(status or "").strip().upper()
-        return _STATUS_PILLS.get(key, (key or "UNKNOWN", _MUTED))
+        return _STATUS_PILLS.get(key, (key or "UNKNOWN", T.MUTED))
 
     def _make_task_row(self, rec: Any) -> ctk.CTkFrame:
         status_val = getattr(rec.status, "value", str(rec.status))
         label, color = self._pill_style(status_val)
         card = ctk.CTkFrame(
             self._scroll,
-            fg_color=_CARD,
+            fg_color=T.CARD,
             corner_radius=10,
             border_width=1,
-            border_color=_BORDER,
+            border_color=T.BORDER,
         )
         card.pack(fill="x", padx=4, pady=4)
 
@@ -160,7 +153,7 @@ class TaskTrackerView(ctk.CTkFrame):
             top,
             text=f"  {label}  ",
             font=ctk.CTkFont(size=10, weight="bold"),
-            text_color="#0F172A",
+            text_color=T.TEXT_ON_ACCENT,
             fg_color=color,
             corner_radius=999,
         ).pack(side="left")
@@ -168,7 +161,7 @@ class TaskTrackerView(ctk.CTkFrame):
             top,
             text=str(getattr(rec, "updated_at", "") or ""),
             font=ctk.CTkFont(size=10),
-            text_color=_MUTED,
+            text_color=T.MUTED,
             anchor="e",
         ).pack(side="right")
 
@@ -179,7 +172,7 @@ class TaskTrackerView(ctk.CTkFrame):
                 card,
                 text=short,
                 font=ctk.CTkFont(size=12, weight="bold"),
-                text_color=_TEXT,
+                text_color=T.TEXT,
                 anchor="w",
                 wraplength=520,
                 justify="left",
@@ -196,17 +189,19 @@ class TaskTrackerView(ctk.CTkFrame):
                 card,
                 text=f"• {msg}",
                 font=ctk.CTkFont(size=11),
-                text_color=_MUTED,
+                text_color=T.MUTED,
                 anchor="w",
             ).pack(fill="x", padx=14, pady=(0, 8))
         else:
             for act in activities[-4:]:
                 line = str(act.get("message") or "").strip() or "Activity"
+                ts = str(act.get("timestamp") or "").strip()
+                step = f"• {line}" + (f"  ·  {ts}" if ts else "")
                 ctk.CTkLabel(
                     card,
-                    text=f"• {line}",
+                    text=step,
                     font=ctk.CTkFont(size=11),
-                    text_color=_MUTED,
+                    text_color=T.MUTED,
                     anchor="w",
                     wraplength=500,
                     justify="left",
@@ -225,17 +220,17 @@ class TaskTrackerView(ctk.CTkFrame):
         label, color = self._pill_style(status)
         row = ctk.CTkFrame(
             self._scroll,
-            fg_color=_CARD,
+            fg_color=T.CARD,
             corner_radius=8,
             border_width=1,
-            border_color=_BORDER,
+            border_color=T.BORDER,
         )
         row.pack(fill="x", padx=4, pady=3)
         ctk.CTkLabel(
             row,
             text=f"  {label}  ",
             font=ctk.CTkFont(size=10, weight="bold"),
-            text_color="#0F172A",
+            text_color=T.TEXT_ON_ACCENT,
             fg_color=color,
             corner_radius=999,
         ).pack(side="left", padx=(8, 6), pady=8)
@@ -245,14 +240,14 @@ class TaskTrackerView(ctk.CTkFrame):
             body,
             text=message,
             font=ctk.CTkFont(size=12),
-            text_color=_TEXT,
+            text_color=T.TEXT,
             anchor="w",
         ).pack(fill="x")
         ctk.CTkLabel(
             body,
             text=f"{task_id} · {timestamp}",
             font=ctk.CTkFont(size=10),
-            text_color=_MUTED,
+            text_color=T.MUTED,
             anchor="w",
         ).pack(fill="x")
         return row

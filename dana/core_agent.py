@@ -219,22 +219,44 @@ _mic_ambient_rms: float = 0.0
 
 # Live Trace telemetry (background threads → Tk main thread via Queue only).
 gui_telemetry_queue: queue.Queue = queue.Queue()
+# Shared dark-slate tokens (dana.ui.theme) — keep local aliases for call sites.
+try:
+    from dana.ui import theme as _UI_THEME
+
+    _UI_CANVAS = _UI_THEME.BG
+    _UI_CARD = _UI_THEME.CARD
+    _UI_CARD_BORDER = _UI_THEME.BORDER
+    _UI_GHOST = _UI_THEME.GHOST
+    _UI_MUTED = _UI_THEME.MUTED
+    _UI_TEXT = _UI_THEME.TEXT
+    _UI_ACCENT = _UI_THEME.ACCENT
+    _UI_ACCENT_HOVER = _UI_THEME.ACCENT_HOVER
+    _UI_EMERALD = _UI_THEME.EMERALD
+    _UI_ROSE = _UI_THEME.ROSE
+    _UI_ROSE_HOVER = _UI_THEME.ROSE_HOVER
+    _UI_AMBER = _UI_THEME.AMBER
+except Exception:  # noqa: BLE001
+    _UI_CANVAS = "#0F172A"
+    _UI_CARD = "#1E293B"
+    _UI_CARD_BORDER = "#334155"
+    _UI_GHOST = "#334155"
+    _UI_MUTED = "#94A3B8"
+    _UI_TEXT = "#F8FAFC"
+    _UI_ACCENT = "#0EA5E9"
+    _UI_ACCENT_HOVER = "#0284C7"
+    _UI_EMERALD = "#10B981"
+    _UI_ROSE = "#F43F5E"
+    _UI_ROSE_HOVER = "#E11D48"
+    _UI_AMBER = "#F59E0B"
+
 _TRACE_MODE_COLORS: dict[str, str] = {
-    "chat": "#00E676",
-    "developer": "#FB8C00",  # execution / developer
-    "vision": "#3B82F6",
-    "research": "#F59E0B",
-    "dictation": "#9C27B0",
+    "chat": _UI_EMERALD,
+    "developer": _UI_AMBER,
+    "vision": _UI_ACCENT,
+    "research": _UI_AMBER,
+    "dictation": "#A855F7",
 }
-_TRACE_IDLE_COLOR = "#9CA3AF"
-_UI_CANVAS = "#0F172A"
-_UI_CARD = "#1E293B"
-_UI_CARD_BORDER = "#334155"
-_UI_GHOST = "#334155"
-_UI_MUTED = "#94A3B8"
-# Unified slate accent (sky-500).
-_UI_ACCENT = "#0EA5E9"
-_UI_ACCENT_HOVER = "#0284C7"
+_TRACE_IDLE_COLOR = _UI_MUTED
 # ASCII-only — emoji tofu glyphs rendered as broken purple boxes on Win fonts.
 _TRACE_STATUS_ICONS: dict[str, str] = {
     "active": "[~]",
@@ -7620,8 +7642,8 @@ class DonnaGUI(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Dana — Control Dashboard")
-        self.geometry("880x780")
-        self.minsize(650, 750)
+        self.geometry("980x780")
+        self.minsize(780, 700)
         self._dictation_active = False
         self._behavior_locked = False
         # Stage 8.9.7 — soft LangGraph engine ignition (False = STANDBY).
@@ -7648,6 +7670,7 @@ class DonnaGUI(ctk.CTk):
         self.chat_entry: ctk.CTkEntry | None = None
         self._chat_send_btn: ctk.CTkButton | None = None
         self.transcript_box = None
+        self._chat_view = None
 
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
@@ -7737,7 +7760,7 @@ class DonnaGUI(ctk.CTk):
             text=title,
             anchor="w",
             font=ctk.CTkFont(size=13, weight="bold"),
-            text_color="#F3F4F6",
+            text_color=_UI_TEXT,
         ).pack(fill="x", padx=14, pady=(12, 6))
         body = ctk.CTkFrame(card, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=12, pady=(0, 12))
@@ -7795,8 +7818,8 @@ class DonnaGUI(ctk.CTk):
             width=128,
             height=32,
             corner_radius=8,
-            fg_color="#d32f2f",
-            hover_color="#b71c1c",
+            fg_color=_UI_ROSE,
+            hover_color=_UI_ROSE_HOVER,
             text_color="#FFFFFF",
             font=ctk.CTkFont(size=12, weight="bold"),
             command=self._on_stop_donna_clicked,
@@ -7806,7 +7829,7 @@ class DonnaGUI(ctk.CTk):
             header,
             text="local · offline-first",
             font=ctk.CTkFont(size=11),
-            text_color="#6B7280",
+            text_color=_UI_MUTED,
             anchor="e",
         ).pack(side="right", padx=(8, 4), pady=14)
 
@@ -7819,7 +7842,7 @@ class DonnaGUI(ctk.CTk):
             segmented_button_selected_hover_color=_UI_ACCENT_HOVER,
             segmented_button_unselected_color=_UI_GHOST,
             segmented_button_unselected_hover_color="#475569",
-            text_color="#E5E7EB",
+            text_color=_UI_TEXT,
             corner_radius=14,
             border_width=0,
         )
@@ -7839,13 +7862,11 @@ class DonnaGUI(ctk.CTk):
         self._build_developer_diagnostics(tab_assistant)
         self._build_perception_tab(tab_perception)
 
-        # Memory & Settings: preferences, episodic search, logs, dictation, behavior.
+        # Memory & Settings: 2-column cards + audio/behavior below.
         mem_scroll = ctk.CTkScrollableFrame(tab_memory, fg_color=_UI_CANVAS)
         mem_scroll.pack(fill="both", expand=True, padx=2, pady=2)
+        self._build_memory_settings_grid(mem_scroll)
         self._build_settings_tab(mem_scroll)
-        self._build_episodic_memory_section(mem_scroll)
-        self._build_system_log_section(mem_scroll)
-        self._build_dictation_tab(mem_scroll)
         self._build_behavior_tab(mem_scroll)
 
         try:
@@ -7871,7 +7892,7 @@ class DonnaGUI(ctk.CTk):
             pass
 
     def _build_dashboard_tab(self, tab) -> None:  # noqa: ANN001
-        """Stage 8.9.4 — welcome / quick actions + Live Transcript + bottom chat bar.
+        """Compact Status HUD + chat bubbles + bottom chat bar.
 
         Pack order matters: bottom input is reserved first so the transcript is the
         only region that expands/shrinks on resize (input stays visible).
@@ -7893,7 +7914,7 @@ class DonnaGUI(ctk.CTk):
             fg_color=_UI_GHOST,
             border_width=1,
             border_color=_UI_CARD_BORDER,
-            text_color="#F9FAFB",
+            text_color=_UI_TEXT,
             placeholder_text_color=_UI_MUTED,
             font=ctk.CTkFont(size=13),
         )
@@ -7913,151 +7934,185 @@ class DonnaGUI(ctk.CTk):
         )
         self._chat_send_btn.grid(row=0, column=1, sticky="e")
 
-        # --- Top welcome / ignition (fixed height, no expand) ---
-        welcome = self._make_card(
-            tab, title="System Ready", pady=(10, 4), expand=False
+        # --- Compact Status HUD (fixed height, horizontal) ---
+        hud = ctk.CTkFrame(
+            tab,
+            fg_color=_UI_CARD,
+            corner_radius=14,
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
         )
-        center = ctk.CTkFrame(welcome, fg_color="transparent")
-        center.pack(fill="x", pady=(4, 4))
+        hud.pack(fill="x", padx=14, pady=(10, 6))
+        hud_inner = ctk.CTkFrame(hud, fg_color="transparent")
+        hud_inner.pack(fill="x", padx=10, pady=8)
+
+        left = ctk.CTkFrame(hud_inner, fg_color="transparent")
+        left.pack(side="left", fill="y")
         self._dash_logo_img = None
         try:
             from dana.ui.logo import load_premium_logo
 
-            self._dash_logo_img = load_premium_logo((72, 72))
+            self._dash_logo_img = load_premium_logo((36, 36))
         except Exception:  # noqa: BLE001
             self._dash_logo_img = None
         if self._dash_logo_img is not None:
             try:
                 ctk.CTkLabel(
-                    center,
+                    left,
                     text="",
                     image=self._dash_logo_img,
                     fg_color="transparent",
-                ).pack(pady=(2, 4))
-            except Exception:  # noqa: BLE001 — Tk pyimage race across roots
+                ).pack(side="left", padx=(0, 10))
+            except Exception:  # noqa: BLE001
                 self._dash_logo_img = None
+        meta = ctk.CTkFrame(left, fg_color="transparent")
+        meta.pack(side="left", fill="y")
         ctk.CTkLabel(
-            center,
+            meta,
             text="Dana is online",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color="#F9FAFB",
-        ).pack(pady=(2, 2))
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=_UI_TEXT,
+            anchor="w",
+        ).pack(anchor="w")
+        status_row = ctk.CTkFrame(meta, fg_color="transparent")
+        status_row.pack(anchor="w")
         self.status_value = ctk.CTkLabel(
-            center,
+            status_row,
             text="Idle",
-            font=ctk.CTkFont(size=13),
+            font=ctk.CTkFont(size=11),
             text_color=_UI_MUTED,
         )
-        self.status_value.pack(pady=(0, 2))
+        self.status_value.pack(side="left", padx=(0, 10))
         self.wake_value = ctk.CTkLabel(
-            center,
+            status_row,
             text="Wake: Dana",
-            font=ctk.CTkFont(size=12),
-            text_color="#00E676",
+            font=ctk.CTkFont(size=11),
+            text_color=_UI_EMERALD,
         )
-        self.wake_value.pack(pady=(0, 6))
+        self.wake_value.pack(side="left")
 
-        engine_row = ctk.CTkFrame(center, fg_color="transparent")
-        engine_row.pack(pady=(2, 2))
+        # Inline segmented toolbar: ENGAGE/STANDBY + quick actions
+        toolbar = ctk.CTkFrame(hud_inner, fg_color="transparent")
+        toolbar.pack(side="right", fill="y")
         try:
             _engage_font = ctk.CTkFont(
-                family="Segoe UI Historic", size=13, weight="bold"
+                family="Segoe UI Historic", size=12, weight="bold"
             )
         except Exception:  # noqa: BLE001
-            _engage_font = ctk.CTkFont(size=13, weight="bold")
+            _engage_font = ctk.CTkFont(size=12, weight="bold")
         self._engage_btn = ctk.CTkButton(
-            engine_row,
+            toolbar,
             text="ENGAGE \U000103ad",
-            width=160,
-            height=36,
+            width=118,
+            height=30,
             corner_radius=999,
-            fg_color="#2E7D32",
-            hover_color="#1B5E20",
+            fg_color=_UI_EMERALD,
+            hover_color="#059669",
             text_color="#FFFFFF",
             font=_engage_font,
             command=self.engage_engine,
         )
-        self._engage_btn.pack(side="left", padx=6)
+        self._engage_btn.pack(side="left", padx=3)
         self._standby_btn = ctk.CTkButton(
-            engine_row,
+            toolbar,
             text="STANDBY",
-            width=130,
-            height=36,
+            width=96,
+            height=30,
             corner_radius=999,
-            fg_color="#6B6560",
-            hover_color="#5A5550",
-            text_color="#E8E0D5",
-            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color=_UI_GHOST,
+            hover_color="#475569",
+            text_color=_UI_TEXT,
+            font=ctk.CTkFont(size=12, weight="bold"),
             command=self.standby_engine,
         )
-        self._standby_btn.pack(side="left", padx=6)
-        self._engine_status_lbl = ctk.CTkLabel(
-            center,
-            text="Status: STANDBY (Variables Unlocked)",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="#A1887F",
-        )
-        self._engine_status_lbl.pack(pady=(4, 2))
-        self._engine_warn_lbl = ctk.CTkLabel(
-            center,
-            text="",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="#F87171",
-        )
-        self._engine_warn_lbl.pack(pady=(0, 4))
-
-        actions = ctk.CTkFrame(center, fg_color="transparent")
-        actions.pack(pady=(2, 4))
+        self._standby_btn.pack(side="left", padx=3)
         for label, cmd in (
             ("Start Chat", self._dashboard_start_chat),
             ("Trigger Dictation", self._dashboard_trigger_dictation),
             ("Open Diagnostics", self._dashboard_open_trace),
         ):
             ctk.CTkButton(
-                actions,
+                toolbar,
                 text=label,
-                width=140,
-                height=32,
+                width=118 if "Dictation" in label else 100,
+                height=30,
                 corner_radius=999,
                 fg_color=_UI_GHOST,
-                hover_color="#34344A",
+                hover_color="#475569",
                 border_width=1,
                 border_color=_UI_CARD_BORDER,
-                text_color="#E5E7EB",
-                font=ctk.CTkFont(size=12),
+                text_color=_UI_TEXT,
+                font=ctk.CTkFont(size=11),
                 command=cmd,
-            ).pack(side="left", padx=6)
+            ).pack(side="left", padx=3)
+
+        status_bar = ctk.CTkFrame(hud, fg_color="transparent")
+        status_bar.pack(fill="x", padx=12, pady=(0, 8))
+        self._engine_status_lbl = ctk.CTkLabel(
+            status_bar,
+            text="Status: STANDBY (Variables Unlocked)",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=_UI_MUTED,
+            anchor="w",
+        )
+        self._engine_status_lbl.pack(side="left")
+        self._engine_warn_lbl = ctk.CTkLabel(
+            status_bar,
+            text="",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=_UI_ROSE,
+            anchor="e",
+        )
+        self._engine_warn_lbl.pack(side="right")
         try:
             self._refresh_engine_ui()
         except Exception:  # noqa: BLE001
             pass
 
-        # --- Middle transcript (only expanding region) ---
-        transcript_card = self._make_card(
-            tab, title="Live Transcript", pady=(4, 4), expand=True
-        )
+        # --- Chat bubbles (expanding region) ---
+        chat_card = self._make_card(tab, title="Conversation", pady=(4, 4), expand=True)
         ctk.CTkLabel(
-            transcript_card,
-            text="Persona-colored STT / agent replies",
+            chat_card,
+            text="User right · Dana left · system tags as muted badges",
             anchor="w",
             text_color=_UI_MUTED,
+            font=ctk.CTkFont(size=11),
         ).pack(fill="x", pady=(0, 6))
-        self.transcript_box = ctk.CTkTextbox(
-            transcript_card,
-            wrap="word",
-            font=ctk.CTkFont(family="Segoe UI", size=14),
-            fg_color=_UI_CANVAS,
-            corner_radius=12,
-            border_width=0,
-        )
-        self.transcript_box.pack(fill="both", expand=True)
+        self._chat_view = None
+        try:
+            from dana.ui.chat_view import ChatBubbleView
+
+            self._chat_view = ChatBubbleView(chat_card, wraplength=440)
+            self._chat_view.pack(fill="both", expand=True)
+            self.transcript_box = self._chat_view.transcript_box
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: ChatBubbleView unavailable ({exc})")
+            self.transcript_box = ctk.CTkTextbox(
+                chat_card,
+                wrap="word",
+                font=ctk.CTkFont(family="Segoe UI", size=14),
+                fg_color=_UI_CANVAS,
+                corner_radius=12,
+                border_width=0,
+            )
+            self.transcript_box.pack(fill="both", expand=True)
         self._init_persona_transcript_tags()
         # One-time welcome banner (never re-logged from Start Chat / idle loops).
-        self.transcript_box.insert(
-            "1.0",
-            "[Dana] Type below or say Dana, then speak.\n\n",
-        )
-        self.transcript_box.configure(state="disabled")
+        welcome = "Type below or say Dana, then speak."
+        try:
+            self.transcript_box.configure(state="normal")
+            self.transcript_box.insert(
+                "1.0",
+                f"[Dana] {welcome}\n\n",
+            )
+            self.transcript_box.configure(state="disabled")
+        except Exception:  # noqa: BLE001
+            pass
+        if self._chat_view is not None:
+            try:
+                self._chat_view.append_bubble("Dana", welcome, agent_id="broker")
+            except Exception:  # noqa: BLE001
+                pass
 
     def submit_text_command(self, event=None):  # noqa: ANN001
         """Stage 8.10 — inject typed text as the next user utterance (no STT)."""
@@ -8168,19 +8223,71 @@ class DonnaGUI(ctk.CTk):
             pass
 
     def _build_perception_tab(self, tab) -> None:  # noqa: ANN001
-        """Screen capture ROI preview + hybrid UIA / vision status."""
+        """2-column Perception: ROI preview | vision status + UIA tree."""
         try:
             tab.configure(fg_color=_UI_CANVAS)
         except Exception:  # noqa: BLE001
             pass
 
-        status_card = self._make_card(tab, title="Vision status", expand=False)
+        grid = ctk.CTkFrame(tab, fg_color="transparent")
+        grid.pack(fill="both", expand=True, padx=8, pady=8)
+        grid.grid_columnconfigure(0, weight=1, uniform="perc")
+        grid.grid_columnconfigure(1, weight=1, uniform="perc")
+        grid.grid_rowconfigure(0, weight=1)
+
+        left = ctk.CTkFrame(grid, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="nsew", padx=(4, 6), pady=4)
+        right = ctk.CTkFrame(grid, fg_color="transparent")
+        right.grid(row=0, column=1, sticky="nsew", padx=(6, 4), pady=4)
+
+        # Left 50% — ROI / screen preview + grounding overlays
+        roi_card = self._make_card(left, title="ROI / screen preview", padx=4, pady=(0, 0))
+        self._roi_preview_lbl = ctk.CTkLabel(
+            roi_card,
+            text="No ROI captured yet. Grounding hits appear here.",
+            anchor="w",
+            text_color=_UI_MUTED,
+            wraplength=360,
+            justify="left",
+        )
+        self._roi_preview_lbl.pack(fill="x", pady=(0, 8))
+        self._roi_overlay_lbl = ctk.CTkLabel(
+            roi_card,
+            text="Grounding overlays: standby",
+            anchor="w",
+            text_color=_UI_MUTED,
+            font=ctk.CTkFont(size=11),
+            wraplength=360,
+            justify="left",
+        )
+        self._roi_overlay_lbl.pack(fill="x", pady=(0, 8))
+        # Placeholder preview surface
+        self._roi_canvas = ctk.CTkFrame(
+            roi_card,
+            fg_color=_UI_CANVAS,
+            corner_radius=12,
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+            height=220,
+        )
+        self._roi_canvas.pack(fill="both", expand=True, pady=(0, 4))
+        ctk.CTkLabel(
+            self._roi_canvas,
+            text="Screen / ROI preview",
+            text_color=_UI_MUTED,
+            font=ctk.CTkFont(size=12),
+        ).pack(expand=True, pady=40)
+
+        # Right 50% — vision status + scrollable UIA tree
+        status_card = self._make_card(
+            right, title="Vision status", padx=4, pady=(0, 8), expand=False
+        )
         self._vision_status_lbl = ctk.CTkLabel(
             status_card,
             text="Hybrid grounding: idle · ROI overlay: standby",
             anchor="w",
             text_color=_UI_MUTED,
-            wraplength=640,
+            wraplength=360,
             justify="left",
         )
         self._vision_status_lbl.pack(fill="x", pady=(0, 8))
@@ -8189,8 +8296,8 @@ class DonnaGUI(ctk.CTk):
         ctk.CTkButton(
             btn_row,
             text="Refresh status",
-            width=130,
-            height=30,
+            width=120,
+            height=28,
             corner_radius=999,
             fg_color=_UI_GHOST,
             hover_color="#475569",
@@ -8199,31 +8306,21 @@ class DonnaGUI(ctk.CTk):
         ctk.CTkButton(
             btn_row,
             text="Inspect UIA tree",
-            width=140,
-            height=30,
+            width=130,
+            height=28,
             corner_radius=999,
             fg_color=_UI_ACCENT,
             hover_color=_UI_ACCENT_HOVER,
             command=self._inspect_uia_tree,
-        ).pack(side="left")
+        ).pack(side="right")
 
-        roi_card = self._make_card(tab, title="ROI preview", expand=False)
-        self._roi_preview_lbl = ctk.CTkLabel(
-            roi_card,
-            text="No ROI captured yet. Grounding hits appear here.",
-            anchor="w",
-            text_color=_UI_MUTED,
-            wraplength=640,
-            justify="left",
-        )
-        self._roi_preview_lbl.pack(fill="x", pady=(0, 4))
-
-        tree_card = self._make_card(tab, title="Win32 UIA tree", expand=True)
+        tree_card = self._make_card(right, title="Win32 UIA tree", padx=4, pady=(0, 0))
         self._uia_tree_box = ctk.CTkTextbox(
             tree_card,
-            wrap="word",
+            wrap="none",
             font=ctk.CTkFont(family="Consolas", size=11),
             fg_color=_UI_CANVAS,
+            text_color=_UI_TEXT,
             corner_radius=12,
             border_width=0,
         )
@@ -8241,6 +8338,7 @@ class DonnaGUI(ctk.CTk):
 
     def _refresh_perception_status(self) -> None:
         bits: list[str] = []
+        overlay_txt = "Grounding overlays: standby"
         try:
             from dana.graph.nodes.vision import get_hybrid_grounding
 
@@ -8258,6 +8356,10 @@ class DonnaGUI(ctk.CTk):
                 f"ROI overlay: {'visible' if visible else 'standby'}"
                 + (f" @ {current}" if current else "")
             )
+            overlay_txt = (
+                f"Grounding overlays: {'visible' if visible else 'standby'}"
+                + (f" @ {current}" if current else "")
+            )
             roi_lbl = getattr(self, "_roi_preview_lbl", None)
             if roi_lbl is not None:
                 if current:
@@ -8272,12 +8374,54 @@ class DonnaGUI(ctk.CTk):
                     )
         except Exception as exc:  # noqa: BLE001
             bits.append(f"ROI overlay: unavailable ({type(exc).__name__})")
+            overlay_txt = f"Grounding overlays: unavailable ({type(exc).__name__})"
         lbl = getattr(self, "_vision_status_lbl", None)
         if lbl is not None:
             try:
                 lbl.configure(text=" · ".join(bits) if bits else "Vision idle")
             except Exception:  # noqa: BLE001
                 pass
+        ol = getattr(self, "_roi_overlay_lbl", None)
+        if ol is not None:
+            try:
+                ol.configure(text=overlay_txt)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _format_uia_tree_text(self, raw: Any) -> str:
+        """Indent UIA dump lines for readability."""
+        if isinstance(raw, (list, tuple)):
+            lines: list[str] = []
+            for item in list(raw)[:120]:
+                s = str(item)
+                # Heuristic depth from leading spaces / pipe / depth keys.
+                if isinstance(item, dict):
+                    depth = int(item.get("depth") or item.get("level") or 0)
+                    name = (
+                        item.get("name")
+                        or item.get("control_type")
+                        or item.get("AutomationId")
+                        or s
+                    )
+                    lines.append(("  " * max(0, depth)) + str(name))
+                else:
+                    stripped = s.lstrip()
+                    lead = len(s) - len(stripped)
+                    depth = lead // 2 if lead else 0
+                    # Nested markers like "└─" / "|-" keep as-is; else indent.
+                    if stripped.startswith(("└", "├", "|", "+", "-")):
+                        lines.append(s)
+                    else:
+                        lines.append(("  " * depth) + stripped)
+            return "\n".join(lines) or "(no controls)"
+        text = str(raw)
+        out: list[str] = []
+        for line in text.splitlines():
+            stripped = line.lstrip(" \t")
+            lead = len(line) - len(stripped)
+            indent = "  " * (lead // 2) if lead else ""
+            out.append(indent + stripped if lead else line)
+        return "\n".join(out) if out else text
 
     def _inspect_uia_tree(self) -> None:
         box = getattr(self, "_uia_tree_box", None)
@@ -8295,13 +8439,7 @@ class DonnaGUI(ctk.CTk):
                 )
                 if callable(dump):
                     result = dump()
-                    if isinstance(result, (list, tuple)):
-                        lines = []
-                        for item in list(result)[:80]:
-                            lines.append(str(item))
-                        text = "\n".join(lines) or "(no controls)"
-                    else:
-                        text = str(result)
+                    text = self._format_uia_tree_text(result)
                 else:
                     # Best-effort: probe find_element path existence.
                     text = (
@@ -8329,43 +8467,117 @@ class DonnaGUI(ctk.CTk):
 
         threading.Thread(target=_worker, name="UIAInspect", daemon=True).start()
 
+    def _build_memory_settings_grid(self, tab) -> None:  # noqa: ANN001
+        """2-column Memory & Settings cards: Updates/Dictation | Memory/Log."""
+        grid = ctk.CTkFrame(tab, fg_color="transparent")
+        grid.pack(fill="both", expand=True, padx=4, pady=(8, 4))
+        grid.grid_columnconfigure(0, weight=1, uniform="mem")
+        grid.grid_columnconfigure(1, weight=1, uniform="mem")
+
+        left = ctk.CTkFrame(grid, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="nsew", padx=(4, 6), pady=4)
+        right = ctk.CTkFrame(grid, fg_color="transparent")
+        right.grid(row=0, column=1, sticky="nsew", padx=(6, 4), pady=4)
+
+        self._build_system_updates_card(left)
+        self._build_dictation_tab(left)
+        self._build_episodic_memory_section(right)
+        self._build_system_log_section(right)
+
+    def _build_system_updates_card(self, tab) -> None:  # noqa: ANN001
+        """Stage 9.3 — System Updates card (left column)."""
+        updates = self._make_card(
+            tab, title="System Updates", padx=4, pady=(0, 8), expand=False
+        )
+        ctk.CTkLabel(
+            updates,
+            text=(
+                "Fetch from GitHub, compare revisions, then update dependencies "
+                "and restart Dānā in one click."
+            ),
+            anchor="w",
+            justify="left",
+            wraplength=360,
+            text_color=_UI_MUTED,
+        ).pack(fill="x", pady=(0, 8))
+        self._update_status_lbl = ctk.CTkLabel(
+            updates,
+            text="Status: idle",
+            anchor="w",
+            text_color=_UI_MUTED,
+            font=ctk.CTkFont(size=12),
+        )
+        self._update_status_lbl.pack(fill="x", pady=(0, 8))
+        btn_row = ctk.CTkFrame(updates, fg_color="transparent")
+        btn_row.pack(fill="x", side="bottom")
+        self._update_check_btn = ctk.CTkButton(
+            btn_row,
+            text="Check for Updates",
+            width=150,
+            height=30,
+            corner_radius=999,
+            fg_color=_UI_GHOST,
+            hover_color="#475569",
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+            text_color=_UI_TEXT,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._on_check_for_updates,
+        )
+        self._update_check_btn.pack(side="right", padx=(8, 0))
+        self._update_apply_btn = ctk.CTkButton(
+            btn_row,
+            text="Update & Restart",
+            width=150,
+            height=30,
+            corner_radius=999,
+            fg_color=_UI_AMBER,
+            hover_color="#D97706",
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._on_apply_update_and_restart,
+        )
+        # Hidden until check_for_updates() reports True.
+
     def _build_episodic_memory_section(self, tab) -> None:  # noqa: ANN001
         """Episodic memory keyword search (SQLite store)."""
-        card = self._make_card(tab, title="Episodic memory", expand=False)
-        row = ctk.CTkFrame(card, fg_color="transparent")
-        row.pack(fill="x", pady=(0, 8))
+        card = self._make_card(tab, title="Episodic Memory", padx=4, pady=(0, 8), expand=False)
         self._memory_query = ctk.CTkEntry(
-            row,
+            card,
             placeholder_text="Search preferences & facts…",
             height=32,
             corner_radius=8,
             fg_color=_UI_GHOST,
             border_width=1,
             border_color=_UI_CARD_BORDER,
+            text_color=_UI_TEXT,
         )
-        self._memory_query.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self._memory_query.pack(fill="x", pady=(0, 8))
         self._memory_query.bind("<Return>", lambda _e: self._run_episodic_search())
-        ctk.CTkButton(
-            row,
-            text="Search",
-            width=88,
-            height=32,
-            corner_radius=999,
-            fg_color=_UI_ACCENT,
-            hover_color=_UI_ACCENT_HOVER,
-            command=self._run_episodic_search,
-        ).pack(side="right")
         self._memory_results = ctk.CTkTextbox(
             card,
             wrap="word",
             height=140,
             font=ctk.CTkFont(family="Consolas", size=11),
             fg_color=_UI_CANVAS,
+            text_color=_UI_TEXT,
             corner_radius=10,
         )
-        self._memory_results.pack(fill="x")
+        self._memory_results.pack(fill="x", pady=(0, 8))
         self._memory_results.insert("1.0", "(enter a query to search episodic memory)\n")
         self._memory_results.configure(state="disabled")
+        actions = ctk.CTkFrame(card, fg_color="transparent")
+        actions.pack(fill="x")
+        ctk.CTkButton(
+            actions,
+            text="Search",
+            width=88,
+            height=30,
+            corner_radius=999,
+            fg_color=_UI_ACCENT,
+            hover_color=_UI_ACCENT_HOVER,
+            command=self._run_episodic_search,
+        ).pack(side="right")
 
     def _run_episodic_search(self) -> None:
         box = getattr(self, "_memory_results", None)
@@ -8399,11 +8611,23 @@ class DonnaGUI(ctk.CTk):
 
     def _build_system_log_section(self, tab) -> None:  # noqa: ANN001
         """Tail viewer for dana_runtime.log."""
-        card = self._make_card(tab, title="System log", expand=False)
-        row = ctk.CTkFrame(card, fg_color="transparent")
-        row.pack(fill="x", pady=(0, 8))
+        card = self._make_card(tab, title="System Log", padx=4, pady=(0, 8), expand=False)
+        self._system_log_box = ctk.CTkTextbox(
+            card,
+            wrap="word",
+            height=160,
+            font=ctk.CTkFont(family="Consolas", size=11),
+            fg_color=_UI_CANVAS,
+            text_color=_UI_TEXT,
+            corner_radius=10,
+        )
+        self._system_log_box.pack(fill="x", pady=(0, 8))
+        self._system_log_box.insert("1.0", "(log empty — click Refresh)\n")
+        self._system_log_box.configure(state="disabled")
+        actions = ctk.CTkFrame(card, fg_color="transparent")
+        actions.pack(fill="x")
         ctk.CTkButton(
-            row,
+            actions,
             text="Refresh log",
             width=110,
             height=30,
@@ -8411,18 +8635,7 @@ class DonnaGUI(ctk.CTk):
             fg_color=_UI_GHOST,
             hover_color="#475569",
             command=self._refresh_system_log,
-        ).pack(side="left")
-        self._system_log_box = ctk.CTkTextbox(
-            card,
-            wrap="word",
-            height=160,
-            font=ctk.CTkFont(family="Consolas", size=11),
-            fg_color=_UI_CANVAS,
-            corner_radius=10,
-        )
-        self._system_log_box.pack(fill="x")
-        self._system_log_box.insert("1.0", "(log empty — click Refresh)\n")
-        self._system_log_box.configure(state="disabled")
+        ).pack(side="right")
         try:
             self.after(800, self._refresh_system_log)
         except Exception:  # noqa: BLE001
@@ -8492,7 +8705,7 @@ class DonnaGUI(ctk.CTk):
             justify="left",
             wraplength=320,
             font=ctk.CTkFont(size=16, weight="bold"),
-            text_color="#00E676",
+            text_color=_UI_EMERALD,
         )
         self._settings_wake_lbl.pack(fill="x", pady=(0, 12))
         try:
@@ -8558,7 +8771,7 @@ class DonnaGUI(ctk.CTk):
             hover_color=_UI_ACCENT_HOVER,
             height=32,
         )
-        self.save_btn.pack(anchor="w", pady=(4, 8))
+        self.save_btn.pack(anchor="e", pady=(4, 8))
         self.apply_note = ctk.CTkLabel(
             audio_card,
             text="",
@@ -8568,61 +8781,6 @@ class DonnaGUI(ctk.CTk):
             justify="left",
         )
         self.apply_note.pack(fill="x", pady=(4, 0))
-
-        # Stage 9.3 — System Updates (git fetch / pull + pip + restart).
-        updates = self._make_card(
-            tab, title="System Updates", padx=8, pady=(10, 8), expand=False
-        )
-        ctk.CTkLabel(
-            updates,
-            text=(
-                "Fetch from GitHub, compare revisions, then update dependencies "
-                "and restart Dānā in one click."
-            ),
-            anchor="w",
-            justify="left",
-            wraplength=720,
-            text_color=_UI_MUTED,
-        ).pack(fill="x", pady=(0, 8))
-        self._update_status_lbl = ctk.CTkLabel(
-            updates,
-            text="Status: idle",
-            anchor="w",
-            text_color=_UI_MUTED,
-            font=ctk.CTkFont(size=12),
-        )
-        self._update_status_lbl.pack(fill="x", pady=(0, 8))
-        btn_row = ctk.CTkFrame(updates, fg_color="transparent")
-        btn_row.pack(fill="x")
-        self._update_check_btn = ctk.CTkButton(
-            btn_row,
-            text="Check for Updates",
-            width=160,
-            height=32,
-            corner_radius=999,
-            fg_color=_UI_GHOST,
-            hover_color="#34344A",
-            border_width=1,
-            border_color=_UI_CARD_BORDER,
-            text_color="#E5E7EB",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            command=self._on_check_for_updates,
-        )
-        self._update_check_btn.pack(side="left", padx=(0, 8))
-        self._update_apply_btn = ctk.CTkButton(
-            btn_row,
-            text="Update & Restart Dānā",
-            width=190,
-            height=32,
-            corner_radius=999,
-            fg_color="#FB8C00",
-            hover_color="#EF6C00",
-            text_color="#FFFFFF",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            command=self._on_apply_update_and_restart,
-        )
-        # Hidden until check_for_updates() reports True.
-        # (pack later via _set_update_available)
 
     def _set_update_status(self, text: str, *, color: str | None = None) -> None:
         lbl = self._update_status_lbl
@@ -8643,7 +8801,11 @@ class DonnaGUI(ctk.CTk):
         try:
             if available:
                 if not btn.winfo_ismapped():
-                    btn.pack(side="left", padx=(0, 8))
+                    check = self._update_check_btn
+                    if check is not None and check.winfo_ismapped():
+                        btn.pack(side="right", padx=(0, 8), before=check)
+                    else:
+                        btn.pack(side="right", padx=(0, 8))
             else:
                 btn.pack_forget()
         except Exception:  # noqa: BLE001
@@ -8781,7 +8943,7 @@ class DonnaGUI(ctk.CTk):
         """Return True when engine is ACTIVE; else flash warning and return False."""
         if self.engine_active and is_engine_engaged():
             return True
-        self._select_tab("Dashboard")
+        self._select_tab("Assistant & Tasks")
         self._flash_engine_warning("Please Engage Engine First.")
         return False
 
@@ -8817,12 +8979,12 @@ class DonnaGUI(ctk.CTk):
                 if active:
                     status.configure(
                         text="Status: ACTIVE (Variables Locked)",
-                        text_color="#66BB6A",
+                        text_color=_UI_EMERALD,
                     )
                 else:
                     status.configure(
                         text="Status: STANDBY (Variables Unlocked)",
-                        text_color="#A1887F",
+                        text_color=_UI_MUTED,
                     )
             except Exception:  # noqa: BLE001
                 pass
@@ -8970,29 +9132,30 @@ class DonnaGUI(ctk.CTk):
         if tk_text is None:
             return
         try:
+            # Readable slate palette — no electric cyan / neon green.
             tk_text.tag_configure(
                 "jason",
-                foreground="#9c27b0",
+                foreground="#C084FC",
                 font=("Segoe UI", 14, "bold"),
             )
             tk_text.tag_configure(
                 "llama",
-                foreground="#0288d1",
+                foreground=_UI_TEXT,
                 font=("Segoe UI", 14),
             )
             tk_text.tag_configure(
                 "deepseek",
-                foreground="#d32f2f",
+                foreground=_UI_ROSE,
                 font=("Courier New", 10),
             )
             tk_text.tag_configure(
                 "vision",
-                foreground="#388e3c",
+                foreground=_UI_EMERALD,
                 font=("Segoe UI", 14),
             )
             tk_text.tag_configure(
                 "typist",
-                foreground="#f57c00",
+                foreground=_UI_AMBER,
                 font=("Segoe UI", 14, "italic"),
             )
             # Stage 8.10 — silent Dashboard text (distinct from Whisper).
@@ -9004,7 +9167,7 @@ class DonnaGUI(ctk.CTk):
             # Theme-safe default when no agent_id is provided.
             tk_text.tag_configure(
                 "default",
-                foreground="#E5E7EB",
+                foreground=_UI_TEXT,
                 font=("Segoe UI", 14),
             )
         except Exception as exc:  # noqa: BLE001
@@ -9073,7 +9236,7 @@ class DonnaGUI(ctk.CTk):
             pass
 
         control_card = self._make_card(
-            tab, title="Dictation Latch", pady=(10, 8), expand=False
+            tab, title="Dictation Latch", padx=4, pady=(0, 8), expand=False
         )
         ctk.CTkLabel(
             control_card,
@@ -9083,24 +9246,24 @@ class DonnaGUI(ctk.CTk):
             ),
             anchor="w",
             text_color=_UI_MUTED,
-            wraplength=640,
+            wraplength=360,
             justify="left",
         ).pack(fill="x", pady=(0, 12))
 
         controls = ctk.CTkFrame(control_card, fg_color="transparent")
         controls.pack(fill="x", pady=(0, 4))
-        # Unified pill toggle — OFF: dim gray + red pill; ON: accent glow + DICTATING.
+        # Unified pill toggle — OFF: dim gray + rose pill; ON: accent glow + DICTATING.
         self.dictation_btn = ctk.CTkButton(
             controls,
             text="  ●  OFF  ",
-            width=168,
-            height=40,
+            width=140,
+            height=36,
             corner_radius=999,
             fg_color=_UI_GHOST,
-            hover_color="#34344A",
+            hover_color="#475569",
             border_width=1,
             border_color=_UI_CARD_BORDER,
-            text_color="#F87171",
+            text_color=_UI_ROSE,
             font=ctk.CTkFont(size=13, weight="bold"),
             command=self._toggle_dictation_mode,
         )
@@ -9111,35 +9274,40 @@ class DonnaGUI(ctk.CTk):
             controls,
             text="● OFF",
             anchor="w",
-            text_color="#F87171",
+            text_color=_UI_ROSE,
             font=ctk.CTkFont(size=12, weight="bold"),
             fg_color=_UI_CANVAS,
             corner_radius=999,
             padx=10,
             pady=4,
         )
+        actions = ctk.CTkFrame(control_card, fg_color="transparent")
+        actions.pack(fill="x", pady=(8, 0))
         ctk.CTkButton(
-            controls,
+            actions,
             text="Refresh",
             width=88,
             height=30,
             corner_radius=999,
-            fg_color=_UI_CANVAS,
-            hover_color="#34344A",
+            fg_color=_UI_GHOST,
+            hover_color="#475569",
             border_width=1,
             border_color=_UI_CARD_BORDER,
-            text_color="#D1D5DB",
+            text_color=_UI_TEXT,
             font=ctk.CTkFont(size=11),
             command=self.refresh_dictation_sessions,
         ).pack(side="right")
 
-        sessions_card = self._make_card(tab, title="Recent sessions", pady=(4, 10))
+        sessions_card = self._make_card(
+            tab, title="Recent sessions", padx=4, pady=(4, 8), expand=False
+        )
         self.dictation_list = ctk.CTkTextbox(
             sessions_card,
             wrap="word",
             font=ctk.CTkFont(family="Consolas", size=12),
-            height=280,
+            height=180,
             fg_color=_UI_CANVAS,
+            text_color=_UI_TEXT,
             corner_radius=12,
             border_width=0,
         )
@@ -9288,28 +9456,28 @@ class DonnaGUI(ctk.CTk):
             if self._dictation_active:
                 self.dictation_btn.configure(
                     text="  ●  DICTATING  ",
-                    fg_color="#388e3c",
-                    hover_color="#2E7D32",
-                    border_color="#66BB6A",
-                    text_color="#E8F5E9",
+                    fg_color=_UI_EMERALD,
+                    hover_color="#059669",
+                    border_color=_UI_EMERALD,
+                    text_color="#ECFDF5",
                 )
                 if self.dictation_status is not None:
                     self.dictation_status.configure(
                         text="● DICTATING",
-                        text_color="#66BB6A",
+                        text_color=_UI_EMERALD,
                     )
             else:
                 self.dictation_btn.configure(
                     text="  ●  OFF  ",
                     fg_color=_UI_GHOST,
-                    hover_color="#34344A",
+                    hover_color="#475569",
                     border_color=_UI_CARD_BORDER,
-                    text_color="#F87171",
+                    text_color=_UI_ROSE,
                 )
                 if self.dictation_status is not None:
                     self.dictation_status.configure(
                         text="● OFF",
-                        text_color="#F87171",
+                        text_color=_UI_ROSE,
                     )
         except Exception:  # noqa: BLE001
             pass
@@ -9509,7 +9677,7 @@ class DonnaGUI(ctk.CTk):
         *,
         agent_id: str | None = None,
     ) -> None:
-        """Append a speaker line to Live Transcript (Tk thread; persona tags)."""
+        """Append a speaker line to Conversation (bubbles + mirror textbox)."""
         line = f"[{speaker}] {text}\n\n"
         tag = self._persona_tag_for_agent(agent_id, speaker=speaker)
 
@@ -9517,18 +9685,36 @@ class DonnaGUI(ctk.CTk):
             try:
                 if not self.winfo_exists():
                     return
-                self.transcript_box.configure(state="normal")
-                # Prefer tagged insert on underlying Text; fall back to CTk API.
-                tk_text = self._transcript_tk()
-                if tk_text is not None:
-                    tk_text.insert("end", line, (tag,))
-                else:
+                box = getattr(self, "transcript_box", None)
+                if box is not None:
+                    box.configure(state="normal")
+                    # Prefer tagged insert on underlying Text; fall back to CTk API.
+                    tk_text = self._transcript_tk()
+                    if tk_text is not None:
+                        tk_text.insert("end", line, (tag,))
+                    else:
+                        try:
+                            box.insert("end", line, tag)
+                        except TypeError:
+                            box.insert("end", line)
                     try:
-                        self.transcript_box.insert("end", line, tag)
-                    except TypeError:
-                        self.transcript_box.insert("end", line)
-                self.transcript_box.see("end")
-                self.transcript_box.configure(state="disabled")
+                        box.see("end")
+                    except Exception:  # noqa: BLE001
+                        pass
+                    box.configure(state="disabled")
+                chat = getattr(self, "_chat_view", None)
+                if chat is not None:
+                    try:
+                        from dana.ui.chat_view import _classify_role
+
+                        role = _classify_role(speaker, agent_id)
+                        if tag == "vision":
+                            role = "system"
+                        chat.append_bubble(
+                            speaker, text, agent_id=agent_id, role=role
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
             except Exception:
                 pass
 
@@ -9756,7 +9942,7 @@ class DonnaGUI(ctk.CTk):
                 btn.configure(
                     text="TERMINATING...",
                     state="disabled",
-                    fg_color="#b71c1c",
+                    fg_color=_UI_ROSE_HOVER,
                 )
         except Exception:  # noqa: BLE001
             pass
@@ -9771,9 +9957,9 @@ class DonnaGUI(ctk.CTk):
                 try:
                     if btn is not None:
                         btn.configure(
-                            text="STOP DONNA",
+                            text="STOP DANA",
                             state="normal",
-                            fg_color="#d32f2f",
+                            fg_color=_UI_ROSE,
                         )
                 except Exception:  # noqa: BLE001
                     pass

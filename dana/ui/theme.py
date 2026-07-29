@@ -1,0 +1,60 @@
+"""Shared dark-slate design tokens for Dana CustomTkinter surfaces."""
+
+from __future__ import annotations
+
+# Canvas / surfaces
+BG = "#0F172A"
+CARD = "#1E293B"
+BORDER = "#334155"
+GHOST = "#334155"
+
+# Text
+TEXT = "#F8FAFC"
+TEXT_SECONDARY = "#94A3B8"
+TEXT_ON_ACCENT = "#0F172A"
+MUTED = TEXT_SECONDARY
+
+# Accents
+ACCENT = "#0EA5E9"  # sky — primary
+ACCENT_HOVER = "#0284C7"
+EMERALD = "#10B981"  # active / success
+EMERALD_HOVER = "#059669"
+ROSE = "#F43F5E"  # stop / alert
+ROSE_HOVER = "#E11D48"
+AMBER = "#F59E0B"
+
+# Chat bubbles
+BUBBLE_USER = "#0EA5E9"
+BUBBLE_USER_TEXT = "#F8FAFC"
+BUBBLE_DANA = "#1E293B"
+BUBBLE_DANA_BORDER = "#334155"
+BUBBLE_SYSTEM = "#334155"
+
+# Compat aliases used by core_agent / views
+CANVAS = BG
+CARD_BORDER = BORDER
+
+__all__ = (
+    "BG",
+    "CARD",
+    "BORDER",
+    "GHOST",
+    "TEXT",
+    "TEXT_SECONDARY",
+    "TEXT_ON_ACCENT",
+    "MUTED",
+    "ACCENT",
+    "ACCENT_HOVER",
+    "EMERALD",
+    "EMERALD_HOVER",
+    "ROSE",
+    "ROSE_HOVER",
+    "AMBER",
+    "BUBBLE_USER",
+    "BUBBLE_USER_TEXT",
+    "BUBBLE_DANA",
+    "BUBBLE_DANA_BORDER",
+    "BUBBLE_SYSTEM",
+    "CANVAS",
+    "CARD_BORDER",
+)
