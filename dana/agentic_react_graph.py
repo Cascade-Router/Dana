@@ -1029,9 +1029,9 @@ async def run_react_langgraph(
         active_intent=active_intent,
     )
     # Task lifecycle tracker (dropped / timeout → FAILED, never silent ghost).
-    from dana.graph.task_tracker import TaskStatus, TaskTracker
+    from dana.graph.task_tracker import TaskStatus, get_shared_task_tracker
 
-    _task_tracker = TaskTracker()
+    _task_tracker = get_shared_task_tracker()
     _task_tracker.start_task(session_id, user_text or "")
     _task_tracker.update_status(session_id, TaskStatus.IN_PROGRESS)
     # Stage 4.3 — piggyback unread actuator completions into this turn's prompt.

@@ -1,12 +1,12 @@
-"""Donna logging: light runtime log + clean latest conversation log.
+"""Dana logging: light runtime log + clean latest conversation log.
 
-Runtime (``CAMGRASPER/logs/donna_runtime.log``):
+Runtime (``CAMGRASPER/logs/dana_runtime.log``):
   - Circular last-100-lines buffer across the process life.
   - ``log()`` / ``log_debug()`` — debug is silenced unless ``DONNA_DEBUG=1``.
 
-Conversation (``CAMGRASPER/logs/donna_conversation.log``):
+Conversation (``CAMGRASPER/logs/dana_conversation.log``):
   - Truncated (cleared) on every new agent run.
-  - User ↔ Donna turns only — no Tracker / wake / mic / YOLO noise.
+  - User ↔ Dana turns only — no Tracker / wake / mic / YOLO noise.
 """
 
 from __future__ import annotations
@@ -27,8 +27,11 @@ _PROJECT_DIR = str(PROJECT_ROOT)
 # Any import of dana.logging (hot path) hardens pythonw stdio immediately.
 ensure_stdio()
 RUNTIME_LOG_DIR = str(LOGS_DIR)
-RUNTIME_LOG_PATH = str(LOGS_DIR / "donna_runtime.log")
-CONVERSATION_LOG_PATH = str(LOGS_DIR / "donna_conversation.log")
+RUNTIME_LOG_PATH = str(LOGS_DIR / "dana_runtime.log")
+CONVERSATION_LOG_PATH = str(LOGS_DIR / "dana_conversation.log")
+# Legacy filenames — migrated on first enable when still present.
+_LEGACY_RUNTIME_LOG = str(LOGS_DIR / "donna_runtime.log")
+_LEGACY_CONVERSATION_LOG = str(LOGS_DIR / "donna_conversation.log")
 # Keep enough headroom for multi-line ``log_exception`` stack traces.
 RUNTIME_LOG_MAX_LINES = 250
 
@@ -47,8 +50,19 @@ def _stamp() -> str:
     return time.strftime("%H:%M:%S")
 
 
+def _migrate_legacy_log(legacy: str, modern: str) -> None:
+    """Rename legacy donna_*.log → dana_*.log when the modern file is absent."""
+    try:
+        if os.path.isfile(modern) or not os.path.isfile(legacy):
+            return
+        os.makedirs(os.path.dirname(modern) or ".", exist_ok=True)
+        os.replace(legacy, modern)
+    except OSError:
+        pass
+
+
 def append_runtime_log(text: str) -> None:
-    """Append raw text to ``logs/donna_runtime.log`` (thread-safe, last 100 lines)."""
+    """Append raw text to ``logs/dana_runtime.log`` (thread-safe, last 100 lines)."""
     if not text:
         return
     try:
@@ -131,7 +145,7 @@ def log_exception(
     *,
     exc: Optional[BaseException] = None,
 ) -> None:
-    """Force a full Python stack trace into ``donna_runtime.log``.
+    """Force a full Python stack trace into ``dana_runtime.log``.
 
     Also calls ``logging.exception`` so stdlib handlers (if any) see the failure.
     Prefer calling from an ``except`` block so ``sys.exc_info()`` is populated.
@@ -172,11 +186,11 @@ def log_exception(
 
 
 def reset_conversation_log() -> str:
-    """Clear and recreate the latest Donna conversation log for this run."""
+    """Clear and recreate the latest Dana conversation log for this run."""
     os.makedirs(RUNTIME_LOG_DIR, exist_ok=True)
     header = (
-        f"===== Donna conversation session {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n"
-        "# Latest User ↔ Donna turns only (system noise excluded).\n"
+        f"===== Dana conversation session {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n"
+        "# Latest User ↔ Dana turns only (system noise excluded).\n"
     )
     with _conversation_log_lock:
         with open(
@@ -196,7 +210,9 @@ def log_conversation(role: str, text: str, *, extra: str = "") -> None:
     Does **not** write to the runtime log — call ``log()`` separately for essential
     console breadcrumbs if needed.
     """
-    role_s = (role or "Donna").strip() or "Donna"
+    role_s = (role or "Dana").strip() or "Dana"
+    if role_s.lower() == "donna":
+        role_s = "Dana"
     body = sanitize_log_message(str(text or "").strip())
     if not body:
         return
@@ -267,6 +283,8 @@ def enable_runtime_file_logging() -> str:
     global _runtime_log_tee_installed
     ensure_stdio()
     os.makedirs(RUNTIME_LOG_DIR, exist_ok=True)
+    _migrate_legacy_log(_LEGACY_RUNTIME_LOG, RUNTIME_LOG_PATH)
+    _migrate_legacy_log(_LEGACY_CONVERSATION_LOG, CONVERSATION_LOG_PATH)
     with _runtime_log_lock:
         _trim_runtime_log_to_last_lines(RUNTIME_LOG_PATH)
     reset_conversation_log()
@@ -277,6 +295,6 @@ def enable_runtime_file_logging() -> str:
             sys.stderr = _RuntimeLogTee(sys.stderr)  # type: ignore[assignment]
         _runtime_log_tee_installed = True
         append_runtime_log(
-            f"\n===== Donna runtime session {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n"
+            f"\n===== Dana runtime session {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n"
         )
     return RUNTIME_LOG_PATH

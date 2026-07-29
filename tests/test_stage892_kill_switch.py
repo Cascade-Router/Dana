@@ -1,4 +1,4 @@
-"""Stage 8.9.2 — STOP DONNA / KILL SWITCH launches stop_dana.vbs / stop_dana.bat."""
+"""Stage 8.9.2 — STOP DANA / KILL SWITCH launches stop_dana.vbs / stop_dana.bat."""
 
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ def test_stop_button_shows_terminating(monkeypatch: pytest.MonkeyPatch, tmp_path
 
     app = DonnaGUI()
     app.update_idletasks()
-    assert "STOP DONNA" in str(app.stop_donna_btn.cget("text"))
+    assert "STOP DANA" in str(app.stop_donna_btn.cget("text"))
     # Bypass after(80) — invoke the click handler then kill directly.
     app.stop_donna_btn.configure(text="TERMINATING...", state="disabled")
     app.update_idletasks()
@@ -102,7 +102,7 @@ def test_stop_button_shows_terminating(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 
 def test_live_trace_has_no_footer_kill_switch() -> None:
-    """Stage 8.9.8 — footer KILL SWITCH removed; header STOP DONNA is sole exit."""
+    """Stage 8.9.8 — footer KILL SWITCH removed; header STOP DANA is sole exit."""
     import customtkinter as ctk
 
     from dana.core_agent import DonnaGUI
@@ -119,6 +119,6 @@ def test_live_trace_has_no_footer_kill_switch() -> None:
     app = DonnaGUI()
     try:
         assert app.stop_donna_btn is not None
-        assert "STOP DONNA" in str(app.stop_donna_btn.cget("text"))
+        assert "STOP DANA" in str(app.stop_donna_btn.cget("text"))
     finally:
         app.destroy()

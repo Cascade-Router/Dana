@@ -15,11 +15,11 @@ from dana.ui.trace_bus import TraceEvent, get_trace_bus
 
 
 def _startup_log_path() -> str:
-    """Locate OS-level donna_startup.log written by login/startup launchers."""
+    """Locate OS-level dana_startup.log written by login/startup launchers."""
     system = platform.system()
     if system == "Windows":
-        return os.path.join(os.environ.get("TEMP", os.environ.get("TMP", ".")), "donna_startup.log")
-    return "/tmp/donna_startup.log"
+        return os.path.join(os.environ.get("TEMP", os.environ.get("TMP", ".")), "dana_startup.log")
+    return "/tmp/dana_startup.log"
 
 
 def _project_root() -> str:

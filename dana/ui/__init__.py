@@ -1,4 +1,4 @@
-"""Donna CustomTkinter UI package.
+"""Dana CustomTkinter UI package.
 
 Keep this module empty of backend imports. Submodules such as ``dana.ui.logo``
 must load without pulling ``dana.schema``, ``pydantic``, or ``langgraph``.

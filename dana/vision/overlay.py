@@ -116,7 +116,7 @@ class RoiOverlay:
             self._ready.set()
             return
         self._root = root
-        root.title("Donna ROI")
+        root.title("Dana ROI")
         root.overrideredirect(True)
         try:
             root.attributes("-topmost", True)

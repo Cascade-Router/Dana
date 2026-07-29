@@ -19,7 +19,13 @@ from dana.graph.subgraph_router import (
     resolve_subgraph_execution,
     route_subgraph_execution,
 )
-from dana.graph.task_tracker import TaskStatus, TaskTracker
+from dana.graph.task_tracker import (
+    TaskStatus,
+    TaskTracker,
+    get_shared_task_tracker,
+    humanize_activity,
+    set_shared_task_tracker,
+)
 
 __all__ = (
     "BUMP_SUBGRAPH_RETRY",
@@ -36,8 +42,11 @@ __all__ = (
     "compile_subgraph_retry_graph",
     "escalate_subgraph",
     "get_raw_trace",
+    "get_shared_task_tracker",
+    "humanize_activity",
     "resolve_subgraph_execution",
     "route_subgraph_execution",
+    "set_shared_task_tracker",
     "should_block_end",
     "store_raw_trace",
 )

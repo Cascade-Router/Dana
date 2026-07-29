@@ -12,9 +12,9 @@ from typing import Any
 # Preferred filenames under dana/ui/assets/ (first hit wins).
 _LOGO_CANDIDATES = (
     "dana_logo_highres.png",
-    "donna_logo_highres.png",
-    "donna_logo.png",
     "orb_logo.png",
+    "donna_logo_highres.png",  # legacy fallback
+    "donna_logo.png",  # legacy fallback
 )
 
 # Cached generators — key: (kind, width, height)

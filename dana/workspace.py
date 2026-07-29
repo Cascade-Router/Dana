@@ -213,7 +213,7 @@ Repo root is the runtime workspace (`DONNA_WORKSPACE == PROJECT_ROOT`).
 
 | Folder | Contents |
 |--------|----------|
-| `logs/` | `donna_runtime.log`, `donna_conversation.log` |
+| `logs/` | `dana_runtime.log`, `dana_conversation.log` |
 | `tracker/` | `bug_tracker.json`, `pending_patches/` |
 | `execution_jail/` | Filesystem jail (`task_queue.json`, `library/`, fixture copies). Not the Python package. |
 | `dana_security/` | Importable security package + `patch_ledger.md` |
@@ -480,9 +480,15 @@ def migrate_legacy_artifacts() -> dict[str, Any]:
 
     legacy_logs = PROJECT_ROOT / "logs"
 
-    for name in ("donna_runtime.log", "donna_conversation.log"):
+    for name in ("dana_runtime.log", "dana_conversation.log", "donna_runtime.log", "donna_conversation.log"):
 
-        if _safe_move_file(legacy_logs / name, LOGS_DIR / name):
+        if name.startswith("donna_"):
+            modern = name.replace("donna_", "dana_", 1)
+            if _safe_move_file(legacy_logs / name, LOGS_DIR / modern):
+                report["moved"].append(f"logs/{modern}")
+            elif _safe_move_file(LOGS_DIR / name, LOGS_DIR / modern):
+                report["moved"].append(f"logs/{modern}")
+        elif _safe_move_file(legacy_logs / name, LOGS_DIR / name):
 
             report["moved"].append(f"logs/{name}")
 

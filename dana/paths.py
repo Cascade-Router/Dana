@@ -118,7 +118,18 @@ EVALS_DIR: Path = PROJECT_ROOT / "dana" / "evals"
 
 EVAL_CASES_PATH: Path = EVALS_DIR / "test_cases.json"
 
-WAKEWORD_ONNX: Path = PROJECT_ROOT / "donna.onnx"
+# Preferred wake-word ONNX; ``resolve_wakeword_onnx`` falls back to legacy names.
+WAKEWORD_ONNX: Path = PROJECT_ROOT / "dana.onnx"
+WAKEWORD_ONNX_LEGACY: Path = PROJECT_ROOT / "donna.onnx"
+WAKEWORD_ONNX_ALT: Path = PROJECT_ROOT / "wake_word_model.onnx"
+
+
+def resolve_wakeword_onnx() -> Path:
+    """Return the first existing wake-word model path (dana → alt → legacy)."""
+    for candidate in (WAKEWORD_ONNX, WAKEWORD_ONNX_ALT, WAKEWORD_ONNX_LEGACY):
+        if candidate.is_file():
+            return candidate
+    return WAKEWORD_ONNX
 
 ENV_PATH: Path = PROJECT_ROOT / ".env"
 

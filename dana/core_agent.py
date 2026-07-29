@@ -164,6 +164,7 @@ from dana.paths import (
     WAKEWORD_ONNX,
     YOLO_WEIGHTS_PATH,
     chdir_project_root,
+    resolve_wakeword_onnx,
 )
 # TEXT_INJECTION_PATH kept for legacy migrate; ingestion uses task_queue.json.
 
@@ -226,14 +227,14 @@ _TRACE_MODE_COLORS: dict[str, str] = {
     "dictation": "#9C27B0",
 }
 _TRACE_IDLE_COLOR = "#9CA3AF"
-_UI_CANVAS = "#121218"
-_UI_CARD = "#1E1E2E"
-_UI_CARD_BORDER = "#2A2A3C"
-_UI_GHOST = "#2A2A3C"
-_UI_MUTED = "#9AA0A6"
-# Stage 8.9.8 — unified cybernetic accent (replaces default CTk blue).
-_UI_ACCENT = "#00ADB5"
-_UI_ACCENT_HOVER = "#008E95"
+_UI_CANVAS = "#0F172A"
+_UI_CARD = "#1E293B"
+_UI_CARD_BORDER = "#334155"
+_UI_GHOST = "#334155"
+_UI_MUTED = "#94A3B8"
+# Unified slate accent (sky-500).
+_UI_ACCENT = "#0EA5E9"
+_UI_ACCENT_HOVER = "#0284C7"
 # ASCII-only — emoji tofu glyphs rendered as broken purple boxes on Win fonts.
 _TRACE_STATUS_ICONS: dict[str, str] = {
     "active": "[~]",
@@ -2805,13 +2806,13 @@ def wakeword_worker() -> None:
     _nt_hide_console_if_mp_child()
     global AUDIO_INPUT_DEVICE, AUDIO_INPUT_RATE
 
-    # Prefer custom Donna model. If missing, temporarily use stock Alexa so we can
-    # live-debug the mic path (Donna model is not listening at all when absent).
+    # Prefer custom Dana wake model (dana.onnx), with legacy donna.onnx fallback.
     wake_token = "donna"
     model_paths: list[str]
-    if os.path.isfile(DONNA_WAKEWORD_ONNX):
-        model_paths = [DONNA_WAKEWORD_ONNX]
-        log("WakeWord", f"Loading OpenWakeWord model: {DONNA_WAKEWORD_ONNX}")
+    onnx_path = str(resolve_wakeword_onnx())
+    if os.path.isfile(onnx_path):
+        model_paths = [onnx_path]
+        log("WakeWord", f"Loading OpenWakeWord model: {onnx_path}")
         try:
             from openwakeword.utils import download_models
 
@@ -2821,14 +2822,14 @@ def wakeword_worker() -> None:
             log("WakeWord", f"WARNING: could not refresh OWW feature models ({exc})")
     else:
         print(
-            "[Warning] donna.onnx not found! Temporary Alexa wake-word enabled for "
-            "mic debugging. Say 'Alexa' (not Donna). Place donna.onnx in the project "
-            "root to switch back.",
+            "[Warning] dana.onnx / donna.onnx not found! Temporary Alexa wake-word "
+            "enabled for mic debugging. Say 'Alexa' (not Dana). Place dana.onnx "
+            "(or legacy donna.onnx) in the project root to switch back.",
             flush=True,
         )
         log(
             "WakeWord",
-            "WARNING: donna.onnx missing — temporary Alexa debug wake-word active.",
+            "WARNING: wake-word ONNX missing — temporary Alexa debug wake-word active.",
         )
         try:
             import openwakeword
@@ -2884,10 +2885,10 @@ def wakeword_worker() -> None:
     _shared_wakeword_model = oww
     _shared_wakeword_token = wake_token
     if wake_token == "donna":
-        print("Say 'Donna' to wake.", flush=True)
-        listen_msg = "Donna"
+        print("Say 'Dana' to wake.", flush=True)
+        listen_msg = "Dana"
     else:
-        print("DEBUG: Say 'Alexa' to wake (temporary until donna.onnx is added).", flush=True)
+        print("DEBUG: Say 'Alexa' to wake (temporary until dana.onnx is added).", flush=True)
         listen_msg = "Alexa (debug)"
     log(
         "WakeWord",
@@ -5407,7 +5408,7 @@ def conversation_worker(
 
     log(
         "Conversation",
-        f"Donna is ready (brain={OLLAMA_MODEL}). Say 'Donna' to wake — then ask "
+        f"Dana is ready (brain={OLLAMA_MODEL}). Say 'Dana' to wake — then ask "
         f"follow-ups without the wake word (~{FOLLOWUP_VAD_MAX_SECONDS:.0f}s silence -> Standing by).",
     )
 
@@ -5441,7 +5442,7 @@ def conversation_worker(
         if message:
             log("Conversation", f'Session end -> "{message}"')
             try:
-                emit_live_transcript("Donna", message)
+                emit_live_transcript("Dana", message)
             except Exception:  # noqa: BLE001
                 pass
             enqueue_speech(message)
@@ -5477,9 +5478,9 @@ def conversation_worker(
                 f"Chat memory cleared ({before} turn(s)); ack={ack!r}",
             )
             log_conversation("User", whisper_text or "")
-            log_conversation("Donna", ack)
+            log_conversation("Dana", ack)
             emit_live_transcript("User (Whisper)", whisper_text or "")
-            emit_live_transcript("Donna", ack)
+            emit_live_transcript("Dana", ack)
             enqueue_speech(ack)
             wait_for_speech_idle(timeout=8.0)
             set_subtitle("")
@@ -5522,8 +5523,8 @@ def conversation_worker(
                         gui_ref.after(0, gui_ref.refresh_dictation_sessions)
                 except Exception:  # noqa: BLE001
                     pass
-                log_conversation("Donna", ack)
-                emit_live_transcript("Donna", ack)
+                log_conversation("Dana", ack)
+                emit_live_transcript("Dana", ack)
                 enqueue_speech(ack, interruptible=False)
                 wait_for_speech_idle(timeout=8.0)
                 set_subtitle("")
@@ -5547,9 +5548,9 @@ def conversation_worker(
             except Exception:  # noqa: BLE001
                 pass
             log_conversation("User", whisper_text or "")
-            log_conversation("Donna", ack)
+            log_conversation("Dana", ack)
             emit_live_transcript("User (Whisper)", whisper_text or "")
-            emit_live_transcript("Donna", ack)
+            emit_live_transcript("Dana", ack)
             enqueue_speech(ack, interruptible=False)
             wait_for_speech_idle(timeout=8.0)
             set_subtitle("")
@@ -5736,8 +5737,8 @@ def conversation_worker(
             if not ollama_service_reachable():
                 answer = OLLAMA_UNREACHABLE_SPEECH
                 log("Conversation", f'Dānā: "{answer}"')
-                log_conversation("Donna", answer)
-                emit_live_transcript("Donna", answer)
+                log_conversation("Dana", answer)
+                emit_live_transcript("Dana", answer)
                 enqueue_speech(answer)
                 wait_for_speech_idle(timeout=30.0)
                 time.sleep(0.15)
@@ -5887,8 +5888,8 @@ def conversation_worker(
             f"Ollama {brain_ms:.0f} ms | turn {latency_ms:.0f} ms",
         )
         log("Conversation", f'Dānā: "{answer}"')
-        log_conversation("Donna", answer or "", extra=f"{latency_ms:.0f} ms")
-        emit_live_transcript("Donna", answer)
+        log_conversation("Dana", answer or "", extra=f"{latency_ms:.0f} ms")
+        emit_live_transcript("Dana", answer)
         SPATIAL_AGGREGATOR.update_transcript(assistant=answer)
 
         # Prefer live astream TTS; skip duplicate final enqueue when already spoken.
@@ -5942,14 +5943,14 @@ def conversation_worker(
                 set_subtitle(f'User (Queue): "{command}"')
                 emit_live_transcript("User (TaskQueue)", command)
                 if is_standby_command(command):
-                    emit_live_transcript("Donna", "Standing by.")
+                    emit_live_transcript("Dana", "Standing by.")
                     enqueue_speech("Standing by.", interruptible=False)
                     wait_for_speech_idle(timeout=8.0)
                     return
                 if is_clear_context_command(command):
                     flush_conversation_memory(reason="task_queue")
                     reply = clear_context_spoken_reply(command)
-                    emit_live_transcript("Donna", reply)
+                    emit_live_transcript("Dana", reply)
                     enqueue_speech(reply)
                     wait_for_speech_idle(timeout=8.0)
                     return
@@ -5958,7 +5959,7 @@ def conversation_worker(
                     return
                 if is_time_command(command):
                     reply = wall_clock_spoken_reply()
-                    emit_live_transcript("Donna", reply)
+                    emit_live_transcript("Dana", reply)
                     enqueue_speech(reply)
                     wait_for_speech_idle(timeout=8.0)
                     return
@@ -6055,8 +6056,8 @@ def conversation_worker(
                     log_conversation("User", whisper_text)
                     flush_conversation_memory(reason="voice_command")
                     reply = clear_context_spoken_reply(whisper_text)
-                    log_conversation("Donna", reply)
-                    emit_live_transcript("Donna", reply)
+                    log_conversation("Dana", reply)
+                    emit_live_transcript("Dana", reply)
                     enqueue_speech(reply)
                     wait_for_speech_idle(timeout=8.0)
                     follow_up = True
@@ -6069,7 +6070,7 @@ def conversation_worker(
                     reply = wall_clock_spoken_reply()
                     log("Router", f"Fast-path wall-clock -> {reply!r}")
                     log_conversation("User", whisper_text)
-                    log_conversation("Donna", reply)
+                    log_conversation("Dana", reply)
                     end_session_to_idle(reply)
                     break
                 if is_whisper_hallucination(whisper_text):
@@ -6309,8 +6310,8 @@ def conversation_worker(
                     log_conversation("User", whisper_text)
                     flush_conversation_memory(reason="voice_command")
                     reply = clear_context_spoken_reply(whisper_text)
-                    log_conversation("Donna", reply)
-                    emit_live_transcript("Donna", reply)
+                    log_conversation("Dana", reply)
+                    emit_live_transcript("Dana", reply)
                     enqueue_speech(reply)
                     wait_for_speech_idle(timeout=8.0)
                     follow_up = True
@@ -6323,7 +6324,7 @@ def conversation_worker(
                     reply = wall_clock_spoken_reply()
                     log("Router", f"Fast-path wall-clock -> {reply!r}")
                     log_conversation("User", whisper_text)
-                    log_conversation("Donna", reply)
+                    log_conversation("Dana", reply)
                     end_session_to_idle(reply)
                     break
 
@@ -6353,8 +6354,8 @@ def conversation_worker(
                 log_conversation("User", whisper_text)
                 flush_conversation_memory(reason="voice_command")
                 reply = clear_context_spoken_reply(whisper_text)
-                log_conversation("Donna", reply)
-                emit_live_transcript("Donna", reply)
+                log_conversation("Dana", reply)
+                emit_live_transcript("Dana", reply)
                 enqueue_speech(reply)
                 wait_for_speech_idle(timeout=8.0)
                 follow_up = True
@@ -6367,7 +6368,7 @@ def conversation_worker(
                 reply = wall_clock_spoken_reply()
                 log("Router", f"Fast-path wall-clock -> {reply!r}")
                 log_conversation("User", whisper_text)
-                log_conversation("Donna", reply)
+                log_conversation("Dana", reply)
                 end_session_to_idle(reply)
                 break
 
@@ -7564,7 +7565,7 @@ class DonnaGUI(ctk.CTk):
 
     def __init__(self) -> None:
         super().__init__()
-        self.title("Donna — Control Dashboard")
+        self.title("Dana — Control Dashboard")
         self.geometry("880x780")
         self.minsize(650, 750)
         self._dictation_active = False
@@ -7736,7 +7737,7 @@ class DonnaGUI(ctk.CTk):
         # Stage 8.9.2 — emergency kill switch (runs stop_dana.vbs / stop_dana.bat).
         self.stop_donna_btn = ctk.CTkButton(
             header,
-            text="STOP DONNA",
+            text="STOP DANA",
             width=128,
             height=32,
             corner_radius=8,
@@ -7755,7 +7756,7 @@ class DonnaGUI(ctk.CTk):
             anchor="e",
         ).pack(side="right", padx=(8, 4), pady=14)
 
-        # Stage 8.9.4 — optimized tab order (widget refs, not notebook indices).
+        # Three polished surfaces: Assistant, Perception, Memory & Settings.
         tabs = ctk.CTkTabview(
             self,
             fg_color=_UI_CANVAS,
@@ -7763,7 +7764,7 @@ class DonnaGUI(ctk.CTk):
             segmented_button_selected_color=_UI_ACCENT,
             segmented_button_selected_hover_color=_UI_ACCENT_HOVER,
             segmented_button_unselected_color=_UI_GHOST,
-            segmented_button_unselected_hover_color="#34344A",
+            segmented_button_unselected_hover_color="#475569",
             text_color="#E5E7EB",
             corner_radius=14,
             border_width=0,
@@ -7775,33 +7776,26 @@ class DonnaGUI(ctk.CTk):
         except Exception:  # noqa: BLE001
             pass
 
-        tab_dashboard = tabs.add("Dashboard")
-        tab_dictation = tabs.add("Dictation")
-        tab_behavior = tabs.add("Behavior")
-        tab_trace = tabs.add("Live Trace")
-        tab_settings = tabs.add("Settings")
+        tab_assistant = tabs.add("Assistant & Tasks")
+        tab_perception = tabs.add("Perception")
+        tab_memory = tabs.add("Memory & Settings")
 
-        self._build_dashboard_tab(tab_dashboard)
-        self._build_dictation_tab(tab_dictation)
-        self._build_behavior_tab(tab_behavior)
+        self._build_dashboard_tab(tab_assistant)
+        self._build_task_tracker_section(tab_assistant)
+        self._build_developer_diagnostics(tab_assistant)
+        self._build_perception_tab(tab_perception)
 
-        # LangGraph Live Trace panel (queue drain via self.after — never worker threads).
-        try:
-            from dana.ui.trace_window import LiveTracePanel
-
-            self.live_trace = LiveTracePanel(tab_trace, poll_ms=50)
-            self.live_trace.pack(fill="both", expand=True, padx=2, pady=2)
-            self.trace_scroll = self.live_trace.timeline
-        except Exception:  # noqa: BLE001
-            self.live_trace = None
-            fallback = self._make_card(tab_trace, title="Pipeline stages")
-            self.trace_scroll = ctk.CTkScrollableFrame(fallback, fg_color="transparent")
-            self.trace_scroll.pack(fill="both", expand=True)
-
-        self._build_settings_tab(tab_settings)
+        # Memory & Settings: preferences, episodic search, logs, dictation, behavior.
+        mem_scroll = ctk.CTkScrollableFrame(tab_memory, fg_color=_UI_CANVAS)
+        mem_scroll.pack(fill="both", expand=True, padx=2, pady=2)
+        self._build_settings_tab(mem_scroll)
+        self._build_episodic_memory_section(mem_scroll)
+        self._build_system_log_section(mem_scroll)
+        self._build_dictation_tab(mem_scroll)
+        self._build_behavior_tab(mem_scroll)
 
         try:
-            tabs.set("Dashboard")
+            tabs.set("Assistant & Tasks")
         except Exception:  # noqa: BLE001
             pass
 
@@ -7839,7 +7833,7 @@ class DonnaGUI(ctk.CTk):
         chat_bar.grid_columnconfigure(0, weight=1)
         self.chat_entry = ctk.CTkEntry(
             chat_bar,
-            placeholder_text="Type below or say Donna, then speak.",
+            placeholder_text="Type below or say Dana, then speak.",
             height=36,
             corner_radius=10,
             fg_color=_UI_GHOST,
@@ -7890,7 +7884,7 @@ class DonnaGUI(ctk.CTk):
                 self._dash_logo_img = None
         ctk.CTkLabel(
             center,
-            text="Donna is online",
+            text="Dana is online",
             font=ctk.CTkFont(size=15, weight="bold"),
             text_color="#F9FAFB",
         ).pack(pady=(2, 2))
@@ -7903,7 +7897,7 @@ class DonnaGUI(ctk.CTk):
         self.status_value.pack(pady=(0, 2))
         self.wake_value = ctk.CTkLabel(
             center,
-            text="Wake: Donna",
+            text="Wake: Dana",
             font=ctk.CTkFont(size=12),
             text_color="#00E676",
         )
@@ -7963,7 +7957,7 @@ class DonnaGUI(ctk.CTk):
         for label, cmd in (
             ("Start Chat", self._dashboard_start_chat),
             ("Trigger Dictation", self._dashboard_trigger_dictation),
-            ("Open Live Trace", self._dashboard_open_trace),
+            ("Open Diagnostics", self._dashboard_open_trace),
         ):
             ctk.CTkButton(
                 actions,
@@ -8007,7 +8001,7 @@ class DonnaGUI(ctk.CTk):
         # One-time welcome banner (never re-logged from Start Chat / idle loops).
         self.transcript_box.insert(
             "1.0",
-            "[Donna] Type below or say Donna, then speak.\n\n",
+            "[Dana] Type below or say Dana, then speak.\n\n",
         )
         self.transcript_box.configure(state="disabled")
 
@@ -8048,6 +8042,370 @@ class DonnaGUI(ctk.CTk):
             pass
         return "break" if event is not None else None
 
+    def _build_task_tracker_section(self, tab) -> None:  # noqa: ANN001
+        """Human-readable Task Tracker timeline (replaces raw LangGraph dumps)."""
+        try:
+            from dana.ui.task_tracker_view import TaskTrackerView
+
+            self.task_tracker_view = TaskTrackerView(tab, poll_ms=400)
+            self.task_tracker_view.pack(fill="both", expand=False, padx=14, pady=(0, 6))
+            try:
+                self.task_tracker_view.configure(height=220)
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception as exc:  # noqa: BLE001
+            self.task_tracker_view = None
+            log("UI", f"WARNING: TaskTrackerView unavailable ({exc})")
+
+    def _build_developer_diagnostics(self, tab) -> None:  # noqa: ANN001
+        """Collapsible Live Trace / LangGraph diagnostics (not the main chat view)."""
+        self._diag_expanded = False
+        self.live_trace = None
+        self.trace_scroll = None
+        self._diag_expander = None
+        shell = ctk.CTkFrame(tab, fg_color="transparent")
+        shell.pack(fill="x", padx=14, pady=(0, 10))
+        self._diag_btn = ctk.CTkButton(
+            shell,
+            text="▸ Developer Diagnostics",
+            anchor="w",
+            height=28,
+            corner_radius=8,
+            fg_color=_UI_GHOST,
+            hover_color="#475569",
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+            text_color=_UI_MUTED,
+            font=ctk.CTkFont(size=12),
+            command=self._toggle_developer_diagnostics,
+        )
+        self._diag_btn.pack(fill="x")
+        self._diag_body = ctk.CTkFrame(shell, fg_color=_UI_CANVAS, height=1)
+        # Hidden until toggled.
+        try:
+            from dana.ui.trace_window import LiveTracePanel
+
+            self.live_trace = LiveTracePanel(self._diag_body, poll_ms=80)
+            self.live_trace.pack(fill="both", expand=True, padx=2, pady=2)
+            self.trace_scroll = self.live_trace.timeline
+        except Exception:  # noqa: BLE001
+            self.live_trace = None
+            fallback = self._make_card(self._diag_body, title="Pipeline stages")
+            self.trace_scroll = ctk.CTkScrollableFrame(fallback, fg_color="transparent")
+            self.trace_scroll.pack(fill="both", expand=True)
+        self._diag_expander = self
+
+    def _toggle_developer_diagnostics(self) -> None:
+        body = getattr(self, "_diag_body", None)
+        btn = getattr(self, "_diag_btn", None)
+        if body is None:
+            return
+        self._diag_expanded = not bool(getattr(self, "_diag_expanded", False))
+        try:
+            if self._diag_expanded:
+                body.pack(fill="both", expand=True, pady=(6, 0))
+                if btn is not None:
+                    btn.configure(text="▾ Developer Diagnostics")
+            else:
+                body.pack_forget()
+                if btn is not None:
+                    btn.configure(text="▸ Developer Diagnostics")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _build_perception_tab(self, tab) -> None:  # noqa: ANN001
+        """Screen capture ROI preview + hybrid UIA / vision status."""
+        try:
+            tab.configure(fg_color=_UI_CANVAS)
+        except Exception:  # noqa: BLE001
+            pass
+
+        status_card = self._make_card(tab, title="Vision status", expand=False)
+        self._vision_status_lbl = ctk.CTkLabel(
+            status_card,
+            text="Hybrid grounding: idle · ROI overlay: standby",
+            anchor="w",
+            text_color=_UI_MUTED,
+            wraplength=640,
+            justify="left",
+        )
+        self._vision_status_lbl.pack(fill="x", pady=(0, 8))
+        btn_row = ctk.CTkFrame(status_card, fg_color="transparent")
+        btn_row.pack(fill="x")
+        ctk.CTkButton(
+            btn_row,
+            text="Refresh status",
+            width=130,
+            height=30,
+            corner_radius=999,
+            fg_color=_UI_GHOST,
+            hover_color="#475569",
+            command=self._refresh_perception_status,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            btn_row,
+            text="Inspect UIA tree",
+            width=140,
+            height=30,
+            corner_radius=999,
+            fg_color=_UI_ACCENT,
+            hover_color=_UI_ACCENT_HOVER,
+            command=self._inspect_uia_tree,
+        ).pack(side="left")
+
+        roi_card = self._make_card(tab, title="ROI preview", expand=False)
+        self._roi_preview_lbl = ctk.CTkLabel(
+            roi_card,
+            text="No ROI captured yet. Grounding hits appear here.",
+            anchor="w",
+            text_color=_UI_MUTED,
+            wraplength=640,
+            justify="left",
+        )
+        self._roi_preview_lbl.pack(fill="x", pady=(0, 4))
+
+        tree_card = self._make_card(tab, title="Win32 UIA tree", expand=True)
+        self._uia_tree_box = ctk.CTkTextbox(
+            tree_card,
+            wrap="word",
+            font=ctk.CTkFont(family="Consolas", size=11),
+            fg_color=_UI_CANVAS,
+            corner_radius=12,
+            border_width=0,
+        )
+        self._uia_tree_box.pack(fill="both", expand=True)
+        self._uia_tree_box.insert(
+            "1.0",
+            "Click “Inspect UIA tree” to dump the foreground window hierarchy "
+            "(best-effort; requires Windows UIA backends).\n",
+        )
+        self._uia_tree_box.configure(state="disabled")
+        try:
+            self.after(600, self._refresh_perception_status)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _refresh_perception_status(self) -> None:
+        bits: list[str] = []
+        try:
+            from dana.graph.nodes.vision import get_hybrid_grounding
+
+            grounder = get_hybrid_grounding()
+            bits.append(f"Hybrid grounding: {type(grounder).__name__}")
+        except Exception as exc:  # noqa: BLE001
+            bits.append(f"Hybrid grounding: unavailable ({type(exc).__name__})")
+        try:
+            from dana.vision.overlay import get_overlay
+
+            overlay = get_overlay()
+            visible = bool(getattr(overlay, "_visible", False))
+            current = getattr(overlay, "_current", None)
+            bits.append(
+                f"ROI overlay: {'visible' if visible else 'standby'}"
+                + (f" @ {current}" if current else "")
+            )
+            roi_lbl = getattr(self, "_roi_preview_lbl", None)
+            if roi_lbl is not None:
+                if current:
+                    label = str(getattr(overlay, "_label", "") or "")
+                    roi_lbl.configure(
+                        text=f"Last ROI {current}"
+                        + (f" — {label}" if label else "")
+                    )
+                else:
+                    roi_lbl.configure(
+                        text="No ROI captured yet. Grounding hits appear here."
+                    )
+        except Exception as exc:  # noqa: BLE001
+            bits.append(f"ROI overlay: unavailable ({type(exc).__name__})")
+        lbl = getattr(self, "_vision_status_lbl", None)
+        if lbl is not None:
+            try:
+                lbl.configure(text=" · ".join(bits) if bits else "Vision idle")
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _inspect_uia_tree(self) -> None:
+        box = getattr(self, "_uia_tree_box", None)
+        if box is None:
+            return
+
+        def _worker() -> None:
+            text = "(empty)"
+            try:
+                from dana.vision.uia_provider import Win32UIAProvider
+
+                provider = Win32UIAProvider()
+                dump = getattr(provider, "dump_tree", None) or getattr(
+                    provider, "list_controls", None
+                )
+                if callable(dump):
+                    result = dump()
+                    if isinstance(result, (list, tuple)):
+                        lines = []
+                        for item in list(result)[:80]:
+                            lines.append(str(item))
+                        text = "\n".join(lines) or "(no controls)"
+                    else:
+                        text = str(result)
+                else:
+                    # Best-effort: probe find_element path existence.
+                    text = (
+                        "UIA provider loaded. No dump_tree API — "
+                        f"provider={type(provider).__name__}. "
+                        "Hybrid grounding still uses UIA hit-testing at runtime."
+                    )
+            except Exception as exc:  # noqa: BLE001
+                text = f"UIA inspect failed: {type(exc).__name__}: {exc}"
+
+            def _ui() -> None:
+                try:
+                    box.configure(state="normal")
+                    box.delete("1.0", "end")
+                    box.insert("1.0", text + "\n")
+                    box.configure(state="disabled")
+                except Exception:  # noqa: BLE001
+                    pass
+                self._refresh_perception_status()
+
+            try:
+                self.after(0, _ui)
+            except Exception:  # noqa: BLE001
+                _ui()
+
+        threading.Thread(target=_worker, name="UIAInspect", daemon=True).start()
+
+    def _build_episodic_memory_section(self, tab) -> None:  # noqa: ANN001
+        """Episodic memory keyword search (SQLite store)."""
+        card = self._make_card(tab, title="Episodic memory", expand=False)
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", pady=(0, 8))
+        self._memory_query = ctk.CTkEntry(
+            row,
+            placeholder_text="Search preferences & facts…",
+            height=32,
+            corner_radius=8,
+            fg_color=_UI_GHOST,
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+        )
+        self._memory_query.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self._memory_query.bind("<Return>", lambda _e: self._run_episodic_search())
+        ctk.CTkButton(
+            row,
+            text="Search",
+            width=88,
+            height=32,
+            corner_radius=999,
+            fg_color=_UI_ACCENT,
+            hover_color=_UI_ACCENT_HOVER,
+            command=self._run_episodic_search,
+        ).pack(side="right")
+        self._memory_results = ctk.CTkTextbox(
+            card,
+            wrap="word",
+            height=140,
+            font=ctk.CTkFont(family="Consolas", size=11),
+            fg_color=_UI_CANVAS,
+            corner_radius=10,
+        )
+        self._memory_results.pack(fill="x")
+        self._memory_results.insert("1.0", "(enter a query to search episodic memory)\n")
+        self._memory_results.configure(state="disabled")
+
+    def _run_episodic_search(self) -> None:
+        box = getattr(self, "_memory_results", None)
+        entry = getattr(self, "_memory_query", None)
+        if box is None:
+            return
+        try:
+            query = str(entry.get() if entry is not None else "").strip()
+        except Exception:  # noqa: BLE001
+            query = ""
+        try:
+            from dana.memory.store import get_episodic_store
+
+            facts = get_episodic_store().search_facts(query, limit=24)
+            lines = []
+            for fact in facts:
+                key = fact.get("key") or ""
+                val = fact.get("value") or ""
+                cat = fact.get("category") or ""
+                lines.append(f"[{cat}] {key} = {val}")
+            text = "\n".join(lines) if lines else "(no matching facts)\n"
+        except Exception as exc:  # noqa: BLE001
+            text = f"Memory search failed: {type(exc).__name__}: {exc}\n"
+        try:
+            box.configure(state="normal")
+            box.delete("1.0", "end")
+            box.insert("1.0", text if text.endswith("\n") else text + "\n")
+            box.configure(state="disabled")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _build_system_log_section(self, tab) -> None:  # noqa: ANN001
+        """Tail viewer for dana_runtime.log."""
+        card = self._make_card(tab, title="System log", expand=False)
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", pady=(0, 8))
+        ctk.CTkButton(
+            row,
+            text="Refresh log",
+            width=110,
+            height=30,
+            corner_radius=999,
+            fg_color=_UI_GHOST,
+            hover_color="#475569",
+            command=self._refresh_system_log,
+        ).pack(side="left")
+        self._system_log_box = ctk.CTkTextbox(
+            card,
+            wrap="word",
+            height=160,
+            font=ctk.CTkFont(family="Consolas", size=11),
+            fg_color=_UI_CANVAS,
+            corner_radius=10,
+        )
+        self._system_log_box.pack(fill="x")
+        self._system_log_box.insert("1.0", "(log empty — click Refresh)\n")
+        self._system_log_box.configure(state="disabled")
+        try:
+            self.after(800, self._refresh_system_log)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _refresh_system_log(self) -> None:
+        box = getattr(self, "_system_log_box", None)
+        if box is None:
+            return
+        text = "(log unavailable)\n"
+        try:
+            from dana.logging import RUNTIME_LOG_PATH
+
+            path = RUNTIME_LOG_PATH
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                    lines = fh.readlines()
+                text = "".join(lines[-120:]) or "(log empty)\n"
+            else:
+                legacy = os.path.join(os.path.dirname(path), "donna_runtime.log")
+                if os.path.isfile(legacy):
+                    with open(legacy, "r", encoding="utf-8", errors="replace") as fh:
+                        lines = fh.readlines()
+                    text = "".join(lines[-120:]) or "(log empty)\n"
+                else:
+                    text = f"(no log yet at {path})\n"
+        except Exception as exc:  # noqa: BLE001
+            text = f"Could not read log: {exc}\n"
+        try:
+            box.configure(state="normal")
+            box.delete("1.0", "end")
+            box.insert("1.0", text)
+            box.configure(state="disabled")
+            box.see("end")
+        except Exception:  # noqa: BLE001
+            pass
+
     def _build_settings_tab(self, tab) -> None:  # noqa: ANN001
         """Stage 8.9.4 — merged Stats + Audio into one Settings surface."""
         try:
@@ -8075,7 +8433,7 @@ class DonnaGUI(ctk.CTk):
         ).pack(fill="x", pady=(0, 4))
         self._settings_wake_lbl = ctk.CTkLabel(
             stats_card,
-            text="Active wake word: Donna",
+            text="Active wake word: Dana",
             anchor="w",
             justify="left",
             wraplength=320,
@@ -8440,7 +8798,7 @@ class DonnaGUI(ctk.CTk):
         )
         try:
             self.log_transcript(
-                "Donna",
+                "Dana",
                 "Engine ENGAGED — Behavior variables locked. Ready for chat.",
                 agent_id="broker",
             )
@@ -8498,7 +8856,7 @@ class DonnaGUI(ctk.CTk):
         log("UI", "STANDBY engine — behavior unlocked (soft pause)")
         try:
             self.log_transcript(
-                "Donna",
+                "Dana",
                 "Engine STANDBY — Behavior variables unlocked.",
                 agent_id="broker",
             )
@@ -8511,10 +8869,10 @@ class DonnaGUI(ctk.CTk):
             pass
 
     def _dashboard_start_chat(self) -> None:
-        """Quick action — focus Dashboard silent chat entry (no transcript spam)."""
+        """Quick action — focus Assistant silent chat entry (no transcript spam)."""
         if not self._require_engine():
             return
-        self._select_tab("Dashboard")
+        self._select_tab("Assistant & Tasks")
         try:
             self.lift()
             self.focus_force()
@@ -8527,10 +8885,10 @@ class DonnaGUI(ctk.CTk):
             pass
 
     def _dashboard_trigger_dictation(self) -> None:
-        """Quick action — open Dictation tab and arm the latch if cold."""
+        """Quick action — open Memory & Settings and arm the latch if cold."""
         if not self._require_engine():
             return
-        self._select_tab("Dictation")
+        self._select_tab("Memory & Settings")
         if not self._dictation_active:
             try:
                 self._toggle_dictation_mode()
@@ -8538,7 +8896,12 @@ class DonnaGUI(ctk.CTk):
                 pass
 
     def _dashboard_open_trace(self) -> None:
-        self._select_tab("Live Trace")
+        self._select_tab("Assistant & Tasks")
+        try:
+            if not bool(getattr(self, "_diag_expanded", False)):
+                self._toggle_developer_diagnostics()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _transcript_tk(self):
         """Return the raw ``tk.Text`` inside CTkTextbox (for tag_configure)."""
@@ -9179,7 +9542,12 @@ class DonnaGUI(ctk.CTk):
         except Exception:  # noqa: BLE001
             pass
         wake = ", ".join(WAKEWORD_MODELS) if WAKEWORD_MODELS else "—"
-        wake_disp = wake.title() if wake != "—" else wake
+        _wake_display = {"donna": "Dana", "alexa": "Alexa"}
+        if wake != "—":
+            parts = [w.strip() for w in wake.split(",") if w.strip()]
+            wake_disp = ", ".join(_wake_display.get(p.lower(), p.title()) for p in parts)
+        else:
+            wake_disp = wake
         try:
             self.wake_value.configure(text=f"Wake: {wake_disp}")
         except Exception:  # noqa: BLE001
@@ -9616,7 +9984,7 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
 
     log(
         "Main",
-        "Donna is ready. Say 'Donna' to wake. | Tray Quit / Ctrl+C=quit",
+        "Dana is ready. Say 'Dana' to wake. | Tray Quit / Ctrl+C=quit",
     )
     try:
         from dana.telemetry import start_dashboard_thread
