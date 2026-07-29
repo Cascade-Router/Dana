@@ -611,6 +611,7 @@ def _route_after_agent(state: ReactGraphState) -> str:
     """Conditional edge: agent → ticket_validate / tools / agent / END."""
     from langgraph.graph import END
 
+    from dana.graph.completion_gate import gate_route_after_agent, should_block_end
     from dana.middleware.hitl_ticket import hitl_enabled
 
     messages = state.get("messages") or []
@@ -623,9 +624,11 @@ def _route_after_agent(state: ReactGraphState) -> str:
     # Option B: do not END while broker-merged tools remain uninvoked.
     if pending_always_include_tools(state):
         return "agent"
-    if state.get("halt"):
-        return END
-    return END
+    # Completion gate: filler / unresolved tools must not silent-END.
+    if should_block_end(state):
+        return "agent"
+    proposed = END if state.get("halt") else END
+    return gate_route_after_agent(state, proposed=proposed, end_sentinel=END)
 
 
 def _route_after_ticket_validate(state: ReactGraphState) -> str:
@@ -664,10 +667,13 @@ def route_after_execution(state: ReactGraphState) -> str:
     route to ``critic`` (then back to tools). Exhausted retries → ``fail_closed``.
     Fatal OS / dependency blocks (``fatal_block``) bypass Critic and go straight to
     ``fail_closed`` (ticket draft on the existing HITL corridor fields).
+    Tool timeout / soft failures never silent-END — completion gate keeps the
+    loop on agent/critic with an explicit spoken failure message.
     Otherwise preserve the existing ReAct / HITL corridor (agent loop or END).
     """
     from langgraph.graph import END
 
+    from dana.graph.completion_gate import gate_route_after_execution, should_block_end
     from dana.graph.nodes.critic import is_fatal_execution_error
 
     err = state.get("execution_error")
@@ -681,11 +687,15 @@ def route_after_execution(state: ReactGraphState) -> str:
             return "critic"
         return "fail_closed"
 
-    if state.get("halt") and not pending_always_include_tools(state):
-        return END
     if pending_always_include_tools(state):
         return "agent"
-    return END if state.get("halt") else "agent"
+    if should_block_end(state):
+        return "agent"
+    if state.get("halt") and not pending_always_include_tools(state):
+        proposed = END
+    else:
+        proposed = END if state.get("halt") else "agent"
+    return gate_route_after_execution(state, proposed=proposed, end_sentinel=END)
 
 
 # Back-compat alias for callers / tests that still import the private name.
@@ -1018,6 +1028,12 @@ async def run_react_langgraph(
         current_agent=current_agent,
         active_intent=active_intent,
     )
+    # Task lifecycle tracker (dropped / timeout → FAILED, never silent ghost).
+    from dana.graph.task_tracker import TaskStatus, TaskTracker
+
+    _task_tracker = TaskTracker()
+    _task_tracker.start_task(session_id, user_text or "")
+    _task_tracker.update_status(session_id, TaskStatus.IN_PROGRESS)
     # Stage 4.3 — piggyback unread actuator completions into this turn's prompt.
     try:
         from dana.memory.blackboard import (
@@ -1830,6 +1846,7 @@ async def run_react_langgraph(
                     "final_raw": "",
                     "halt": False,
                     "always_include": always_list,
+                    "pending_synthesis": True,
                 }
             # Strip phantoms so we do not route into the tools node.
             try:
@@ -1955,13 +1972,32 @@ async def run_react_langgraph(
         except Exception:  # noqa: BLE001
             pass
         trace.append({"step": step, "final": True})
+        from dana.graph.completion_gate import (
+            flag_pending_synthesis_from_text,
+            is_filler_response,
+        )
+
+        filler_patch = flag_pending_synthesis_from_text(answer)
+        # Filler acknowledgements must not halt the corridor (ghosting guard).
+        halt_out = not bool(filler_patch.get("pending_synthesis"))
+        if is_filler_response(answer):
+            halt_out = False
+        else:
+            try:
+                _task_tracker.update_status(
+                    str(state.get("session_id") or session_id),
+                    TaskStatus.COMPLETED,
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return {
             "messages": [response],
             "iterations": step,
             "last_obs": last_obs,
             "final_raw": answer,
-            "halt": True,
+            "halt": halt_out,
             "always_include": always_list,
+            **filler_patch,
         }
 
     async def _tools_node(state: ReactGraphState) -> dict[str, Any]:
@@ -2156,23 +2192,62 @@ async def run_react_langgraph(
                     )
             else:
                 try:
+                    from dana.graph.completion_gate import (
+                        DEFAULT_TOOL_TIMEOUT_S,
+                        TOOL_TIMEOUT_MESSAGE,
+                        apply_timeout_failure,
+                        run_async_with_tool_timeout,
+                        run_with_tool_timeout,
+                    )
+
+                    _tool_timeout_s = float(
+                        (state.get("env_context") or {}).get("tool_timeout_s")
+                        or DEFAULT_TOOL_TIMEOUT_S
+                    )
+
+                    def _on_timeout() -> None:
+                        repl_heal.update(
+                            apply_timeout_failure(
+                                _task_tracker,
+                                str(state.get("session_id") or session_id),
+                                tool_id=tool_call.tool_id,
+                            )
+                        )
+
+                    try:
+                        _task_tracker.update_status(
+                            str(state.get("session_id") or session_id),
+                            TaskStatus.TOOL_EXECUTING,
+                            metadata={"tool": tool_call.tool_id},
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+
                     if tool_call.tool_id == "draft_cursor_prompt":
                         from dana.tools.general.draft_cursor_prompt import (
                             draft_cursor_prompt as _draft_cursor_prompt,
                         )
 
-                        observation = str(
-                            _draft_cursor_prompt(
-                                objective=str(
-                                    (tool_call.arguments or {}).get("objective")
-                                    or ""
-                                ),
-                                context=str(
-                                    (tool_call.arguments or {}).get("context")
-                                    or ""
-                                ),
+                        def _run_draft() -> str:
+                            return str(
+                                _draft_cursor_prompt(
+                                    objective=str(
+                                        (tool_call.arguments or {}).get("objective")
+                                        or ""
+                                    ),
+                                    context=str(
+                                        (tool_call.arguments or {}).get("context")
+                                        or ""
+                                    ),
+                                )
                             )
+
+                        ok, observation, terr = run_with_tool_timeout(
+                            _run_draft, timeout_s=_tool_timeout_s
                         )
+                        if not ok:
+                            observation = terr or TOOL_TIMEOUT_MESSAGE
+                            _on_timeout()
                     elif tool_call.tool_id == "analyze_visual_context":
                         # Direct JIT vision path → ToolMessage content for synthesis.
                         from dana.vision_tools import (
@@ -2184,30 +2259,85 @@ async def run_react_langgraph(
                         ).strip().lower() or "screen"
                         if src == "camera":
                             src = "webcam"
-                        observation = str(_analyze_visual(source=src))
+
+                        def _run_vision() -> str:
+                            return str(_analyze_visual(source=src))
+
+                        ok, observation, terr = run_with_tool_timeout(
+                            _run_vision, timeout_s=_tool_timeout_s
+                        )
+                        if not ok:
+                            observation = terr or TOOL_TIMEOUT_MESSAGE
+                            _on_timeout()
                     elif tool_call.tool_id == "ocr_with_region":
                         from dana.tools.visual_tools import (
                             ocr_with_region as _ocr_region,
                         )
 
-                        observation = str(
-                            _ocr_region(
-                                query=str(
-                                    (tool_call.arguments or {}).get("query") or ""
-                                ).strip()
+                        def _run_ocr() -> str:
+                            return str(
+                                _ocr_region(
+                                    query=str(
+                                        (tool_call.arguments or {}).get("query") or ""
+                                    ).strip()
+                                )
                             )
+
+                        ok, observation, terr = run_with_tool_timeout(
+                            _run_ocr, timeout_s=_tool_timeout_s
                         )
+                        if not ok:
+                            observation = terr or TOOL_TIMEOUT_MESSAGE
+                            _on_timeout()
                     else:
                         tool_map = {getattr(t, "name", ""): t for t in tools}
                         st = tool_map.get(tool_call.tool_id)
                         if st is not None and hasattr(st, "ainvoke"):
-                            observation = str(
-                                await st.ainvoke(dict(tool_call.arguments or {}))
+
+                            async def _ainvoke_tool() -> Any:
+                                return await st.ainvoke(
+                                    dict(tool_call.arguments or {})
+                                )
+
+                            ok, raw_obs, terr = await run_async_with_tool_timeout(
+                                _ainvoke_tool, timeout_s=_tool_timeout_s
                             )
+                            if not ok:
+                                observation = terr or TOOL_TIMEOUT_MESSAGE
+                                _on_timeout()
+                            else:
+                                observation = str(raw_obs)
                         else:
-                            observation = str(execute_fn(tool_call))
+
+                            def _run_execute() -> str:
+                                return str(execute_fn(tool_call))
+
+                            ok, observation, terr = run_with_tool_timeout(
+                                _run_execute, timeout_s=_tool_timeout_s
+                            )
+                            if not ok:
+                                observation = terr or TOOL_TIMEOUT_MESSAGE
+                                _on_timeout()
                 except Exception as exc:  # noqa: BLE001
                     observation = f"ERROR: tool {tool_call.tool_id} failed: {exc}"
+                    repl_heal.update(
+                        {
+                            "execution_error": observation,
+                            "final_raw": (
+                                f"Tool `{tool_call.tool_id}` failed: {exc}"
+                            ),
+                            "pending_synthesis": True,
+                            "halt": False,
+                        }
+                    )
+                    try:
+                        _task_tracker.update_status(
+                            str(state.get("session_id") or session_id),
+                            TaskStatus.FAILED,
+                            metadata={"tool": tool_call.tool_id, "error": str(exc)},
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
             # Localized bounce when the tool returns a Validation Error string.
             if "Validation Error:" in str(observation):
                 retry_key = f"{tool_call.tool_id}:{call_id}"
