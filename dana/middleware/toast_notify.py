@@ -13,6 +13,7 @@ def show_silent_toast(
     message: str,
     *,
     app_id: str = "Donna",
+    icon: str | None = None,
 ) -> bool:
     """Show a native Windows toast with audio silenced.
 
@@ -21,6 +22,8 @@ def show_silent_toast(
 
     Prefer ``show_silent_toast_async`` from actuator workers — WinRT/win11toast
     can block for several seconds on dismissal timeout.
+
+    ``icon`` may be a filesystem path to a transparent PNG (RGBA toast logo).
     """
     if (os.environ.get("DONNA_DISABLE_TOAST") or "").strip().lower() in {
         "1",
@@ -34,16 +37,27 @@ def show_silent_toast(
     if sys.platform != "win32":
         return False
 
+    icon_path = (icon or "").strip() or None
+    if icon_path is None:
+        try:
+            from dana.ui.logo import toast_logo_path
+
+            path = toast_logo_path((64, 64))
+            icon_path = str(path) if path is not None else None
+        except Exception:  # noqa: BLE001
+            icon_path = None
+
     try:
         from win11toast import toast as _toast
 
         # win11toast: audio={'silent': 'true'} suppresses the chime.
-        _toast(
-            title_s,
-            body_s,
-            app_id=app_id,
-            audio={"silent": "true"},
-        )
+        kwargs: dict = {
+            "app_id": app_id,
+            "audio": {"silent": "true"},
+        }
+        if icon_path:
+            kwargs["icon"] = icon_path
+        _toast(title_s, body_s, **kwargs)
         return True
     except Exception:  # noqa: BLE001
         pass

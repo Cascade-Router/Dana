@@ -21,12 +21,21 @@ def show_watchdog_toast(title: str, message: str, *, app_id: str = "Donna") -> b
     """Best-effort native toast; never raises. No-op off Windows / when disabled."""
     try:
         from dana.middleware.toast_notify import show_silent_toast
+        from dana.ui.logo import toast_logo_path
+
+        icon_path = None
+        try:
+            path = toast_logo_path((64, 64))
+            icon_path = str(path) if path is not None else None
+        except Exception:  # noqa: BLE001
+            icon_path = None
 
         return bool(
             show_silent_toast(
                 title or WATCHDOG_TOAST_TITLE,
                 message or "Shell error detected",
                 app_id=app_id,
+                icon=icon_path,
             )
         )
     except Exception:  # noqa: BLE001

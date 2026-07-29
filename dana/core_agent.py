@@ -7165,22 +7165,16 @@ _TRAY_LISTENING_STATES = frozenset({"listening", "followup"})
 
 
 def create_tray_image(mode: str = "idle") -> Image.Image:
-    """Branded tray icon; prefers ``dana/assets/donna.ico``, procedural fallback."""
+    """Branded tray icon; prefers keyed RGBA logo, procedural fallback."""
     size = 64
     try:
-        from dana.ui.logo import load_app_icon_pil
+        from dana.ui.startup_tray import build_tray_image
 
-        logo = load_app_icon_pil((size, size))
+        logo = build_tray_image(mode=mode, size=size)
     except Exception:  # noqa: BLE001
         logo = None
     if logo is not None:
-        img = logo.convert("RGBA")
-        if mode == "listening":
-            # Status pip (same cue as procedural tray icon).
-            draw = ImageDraw.Draw(img)
-            draw.ellipse((42, 8, 56, 22), fill=(250, 250, 250, 255))
-            draw.ellipse((45, 11, 53, 19), fill=(34, 197, 94, 255))
-        return img
+        return logo.convert("RGBA") if hasattr(logo, "convert") else logo
     fill = _TRAY_FILL_LISTENING if mode == "listening" else _TRAY_FILL_IDLE
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)

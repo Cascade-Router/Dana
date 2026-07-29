@@ -16,7 +16,8 @@ import tkinter as tk
 from typing import Any, Callable
 
 # Chroma-key for Windows layered transparency (must not appear in drawn pixels).
-_TRANSPARENT = "#010101"
+# Align with Apple-style HUD key in ``dana.ui.overlay``.
+_TRANSPARENT = "#000001"
 _ORB_DIAMETER = 64
 _PANEL_W = 320
 _PANEL_H = 360
