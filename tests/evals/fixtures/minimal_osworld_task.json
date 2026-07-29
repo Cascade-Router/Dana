@@ -1,0 +1,38 @@
+{
+  "id": "osworld_open_notepad_save",
+  "prompt": "Open Notepad and click the Save button",
+  "always_include": ["ocr_with_region", "python_repl"],
+  "target_screen_state": {
+    "app": "Notepad",
+    "elements": [
+      {
+        "name": "Save",
+        "automation_id": "btnSave",
+        "control_type": "Button",
+        "bbox": [120.0, 80.0, 180.0, 110.0]
+      },
+      {
+        "name": "File",
+        "automation_id": "menuFile",
+        "control_type": "MenuItem",
+        "bbox": [10.0, 5.0, 50.0, 28.0]
+      }
+    ]
+  },
+  "expected_actions": [
+    {
+      "type": "click",
+      "target": "Save",
+      "bbox": [120.0, 80.0, 180.0, 110.0]
+    },
+    {
+      "type": "type_text",
+      "text": "hello.txt"
+    },
+    {
+      "type": "tool",
+      "name": "python_repl",
+      "args": {"code": "print('saved')"}
+    }
+  ]
+}

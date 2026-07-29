@@ -1,0 +1,75 @@
+{
+  "benchmark": "osworld_offline",
+  "task_id": "osworld_open_notepad_save",
+  "n_runs": 5,
+  "mean_precision": 1.0,
+  "mean_task_completion": 1.0,
+  "mean_score": 1.0,
+  "runs": [
+    {
+      "run": 0,
+      "seed": 42,
+      "offset_xy": [
+        -5,
+        8
+      ],
+      "latency_s": 0.0035577071938315353,
+      "precision": 1.0,
+      "task_completion": 1.0,
+      "score": 1.0,
+      "passed": true
+    },
+    {
+      "run": 1,
+      "seed": 43,
+      "offset_xy": [
+        -7,
+        -10
+      ],
+      "latency_s": 0.0011542073573495202,
+      "precision": 1.0,
+      "task_completion": 1.0,
+      "score": 1.0,
+      "passed": true
+    },
+    {
+      "run": 2,
+      "seed": 44,
+      "offset_xy": [
+        -13,
+        6
+      ],
+      "latency_s": 0.002634143517017975,
+      "precision": 1.0,
+      "task_completion": 1.0,
+      "score": 1.0,
+      "passed": true
+    },
+    {
+      "run": 3,
+      "seed": 45,
+      "offset_xy": [
+        12,
+        9
+      ],
+      "latency_s": 0.0020875016575363633,
+      "precision": 1.0,
+      "task_completion": 1.0,
+      "score": 1.0,
+      "passed": true
+    },
+    {
+      "run": 4,
+      "seed": 46,
+      "offset_xy": [
+        11,
+        -14
+      ],
+      "latency_s": 0.004553072305809952,
+      "precision": 1.0,
+      "task_completion": 1.0,
+      "score": 1.0,
+      "passed": true
+    }
+  ]
+}
