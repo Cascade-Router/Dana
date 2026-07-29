@@ -114,7 +114,42 @@ def bump_subgraph_retry(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def escalate_subgraph(state: dict[str, Any]) -> dict[str, Any]:
-    """Node: reset retry counter before supervisor re-planning or clean END."""
+    """Node: reset retry counter; flush ``[PENDING]`` ledger on failure escalate."""
+    if has_subgraph_failure(state):
+        try:
+            from dana_security.ledger_writer import write_escalation_ticket
+
+            fatal = bool(state.get("fatal_block")) or is_fatal_execution_error(
+                _error_payload(state)
+            )
+            reason = "subgraph_fatal" if fatal else "subgraph_retries_exhausted"
+            meta = write_escalation_ticket(
+                state,
+                reason=reason,
+                objective=(
+                    "Sub-graph escalation: fatal block"
+                    if fatal
+                    else "Sub-graph escalation: local retries exhausted"
+                ),
+                recommended_fix=(
+                    "Supervisor re-plan using intact raw_state_buffer; "
+                    "fix the underlying OS/dependency/code fault before "
+                    "re-entering the sub-graph."
+                ),
+            )
+            if not meta.get("ok"):
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "escalate_subgraph: ledger flush failed (%s)",
+                    meta.get("error"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "escalate_subgraph: ledger writer unavailable (%s)", exc
+            )
     return {"subgraph_retry_count": 0}
 
 

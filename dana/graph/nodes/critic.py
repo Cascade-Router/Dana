@@ -292,23 +292,64 @@ def make_critic_node(critic_llm: CriticLLM | None = None) -> Callable[[ReactGrap
 critic_node = make_critic_node()
 
 
+def _flush_escalation_ledger(
+    state: ReactGraphState,
+    *,
+    reason: str,
+    objective: str | None = None,
+    recommended_fix: str | None = None,
+) -> None:
+    """Append ``[PENDING]`` ticket to ``dana_security/patch_ledger.md`` (best-effort)."""
+    try:
+        from dana_security.ledger_writer import write_escalation_ticket
+
+        meta = write_escalation_ticket(
+            dict(state) if not isinstance(state, dict) else state,
+            reason=reason,
+            objective=objective,
+            recommended_fix=recommended_fix,
+        )
+        if meta.get("ok"):
+            logger.info(
+                "fail_closed: flushed [PENDING] ticket id=%s path=%s",
+                meta.get("ticket_id"),
+                meta.get("ledger_path"),
+            )
+        else:
+            logger.warning(
+                "fail_closed: ledger flush failed id=%s err=%s",
+                meta.get("ticket_id"),
+                meta.get("error"),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("fail_closed: ledger writer unavailable (%s)", exc)
+
+
 def fail_closed_node(state: ReactGraphState) -> dict[str, Any]:
     """Halt after exhausted REPL self-heal attempts; log critique summary.
 
     Fatal OS blocks skip the Critic loop entirely and land here with a
     drafted HITL ticket payload (existing ticket corridor fields).
+    Always flushes a ``[PENDING]`` block to ``dana_security/patch_ledger.md``.
     """
     error = str(state.get("execution_error") or "")
     if state.get("fatal_block") or is_fatal_execution_error(error):
         sid = str(state.get("session_id") or "")
         logger.error("fail_closed: fatal_block — %s", error[:400])
+        drafted = _fatal_ticket_draft(error, session_id=sid)
+        _flush_escalation_ledger(
+            {**dict(state), "drafted_ticket": drafted},
+            reason="fatal_block",
+            objective=str(drafted.get("objective") or FATAL_OS_BLOCK_MSG),
+            recommended_fix=str(drafted.get("context") or ""),
+        )
         return {
             "halt": True,
             "fatal_block": True,
             "final_raw": FATAL_OS_BLOCK_MSG,
             "last_obs": FATAL_OS_BLOCK_MSG,
             "current_agent": "FailClosed",
-            "drafted_ticket": _fatal_ticket_draft(error, session_id=sid),
+            "drafted_ticket": drafted,
             "always_include": [],
         }
 
@@ -323,6 +364,16 @@ def fail_closed_node(state: ReactGraphState) -> dict[str, Any]:
     msg = (
         f"FAIL_CLOSED: python_repl self-heal exhausted after {retry} retries. "
         f"Critiques: {summary}"
+    )
+    _flush_escalation_ledger(
+        state,
+        reason="fail_closed_exhausted",
+        objective="FAIL_CLOSED: python_repl self-heal retries exhausted",
+        recommended_fix=(
+            f"Retries={retry}. Critique summary: {summary[:800]}\n"
+            "Inspect last_code_snippet / execution_error; patch the failing "
+            "code path rather than looping Critic indefinitely."
+        ),
     )
     return {
         "halt": True,

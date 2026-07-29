@@ -110,6 +110,7 @@ def test_permission_error_fatal_block_halts_retries(tmp_path: Path) -> None:
         == "fail_closed"
     )
 
+    ledger = tmp_path / "dana_security" / "patch_ledger.md"
     closed = fail_closed_node(
         {
             "execution_error": obs,
@@ -117,6 +118,7 @@ def test_permission_error_fatal_block_halts_retries(tmp_path: Path) -> None:
             "session_id": "sess-perm",
             "critique_history": [],
             "retry_count": 0,
+            "patch_ledger_path": str(ledger),
         }
     )
     assert closed.get("fatal_block") is True
@@ -124,6 +126,8 @@ def test_permission_error_fatal_block_halts_retries(tmp_path: Path) -> None:
     assert closed.get("final_raw") == FATAL_OS_BLOCK_MSG
     assert isinstance(closed.get("drafted_ticket"), dict)
     assert "Fatal OS Block" in str(closed["drafted_ticket"].get("objective") or "")
+    assert ledger.is_file()
+    assert "[PENDING]" in ledger.read_text(encoding="utf-8")
 
 
 def test_successful_script_commits_staged_files(tmp_path: Path) -> None:

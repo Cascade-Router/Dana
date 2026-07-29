@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -16,6 +17,12 @@ from dana.graph.subgraph_router import (
     route_subgraph_execution,
 )
 from dana.schema import ReactGraphState
+
+
+def _tmp_ledger(tmp_path: Path) -> str:
+    path = tmp_path / "dana_security" / "patch_ledger.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 
 def test_zero_copy_buffer_preserves_exact_raw_trace() -> None:
@@ -55,10 +62,11 @@ def test_zero_copy_buffer_preserves_exact_raw_trace() -> None:
     assert "RuntimeError" in tb2
 
 
-def test_transient_error_retries_locally_without_supervisor() -> None:
+def test_transient_error_retries_locally_without_supervisor(tmp_path: Path) -> None:
     """Non-fatal failures retry locally up to N=2; supervisor never visited."""
     visits: list[str] = []
     attempts = {"n": 0}
+    ledger = _tmp_ledger(tmp_path)
 
     def subgraph(state: ReactGraphState) -> dict[str, Any]:
         visits.append(SUBGRAPH_NODE)
@@ -96,6 +104,7 @@ def test_transient_error_retries_locally_without_supervisor() -> None:
         "max_subgraph_retries": DEFAULT_MAX_SUBGRAPH_RETRIES,
         "fatal_block": False,
         "raw_state_buffer": {},
+        "patch_ledger_path": ledger,
     }
     out = graph.invoke(seed, config={"configurable": {"thread_id": "t-local"}})
 
@@ -103,12 +112,17 @@ def test_transient_error_retries_locally_without_supervisor() -> None:
     assert visits.count(SUBGRAPH_NODE) == 3
     assert int(out.get("subgraph_retry_count") or 0) == 0
     assert get_raw_trace(out) is None
+    # Success escalate must not invent a PENDING ticket.
+    assert not Path(ledger).is_file() or "[PENDING]" not in Path(ledger).read_text(
+        encoding="utf-8"
+    )
 
 
-def test_exhausted_retries_bubble_to_supervisor_with_full_stack() -> None:
+def test_exhausted_retries_bubble_to_supervisor_with_full_stack(tmp_path: Path) -> None:
     """After 2 failed local retries, escalate with un-truncated raw_state_buffer."""
     visits: list[str] = []
     long_marker = "STACK_MARKER_" + ("Z" * 800)
+    ledger = _tmp_ledger(tmp_path)
 
     def subgraph(state: ReactGraphState) -> dict[str, Any]:
         visits.append(SUBGRAPH_NODE)
@@ -151,6 +165,7 @@ def test_exhausted_retries_bubble_to_supervisor_with_full_stack() -> None:
         "max_subgraph_retries": 2,
         "fatal_block": False,
         "raw_state_buffer": {},
+        "patch_ledger_path": ledger,
     }
     out = graph.invoke(seed, config={"configurable": {"thread_id": "t-escalate"}})
 
@@ -167,6 +182,9 @@ def test_exhausted_retries_bubble_to_supervisor_with_full_stack() -> None:
     assert "Traceback (most recent call last)" in trace["traceback"]
     # No truncation of the long marker payload.
     assert long_marker == "STACK_MARKER_" + ("Z" * 800)
+    body = Path(ledger).read_text(encoding="utf-8")
+    assert "[PENDING]" in body
+    assert long_marker in body
 
 
 def test_resolve_and_route_helpers_agree_on_retry_budget() -> None:

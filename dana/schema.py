@@ -172,3 +172,5 @@ class ReactGraphState(TypedDict, total=False):
     # Autonomous sub-graph local retries (bypass supervisor until exhausted).
     subgraph_retry_count: int
     max_subgraph_retries: int
+    # Injectable patch ledger path (tests); production leaves unset → dana_security/.
+    patch_ledger_path: str

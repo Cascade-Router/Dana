@@ -127,7 +127,7 @@ def test_hybrid_grounding_survives_visual_shift() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_critic_and_watchdog_tolerate_latency_jitter() -> None:
+def test_critic_and_watchdog_tolerate_latency_jitter(tmp_path: Path) -> None:
     """Non-fatal delay / toast noise must not set fatal_block or fail-closed."""
     sleeps: list[float] = []
     injector = DesktopNoiseInjector(
@@ -179,6 +179,7 @@ def test_critic_and_watchdog_tolerate_latency_jitter() -> None:
             "critique_history": ["healed"],
             "retry_count": 0,
             "session_id": "osworld-latency",
+            "patch_ledger_path": str(tmp_path / "patch_ledger.md"),
         }
     )
     # Exhausted-heal fail_closed may halt, but latency alone must not invent fatal_block.
