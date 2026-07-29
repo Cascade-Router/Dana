@@ -1,14 +1,30 @@
-# Donna Architecture
+# Dānā Architecture
 
-Donna is a **local-first agentic voice OS**: a multi-threaded perception plane, a mode-gated cognitive router, and a filesystem execution jail under a single-instance process lock. This document describes the production control paths relevant to operators and contributors.
+Dānā (package `dana`) is a **production-hardened, local-first agentic voice OS**: a multi-threaded perception plane, a mode-gated cognitive router, transactional shadow workspaces, hybrid UIA/Florence grounding, and a filesystem execution jail under a single-instance process lock. This document describes the production control paths relevant to operators and contributors.
 
-**Stage 3 (FSM Bureaucracy & Blackboard):** Donna is no longer a purely probabilistic LangGraph system. She is a **deterministic Finite State Machine (FSM) hybrid** — RapidFuzz mailroom routing, minimized graph state, SQLite Blackboard memory, DeepSeek `<think>` extraction, Pydantic tool guards, and structured `Handoff` capability switches. LLMs generate content; Python owns routing, validation, and state transitions.
+**White paper:** [`WHITE_PAPER.md`](WHITE_PAPER.md) — 5-phase hardening specs + OSWorld benchmarks  
+**OSWorld bench:** `pytest tests/evals/test_osworld_bench.py`  
+**Root overview:** [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
+
+**Packages:** `dana/` (core) · `dana_jason_loop/` (Jason supervisor) · `dana_security/` (AST/subprocess gates + `patch_ledger.md`)
+
+**Stage 3 (FSM Bureaucracy & Blackboard):** Dānā is a **deterministic Finite State Machine (FSM) hybrid** — RapidFuzz mailroom routing, Memory Hydration → Supervisor Router (`hydrate_memory` → `planner`), minimized graph state, SQLite Blackboard memory, DeepSeek `<think>` extraction, Pydantic tool guards, and structured `Handoff` capability switches. LLMs generate content; Python owns routing, validation, and state transitions.
+
+### Five hardened capabilities
+
+| Capability | Module |
+|------------|--------|
+| Transactional Shadow Workspaces (`.dana_scratch/`) | `dana/exec/shadow_workspace.py` |
+| Fatal Error Classifier → HITL tickets | `dana/graph/nodes/critic.py` (`FATAL_EXCEPTIONS`) |
+| Hybrid Win32 UIA + Crop-and-Zoom Florence-2 | `dana/vision/hybrid_grounding.py` |
+| Zero-Copy `raw_state_buffer` + Sub-Graph Retries (N=2) | `dana/graph/buffer.py`, `dana/graph/subgraph_router.py` |
+| Spatial TTL (900s) + exponential decay (λ=0.05/hr) | `dana/graph/nodes/memory.py`, `dana/memory/compaction.py` |
 
 ---
 
 ## 1. Multi-Threaded Ingestion Pipeline
 
-Donna never blocks the cognitive loop on a single I/O source. Two complementary ingest planes feed the conversation finite-state machine.
+Dānā never blocks the cognitive loop on a single I/O source. Two complementary ingest planes feed the conversation finite-state machine.
 
 ### 1.1 MicIngest (continuous audio producer)
 
@@ -125,7 +141,7 @@ Implemented at process entry in `run.py` before `core_agent.main()`:
 
 ### Why this is critical
 
-Donna’s durable control plane lives on disk:
+Dānā’s durable control plane lives on disk:
 
 | Artifact | Risk under concurrent writers |
 |----------|-------------------------------|
@@ -133,6 +149,7 @@ Donna’s durable control plane lives on disk:
 | `execution_jail/input.txt` | Raced clear/ingest; duplicate or dropped tasks |
 | `dana_security/patch_ledger.md` | Interleaved ticket writes; `Errno 22` / failed drains |
 | `memory/blackboard.db` | Concurrent SQLite writers / torn sessions |
+| `.dana_scratch/` | Torn shadow commits if two writers share a session |
 | `.trigger_ask` | Two Mains consuming one inject; duplicated sessions |
 
 Headless E2E and Startup-registered `pythonw` launches make multi-instance races likely without a lock. The socket gate is **fail-closed infrastructure**, not a UX nicety.
@@ -145,7 +162,7 @@ Headless E2E and Startup-registered `pythonw` launches make multi-instance races
 
 | Thread / owner | Responsibility |
 |----------------|----------------|
-| Tk main (`DonnaGUI.mainloop`) | Live Trace + settings; only thread that mutates widgets |
+| Tk main (`DonnaGUI.mainloop`) | Live Trace + settings; only thread that mutates widgets (legacy class name) |
 | AgentLoop | Wake/VAD/Whisper/brain/TTS orchestration |
 | MicIngest | Mic producer |
 | InputIngest watcher | `input.txt` → queue |

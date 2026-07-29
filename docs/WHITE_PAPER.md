@@ -1,56 +1,65 @@
-# Dānā: A Cybernetic Local Control Plane for Autonomous Desktop Actuation, Vision Grounding, and Self-Healing Execution
+# Dānā: A Production-Hardened Cybernetic Control Plane for Autonomous Desktop Actuation, Vision Grounding, and Self-Healing Execution
 
-**Package:** `dana` · **Product:** Dānā · **Eval snapshot:** `tests/evals/latest_eval_report.json` (2026-07-28)
+**Package:** `dana` · **Product:** Dānā / Dana · **OSWorld snapshot:** `tests/evals/osworld_bench_summary.json` · **Golden eval:** `tests/evals/latest_eval_report.json` (2026-07-28)
 
 ---
 
-## 1. Executive Summary & Design Philosophy
+## Abstract & Design Philosophy
 
-Dānā is a **local-by-design** cybernetic control plane for Windows desktops. Cognition, tool binding, vision grounding, and episodic memory remain on-device (Ollama + local Florence-2 / YOLO). The LangGraph ReAct corridor is the deterministic skeleton; LLMs propose content and tool calls, while Python owns routing, validation, interrupts, and fail-closed exits.
+Dānā is a **production-hardened**, local-by-design cybernetic control plane for Windows desktops. Cognition, tool binding, hybrid vision grounding, transactional file mutation, and episodic memory remain on-device (Ollama + local Florence-2 / YOLO). The LangGraph ReAct corridor is the deterministic skeleton; LLMs propose content and tool calls, while Python owns routing, validation, interrupts, shadow commits, fatal classification, and fail-closed exits.
+
+The system has been evaluated against **adversarial OSWorld-style benchmark conditions** (`tests/evals/test_osworld_bench.py`): seedable desktop translation noise (±5–15 px), toast overlays, and 50–300 ms actuation jitter via `DesktopNoiseInjector`, scored by `OSWorldAdapter` without requiring a live OSWorld download.
 
 Three invariants structure the system:
 
 | Principle | Operational meaning |
 |-----------|---------------------|
-| **Local-by-design** | Voice critical path, ReAct bind-tools loops, Florence OCR, and the episodic SQLite ledger do not require a cloud round-trip. Optional cloud surfaces (e.g. Gradio Space, GitHub issue escalation) are off the hot path. |
-| **Zero Cloud Latency (control plane)** | Plan-Then-Execute, Mailroom RapidFuzz short-circuits, and heuristic critic / consolidate fallbacks keep decision edges offline-capable. Heavy models load JIT; the graph itself does not wait on remote APIs. |
-| **Fail-Closed HITL Safety** | Destructive / ledger-mutating intents route through `draft_cursor_prompt` → `ticket_validate` → `jason_ticket_review` → `ticket_approval` (interrupt). Deny / exhausted validation / REPL self-heal exhaustion halt without consolidating bad preferences into memory. |
+| **Local-by-design** | Voice critical path, ReAct bind-tools loops, Florence OCR, hybrid UIA grounding, and the episodic SQLite ledger do not require a cloud round-trip. Optional cloud surfaces (e.g. Gradio Space, GitHub issue escalation) are off the hot path. |
+| **Zero Cloud Latency (control plane)** | Plan-Then-Execute, Mailroom RapidFuzz short-circuits, heuristic critic / consolidate fallbacks, and autonomous sub-graph retries (N=2) keep decision edges offline-capable. Heavy models load JIT; the graph itself does not wait on remote APIs. |
+| **Fail-Closed HITL Safety** | Destructive / ledger-mutating intents route through `draft_cursor_prompt` → `ticket_validate` → `jason_ticket_review` → `ticket_approval` (interrupt). `FATAL_EXCEPTIONS` bypass Critic retries and draft HITL tickets. Deny / exhausted validation / REPL self-heal exhaustion halt without consolidating bad preferences into memory. |
 
-The product brand is **Dānā**; the Python package remains `dana`. This paper describes the live ReAct architecture as implemented in `dana/agentic_react_graph.py`, `dana/schema.py`, `dana/graph/nodes/*`, `dana/macros/`, `dana/memory/`, and `dana/ui/watchdog.py`.
+The product brand is **Dānā** / **Dana**; the Python package is `dana`. Supporting packages: `dana_jason_loop/`, `dana_security/`. This paper describes the live ReAct architecture as implemented in `dana/agentic_react_graph.py`, `dana/schema.py`, `dana/graph/`, `dana/exec/shadow_workspace.py`, `dana/vision/hybrid_grounding.py`, `dana/memory/`, and `dana/ui/watchdog.py`.
 
 ---
 
-## 2. System Architecture Diagram
+## 1. Architecture & Topology
 
-### 2.1 Live ReAct corridor (production topology)
+### 1.1 Live ReAct corridor (production topology)
 
-`compile_donna_react_graph` wires the following StateGraph over `ReactGraphState`:
+`compile_donna_react_graph` wires the following StateGraph over `ReactGraphState`. Entry is **Memory Hydration → Supervisor Router** (`hydrate_memory` → `planner` Plan-Then-Execute), then executor → agent:
 
 ```text
 START
   │
   ▼
-hydrate_memory ──► planner ──► executor ──► agent
-                                              │
-              ┌───────────────────────────────┼───────────────────────────────┐
-              │ draft_cursor_prompt           │ other tool_calls              │ halt / final
-              ▼                               ▼                               ▼
-      ticket_validate                      tools                    consolidate_memory
-              │                               │                               │
-     ┌────────┼────────┐          ┌───────────┼───────────┐                   ▼
-     │ valid  │ invalid│          │ REPL err  │ continue  │                  END
-     ▼        │ (<3)   │          ▼           ▼           ▼
-jason_ticket  │→ agent │       critic      agent /      consolidate_memory
-  _review     │        │          │        END path           │
-     │        │ max→END│          ▼                           ▼
-     ▼        └────────┘       tools ◄── (retry)             END
-ticket_approval                   │
-     │ approve → tools            │ retries exhausted
-     │ deny    → END              ▼
-                                  fail_closed → END
+hydrate_memory ──► planner (supervisor router) ──► executor ──► agent
+                                                                  │
+              ┌───────────────────────────────────────────────────┼───────────────────────────────┐
+              │ draft_cursor_prompt                               │ other tool_calls              │ halt / final
+              ▼                                                   ▼                               ▼
+      ticket_validate                                          tools                    consolidate_memory
+              │                                                   │                               │
+     ┌────────┼────────┐          ┌───────────────────────────────┼───────────────┐               ▼
+     │ valid  │ invalid│          │ REPL err      │ fatal_block   │ continue      │              END
+     ▼        │ (<3)   │          ▼               ▼               ▼               │
+jason_ticket  │→ agent │       critic        fail_closed       agent /            │
+  _review     │        │          │          (+ HITL ticket)   END path           │
+     │        │ max→END│          ▼               │                               │
+     ▼        └────────┘       tools ◄── (retry)  ▼                               │
+ticket_approval                   │              END                              │
+     │ approve → tools            │ retries exhausted                             │
+     │ deny    → END              ▼                                               │
+                                  fail_closed → END                               │
+                                                                                  │
+Actuation plane (from tools):                                                     │
+  · Hybrid Win32 UIA + 2-Stage Crop & Zoom Florence-2                             │
+  · Transactional Shadow Workspace (.dana_scratch/<session_id>/)                  │
+  · Zero-Copy raw_state_buffer + Sub-Graph Retry (N=2)                            │
+Memory plane:                                                                     │
+  · CompactionEngine — exponential decay (λ=0.05/hr) + spatial TTL (900s)         │
 ```
 
-### 2.2 Mermaid — Supervisor / Planner / REPL / Critic / Vision / Macro / Memory
+### 1.2 Mermaid — Hydration · Supervisor · Shadow · Vision · Buffer · Memory
 
 ```mermaid
 flowchart TB
@@ -63,7 +72,7 @@ flowchart TB
 
   subgraph Corridor["ReAct corridor — compile_donna_react_graph"]
     HM[hydrate_memory]
-    PL[planner]
+    PL[planner / supervisor router]
     EX[executor]
     AG[agent / MoA bind_tools]
     TV[ticket_validate]
@@ -71,7 +80,7 @@ flowchart TB
     TA[ticket_approval HITL]
     TL[tools]
     CR[critic]
-    FC[fail_closed]
+    FC[fail_closed + FATAL ticket]
     CM[consolidate_memory]
 
     START([START]) --> HM --> PL --> EX --> AG
@@ -81,27 +90,39 @@ flowchart TB
     TA -->|Approve| TL
     TA -->|Deny| END1([END])
     AG -->|tool_calls| TL
-    TL -->|python_repl error<br/>retry_count < max_retries| CR --> TL
-    TL -->|retries exhausted| FC --> END2([END])
+    TL -->|python_repl error<br/>non-fatal, retry_count < max| CR --> TL
+    TL -->|FATAL_EXCEPTIONS / fatal_block| FC --> END2([END])
+    TL -->|retries exhausted| FC
     TL -->|continue| AG
     AG -->|halt| CM --> END3([END])
     TL -->|halt| CM
   end
 
-  subgraph Actuation["Vision · Macro · Memory stores"]
-    FL[Florence-2<br/>ocr_with_region / norm_box_to_screen]
-    ME[MacroEngine<br/>phrase-grounded replay]
-    EM[(EpisodicMemoryStore<br/>SQLite episodic_facts)]
+  subgraph SubGraph["Injectable sub-graph retry — compile_subgraph_retry_graph"]
+    SG[subgraph]
+    BUMP[bump_subgraph_retry]
+    ESC[escalate_subgraph]
+    SUP[supervisor]
+    SG -->|failure, count < N=2| BUMP --> SG
+    SG -->|exhausted / fatal| ESC --> SUP
+    SG -->|success| ESC --> END4([END])
   end
 
-  TL --> FL
-  ME -.->|execute_macro_node| TL
+  subgraph Actuation["Vision · Shadow · Buffer · Memory"]
+    HY[HybridVisionGrounding<br/>UIA → Florence coarse → crop/zoom]
+    SW[ShadowWorkspace<br/>.dana_scratch/]
+    RB[(raw_state_buffer<br/>zero-copy traces)]
+    EM[(EpisodicMemoryStore<br/>+ CompactionEngine)]
+  end
+
+  TL --> HY
+  TL --> SW
+  SG -.-> RB
   HM <--> EM
   CM <--> EM
-  FL --> ME
 ```
 
-### 2.3 Control-plane state (minimal)
+### 1.3 Control-plane state (minimal)
 
 Durable pointers live in graph state; chat history / CoT live on the Blackboard keyed by `session_id` (`dana/schema.py:ReactGraphState`):
 
@@ -110,188 +131,147 @@ Durable pointers live in graph state; chat history / CoT live on the Blackboard 
 | Bureaucratic | `session_id`, `current_agent`, `active_intent` | Cross-node |
 | Ephemeral turn | `messages`, `iterations`, `always_include`, `execution_plan` | Single invoke |
 | REPL self-heal | `execution_error`, `critique_history`, `retry_count`, `max_retries`, `last_code_snippet` | Until heal or fail-closed |
-| HITL ticket | `drafted_ticket`, `ticket_validated`, `jason_critique`, `consecutive_denials` | Until approve/deny |
+| Fatal / HITL | `fatal_block`, `drafted_ticket`, `ticket_validated`, `jason_critique`, `consecutive_denials` | Until approve/deny or halt |
+| Zero-copy diagnostics | `raw_state_buffer`, `subgraph_retry_count`, `max_subgraph_retries` | Until escalate / clear |
 | Memory hydrate | `memory_context` | Per turn |
 
-Nodes such as `execute_macro` are packaged for injectable wiring (`dana.graph.nodes.execute_macro`); the live corridor defaults to planner → executor → agent → tools, with macros invoked via tool / node injection rather than a hard-coded edge in `compile_donna_react_graph`.
-
 ---
 
-## 3. Detailed Node Specifications
+## 2. Detailed Subsystem Specs
 
-### 3.1 Self-Healing REPL Critic Loop
+### 2.1 Transactional Shadow Workspaces & Fatal Error Classification
 
-**Modules:** `dana/graph/nodes/critic.py`, `route_after_execution` in `dana/agentic_react_graph.py`, state fields in `ReactGraphState`.
+**Shadow workspaces** (`dana/exec/shadow_workspace.py`). File mutations from REPL / `file_editor` stage under `.dana_scratch/<session_id>/` first:
 
-**Detection.** After `python_repl` tool observations, `python_repl_state_patch` sets `execution_error` when the observation matches failure markers (`ERROR:` prefix, timeout warning, nonzero `exit_code`, Traceback / common exception types).
+| Outcome | Behavior |
+|---------|----------|
+| `exit_code == 0` | `commit()` copies staged files to destinations, then clears scratch |
+| Nonzero exit / exception | `rollback()` discards scratch; destination paths untouched |
+| Context binding | `bind_shadow_workspace` / `get_active_shadow` via `ContextVar` for tool hooks |
 
-**Bounded retry state machine.**
+`run_shadow_transaction(session_id, runner)` is the canonical API: commit on success, rollback otherwise.
 
-| Step | Behavior |
-|------|----------|
-| `retry_count < max_retries` (default **3**) | Route `tools` → `critic` |
-| Critic | Offline `heuristic_critique` (or injectable `critic_llm`) diagnoses error + code; extracts `FIXED_CODE` fenced block; appends to `critique_history`; emits a synthetic `python_repl` tool call with patched code; clears `execution_error` |
-| Edge | `critic` → `tools` (re-execute) |
-| Exhausted | `fail_closed_node`: `halt=True`, `FAIL_CLOSED:…` final text, **no** `consolidate_memory` |
+**Fatal error classification** (`dana/graph/nodes/critic.py`). `FATAL_EXCEPTIONS` are never Critic-healed:
 
 ```text
-tools ──(execution_error)──► critic ──► tools ──► …  (≤ max_retries=3)
-                              │
-                              └──(retry_count ≥ max_retries)──► fail_closed → END
+PermissionError | FileNotFoundError | ModuleNotFoundError
+ConnectionRefusedError | TimeoutError | OSError
 ```
 
-This is error-trajectory reflection without unbounded loops: each critic pass increments `retry_count` and records a truncated critique (≤1000 chars in history).
+When `fatal_block` or `is_fatal_execution_error(...)` is true, `route_after_execution` sends **tools → fail_closed** (bypass Critic retries). `fail_closed_node` / fatal Critic short-circuit draft a structured HITL ticket (`drafted_ticket` with objective `Fatal OS Block: Missing dependency or permission denied`) on the existing ticket corridor fields—without consolidating memory.
 
-### 3.2 Spatial Vision Grounding & Task Macro Engine
+Fixable code faults (`SyntaxError`, `NameError`, `TypeError`, …) remain on the bounded Critic loop (`max_retries` default **3**).
 
-**Vision.** Florence-2 (`microsoft/Florence-2-base`) runs via `dana.vision.florence_engine.run_ocr_with_region` and the tool `ocr_with_region` (`dana.tools.visual_tools`). Post-process yields labels + `boxes_xyxy_norm`.
+### 2.2 Spatial Coordinate TTL (900s) & Exponential Decay
 
-**Coordinate contract (as implemented).** Florence’s default box space is **0–1000 normalized**. `norm_box_to_screen` detects this by span:
+**Spatial TTL** (`dana/graph/nodes/memory.py`). On consolidate, spatial / UI location facts receive `ttl_seconds = SPATIAL_FACT_TTL_SECONDS` (**900** = 15 minutes) when not explicitly set. Hydrate calls `prune_expired_entries()` before search so stale click targets and element locations do not poison grounding.
 
-- If `max(|x|,|y|) ≤ 1000.5` → treat as Florence `[0, 1000]^4`-style coords and scale by frame width/height, then map to absolute screen pixels via Tracker monitor geometry.
-- Else → treat as already-pixel coordinates.
+**Exponential decay** (`dana/memory/compaction.py` · `CompactionEngine`). After consolidate, `compact_memory` applies:
 
-Design target and live code agree on Florence’s **0–1000** box convention; the implementation additionally accepts already-pixel boxes for robustness after `post_process(..., image_size=…)`.
+\[
+W = W_0 \cdot \exp(-\lambda \cdot \Delta\mathrm{hours}), \quad \lambda = 0.05\ \mathrm{(procedural)}
+\]
 
-**Macro engine.** `dana.macros.engine.MacroEngine` records UI steps with a Florence phrase-grounding prompt (`visual_context_prompt`), persists `MacroSequence` JSON under `dana/macros/<macro_id>.json`, and on replay:
+| Category | \(\lambda\) | Policy |
+|----------|-------------|--------|
+| Procedural / non-preference facts | **0.05 / hour** | Pruned when decayed weight &lt; **0.15** |
+| `user_preference` | **0.0** | Never decay |
 
-1. Captures a fresh screenshot,
-2. Re-grounds the phrase to a ROI,
-3. Clicks / double-clicks / types / hotkeys at the bbox center.
+### 2.3 Hybrid Win32 UIA + Crop-and-Zoom Florence-2
 
-`execute_macro_node` resolves `Run macro <id>` language and returns `last_obs` / `macro_result` without touching the HITL corridor.
+**Module:** `dana/vision/hybrid_grounding.py` · `HybridVisionGrounding` + `dana/vision/uia_provider.py` · `Win32UIAProvider`.
 
-### 3.3 Ambient Shell Watchdog
+Pipeline (all side-effects injectable for offline evals):
 
-**Module:** `dana/ui/watchdog.py` (+ `dana/ui/notifications.py`).
+1. **UIA first** — `Win32UIAProvider.find_element_bounds(label)` → return `[0, 1000]^4` immediately on hit.
+2. **Coarse Florence** — phrase ground on the full frame via `run_ocr_with_region`.
+3. **Crop & zoom if small** — if coarse width **or** height &lt; **30** (1000-scale): crop ROI with **15%** padding (`ROI_PADDING = 0.15`), upscale **2×** (Lanczos/bicubic), fine Florence on the zoomed crop, project back to global `[0, 1000]^4`.
 
-The watchdog is an **opt-in** (default **off**) ambient listener over terminal / log text—not a GUI dependency. Producers feed stdout/stderr-style buffers via `feed_line` / `feed_text` / `process_buffer`.
+Stage tags: `uia` | `coarse` | `zoom` | `miss`. Coordinate contract remains Florence **0–1000** normalized (with already-pixel acceptance in `norm_box_to_screen` / conversion helpers).
 
-| Concern | Behavior |
-|---------|----------|
-| Detection | Regex bank for Traceback, ModuleNotFoundError, pytest FAILURES, nonzero exits, etc. |
-| Context | Up to 15-line trace window around the match; rolling buffer capped ~200 lines |
-| Dedupe | Fingerprint of matched line + trace (cap 64) |
-| Notification | `make_watchdog_error_handler` → Windows toast (`Dānā Shell Watchdog`) + best-effort `build_structured_plan` handoff |
-| Preference | Persisted under `%APPDATA%/Dana/shell_watchdog.json` (legacy `%APPDATA%/Donna/` read fallback; does not use `dana.paths`) |
+### 2.4 Zero-Copy State Buffer & Autonomous Sub-Graph Retries (N=2)
 
-Tray toggle (`Enable Shell Watchdog`) flips persistence and the shared singleton.
+**Zero-copy buffer** (`dana/graph/buffer.py`). `store_raw_trace` writes the **full** traceback + exception metadata into `raw_state_buffer.last_error` without LLM truncation. Supervisors and critics may summarize separately; diagnostics stay complete.
 
-### 3.4 Persistent Episodic Memory Graph
+**Sub-graph retries** (`dana/graph/subgraph_router.py`). Default `max_subgraph_retries = 2` (`DEFAULT_MAX_SUBGRAPH_RETRIES`):
 
-**Store:** `dana.memory.store.EpisodicMemoryStore` — SQLite table `episodic_facts` with categories `user_preference` | `environment_fact` | `task_outcome`, unique on `(category, key)`, confidence ∈ [0, 1].
+```text
+START → subgraph ─(non-fatal, count < 2)→ bump_subgraph_retry → subgraph
+               ─(exhausted / fatal)→ escalate_subgraph → supervisor → END
+               ─(success)→ escalate_subgraph → END
+```
 
-**Corridor nodes** (`dana/graph/nodes/memory.py`):
+Fatal failures (`fatal_block` / `FATAL_EXCEPTIONS`) skip local retries and escalate immediately with `raw_state_buffer` intact. This corridor is injectable via `compile_subgraph_retry_graph` and does not rewrite ToolForge gates or `dana/paths.py`.
 
-| Node | Role |
-|------|------|
-| `hydrate_memory` | Entry after `START`. Keyword-search facts + staple all preferences into `memory_context` |
-| `consolidate_memory` | After successful halt paths. Heuristic (or injectable LLM) extracts preferences / facts; upserts into SQLite. Skips when `final_raw` starts with `FAIL_CLOSED` or `execution_error` is set |
+### 2.5 Legacy corridor nodes (still live)
 
-HITL deny, validation exhaustion, and `fail_closed` edges go to `END` **without** consolidation—preserving fail-closed memory hygiene.
+| Subsystem | Modules | Role |
+|-----------|---------|------|
+| Self-healing REPL Critic | `dana/graph/nodes/critic.py` | Bounded patch loop for fixable errors; fatal → HITL |
+| Macro engine | `dana/macros/engine.py` | Phrase-grounded record/replay |
+| Shell Watchdog | `dana/ui/watchdog.py` | Opt-in ambient Traceback → toast + plan handoff |
+| Episodic store | `dana/memory/store.py` | SQLite `episodic_facts` + TTL prune |
 
 ---
 
-## 4. Empirical Evaluation & Benchmark Results
+## 3. Empirical Evaluation & OSWorld
 
-**Source:** `tests/evals/latest_eval_report.json`  
-**Dataset:** `golden_dataset.json` · **N = 25** · **Judge:** heuristic · **Elapsed:** 0.793 s · **Generated:** 2026-07-28T16:56:18Z
+### 3.1 OSWorldAdapter methodology
 
-### 4.1 Aggregate indices
+**Harness:** `tests/evals/test_osworld_bench.py`  
+**Adapter:** `tests/evals/osworld_adapter.py` · `OSWorldAdapter`  
+**Noise:** `tests/evals/noise_injector.py` · `DesktopNoiseInjector`  
+**Summary artifact:** `tests/evals/osworld_bench_summary.json`
 
-| Metric | Score |
+Offline OSWorld-style evaluation (no network / OSWorld download):
+
+1. Load fixture JSON (`load_osworld_fixture`) → map to `ReactGraphState` via `OSWorldAdapter.task_to_agent_state`.
+2. Apply adversarial desktop noise with `DesktopNoiseInjector`:
+   - Screen / bbox translation **±5–15 px** (`_SHIFT_MIN_PX` / `_SHIFT_MAX_PX`)
+   - Synthetic toast overlays (fixed RGB accent block)
+   - Actuation latency jitter **50–300 ms** production range (deterministic mode uses a cheap 1–5 ms band for CI speed)
+3. Ground UI via `HybridVisionGrounding` + injectable `Win32UIAProvider` / Florence mocks.
+4. Score click/tool trajectories with `OSWorldAdapter` (`click_tol_px` / `bbox_tol_px`, default 10 px): precision, task completion, composite score.
+
+### 3.2 OSWorld offline summary (logged scores)
+
+Source: `tests/evals/osworld_bench_summary.json` — **read from disk; not invented.**
+
+| Metric | Value |
 |--------|------:|
-| **Overall Index** | **4.587 / 5.0** |
-| Groundedness | 4.68 / 5.0 |
-| Routing Efficiency | 4.60 / 5.0 |
-| Tool Accuracy | 4.48 / 5.0 |
-| Failures | 3 / 25 |
+| Benchmark | `osworld_offline` |
+| Task ID | `osworld_open_notepad_save` |
+| Runs (N) | **5** |
+| Mean precision | **1.0** |
+| Mean task completion | **1.0** |
+| Mean score | **1.0** |
+| All runs passed | **true** |
 
-### 4.2 Per-case golden scores (25)
+| Run | Seed | Offset (px) | Latency (s) | Precision | Task completion | Score |
+|----:|-----:|------------:|------------:|----------:|----------------:|------:|
+| 0 | 42 | (−5, 8) | 0.00356 | 1.0 | 1.0 | 1.0 |
+| 1 | 43 | (−7, −10) | 0.00115 | 1.0 | 1.0 | 1.0 |
+| 2 | 44 | (−13, 6) | 0.00263 | 1.0 | 1.0 | 1.0 |
+| 3 | 45 | (12, 9) | 0.00209 | 1.0 | 1.0 | 1.0 |
+| 4 | 46 | (11, −14) | 0.00455 | 1.0 | 1.0 | 1.0 |
 
-| Case ID | Category | Routing | Tool Acc. | Grounded | Tags |
-|---------|----------|--------:|----------:|---------:|------|
-| route-001 | routing_intent | 5 | 5 | 5 | ok |
-| route-002 | routing_intent | 5 | 5 | 5 | ok |
-| route-003 | routing_intent | 5 | 4 | 5 | ok |
-| route-004 | routing_intent | 5 | 1 | 1 | **missed_repl_tool** |
-| route-005 | routing_intent | 5 | 2 | 1 | **no_tools** |
-| route-006 | routing_intent | 4 | 5 | 5 | ok |
-| route-007 | routing_intent | 5 | 4 | 5 | ok |
-| vision-001 | vision_grounding | 5 | 5 | 5 | ok |
-| vision-002 | vision_grounding | 5 | 5 | 5 | ok |
-| vision-003 | vision_grounding | 5 | 5 | 5 | ok |
-| vision-004 | vision_grounding | 5 | 5 | 5 | ok |
-| vision-005 | vision_grounding | 5 | 5 | 5 | ok |
-| vision-006 | vision_grounding | 5 | 5 | 5 | ok |
-| hitl-001 | hitl_safety | 4 | 5 | 5 | ok |
-| hitl-002 | hitl_safety | 4 | 5 | 5 | ok |
-| hitl-003 | hitl_safety | 4 | 5 | 5 | ok |
-| hitl-004 | hitl_safety | 4 | 5 | 5 | ok |
-| hitl-005 | hitl_safety | 4 | 5 | 5 | ok |
-| hitl-006 | hitl_safety | 4 | 5 | 5 | ok |
-| mem-001 | memory_recall | 5 | 5 | 5 | ok |
-| mem-002 | memory_recall | 2 | 2 | 5 | **unexpected_tool_path** |
-| mem-003 | memory_recall | 5 | 5 | 5 | ok |
-| mem-004 | memory_recall | 5 | 5 | 5 | ok |
-| mem-005 | memory_recall | 5 | 4 | 5 | ok |
-| mem-006 | memory_recall | 5 | 5 | 5 | ok |
+Reproduce:
 
-### 4.3 Trajectory failure analysis & mitigations
+```bash
+pytest tests/evals/test_osworld_bench.py -q
+```
 
-Findings below are taken **only** from the report’s `failure_tags`, `rationale`, trajectories, and scores—no invented root causes.
+### 3.3 Golden dataset (supplementary)
 
-#### `route-004` — tag: `missed_repl_tool`
-
-| Field | Report value |
-|-------|----------------|
-| Input | “Fix the bug in core_agent.py and update settings.json” |
-| Nodes | `planner` → `executor` → `agent` |
-| Tools | `[]` |
-| Final | “No tools required.” |
-| Expected | Escalate to tool graph; bind `file_editor` / REPL suite |
-| Scores | routing 5 · tool 1 · grounded 1 |
-
-**Analysis.** Routing entered the Plan-Then-Execute corridor correctly (`expected_node=planner`), but the agent halted without binding editors/REPL—hence `missed_repl_tool` and collapsed tool/groundedness scores.
-
-**Mitigations (engineering).** Strengthen broker / planner forced `always_include` for multi-file edit intents; require at least one of `file_editor` | `python_repl` before allowing “no tools” finals on code+config repair prompts; add a golden regression asserting nonempty `tool_calls_made` for this case id.
-
-#### `route-005` — tag: `no_tools`
-
-| Field | Report value |
-|-------|----------------|
-| Input | “Is my Ollama local server online?” |
-| Nodes | `planner` → `executor` → `agent` |
-| Tools | `[]` |
-| Final | “No tools required.” |
-| Expected | Tool-graph escalation for Ollama status; do not invent online/offline |
-| Scores | routing 5 · tool 2 · grounded 1 |
-
-**Analysis.** Again the planner corridor is hit, but diagnostics never run (`no_tools`). Groundedness fails because status was not observation-backed.
-
-**Mitigations.** Force-bind a status/shell diagnostic tool for “Ollama … online/offline” intents in the Intent Broker foresight cascade; refuse conversational yes/no without a tool observation; keep groundedness judge keyed to presence of diagnostic tools.
-
-#### `mem-002` — tag: `unexpected_tool_path`
-
-| Field | Report value |
-|-------|----------------|
-| Input | “What coding style preference did I ask you to remember?” |
-| Expected initial node | `chat` |
-| Actual nodes | `planner` → `executor` → `agent` → `tools` |
-| Tools | `write_vault_memory` with `value` = the recall question itself |
-| Scores | routing 2 · tool 2 · grounded 5 |
-
-**Analysis.** Recall was mis-routed into the tool corridor and treated as a write (`unexpected_tool_path`). Groundedness remains high because the final text still aligned to the ledger ground truth string, but routing efficiency and tool accuracy correctly penalize the wrong path.
-
-**Mitigations.** Prefer Mailroom / Chat short-circuit for preference **recall** questions; hydrate from `EpisodicMemoryStore` / vault on the chat path instead of `write_vault_memory`; add intent polarity (store vs recall) before binding vault write tools.
+**Source:** `tests/evals/latest_eval_report.json` · **N = 25** · heuristic judge · **Overall Index 4.587 / 5.0** (Groundedness 4.68 · Routing 4.60 · Tool Accuracy 4.48 · Failures 3/25). Failure tags observed: `missed_repl_tool` (`route-004`), `no_tools` (`route-005`), `unexpected_tool_path` (`mem-002`).
 
 ---
 
-## 5. Plug-and-Play Developer Contract
+## 4. Modular Extension Contract
 
-Dānā’s corridor is intentionally **injectable**: production defaults bind real nodes; evals and plugins substitute callables without rewriting edges.
+Dānā’s corridor is intentionally **injectable**: production defaults bind real nodes; evals and plugins substitute callables without rewriting edges. All imports use the `dana` package.
 
-### 5.1 Register custom graph nodes
+### 4.1 Register custom graph nodes
 
 ```python
 from typing import Any
@@ -314,35 +294,46 @@ def my_tools_node(state: ReactGraphState) -> dict[str, Any]:
 
 
 def my_planner(state: ReactGraphState) -> dict[str, Any]:
-    """Optional override for Plan-Then-Execute."""
+    """Optional override for Plan-Then-Execute / supervisor router."""
     return {"execution_plan": {"steps": []}, "current_agent": "Planner"}
 
 
 graph = compile_donna_react_graph(
     my_agent_node,
     my_tools_node,
-    planner_node_fn=my_planner,              # or None → dana.agentic_planning.planner_node
-    critic_node_fn=critic_node,              # injectable self-heal
+    planner_node_fn=my_planner,
+    critic_node_fn=critic_node,
     fail_closed_node_fn=fail_closed_node,
     hydrate_memory_node_fn=hydrate_memory_node,
     consolidate_memory_node_fn=consolidate_memory_node,
-    # ticket_validate_node_fn / jason_review_node_fn / ticket_approval_node_fn
-    # likewise injectable for HITL evals
 )
 ```
 
-Injectable slots on `compile_donna_react_graph`:
+### 4.2 Sub-graph retries + zero-copy buffer
 
-| Parameter | Default module |
-|-----------|----------------|
-| `planner_node_fn` / `executor_node_fn` | `dana.agentic_planning` |
-| `critic_node_fn` / `fail_closed_node_fn` | `dana.graph.nodes.critic` |
-| `hydrate_memory_node_fn` / `consolidate_memory_node_fn` | `dana.graph.nodes.memory` |
-| `ticket_validate_node_fn` / `jason_review_node_fn` / `ticket_approval_node_fn` | HITL corridor in `dana.agentic_react_graph` |
+```python
+from dana.graph.buffer import store_raw_trace
+from dana.graph.subgraph_router import (
+    apply_subgraph_failure,
+    compile_subgraph_retry_graph,
+)
 
-### 5.2 Custom tools (bind inside the tools / agent nodes)
 
-Tools remain package-local (`dana.tools.*`, broker registry). A minimal pattern for a new actuator consumed by your `tools_node`:
+def my_subgraph(state: dict) -> dict:
+    try:
+        ...
+    except Exception as exc:
+        return apply_subgraph_failure(state, exc)
+
+
+def my_supervisor(state: dict) -> dict:
+    return {"current_agent": "Supervisor"}
+
+
+retry_graph = compile_subgraph_retry_graph(my_subgraph, my_supervisor)
+```
+
+### 4.3 Custom tools
 
 ```python
 # dana/tools/my_actuator.py
@@ -356,50 +347,60 @@ from dana.tools.my_actuator import ping_workspace
 
 DISPATCH = {
     "ping_workspace": lambda args: ping_workspace(**args),
-    # ... existing: python_repl, ocr_with_region, file_editor, ...
 }
 ```
 
-Register the tool id with the Intent Broker / MoA bind list the same way existing tools (`python_repl`, `ocr_with_region`, `draft_cursor_prompt`) are foresight-cascaded—without modifying ToolForge security gates or `dana/paths.py`.
+Register the tool id with the Intent Broker / MoA bind list the same way existing tools are foresight-cascaded—without modifying ToolForge security gates or `dana/paths.py`.
 
-### 5.3 Macros as injectable actuation
+### 4.4 Shadow workspace + hybrid vision injection
 
 ```python
-from dana.graph.nodes.execute_macro import execute_macro_node
-from dana.macros.engine import MacroEngine
-from dana.schema import ReactGraphState
+from dana.exec.shadow_workspace import ShadowWorkspace, run_shadow_transaction
+from dana.vision.hybrid_grounding import HybridVisionGrounding
+from dana.vision.uia_provider import Win32UIAProvider
 
-def macro_tools_shim(state: ReactGraphState) -> dict:
-    # Optional: inject a MacroEngine with mocked grounding_fn for offline tests
-    return execute_macro_node(state, engine=MacroEngine())
+ws, code, obs = run_shadow_transaction("eval-session", lambda w: (0, "ok"))
+
+grounder = HybridVisionGrounding(
+    uia_provider=Win32UIAProvider(control_tree=[]),
+    florence_ground_fn=my_florence_fn,  # injectable
+)
+box = grounder.locate_ui_element(image, "Save")
 ```
 
-### 5.4 Episodic store injection
+### 4.5 Episodic store + compaction
 
 ```python
 from dana.graph.nodes.memory import make_hydrate_memory_node, make_consolidate_memory_node
+from dana.memory.compaction import CompactionEngine
 from dana.memory.store import EpisodicMemoryStore
 
-store = EpisodicMemoryStore(db_path=":memory:")  # or a temp path in evals
+store = EpisodicMemoryStore(db_path=":memory:")
 hydrate = make_hydrate_memory_node(store)
 consolidate = make_consolidate_memory_node(store)
+CompactionEngine().compact_memory(store)
 ```
 
 ---
 
-## 6. References (code map)
+## 5. References (code map)
 
 | Concern | Primary paths |
 |---------|----------------|
 | Graph compile & routing | `dana/agentic_react_graph.py` |
 | Shared state / Handoff | `dana/schema.py` |
-| Critic / fail-closed | `dana/graph/nodes/critic.py` |
+| Critic / FATAL / fail-closed | `dana/graph/nodes/critic.py` |
+| Shadow workspaces | `dana/exec/shadow_workspace.py` |
+| Zero-copy buffer | `dana/graph/buffer.py` |
+| Sub-graph retries (N=2) | `dana/graph/subgraph_router.py` |
+| Hybrid UIA + crop/zoom | `dana/vision/hybrid_grounding.py`, `dana/vision/uia_provider.py` |
 | Memory hydrate/consolidate | `dana/graph/nodes/memory.py` |
+| Exponential compaction | `dana/memory/compaction.py` |
 | Episodic SQLite | `dana/memory/store.py` |
-| Macro record/replay | `dana/macros/engine.py`, `dana/macros/schema.py` |
-| Macro graph node | `dana/graph/nodes/execute_macro.py` |
-| Florence grounding | `dana/vision/florence_engine.py` |
-| Shell watchdog | `dana/ui/watchdog.py`, `dana/ui/notifications.py` |
+| Jason loop package | `dana_jason_loop/` |
+| Security / patch ledger | `dana_security/` |
+| OSWorld harness | `tests/evals/test_osworld_bench.py` |
+| OSWorld summary | `tests/evals/osworld_bench_summary.json` |
 | Golden eval report | `tests/evals/latest_eval_report.json` |
 
 ---

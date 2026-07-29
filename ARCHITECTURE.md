@@ -1,25 +1,48 @@
-# Donna Architecture
+# Dānā Architecture
 
 Offline voice agent for CAMGRASPER: wake-word → STT → native LangChain tool calling
-(local Ollama) → SecureMemory vault + SpatialIR vision + optional swarms → TTS.
+(local Ollama) → SecureMemory vault + hybrid vision grounding + optional swarms → TTS.
+
+**White paper (hardening + OSWorld):** [`docs/WHITE_PAPER.md`](docs/WHITE_PAPER.md)  
+**OSWorld bench:** `pytest tests/evals/test_osworld_bench.py`
+
+## Package layout
+
+| Package | Role |
+|---------|------|
+| `dana/` | Core agent, ReAct graph, vision, memory, tools, UI |
+| `dana_jason_loop/` | Jason supervisor / critic loop |
+| `dana_security/` | AST/subprocess security gates + `patch_ledger.md` |
 
 ## System overview
 
 | Layer | Role | Key modules |
 |-------|------|-------------|
 | Perception | YOLO boxes + screen/camera frames | `vision_tools.py`, tracker in `dana/core_agent.py` |
+| Hybrid grounding | Win32 UIA first → Florence coarse → crop/zoom | `dana/vision/hybrid_grounding.py`, `dana/vision/uia_provider.py` |
 | Spatial compression | Dense `SpatialIR` prompt block | `spatial_context.py` |
 | Cognition | Bound-tools loop (≤3 turns) + language lock; MoA think extract | `dana/agentic.py`, `dana/moa_tool_shim.py`, `dana/prompts/spatial_synthesis.py` |
-| Routing | RapidFuzz mailroom ≥80% before LLM cascade | `dana/cascade_router.py` |
+| Routing | RapidFuzz mailroom ≥80% before LLM cascade; hydrate → planner supervisor | `dana/cascade_router.py`, `dana/agentic_react_graph.py` |
 | Tooling | EN/FA STT aliases + Tool IR + Pydantic guards + LangChain `@tool`s | `dana/tools/`, `dana/tools/guards.py` |
-| Memory | Encrypted vault + **SQLite Blackboard** (off-graph history / CoT) | `dana/secure_memory.py`, `dana/vault_service.py`, `dana/memory/blackboard.py` |
+| Shadow exec | Transactional staging under `.dana_scratch/` | `dana/exec/shadow_workspace.py` |
+| Self-heal | Critic retries; `FATAL_EXCEPTIONS` → HITL tickets; sub-graph N=2 | `dana/graph/nodes/critic.py`, `dana/graph/subgraph_router.py`, `dana/graph/buffer.py` |
+| Memory | Encrypted vault + SQLite Blackboard + episodic TTL/decay | `dana/secure_memory.py`, `dana/memory/blackboard.py`, `dana/memory/compaction.py` |
 | Handoffs | Structured Swarm `Handoff` (deterministic capability switch) | `dana/schema.py`, `dana/handoff.py` |
-| Background | Research swarm + Watchdog (Jason-supervised) | `dana/swarm/` |
+| Background | Research swarm + Watchdog (Jason-supervised) | `dana/swarm/`, `dana_jason_loop/` |
 | Speech | Whisper STT + Piper EN/FA TTS | `dana/core_agent.py` audio workers |
 | Paths | Cwd-independent repo root + logs/docs/execution_jail | `dana/paths.py` (`PROJECT_ROOT`) |
 | Telemetry | Live Trace queue + JSONL tags | `dana/telemetry.py` → `logs/donna_telemetry.jsonl` |
+| Security | Importable gates (do not modify casually) | `dana_security/` |
 
 > **Stage 3 FSM hybrid:** LangGraph state is minimized to `session_id` / `current_agent` / `active_intent`. Full conversational history and DeepSeek `<think>` traces live on `memory/blackboard.db`. See [`docs/architecture.md`](docs/architecture.md).
+
+## Five hardened capabilities (production)
+
+1. **Transactional Shadow Workspaces** — stage under `.dana_scratch/<session_id>/`; commit on `exit_code == 0`, else rollback.
+2. **Fatal Error Classification** — `FATAL_EXCEPTIONS` bypass Critic and draft HITL tickets.
+3. **Hybrid Win32 UIA + Crop-and-Zoom Florence-2** — UIA first; 15% pad + 2× upscale if edge &lt; 30 (1000-space).
+4. **Zero-Copy State Buffer & Sub-Graph Retries** — full traces in `raw_state_buffer`; local retries N=2 before supervisor escalate.
+5. **Memory Compaction** — spatial TTL **900s**; exponential decay \(W = W_0\exp(-0.05\cdot\Delta h)\).
 
 ## Bilingual tool routing
 
@@ -51,12 +74,15 @@ User query → System (SpatialIR + synthesis guide + protocol)
 - Recency context (`<visual_context>`, `<memory>`, `<active_watchdogs>`) is appended
   to the latest user message via `format_recency_context_block`.
 
+Production ReAct corridor entry: `START → hydrate_memory → planner → executor → agent`
+(`compile_donna_react_graph` in `dana/agentic_react_graph.py`).
+
 ## Background work
 
 | Tool | Behavior |
 |------|----------|
 | `dispatch_research_swarm` | Daemon thread → LangGraph research → TTS summary |
-| `dispatch_watchdog` | Daemon thread → Donna coder ↔ Jason → sandboxed REPL |
+| `dispatch_watchdog` | Daemon thread → Dana coder ↔ Jason → sandboxed REPL |
 | `kill_watchdog` | Stop a registered Watchdog by ID |
 | Episodic log | `docs/watchdog_history.db` via `experience_logger.py` |
 
@@ -89,6 +115,7 @@ flowchart TD
 | `test_langchain_tools.py` | Native tool bridge + Watchdog registry |
 | `test_watchdog_graph.py` | Watchdog graph / sandbox cwd |
 | `test_e2e_lifecycle.py` | Lifecycle + resource profiling |
+| `tests/evals/test_osworld_bench.py` | Adversarial OSWorld-style offline bench |
 
 ## Operational notes
 
