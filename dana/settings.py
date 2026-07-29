@@ -27,6 +27,8 @@ DEFAULT_FLAGS: dict[str, Any] = {
     "home_region": "",
     # When False, boot to tray/orb only (main dashboard stays hidden).
     "open_window_on_startup": True,
+    # Default Piper voice id (public-domain LJ Speech). Override via env DONNA_PIPER_VOICE.
+    "piper_voice": "en_US-ljspeech-high",
 }
 
 

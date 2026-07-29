@@ -2,17 +2,66 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+from unittest.mock import patch
+
 import numpy as np
 
 from dana.core_agent import (
+    DEFAULT_PIPER_ONNX,
+    PIPER_EN_ONNX,
     PIPER_LENGTH_SCALE,
+    PIPER_VOICE_ID,
     _resample_pcm,
+    download_piper_models,
     sanitize_text_for_tts,
 )
 
 
 def test_piper_length_scale_slower_than_realtime_default() -> None:
     assert PIPER_LENGTH_SCALE >= 1.15
+
+
+def test_default_piper_voice_is_commercially_clean_ljspeech() -> None:
+    assert PIPER_VOICE_ID == "en_US-ljspeech-high"
+    assert PIPER_EN_ONNX.endswith("en_US-ljspeech-high.onnx")
+    assert DEFAULT_PIPER_ONNX == PIPER_EN_ONNX
+    assert "hfc_female" not in PIPER_EN_ONNX
+
+
+def test_download_piper_falls_back_to_legacy_when_network_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import dana.core_agent as ca
+
+    models = tmp_path / "tts_models"
+    models.mkdir()
+    legacy_onnx = models / "en_US-hfc_female-medium.onnx"
+    legacy_json = models / "en_US-hfc_female-medium.onnx.json"
+    legacy_onnx.write_bytes(b"legacy-onnx")
+    legacy_json.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(ca, "TTS_MODELS_DIR", str(models))
+    monkeypatch.setattr(ca, "PIPER_VOICE_ID", "en_US-ljspeech-high")
+    monkeypatch.setattr(
+        ca, "PIPER_EN_ONNX", str(models / "en_US-ljspeech-high.onnx")
+    )
+    monkeypatch.setattr(
+        ca, "PIPER_EN_JSON", str(models / "en_US-ljspeech-high.onnx.json")
+    )
+    monkeypatch.setattr(ca, "DEFAULT_PIPER_ONNX", ca.PIPER_EN_ONNX)
+    monkeypatch.setattr(ca, "_PIPER_LEGACY_ONNX", str(legacy_onnx))
+    monkeypatch.setattr(ca, "_PIPER_LEGACY_JSON", str(legacy_json))
+
+    def _boom(url: str, dest: str) -> None:
+        raise OSError("network disabled in test")
+
+    with patch.object(ca, "_download_file", side_effect=_boom):
+        download_piper_models()
+
+    assert ca.PIPER_EN_ONNX == str(legacy_onnx)
+    assert os.path.basename(ca.PIPER_EN_ONNX) == "en_US-hfc_female-medium.onnx"
 
 
 def test_sanitize_inserts_pauses_for_ocr_newlines() -> None:

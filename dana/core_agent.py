@@ -5,7 +5,7 @@ Pipeline (4 threads + agent keep-alive loop + GUI main thread):
   1. Tracker   - YOLOv8n rolling buffer (~2s) from active_vision_tool + live ROI overlay
   2. WakeWord  - OpenWakeWord custom "donna.onnx" on mic @ 16 kHz
   3. Conversation - VAD -> Whisper STT -> tool_router -> YOLO + Ollama LLM -> TTS
-  4. Audio     - offline TTS via piper-tts (en_US HFC female)
+  4. Audio     - offline TTS via piper-tts (en_US-ljspeech-high, public domain)
 
 UI:
   - Windows system tray icon (Open Settings / Quit)
@@ -320,8 +320,21 @@ _CANNED_UX_WAV_FILES: dict[str, str] = {
     "Memory cleared.": "memory_cleared.wav",
 }
 # Runtime / conversation log paths live in dana.logging (re-exported above).
-PIPER_EN_ONNX = os.path.join(TTS_MODELS_DIR, "en_US-hfc_female-medium.onnx")
-PIPER_EN_JSON = os.path.join(TTS_MODELS_DIR, "en_US-hfc_female-medium.onnx.json")
+# Default voice: en_US-ljspeech-high (LJ Speech dataset = public domain).
+# Rejected alternatives for the commercial default:
+#   - en_US-hfc_female-medium: CC BY-NC-SA 4.0 (non-commercial)
+#   - en_US-lessac-medium: Blizzard 2013 research license (excludes commercial TTS products)
+PIPER_VOICE_ID = (
+    os.environ.get("DONNA_PIPER_VOICE", "en_US-ljspeech-high").strip()
+    or "en_US-ljspeech-high"
+)
+PIPER_EN_ONNX = os.path.join(TTS_MODELS_DIR, f"{PIPER_VOICE_ID}.onnx")
+PIPER_EN_JSON = os.path.join(TTS_MODELS_DIR, f"{PIPER_VOICE_ID}.onnx.json")
+DEFAULT_PIPER_ONNX = PIPER_EN_ONNX
+# Legacy NC voice kept only as offline migration fallback if preferred download fails.
+_PIPER_LEGACY_VOICE_ID = "en_US-hfc_female-medium"
+_PIPER_LEGACY_ONNX = os.path.join(TTS_MODELS_DIR, f"{_PIPER_LEGACY_VOICE_ID}.onnx")
+_PIPER_LEGACY_JSON = os.path.join(TTS_MODELS_DIR, f"{_PIPER_LEGACY_VOICE_ID}.onnx.json")
 # length_scale > 1.0 slows speech (VITS). Default 1.25 keeps OCR/vision reads intelligible.
 try:
     PIPER_LENGTH_SCALE = float(os.environ.get("DONNA_PIPER_LENGTH_SCALE", "1.25"))
@@ -330,16 +343,28 @@ except ValueError:
 PIPER_LENGTH_SCALE = max(0.8, min(2.0, PIPER_LENGTH_SCALE))
 # Incomplete localization voices are disabled for the public release.
 # Related local Piper assets remain gitignored under tts_models/.
-PIPER_MODEL_URLS: tuple[tuple[str, str], ...] = (
-    (
-        PIPER_EN_ONNX,
-        "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx",
-    ),
-    (
-        PIPER_EN_JSON,
-        "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx.json",
-    ),
+_PIPER_VOICE_RELPATHS: dict[str, str] = {
+    "en_US-ljspeech-high": "ljspeech/high/en_US-ljspeech-high",
+    "en_US-ljspeech-medium": "ljspeech/medium/en_US-ljspeech-medium",
+    "en_US-lessac-medium": "lessac/medium/en_US-lessac-medium",
+    "en_US-hfc_female-medium": "hfc_female/medium/en_US-hfc_female-medium",
+}
+_PIPER_HF_BASE = (
+    "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US"
 )
+
+
+def _piper_hf_urls(voice_id: str) -> tuple[tuple[str, str], tuple[str, str]]:
+    rel = _PIPER_VOICE_RELPATHS.get(voice_id, f"ljspeech/high/{voice_id}")
+    onnx = os.path.join(TTS_MODELS_DIR, f"{voice_id}.onnx")
+    js = os.path.join(TTS_MODELS_DIR, f"{voice_id}.onnx.json")
+    return (
+        (onnx, f"{_PIPER_HF_BASE}/{rel}.onnx"),
+        (js, f"{_PIPER_HF_BASE}/{rel}.onnx.json"),
+    )
+
+
+PIPER_MODEL_URLS: tuple[tuple[str, str], ...] = _piper_hf_urls(PIPER_VOICE_ID)
 _piper_voice_cache: dict[str, PiperVoice] = {}
 DONNA_WAKEWORD_ONNX = str(WAKEWORD_ONNX)
 
@@ -362,23 +387,52 @@ def _download_file(url: str, dest: str) -> None:
     )
 
 
+def _piper_file_ready(path: str) -> bool:
+    return os.path.isfile(path) and os.path.getsize(path) > 0
+
+
 def download_piper_models() -> None:
-    """Download the English Piper voice into tts_models/ if missing."""
+    """Download the English Piper voice into tts_models/ if missing.
+
+    Prefers the commercially clean default (ljspeech-high). If download fails
+    and a legacy hfc_female voice is already on disk, keep that path so offline
+    / mocked test environments do not hard-fail on network.
+    """
+    global PIPER_EN_ONNX, PIPER_EN_JSON, DEFAULT_PIPER_ONNX
     os.makedirs(TTS_MODELS_DIR, exist_ok=True)
-    for dest, url in PIPER_MODEL_URLS:
-        if os.path.isfile(dest) and os.path.getsize(dest) > 0:
-            continue
-        try:
-            _download_file(url, dest)
-        except Exception as exc:  # noqa: BLE001
+    urls = _piper_hf_urls(PIPER_VOICE_ID)
+    try:
+        for dest, url in urls:
+            if _piper_file_ready(dest):
+                continue
             try:
-                if os.path.isfile(dest + ".partial"):
-                    os.remove(dest + ".partial")
-            except OSError:
-                pass
-            raise RuntimeError(
-                f"Failed to download Piper model from {url}: {exc}"
-            ) from exc
+                _download_file(url, dest)
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    if os.path.isfile(dest + ".partial"):
+                        os.remove(dest + ".partial")
+                except OSError:
+                    pass
+                raise RuntimeError(
+                    f"Failed to download Piper model from {url}: {exc}"
+                ) from exc
+    except RuntimeError:
+        if (
+            PIPER_VOICE_ID != _PIPER_LEGACY_VOICE_ID
+            and _piper_file_ready(_PIPER_LEGACY_ONNX)
+            and _piper_file_ready(_PIPER_LEGACY_JSON)
+        ):
+            PIPER_EN_ONNX = _PIPER_LEGACY_ONNX
+            PIPER_EN_JSON = _PIPER_LEGACY_JSON
+            DEFAULT_PIPER_ONNX = PIPER_EN_ONNX
+            print(
+                "[TTS] WARNING: preferred Piper voice download failed; "
+                f"falling back to legacy {_PIPER_LEGACY_VOICE_ID} "
+                "(CC BY-NC-SA — not for commercial redistribution).",
+                flush=True,
+            )
+            return
+        raise
 
 
 from openwakeword.model import Model as OpenWakeWordModel
@@ -7098,7 +7152,7 @@ def tts_worker() -> None:
 
     try:
         get_piper_voice(PIPER_EN_ONNX)
-        log("TTS", "Piper voice ready (en_US-hfc_female).")
+        log("TTS", f"Piper voice ready ({os.path.basename(PIPER_EN_ONNX)}).")
     except Exception as exc:  # noqa: BLE001
         log("TTS", f"ERROR loading Piper voices: {exc}")
         stop_event.set()

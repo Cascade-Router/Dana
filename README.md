@@ -10,7 +10,7 @@ pinned: false
 license: agpl-3.0
 ---
 
-# Dānā: Local-First Agentic Voice OS
+# Dānā: Open-Source Cybernetic Multi-Agent Control Plane
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
@@ -143,13 +143,15 @@ Packages:
   dana_security/        AST/subprocess gates + patch_ledger.md
 ```
 
-Deep dive: [`docs/WHITE_PAPER.md`](docs/WHITE_PAPER.md) · [`docs/architecture.md`](docs/architecture.md) · OSWorld: [`pytest tests/evals/test_osworld_bench.py`](tests/evals/test_osworld_bench.py) · Telemetry: [`docs/telemetry_and_ui.md`](docs/telemetry_and_ui.md) · Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) · Security: [`SECURITY.md`](SECURITY.md)
+Deep dive: [`docs/WHITE_PAPER.md`](docs/WHITE_PAPER.md) · [`docs/architecture.md`](docs/architecture.md) · Legal/IP: [`docs/LEGAL_AND_IP.md`](docs/LEGAL_AND_IP.md) · License audit: [`docs/LICENSE_AUDIT.md`](docs/LICENSE_AUDIT.md) · OSWorld: [`pytest tests/evals/test_osworld_bench.py`](tests/evals/test_osworld_bench.py) · Telemetry: [`docs/telemetry_and_ui.md`](docs/telemetry_and_ui.md) · Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) · Security: [`SECURITY.md`](SECURITY.md)
 
 ---
 
 ## Documentation / Operator Guide
 
 - **[User Handbook](User%20Handbook.md)** — operating modes, wake/voice commands, and automated system behaviors for day-to-day use of Dānā.
+- **Legal & IP:** [`docs/LEGAL_AND_IP.md`](docs/LEGAL_AND_IP.md) — product branding, Class 009/042 scope, bundled-model posture, and license audit linkage
+- **License audit:** [`docs/LICENSE_AUDIT.md`](docs/LICENSE_AUDIT.md) — third-party package inventory (includes GPL/AGPL flags)
 - **White Paper:** [`docs/WHITE_PAPER.md`](docs/WHITE_PAPER.md) — production-hardened cybernetic control plane, 5-phase hardening specs, OSWorld benchmarks
 - **OSWorld bench:** `pytest tests/evals/test_osworld_bench.py` → [`tests/evals/osworld_bench_summary.json`](tests/evals/osworld_bench_summary.json)
 - Architecture: [`docs/architecture.md`](docs/architecture.md) · [`ARCHITECTURE.md`](ARCHITECTURE.md)

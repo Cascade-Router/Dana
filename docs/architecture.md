@@ -3,6 +3,8 @@
 Dānā (package `dana`) is a **production-hardened, local-first agentic voice OS**: a multi-threaded perception plane, a mode-gated cognitive router, transactional shadow workspaces, hybrid UIA/Florence grounding, and a filesystem execution jail under a single-instance process lock. This document describes the production control paths relevant to operators and contributors.
 
 **White paper:** [`WHITE_PAPER.md`](WHITE_PAPER.md) — 5-phase hardening specs + OSWorld benchmarks  
+**Legal & IP:** [`LEGAL_AND_IP.md`](LEGAL_AND_IP.md) — branding, Class 009/042 scope, model license posture  
+**License audit:** [`LICENSE_AUDIT.md`](LICENSE_AUDIT.md) — third-party package flags  
 **OSWorld bench:** `pytest tests/evals/test_osworld_bench.py`  
 **Root overview:** [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
 
