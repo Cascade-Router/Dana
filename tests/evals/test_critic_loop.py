@@ -73,7 +73,7 @@ def test_route_after_execution_critic_then_fail_closed() -> None:
         )
         == "fail_closed"
     )
-    assert route_after_execution({"execution_error": None, "halt": True}) == "__end__"
+    assert route_after_execution({"execution_error": None, "halt": True}) == "verifier"
 
 
 def test_critic_loop_self_heals_within_two_retries() -> None:

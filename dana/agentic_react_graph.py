@@ -19,10 +19,14 @@ from dana.tools.broker import IntentBroker, ToolValidationError, get_broker
 from dana.tools.schema import ToolCall
 
 # Re-export for callers that import ReactGraphState from this module.
+# route_after_verifier is the closed-loop post-verifier router.
+from dana.graph.nodes.verifier import route_after_verifier  # noqa: F401
+
 __all__ = (
     "ReactGraphState",
     "compile_donna_react_graph",
     "route_after_execution",
+    "route_after_verifier",
     "run_react_langgraph",
     "validation_retry_tool_corridor",
 )
@@ -661,7 +665,7 @@ def _route_after_ticket_approval(state: ReactGraphState) -> str:
 
 
 def route_after_execution(state: ReactGraphState) -> str:
-    """Conditional edge after tools (REPL execution): critic / fail_closed / agent / END.
+    """Conditional edge after tools: critic / fail_closed / agent / verifier.
 
     python_repl failures set ``execution_error``; while ``retry_count < max_retries``
     route to ``critic`` (then back to tools). Exhausted retries → ``fail_closed``.
@@ -669,12 +673,14 @@ def route_after_execution(state: ReactGraphState) -> str:
     ``fail_closed`` (ticket draft on the existing HITL corridor fields).
     Tool timeout / soft failures never silent-END — completion gate keeps the
     loop on agent/critic with an explicit spoken failure message.
-    Otherwise preserve the existing ReAct / HITL corridor (agent loop or END).
+    Successful halt routes to ``verifier`` (closed-loop evidence gate) before
+    consolidate_memory / END — never silent-END after tool execution.
     """
     from langgraph.graph import END
 
     from dana.graph.completion_gate import gate_route_after_execution, should_block_end
     from dana.graph.nodes.critic import is_fatal_execution_error
+    from dana.graph.workflow import remap_execution_end_to_verifier
 
     err = state.get("execution_error")
     if err is not None and str(err).strip():
@@ -689,13 +695,15 @@ def route_after_execution(state: ReactGraphState) -> str:
 
     if pending_always_include_tools(state):
         return "agent"
+    # Successful / claimed tool completion → closed-loop verifier before END.
+    # Do this even when pending_synthesis is set (e.g. prior failed verify), so
+    # attempts can advance and the corridor cannot soft-lock on agent↔tools.
+    if bool(state.get("halt")):
+        return "verifier"
     if should_block_end(state):
         return "agent"
-    if state.get("halt") and not pending_always_include_tools(state):
-        proposed = END
-    else:
-        proposed = END if state.get("halt") else "agent"
-    return gate_route_after_execution(state, proposed=proposed, end_sentinel=END)
+    gated = gate_route_after_execution(state, proposed="agent", end_sentinel=END)
+    return remap_execution_end_to_verifier(gated, end_sentinel=END)
 
 
 # Back-compat alias for callers / tests that still import the private name.
@@ -715,6 +723,7 @@ def compile_donna_react_graph(
     fail_closed_node_fn: Callable[..., Any] | None = None,
     hydrate_memory_node_fn: Callable[..., Any] | None = None,
     consolidate_memory_node_fn: Callable[..., Any] | None = None,
+    verifier_node_fn: Callable[..., Any] | None = None,
     checkpointer: Any | None = None,
 ) -> Any:
     """Compile the production ReAct StateGraph (same topology as live Donna).
@@ -730,7 +739,11 @@ def compile_donna_react_graph(
                     ─(retries exhausted)→ fail_closed → END
                     ─(continue)→ agent
                     ╲(pending always_include / nudge)→ agent
-                    ╲(halt/final)→ consolidate_memory → END
+                    ╲(tool halt/final)→ verifier
+                         ─(verified)→ consolidate_memory → END
+                         ─(fail, <3)→ agent
+                         ─(fail, ≥3)→ fail_closed → END
+                    ╲(agent halt, no tools)→ consolidate_memory → END
 
     ``planner`` / ``executor`` enforce Plan-Then-Execute before the MoA agent.
     ``ticket_validate`` (Stage 8.9.6) runs Pydantic before Jason / HITL.
@@ -740,6 +753,7 @@ def compile_donna_react_graph(
     Fatal OS blocks skip Critic and land on ``fail_closed`` with a ticket draft.
     ``hydrate_memory`` / ``consolidate_memory`` are injectable episodic nodes;
     HITL deny / fail_closed / ticket halt paths skip consolidation.
+    ``verifier`` is the closed-loop Generator-Critic evidence gate (injectable).
     """
     from langgraph.graph import END, START, StateGraph
 
@@ -752,6 +766,7 @@ def compile_donna_react_graph(
         consolidate_memory_node as _default_consolidate,
     )
     from dana.graph.nodes.memory import hydrate_memory_node as _default_hydrate
+    from dana.graph.nodes.verifier import verifier_node as _default_verifier
 
     workflow = StateGraph(ReactGraphState)
     workflow.add_node(
@@ -776,6 +791,7 @@ def compile_donna_react_graph(
     workflow.add_node("tools", tools_node)
     workflow.add_node("critic", critic_node_fn or _default_critic)
     workflow.add_node("fail_closed", fail_closed_node_fn or _default_fail_closed)
+    workflow.add_node("verifier", verifier_node_fn or _default_verifier)
     workflow.add_node(
         "consolidate_memory",
         consolidate_memory_node_fn or _default_consolidate,
@@ -792,7 +808,7 @@ def compile_donna_react_graph(
             "ticket_validate": "ticket_validate",
             "tools": "tools",
             "agent": "agent",
-            # Successful / normal halt → consolidate before END.
+            # Chat-only halt (no tools) → consolidate before END.
             END: "consolidate_memory",
         },
     )
@@ -824,7 +840,16 @@ def compile_donna_react_graph(
             "critic": "critic",
             "fail_closed": "fail_closed",
             "agent": "agent",
-            # Successful tool halt → consolidate before END.
+            # Successful tool halt → closed-loop verifier before consolidate.
+            "verifier": "verifier",
+        },
+    )
+    workflow.add_conditional_edges(
+        "verifier",
+        route_after_verifier,
+        {
+            "agent": "agent",
+            "fail_closed": "fail_closed",
             END: "consolidate_memory",
         },
     )

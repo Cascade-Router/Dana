@@ -62,6 +62,7 @@ _REQUIRED_STATE_KEYS: tuple[str, ...] = (
     "max_subgraph_retries",
     "fatal_block",
     "patch_ledger_path",
+    "verification_result",
 )
 
 # Nodes that must appear on the production ReAct compile surface.
@@ -72,6 +73,7 @@ _REQUIRED_REACT_NODES: tuple[str, ...] = (
     "fail_closed",
     "hydrate_memory",
     "consolidate_memory",
+    "verifier",
 )
 
 # Subgraph retry corridor must expose supervisor + escalate.
@@ -185,6 +187,7 @@ def _check_react_graph_nodes(report: IntegrityReport) -> None:
         "fail_closed_node_fn",
         "hydrate_memory_node_fn",
         "consolidate_memory_node_fn",
+        "verifier_node_fn",
     ):
         present = param in sig.parameters
         report.add(

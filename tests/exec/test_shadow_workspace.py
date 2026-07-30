@@ -157,7 +157,7 @@ def test_successful_script_commits_staged_files(tmp_path: Path) -> None:
     patch = python_repl_state_patch(code="print('ok')", observation=obs)
     assert patch["execution_error"] is None
     assert patch.get("fatal_block") is False
-    assert route_after_execution({**patch, "halt": True}) == "__end__"
+    assert route_after_execution({**patch, "halt": True}) == "verifier"
 
 
 def test_module_not_found_is_fatal() -> None:

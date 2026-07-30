@@ -144,7 +144,7 @@ def test_critic_and_watchdog_tolerate_latency_jitter(tmp_path: Path) -> None:
     patch = python_repl_state_patch(code="print('ok')", observation=obs_ok)
     assert patch.get("fatal_block") is False
     assert patch.get("execution_error") is None
-    assert route_after_execution({**patch, "halt": True}) == "__end__"
+    assert route_after_execution({**patch, "halt": True}) == "verifier"
 
     # Background toast / log noise through ShellWatchdog — not a fatal OS block.
     events: list[tuple[str, str]] = []

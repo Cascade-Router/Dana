@@ -176,3 +176,15 @@ class ReactGraphState(TypedDict, total=False):
     patch_ledger_path: str
     # Completion gate: filler / open tools must not reach END while True.
     pending_synthesis: bool
+    # Closed-loop verifier (Generator-Critic): {verified, evidence, attempts}.
+    verification_result: dict
+    # Optional TaskTracker id (falls back to session_id in verifier_node).
+    task_id: str
+    # Optional declarative evidence targets for verifier_node heuristics.
+    verification_targets: dict
+    # Optional max closed-loop verification retries (default 3).
+    max_verification_attempts: int
+    # Optional UIA evidence payload for verifier_node (window titles / bboxes).
+    uia_nodes: list
+    # Optional numeric REPL result for percentile / assertion benches.
+    repl_numeric_result: float
