@@ -60,10 +60,11 @@ class ChatBubbleView(ctk.CTkFrame):
             fg_color="transparent",
             corner_radius=0,
         )
-        self._scroll.pack(fill="both", expand=True, padx=4, pady=4)
+        self._scroll.pack(fill="both", expand=True, padx=4, pady=2)
 
         # Hidden mirror — keeps get/insert/tag API for tests & legacy callers.
-        # Packed with height=1 so the underlying tk.Text is fully realized.
+        # Placed off-screen so raw [Speaker] lines never duplicate bubble UI
+        # and never add a second scrollbar beside the bubble scroller.
         self.transcript_box = ctk.CTkTextbox(
             self,
             wrap="word",
@@ -72,8 +73,10 @@ class ChatBubbleView(ctk.CTkFrame):
             text_color=T.TEXT,
             height=1,
             border_width=0,
+            width=1,
         )
-        self.transcript_box.pack(fill="x", padx=0, pady=0)
+        # Off-screen so mirror text never paints under the bubble scroller.
+        self.transcript_box.place(x=-10_000, y=-10_000)
 
     def clear_bubbles(self) -> None:
         for row in self._bubbles:
@@ -114,7 +117,7 @@ class ChatBubbleView(ctk.CTkFrame):
             pass
 
         row = ctk.CTkFrame(self._scroll, fg_color="transparent")
-        row.pack(fill="x", padx=6, pady=4)
+        row.pack(fill="x", padx=6, pady=(1, 1))
         self._bubbles.append(row)
 
         if role_key == "user":
@@ -124,11 +127,7 @@ class ChatBubbleView(ctk.CTkFrame):
         else:
             self._pack_dana_bubble(row, display, speaker=speaker)
 
-        try:
-            # Auto-scroll to bottom.
-            self._scroll._parent_canvas.yview_moveto(1.0)  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001
-            pass
+        self._scroll_to_latest()
 
     def _pack_user_bubble(
         self, row: ctk.CTkFrame, text: str, *, speaker: str
@@ -142,7 +141,7 @@ class ChatBubbleView(ctk.CTkFrame):
             corner_radius=14,
             border_width=0,
         )
-        bubble.pack(side="right", padx=(8, 4), pady=2)
+        bubble.pack(side="right", padx=(8, 4), pady=1)
         label = speaker if speaker.lower().startswith("user") else "You"
         ctk.CTkLabel(
             bubble,
@@ -150,7 +149,7 @@ class ChatBubbleView(ctk.CTkFrame):
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color="#E0F2FE",
             anchor="e",
-        ).pack(fill="x", padx=12, pady=(8, 0))
+        ).pack(fill="x", padx=10, pady=(5, 0))
         ctk.CTkLabel(
             bubble,
             text=_strip_simple_markdown(text),
@@ -159,7 +158,7 @@ class ChatBubbleView(ctk.CTkFrame):
             wraplength=self._wraplength,
             justify="left",
             anchor="w",
-        ).pack(fill="x", padx=12, pady=(2, 10))
+        ).pack(fill="x", padx=10, pady=(1, 6))
 
     def _pack_dana_bubble(
         self, row: ctk.CTkFrame, text: str, *, speaker: str
@@ -171,7 +170,7 @@ class ChatBubbleView(ctk.CTkFrame):
             border_width=1,
             border_color=T.BUBBLE_DANA_BORDER,
         )
-        bubble.pack(side="left", padx=(4, 8), pady=2)
+        bubble.pack(side="left", padx=(4, 8), pady=1)
         title = speaker.strip() or "Dana"
         ctk.CTkLabel(
             bubble,
@@ -179,7 +178,7 @@ class ChatBubbleView(ctk.CTkFrame):
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=T.ACCENT,
             anchor="w",
-        ).pack(fill="x", padx=12, pady=(8, 0))
+        ).pack(fill="x", padx=10, pady=(5, 0))
         ctk.CTkLabel(
             bubble,
             text=_strip_simple_markdown(text),
@@ -188,15 +187,37 @@ class ChatBubbleView(ctk.CTkFrame):
             wraplength=self._wraplength,
             justify="left",
             anchor="w",
-        ).pack(fill="x", padx=12, pady=(2, 10))
+        ).pack(fill="x", padx=10, pady=(1, 6))
         spacer = ctk.CTkFrame(row, fg_color="transparent", width=80)
         spacer.pack(side="right", fill="x", expand=True)
+
+    def _scroll_to_latest(self) -> None:
+        """Stick the bubble scroller to the newest message (stream-safe)."""
+        try:
+            self.update_idletasks()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            canvas = getattr(self._scroll, "_parent_canvas", None)
+            if canvas is not None:
+                canvas.yview_moveto(1.0)
+                try:
+                    canvas.see("end")
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            # CTkScrollableFrame also exposes .yview / children for fallbacks.
+            self._scroll._parent_canvas.yview_moveto(1.0)  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
 
     def _pack_system_badge(
         self, row: ctk.CTkFrame, badge: str, text: str
     ) -> None:
         wrap = ctk.CTkFrame(row, fg_color="transparent")
-        wrap.pack(fill="x", padx=4, pady=2)
+        wrap.pack(fill="x", padx=4, pady=1)
         tag = badge.strip()
         if tag and not tag.startswith("["):
             tag = f"[{tag}]"

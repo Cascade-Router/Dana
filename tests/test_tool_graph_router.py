@@ -66,6 +66,23 @@ def test_tool_graph_escalates_window_app_and_log_prompts() -> None:
         assert desktop_plan_intent(prompt) is True, prompt
 
 
+def test_readonly_agent_verification_prompts_require_tool_graph() -> None:
+    """Read-only audit prompts must escalate (never filler-only chat)."""
+    prompts = [
+        "How many windows do I have open?",
+        "Can you open your latest logs and summarize the last boot session?",
+        "Describe what you see on my screen right now.",
+        "Search episodic memory for user preferences.",
+    ]
+    for prompt in prompts:
+        assert requires_tool_graph(prompt) is True, prompt
+    # Optional: cascade must not take lightweight chat early-return.
+    set_donna_mode("chat")
+    for prompt in prompts:
+        d = decide_route(prompt, forced_tool=None)
+        assert "tools/MoA bypassed" not in (d.reason or ""), prompt
+
+
 def test_cascade_chat_mode_escalates_on_tool_intent() -> None:
     set_donna_mode("chat")
     d = decide_route(

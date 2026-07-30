@@ -151,7 +151,14 @@ _TOOL_GRAPH_INTENT_RE = re.compile(
     r"\b(?:close|quit|kill|launch|open)\s+(?:[a-zA-Z0-9_-]+\s+)?"
     r"(?:app|application|discord|browser|window|program)\b|"
     r"\b(?:how\s+many|list|show|count)\s+(?:windows|tabs|apps)\b|"
-    r"\b(?:open|show|read|retrack|view)\s+.*\b(?:logs?|runtime\.log|conversation\.log)\b"
+    r"\b(?:open|show|read|retrack|view)\s+.*\b(?:logs?|runtime\.log|conversation\.log)\b|"
+    # Vision / on-screen observe (must not soft-drop to filler chat).
+    r"\b(?:what\s+you\s+see|see\s+on\s+(?:my\s+)?screen|on\s+my\s+screen)\b|"
+    r"\b(?:describe|summarize)\b.*\b(?:screen|display|desktop|window)\b|"
+    # Episodic / vault memory search intents.
+    r"\bepisodic\s+memory\b|"
+    r"\b(?:search|query|recall|read)\s+(?:the\s+)?(?:episodic\s+|vault\s+)?memory\b|"
+    r"\bread_vault_memory\b"
     r")",
     re.IGNORECASE,
 )

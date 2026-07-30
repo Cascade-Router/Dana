@@ -8245,13 +8245,14 @@ class DonnaGUI(ctk.CTk):
 
         # --- Chat bubbles (expanding region) ---
         chat_card = self._make_card(tab, title="Conversation", pady=(4, 4), expand=True)
+        # Non-scrollable card body: only ChatBubbleView's internal scroller scrolls.
         ctk.CTkLabel(
             chat_card,
             text="User right · Dana left · system tags as muted badges",
             anchor="w",
             text_color=_UI_MUTED,
             font=ctk.CTkFont(size=11),
-        ).pack(fill="x", pady=(0, 6))
+        ).pack(fill="x", pady=(0, 4))
         self._chat_view = None
         try:
             from dana.ui.chat_view import ChatBubbleView
@@ -9887,6 +9888,10 @@ class DonnaGUI(ctk.CTk):
                         chat.append_bubble(
                             speaker, text, agent_id=agent_id, role=role
                         )
+                        try:
+                            chat._scroll_to_latest()
+                        except Exception:  # noqa: BLE001
+                            pass
                     except Exception:  # noqa: BLE001
                         pass
             except Exception:
