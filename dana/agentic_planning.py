@@ -43,7 +43,12 @@ _DESKTOP_PLAN_RE = re.compile(
     r"\b(?:desktop|window)\b.*\b(?:log|ticket|ledger)\b|"
     r"\b(?:log|create|file|write)\b.*\b(?:ticket|ledger)\b|"
     r"\bdraft_cursor_prompt\b|"
-    r"\b(?:florence|vision|ui\s+grounding)\b"
+    r"\b(?:florence|vision|ui\s+grounding)\b|"
+    # App management / window-tab inspection / log inspection (chat soft-drop fixes).
+    r"\b(?:close|quit|kill|launch|open)\s+(?:[a-zA-Z0-9_-]+\s+)?"
+    r"(?:app|application|discord|browser|window|program)\b|"
+    r"\b(?:how\s+many|list|show|count)\s+(?:windows|tabs|apps)\b|"
+    r"\b(?:open|show|read|retrack|view)\s+.*\b(?:logs?|runtime\.log|conversation\.log)\b"
     r")",
     re.IGNORECASE,
 )

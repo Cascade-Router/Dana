@@ -287,10 +287,15 @@ class TaskTracker:
         task_id: str,
         reason: str,
         last_state_buffer: dict[str, Any] | None = None,
+        *,
+        draft_ledger: bool = True,
     ) -> dict[str, Any]:
-        """Append a dropped-task line and draft a ``[PENDING]`` ledger ticket.
+        """Append a dropped-task line and optionally draft a ``[PENDING]`` ticket.
 
         Log format (one line): ``Timestamp | Task ID | Prompt | Reason``
+
+        Set ``draft_ledger=False`` for chat soft-drops that should only hit
+        ``dropped_tasks.log`` (avoid spamming the production patch ledger).
         """
         tid = str(task_id or "").strip() or "unknown"
         why = str(reason or "").strip() or "incomplete trajectory"
@@ -339,13 +344,15 @@ class TaskTracker:
                 fh.write(line)
                 fh.flush()
 
-        ticket_meta = self._draft_dropped_ticket(
-            task_id=tid,
-            prompt=prompt,
-            reason=why,
-            last_state_buffer=last_state_buffer,
-            stamp=stamp,
-        )
+        ticket_meta: dict[str, Any] = {"ok": False, "skipped": True}
+        if draft_ledger:
+            ticket_meta = self._draft_dropped_ticket(
+                task_id=tid,
+                prompt=prompt,
+                reason=why,
+                last_state_buffer=last_state_buffer,
+                stamp=stamp,
+            )
         return {
             "ok": True,
             "task_id": tid,

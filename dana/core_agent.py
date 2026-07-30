@@ -706,6 +706,9 @@ vad_abort_event = threading.Event()
 quiet_mic_mode = threading.Event()
 # Cleared until conversation_worker's Ollama warm-up finishes (gates wake-word arming).
 ollama_ready = threading.Event()
+# Soft-drop audit: last chat mid-task prompt awaiting completion (VAD timeout).
+_active_mid_task_prompt: str | None = None
+_active_mid_task_lock = threading.Lock()
 # Boot coordination: ready audio plays only when all three are set.
 piper_voices_ready = threading.Event()
 wakeword_armed = threading.Event()
@@ -5270,6 +5273,74 @@ def tool_router(whisper_text: str) -> tuple[str, Optional[ToolCall]]:
     return whisper_text, call
 
 
+def _register_chat_soft_drop(
+    *,
+    prompt: str,
+    reason: str,
+    answer: str = "",
+) -> str:
+    """RECEIVED → IN_PROGRESS → DROPPED for lightweight-chat soft fails.
+
+    Writes ``logs/dropped_tasks.log`` only (no production ledger spam).
+    """
+    import uuid
+
+    from dana.graph.task_tracker import TaskStatus, get_shared_task_tracker
+
+    tid = f"chat_{uuid.uuid4().hex[:12]}"
+    tracker = get_shared_task_tracker()
+    tracker.start_task(tid, prompt or "")
+    tracker.update_status(tid, TaskStatus.IN_PROGRESS)
+    tracker.log_dropped_task(
+        tid,
+        reason,
+        last_state_buffer={
+            "user_text": prompt or "",
+            "final_raw": answer or "",
+            "mode": "chat",
+        },
+        draft_ledger=False,
+    )
+    return tid
+
+
+def _mark_mid_task_prompt(prompt: str | None) -> None:
+    global _active_mid_task_prompt
+    with _active_mid_task_lock:
+        _active_mid_task_prompt = (prompt or "").strip() or None
+
+
+def _clear_mid_task_prompt() -> None:
+    global _active_mid_task_prompt
+    with _active_mid_task_lock:
+        _active_mid_task_prompt = None
+
+
+def _drop_mid_task_on_vad_timeout(*, stop_reason: str, rms_raw: float) -> None:
+    """If a chat mid-task was open when VAD emptied, record DROPPED."""
+    global _active_mid_task_prompt
+    with _active_mid_task_lock:
+        prompt = _active_mid_task_prompt
+        _active_mid_task_prompt = None
+    if not prompt:
+        return
+    try:
+        _register_chat_soft_drop(
+            prompt=prompt,
+            reason=(
+                f"vad_{stop_reason}_mid_task rms_raw={float(rms_raw):.5f}"
+            ),
+            answer="",
+        )
+        log(
+            "Conversation",
+            f"Task tracker DROPPED mid-task on VAD {stop_reason} "
+            f"(rms_raw={float(rms_raw):.5f})",
+        )
+    except Exception as exc:  # noqa: BLE001
+        log("Conversation", f"WARNING: mid-task drop log failed ({exc})")
+
+
 def ask_ollama_messages(
     messages: list[dict[str, str]],
     model: str = OLLAMA_MODEL,
@@ -5857,6 +5928,75 @@ def conversation_worker(
                     use_chat_memory=True,
                 )
                 answer = result.final_text
+                # Completion gate: filler / verbal escalate → ReAct once (no END).
+                chat_escalated_once = False
+                try:
+                    from dana.graph.completion_gate import (
+                        is_filler_response,
+                        should_reject_chat_final,
+                    )
+
+                    if should_reject_chat_final(answer, whisper_text):
+                        reason = (
+                            "chat_filler_end"
+                            if is_filler_response(answer)
+                            else "chat_verbal_tool_graph_escalate"
+                        )
+                        try:
+                            _register_chat_soft_drop(
+                                prompt=whisper_text or "",
+                                reason=reason,
+                                answer=answer or "",
+                            )
+                        except Exception as drop_exc:  # noqa: BLE001
+                            log(
+                                "Conversation",
+                                f"WARNING: chat soft-drop log failed ({drop_exc})",
+                            )
+                        _mark_mid_task_prompt(whisper_text)
+                        chat_escalated_once = True
+                        use_chat = False
+                        log(
+                            "Conversation",
+                            "Chat completion gate: "
+                            f"{reason} → escalate once to ReAct/MoA",
+                        )
+                        try:
+                            from dana.telemetry import log_router
+
+                            log_router(
+                                "tool-graph escalation",
+                                current_agent="ReAct_Agent",
+                                active_intent="chat_completion_gate",
+                                payload={"reason": reason, "mode": "chat"},
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        if not routed_tool:
+                            whisper_text, routed_tool = tool_router(whisper_text)
+                        result = run_react_loop(
+                            user_text=whisper_text,
+                            system_prompt=system_prompt,
+                            execute_fn=execute_tool_call,
+                            max_iters=REACT_MAX_ITERS,
+                            vault_client=(
+                                vault_client if vault_client.session_token else None
+                            ),
+                            reflect_fn=ask_ollama_messages,
+                            prior_messages=prior_turns,
+                            on_tool_start=speak_tool_working_ack,
+                            visual_context=vision_log or None,
+                            model=OLLAMA_MODEL,
+                            forced_tool=routed_tool,
+                            tts_callback=enqueue_speech,
+                        )
+                        answer = result.final_text
+                        _clear_mid_task_prompt()
+                except Exception as gate_exc:  # noqa: BLE001
+                    log(
+                        "Conversation",
+                        f"WARNING: chat completion gate failed ({gate_exc})",
+                    )
                 try:
                     from dana.schema import TraceEvent
                     from dana.ui.trace_bus import TraceEventBus
@@ -5865,8 +6005,12 @@ def conversation_worker(
                         TraceEvent(
                             event_type="node_exit",
                             node="synthesis",
-                            message="Chat complete",
-                            mode="chat",
+                            message=(
+                                "Chat escalated to ReAct"
+                                if chat_escalated_once
+                                else "Chat complete"
+                            ),
+                            mode="chat" if not chat_escalated_once else "developer",
                             payload=(answer or "")[:800],
                             latency_ms=(time.perf_counter() - _chat_trace_t0)
                             * 1000.0,
@@ -5875,11 +6019,18 @@ def conversation_worker(
                     )
                 except Exception:  # noqa: BLE001
                     pass
-                log(
-                    "Conversation",
-                    f"Lightweight chat node (tools/MoA bypassed; "
-                    f"chat_memory={chat_memory_size()})",
-                )
+                if chat_escalated_once:
+                    log(
+                        "Conversation",
+                        "Chat→tool-graph escalate complete "
+                        f"(chat_memory={chat_memory_size()})",
+                    )
+                else:
+                    log(
+                        "Conversation",
+                        f"Lightweight chat node (tools/MoA bypassed; "
+                        f"chat_memory={chat_memory_size()})",
+                    )
             else:
                 result = run_react_loop(
                     user_text=whisper_text,
@@ -6207,6 +6358,10 @@ def conversation_worker(
                             f"Follow-up empty capture (reason={stop_reason}, "
                             f"rms_raw={rms_raw:.5f}) — silent disarm",
                         )
+                        _drop_mid_task_on_vad_timeout(
+                            stop_reason=stop_reason,
+                            rms_raw=rms_raw,
+                        )
                         end_session_to_idle()
                         break
                     if not speech_started:
@@ -6263,6 +6418,10 @@ def conversation_worker(
                             "Conversation",
                             f"Wake empty capture (reason={stop_reason}, "
                             f"rms_raw={rms_raw:.5f}) — silent disarm",
+                        )
+                        _drop_mid_task_on_vad_timeout(
+                            stop_reason=stop_reason,
+                            rms_raw=rms_raw,
                         )
                         end_session_to_idle()
                         break
@@ -6324,6 +6483,21 @@ def conversation_worker(
                     f"tokens={word_count} unique={unique_n} "
                     f"secs={audio_dur_s:.2f} wps={words_per_sec:.2f}",
                 )
+                # Low-RMS captures (often with max_timeout) must not contaminate
+                # conversation history — Whisper hallucinates on hush/noise.
+                if rms_raw < WHISPER_MIN_RMS_FOR_GAIN:
+                    log(
+                        "Conversation",
+                        f"Discarding STT commit (reason={stop_reason}, "
+                        f"rms_raw={rms_raw:.5f}) — below speech floor"
+                        f"{' / max_timeout' if stop_reason == 'max_timeout' else ''}"
+                        "; not writing conversation history",
+                    )
+                    whisper_text = ""
+                    set_subtitle("")
+                    set_ui_state("listening")
+                    follow_up = True
+                    continue
                 if word_count >= 8 and unique_n <= 2:
                     log(
                         "Conversation",

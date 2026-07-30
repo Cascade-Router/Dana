@@ -38,6 +38,16 @@ _FILLER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Model claims it will escalate but stays on the no-tools chat path (RC-3).
+_VERBAL_TOOL_GRAPH_ESCALATE_RE = re.compile(
+    r"(?:"
+    r"escalate\s+(?:this\s+)?(?:to\s+)?(?:the\s+)?tool[- ]?graph"
+    r"|tool[- ]?graph\s+route"
+    r"|switch(?:ing)?\s+to\s+(?:the\s+)?tool[- ]?graph"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def is_filler_response(text: str | None) -> bool:
     """True when assistant text is a stall / filler acknowledgement."""
@@ -48,6 +58,30 @@ def is_filler_response(text: str | None) -> bool:
     if len(raw) > 160:
         return False
     return bool(_FILLER_RE.search(raw))
+
+
+def is_verbal_tool_graph_escalation(text: str | None) -> bool:
+    """True when the model verbally claims a tool-graph escalate without tools."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    return bool(_VERBAL_TOOL_GRAPH_ESCALATE_RE.search(raw))
+
+
+def should_reject_chat_final(
+    answer: str | None,
+    user_text: str | None = None,
+) -> bool:
+    """True when lightweight chat must not END — escalate to ReAct instead.
+
+    ``user_text`` is reserved for future intent checks; unused today.
+    """
+    _ = user_text
+    if is_filler_response(answer):
+        return True
+    if is_verbal_tool_graph_escalation(answer):
+        return True
+    return False
 
 
 def message_text(msg: Any) -> str:
@@ -305,10 +339,12 @@ __all__ = (
     "gate_route_after_execution",
     "has_unresolved_tool_calls",
     "is_filler_response",
+    "is_verbal_tool_graph_escalation",
     "latest_assistant_text",
     "message_text",
     "run_async_with_tool_timeout",
     "run_with_tool_timeout",
     "should_block_end",
+    "should_reject_chat_final",
     "tool_failure_state_patch",
 )

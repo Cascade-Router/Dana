@@ -146,7 +146,12 @@ _TOOL_GRAPH_INTENT_RE = re.compile(
     r"\b(?:online|offline|status)\b.*\b(?:ollama|olama|allama|local\s+server)\b|"
     r"\b(?:shell_execute|file_editor|python_repl|run_terminal_command|"
     r"read_local_file)\b|"
-    r"\b[\w./\\-]+\.(?:py|json|md|txt|log|csv|yml|yaml|toml|ini)\b"
+    r"\b[\w./\\-]+\.(?:py|json|md|txt|log|csv|yml|yaml|toml|ini)\b|"
+    # Desktop / actuator / log intents (mirrors agentic_planning._DESKTOP_PLAN_RE).
+    r"\b(?:close|quit|kill|launch|open)\s+(?:[a-zA-Z0-9_-]+\s+)?"
+    r"(?:app|application|discord|browser|window|program)\b|"
+    r"\b(?:how\s+many|list|show|count)\s+(?:windows|tabs|apps)\b|"
+    r"\b(?:open|show|read|retrack|view)\s+.*\b(?:logs?|runtime\.log|conversation\.log)\b"
     r")",
     re.IGNORECASE,
 )
@@ -2465,8 +2470,15 @@ def run_lightweight_chat(
             if reply_lang == "fa"
             else "Sorry — please ask me again."
         )
-    # Append to buffer after the response is finalized.
-    if use_chat_memory:
+    # Filler / verbal escalate must not pollute chat memory (caller escalates).
+    reject_final = False
+    try:
+        from dana.graph.completion_gate import should_reject_chat_final
+
+        reject_final = should_reject_chat_final(spoken, user_clean)
+    except Exception:  # noqa: BLE001
+        reject_final = False
+    if use_chat_memory and not reject_final:
         append_chat_memory_turn(user_clean, spoken)
     return AgenticResult(
         final_text=spoken,
