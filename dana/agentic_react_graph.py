@@ -921,6 +921,8 @@ async def run_react_langgraph(
         prompt = f"{prompt}\n\n{ag._STRICT_TOOL_ENFORCEMENT_RULE}"
     if ag._EXPLICIT_TOOL_INVOCATION_RULE not in prompt:
         prompt = f"{prompt}\n\n{ag._EXPLICIT_TOOL_INVOCATION_RULE}"
+    if ag._POWERSHELL_TOOL_ENFORCEMENT_RULE not in prompt:
+        prompt = f"{prompt}\n\n{ag._POWERSHELL_TOOL_ENFORCEMENT_RULE}"
     if ag._R1_REASONING_RULE not in prompt:
         prompt = f"{prompt}\n\n{ag._R1_REASONING_RULE}"
     if ag._VOICE_SANITIZER_RULE not in prompt:

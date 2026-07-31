@@ -296,11 +296,19 @@ _REPL_SUITE_TOOL_IDS: tuple[str, ...] = (
 )
 # Windows PowerShell / OS shell actuators — bind even when aliases miss
 # ("Use PowerShell to…") and the multi-step REPL suite regex does not fire.
+# Bare "shell" nouns are avoided; require an execution cue (use/run/…) or
+# cmd/terminal/command-prompt phrasing so chat about "shells" does not over-bind.
 _POWERSHELL_HINT_RE = re.compile(
     r"("
     r"\b(?:powershell|pwsh|execute_powershell)\b|"
     r"\b(?:get-netadapter|get-process|get-service|get-childitem)\b|"
-    r"\bnetwork\s+adapters?\b"
+    r"\bnetwork\s+adapters?\b|"
+    r"\b(?:use|run|execute|open)\s+(?:(?:a|the|my)\s+)?"
+    r"(?:powershell|pwsh|cmd|command\s*prompt|terminal|shell)\b|"
+    r"\b(?:in|via|with|through)\s+(?:(?:a|the|my)\s+)?"
+    r"(?:powershell|pwsh|cmd|command\s*prompt)\b|"
+    r"\b(?:shell|terminal|cmd)\s+(?:command|script|to)\b|"
+    r"\bcommand\s*prompt\b"
     r")",
     re.IGNORECASE,
 )

@@ -31,13 +31,19 @@ def test_merge_binds_full_repl_suite_not_just_file_editor() -> None:
 
 def test_merge_binds_execute_powershell_for_network_adapter_prompt() -> None:
     """System/OS PowerShell asks must bind execute_powershell (not vision top-K)."""
-    q = "Use PowerShell to list network adapters"
+    q = "Use PowerShell to check my current active network adapters and IP address"
     merged = merge_bound_tool_ids(
         user_text=q,
         forced_tool_id=None,
-        mode="developer",
+        mode="chat",
     )
     assert "execute_powershell" in merged
+    # Terminal/cmd execution cues also seed the PowerShell actuator.
+    assert "execute_powershell" in merge_bound_tool_ids(
+        user_text="Use the terminal to list running processes",
+        forced_tool_id=None,
+        mode="chat",
+    )
     call = get_broker().parse_utterance(q)
     assert call is not None
     assert call.tool_id == "execute_powershell"

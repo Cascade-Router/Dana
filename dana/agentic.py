@@ -422,6 +422,12 @@ _EXPLICIT_TOOL_INVOCATION_RULE = (
     "unless the tool execution trace confirms it."
 )
 
+_POWERSHELL_TOOL_ENFORCEMENT_RULE = (
+    "TOOL ENFORCEMENT: If the user explicitly requests a shell, terminal, or "
+    "PowerShell command, you MUST use the `execute_powershell` tool. Do not "
+    "substitute with vision or memory tools."
+)
+
 _VOICE_SANITIZER_RULE = (
     "VOICE_SANITIZER_RULE: When processing input from voice mode, you must filter out "
     "conversational wrapper text (e.g., 'use the draft cursor prompt tool to log a "
