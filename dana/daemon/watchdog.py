@@ -251,9 +251,12 @@ class ProcessWatchdog:
             "--session",
             str(self.session_path),
         ]
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
         kwargs: dict[str, Any] = {
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
+            "stdout": None,  # inherit — surface daemon logs to parent
+            "stderr": None,
+            "env": env,
         }
         if os.name == "nt":
             kwargs["creationflags"] = int(

@@ -20,6 +20,7 @@ from typing import Any, Awaitable
 
 from dana.daemon.protocol import METHODS, make_error, make_event, make_result
 from dana.daemon.watchdog import ProcessWatchdog, default_session_path
+from dana.logging import enable_runtime_file_logging, log
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 50051
@@ -28,22 +29,150 @@ StreamChatHandler = Callable[[str, dict[str, Any]], AsyncIterator[dict[str, Any]
 StatusProvider = Callable[[], dict[str, Any] | Awaitable[dict[str, Any]]]
 
 
+def _daemon_system_prompt(user_text: str) -> str:
+    """Build live agent system prompt; fall back if core_agent is unavailable."""
+    try:
+        from dana.core_agent import build_donna_system_prompt
+
+        return build_donna_system_prompt([], user_text=user_text)
+    except Exception as exc:  # noqa: BLE001
+        log("Daemon", f"system prompt fallback ({type(exc).__name__}: {exc})")
+        return (
+            "You are Dānā, a local voice agent with tools. "
+            "Prefer concise spoken answers. Use tools when helpful."
+        )
+
+
+def _daemon_execute_tool(tc: Any) -> str:
+    """Dispatch through the live tool executor (lazy import)."""
+    from dana.core_agent import execute_tool_call
+
+    return execute_tool_call(tc)
+
+
 async def _default_stream_chat(
-    message: str, _params: dict[str, Any]
+    message: str, params: dict[str, Any]
 ) -> AsyncIterator[dict[str, Any]]:
-    """Offline graph stub — emits status / token / tool events then completes."""
+    """Thin IPC adapter over the live ReAct / LangGraph tool pipeline."""
     yield {"event": "status", "data": {"phase": "thinking", "wake_state": "awake"}}
     await asyncio.sleep(0)
-    text = f"[stub] {message}"
+    log("Daemon", f"stream_chat start chars={len(message)}")
+
+    from dana.agentic import REACT_MAX_ITERS, run_react_loop
+
+    tool_starts: list[dict[str, Any]] = []
+
+    def _on_tool_start(tc: Any, phrase: str = "") -> None:
+        name = getattr(tc, "tool_id", None) or getattr(tc, "name", None) or "tool"
+        tool_starts.append(
+            {"name": str(name), "status": "running", "ack": str(phrase or "")}
+        )
+
+    model = str(params.get("model") or os.environ.get("DONNA_OLLAMA_MODEL") or "llama3.2")
+    prior = params.get("prior_messages")
+    if not isinstance(prior, list):
+        prior = None
+    visual = params.get("visual_context")
+    if visual is not None:
+        visual = str(visual) or None
+    max_iters = int(params.get("max_iters") or REACT_MAX_ITERS)
+    enable_reflection = bool(params.get("enable_reflection", False))
+
+    def _run_live_graph() -> Any:
+        return run_react_loop(
+            user_text=message,
+            system_prompt=_daemon_system_prompt(message),
+            execute_fn=_daemon_execute_tool,
+            max_iters=max_iters,
+            enable_reflection=enable_reflection,
+            prior_messages=prior,
+            on_tool_start=_on_tool_start,
+            visual_context=visual,
+            model=model,
+            tts_callback=None,
+        )
+
+    # Heartbeat status events so IPC clients (default 10s sock timeout) stay alive.
+    graph_task = asyncio.create_task(asyncio.to_thread(_run_live_graph))
+    try:
+        while True:
+            done, _pending = await asyncio.wait({graph_task}, timeout=2.0)
+            if graph_task in done:
+                break
+            yield {
+                "event": "status",
+                "data": {"phase": "thinking", "wake_state": "awake"},
+            }
+        result = graph_task.result()
+    except Exception as exc:  # noqa: BLE001 — keep daemon alive if graph/LLM missing
+        if not graph_task.done():
+            graph_task.cancel()
+        log("Daemon", f"stream_chat graph error: {type(exc).__name__}: {exc}")
+        yield {
+            "event": "token",
+            "data": {"text": f"I hit a graph error: {type(exc).__name__}: {exc}"},
+        }
+        yield {
+            "event": "vision",
+            "data": {"summary": str(visual) if visual else "no camera frame"},
+        }
+        yield {
+            "event": "tool",
+            "data": {
+                "name": "react_graph",
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        }
+        return
+
+    for start in tool_starts:
+        yield {"event": "tool", "data": start}
+
+    emitted_tools = {str(t.get("name") or "") for t in tool_starts}
+    for entry in list(getattr(result, "tool_trace", None) or []):
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("tool") or entry.get("name") or "")
+        if not name:
+            if entry.get("error"):
+                emitted_tools.add("react_graph")
+                yield {
+                    "event": "tool",
+                    "data": {
+                        "name": "react_graph",
+                        "status": "error",
+                        "error": str(entry.get("error")),
+                    },
+                }
+            continue
+        if name in emitted_tools:
+            continue
+        emitted_tools.add(name)
+        status = "error" if entry.get("error") else "ok"
+        payload: dict[str, Any] = {"name": name, "status": status}
+        if entry.get("error"):
+            payload["error"] = str(entry["error"])
+        yield {"event": "tool", "data": payload}
+
+    text = str(getattr(result, "final_text", None) or "").strip()
+    if not text:
+        text = "I finished the turn but had nothing to say."
     yield {"event": "token", "data": {"text": text}}
     yield {
         "event": "vision",
-        "data": {"summary": "offline stub — no camera frame"},
+        "data": {"summary": str(visual) if visual else "no camera frame"},
     }
-    yield {
-        "event": "tool",
-        "data": {"name": "graph_stub", "status": "ok"},
-    }
+    if not emitted_tools:
+        yield {
+            "event": "tool",
+            "data": {
+                "name": "react_graph",
+                "status": "ok" if not getattr(result, "had_errors", False) else "error",
+                "iterations": int(getattr(result, "iterations", 0) or 0),
+            },
+        }
+    log("Daemon", f"stream_chat done chars={len(text)} iters={getattr(result, 'iterations', 0)}")
 
 
 def _default_status() -> dict[str, Any]:
@@ -236,15 +365,18 @@ class EngineDaemon:
         conversation = self.session.setdefault("conversation", [])
         if isinstance(conversation, list):
             conversation.append({"role": "user", "content": message, "ts": time.time()})
+        assistant_parts: list[str] = []
         async for item in self._stream_chat(message, params):
             event = str(item.get("event") or "update")
             data = item.get("data") if isinstance(item.get("data"), dict) else dict(item)
+            if event == "token" and isinstance(data, dict) and data.get("text"):
+                assistant_parts.append(str(data["text"]))
             await self._send(writer, make_event(req_id, event, data))
         if isinstance(conversation, list):
             conversation.append(
                 {
                     "role": "assistant",
-                    "content": f"[stub] {message}",
+                    "content": "".join(assistant_parts) or message,
                     "ts": time.time(),
                 }
             )
@@ -319,11 +451,14 @@ async def run_engine_daemon(
     port: int = DEFAULT_PORT,
     session_path: Path | str | None = None,
 ) -> None:
+    enable_runtime_file_logging()
+    log("Daemon", f"engine boot host={host} port={port} pid={os.getpid()}")
     daemon = EngineDaemon(host=host, port=port, session_path=session_path)
     await daemon.serve_forever()
 
 
 def main(argv: list[str] | None = None) -> int:
+    enable_runtime_file_logging()
     parser = argparse.ArgumentParser(description="Dana Agent Engine sidecar daemon")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)

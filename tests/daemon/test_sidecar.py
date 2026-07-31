@@ -7,12 +7,37 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
 from dana.daemon.engine import EngineDaemon
 from dana.daemon.watchdog import ProcessWatchdog
+from dana.schema import AgenticResult
 from dana.ui.daemon_client import RECONNECT_BADGE, DaemonClient
+
+
+def _fast_react_loop(**kwargs: Any) -> AgenticResult:
+    """Offline stand-in for the live ReAct graph (keeps daemon tests hermetic)."""
+    user = str(kwargs.get("user_text") or "")
+    on_tool = kwargs.get("on_tool_start")
+    if callable(on_tool):
+        try:
+            from dana.tools.schema import ToolCall
+
+            on_tool(
+                ToolCall(tool_id="graph_probe", arguments={}, raw_text=user, confidence=1.0),
+                "working",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return AgenticResult(
+        final_text=f"live:{user}",
+        iterations=1,
+        tool_trace=[{"tool": "graph_probe", "observation": "ok"}],
+        reply_lang="en",
+        had_errors=False,
+    )
 
 
 class _DaemonThread:
@@ -82,21 +107,28 @@ def test_ui_client_connects_and_streams(session_path: Path) -> None:
     daemon = EngineDaemon(host="127.0.0.1", port=0, session_path=session_path)
     runner = _DaemonThread(daemon)
     host, port = runner.start()
-    client = DaemonClient(host=host, port=port, reconnect_delay_s=0.05)
+    client = DaemonClient(
+        host=host,
+        port=port,
+        reconnect_delay_s=0.05,
+        request_timeout_s=30.0,
+    )
     try:
         assert client.connect(retries=3) is True
         assert client.connected is True
 
-        frames = list(client.stream_chat("hello sidecar"))
-        assert frames, "expected streaming frames"
-        types = [f.get("type") for f in frames]
-        assert "event" in types
-        assert types[-1] == "result"
-        events = {f.get("event") for f in frames if f.get("type") == "event"}
-        assert "token" in events
-        assert "tool" in events or "status" in events
-        text = client.stream_chat_text("ping")
-        assert "ping" in text or "stub" in text
+        with patch("dana.agentic.run_react_loop", side_effect=_fast_react_loop):
+            frames = list(client.stream_chat("hello sidecar"))
+            assert frames, "expected streaming frames"
+            types = [f.get("type") for f in frames]
+            assert "event" in types
+            assert types[-1] == "result"
+            events = {f.get("event") for f in frames if f.get("type") == "event"}
+            assert "token" in events
+            assert "tool" in events or "status" in events
+            text = client.stream_chat_text("ping")
+            assert "live:ping" in text
+            assert "[stub]" not in text
 
         status = client.system_status()
         assert status.get("pid")
