@@ -1,66 +1,135 @@
-name: Release
+# Automated OTA release pipeline.
+# Triggers on tag push matching v*.*.* (e.g. v0.1.0).
+#
+# Publishes:
+#   - dana-engine-<tag>.tar.gz  — dana/ package tree (+ scripts/) excluding
+#     __pycache__, .venv, and heavy optional assets (tts_models/*.onnx blobs).
+#   - latest.json               — OTA manifest for OTAManifestManager
+#     (fields: version, url|package_url, sha256; version without leading "v").
+#
+# Cut a release:
+#   git tag v0.1.0
+#   git push origin v0.1.0
+
+name: OTA Release
 
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
 
 permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest]
+  ota-release:
+    name: Test, package, publish OTA
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.10
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
           pip install -r requirements.txt
-          pip install -r requirements-cuda.txt
-          pip install pyinstaller
+          # Tray / logo tests need Pillow (also in requirements.txt; keep explicit).
+          pip install "Pillow>=10,<13"
 
-      - name: Ensure tts_models directory exists
+      - name: Run full test suite
+        run: python -m pytest tests/ -q --tb=short
+
+      - name: Derive version metadata
+        id: meta
         shell: bash
-        run: mkdir -p tts_models
-
-      - name: Build with PyInstaller
-        run: pyinstaller donna_build.spec --noconfirm --clean
-
-      - name: Package Windows executable
-        if: runner.os == 'Windows'
-        shell: pwsh
         run: |
-          if (Test-Path dist/Donna/Donna.exe) {
-            Compress-Archive -Path dist/Donna/* -DestinationPath dist/Donna-windows-x64.zip -Force
-          } else {
-            Get-ChildItem -Recurse dist | Select-Object FullName
-            throw "Expected dist/Donna/Donna.exe missing"
-          }
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          OWNER="${GITHUB_REPOSITORY_OWNER}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          ASSET="dana-engine-${TAG}.tar.gz"
+          URL="https://github.com/${OWNER}/${REPO}/releases/download/${TAG}/${ASSET}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "asset=${ASSET}" >> "$GITHUB_OUTPUT"
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+          echo "Packaging OTA asset=${ASSET} version=${VERSION}"
 
-      - name: Upload assets to GitHub Release
-        uses: softprops/action-gh-release@v1
+      - name: Package dana engine tarball
+        shell: bash
+        run: |
+          # Package dana/ core + scripts/. Exclude caches, venvs, and optional
+          # heavy TTS ONNX blobs under tts_models/ (download separately if needed).
+          STAGE="$(mktemp -d)"
+          mkdir -p "${STAGE}/dana-engine"
+          rsync -a \
+            --exclude '__pycache__/' \
+            --exclude '*.py[cod]' \
+            --exclude '.venv/' \
+            --exclude 'venv/' \
+            --exclude '*.onnx' \
+            --exclude 'tts_models/' \
+            dana/ "${STAGE}/dana-engine/dana/"
+          if [ -d scripts ]; then
+            rsync -a \
+              --exclude '__pycache__/' \
+              --exclude '*.py[cod]' \
+              scripts/ "${STAGE}/dana-engine/scripts/"
+          fi
+          # Include pyproject.toml so local version fallbacks stay consistent.
+          if [ -f pyproject.toml ]; then
+            cp pyproject.toml "${STAGE}/dana-engine/pyproject.toml"
+          fi
+          tar -C "${STAGE}" -czf "${{ steps.meta.outputs.asset }}" dana-engine
+          ls -lh "${{ steps.meta.outputs.asset }}"
+
+      - name: Calculate SHA256 and write latest.json
+        shell: bash
+        run: |
+          ASSET="${{ steps.meta.outputs.asset }}"
+          SHA256="$(sha256sum "${ASSET}" | awk '{print $1}')"
+          # Align with dana/updater/manifest.py ManifestInfo.from_dict:
+          #   version (no leading v), url|package_url, sha256
+          python - <<PY
+          import json
+          payload = {
+              "version": "${{ steps.meta.outputs.version }}",
+              "url": "${{ steps.meta.outputs.url }}",
+              "package_url": "${{ steps.meta.outputs.url }}",
+              "sha256": "${SHA256}",
+              "release_notes": "Automated OTA Release",
+          }
+          with open("latest.json", "w", encoding="utf-8") as fh:
+              json.dump(payload, fh, indent=2)
+              fh.write("\n")
+          print(json.dumps(payload, indent=2))
+          PY
+          echo "SHA256=${SHA256}"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Donna ${{ github.ref_name }}
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Dana ${{ steps.meta.outputs.tag }}
           draft: false
           prerelease: false
           generate_release_notes: true
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
           files: |
-            dist/Donna-windows-x64.zip
+            ${{ steps.meta.outputs.asset }}
+            latest.json
+          body: |
+            Automated OTA Release `${{ steps.meta.outputs.version }}`.
+
+            Assets:
+            - `${{ steps.meta.outputs.asset }}` — dana engine package
+            - `latest.json` — OTA manifest (`version`, `url`/`package_url`, `sha256`)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
