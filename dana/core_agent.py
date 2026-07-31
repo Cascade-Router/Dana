@@ -232,6 +232,7 @@ try:
     _UI_ACCENT = _UI_THEME.ACCENT
     _UI_ACCENT_HOVER = _UI_THEME.ACCENT_HOVER
     _UI_EMERALD = _UI_THEME.EMERALD
+    _UI_EMERALD_HOVER = _UI_THEME.EMERALD_HOVER
     _UI_ROSE = _UI_THEME.ROSE
     _UI_ROSE_HOVER = _UI_THEME.ROSE_HOVER
     _UI_AMBER = _UI_THEME.AMBER
@@ -245,6 +246,7 @@ except Exception:  # noqa: BLE001
     _UI_ACCENT = "#0EA5E9"
     _UI_ACCENT_HOVER = "#0284C7"
     _UI_EMERALD = "#10B981"
+    _UI_EMERALD_HOVER = "#059669"
     _UI_ROSE = "#F43F5E"
     _UI_ROSE_HOVER = "#E11D48"
     _UI_AMBER = "#F59E0B"
@@ -7840,6 +7842,12 @@ class DonnaGUI(ctk.CTk):
         self._update_check_btn: ctk.CTkButton | None = None
         self._update_apply_btn: ctk.CTkButton | None = None
         self._update_busy = False
+        # Phase 1 OTA — Auto-Update Mode + Hot Apply pill.
+        self._ota_mode_var: Any = None
+        self._ota_mode_menu: ctk.CTkOptionMenu | None = None
+        self._ota_pill_lbl: ctk.CTkLabel | None = None
+        self._ota_hot_apply_btn: ctk.CTkButton | None = None
+        self._ota_manager: Any = None
         # Stage 8.10 — Dashboard silent text chat.
         self.chat_entry: ctk.CTkEntry | None = None
         self._chat_send_btn: ctk.CTkButton | None = None
@@ -8660,7 +8668,7 @@ class DonnaGUI(ctk.CTk):
         self._build_system_log_section(right)
 
     def _build_system_updates_card(self, tab) -> None:  # noqa: ANN001
-        """Stage 9.3 — System Updates card (left column)."""
+        """Stage 9.3 — System Updates card (left column) + Phase 1 OTA chrome."""
         updates = self._make_card(
             tab, title="System Updates", padx=4, pady=(0, 8), expand=False
         )
@@ -8675,6 +8683,54 @@ class DonnaGUI(ctk.CTk):
             wraplength=360,
             text_color=_UI_MUTED,
         ).pack(fill="x", pady=(0, 8))
+
+        # Auto-Update Mode (Silent / Manual) — wired to OTAManifestManager.
+        mode_row = ctk.CTkFrame(updates, fg_color="transparent")
+        mode_row.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(
+            mode_row,
+            text="Auto-Update Mode",
+            anchor="w",
+            text_color=_UI_MUTED,
+            font=ctk.CTkFont(size=12),
+        ).pack(side="left")
+        initial_mode = "Manual"
+        try:
+            from dana.updater.manifest import get_ota_manager
+
+            self._ota_manager = get_ota_manager()
+            initial_mode = (
+                "Silent"
+                if self._ota_manager.auto_update_mode == "silent"
+                else "Manual"
+            )
+        except Exception:  # noqa: BLE001
+            self._ota_manager = None
+        self._ota_mode_var = ctk.StringVar(value=initial_mode)
+        self._ota_mode_menu = ctk.CTkOptionMenu(
+            mode_row,
+            values=["Silent", "Manual"],
+            variable=self._ota_mode_var,
+            width=110,
+            height=28,
+            corner_radius=8,
+            fg_color=_UI_GHOST,
+            button_color=_UI_ACCENT,
+            button_hover_color=_UI_ACCENT_HOVER,
+            text_color=_UI_TEXT,
+            command=self._on_ota_mode_changed,
+        )
+        self._ota_mode_menu.pack(side="right")
+
+        self._ota_pill_lbl = ctk.CTkLabel(
+            updates,
+            text="[UP TO DATE]",
+            anchor="w",
+            text_color=_UI_MUTED,
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        self._ota_pill_lbl.pack(fill="x", pady=(0, 4))
+
         self._update_status_lbl = ctk.CTkLabel(
             updates,
             text="Status: idle",
@@ -8713,6 +8769,23 @@ class DonnaGUI(ctk.CTk):
             command=self._on_apply_update_and_restart,
         )
         # Hidden until check_for_updates() reports True.
+        self._ota_hot_apply_btn = ctk.CTkButton(
+            btn_row,
+            text="Hot Apply",
+            width=110,
+            height=30,
+            corner_radius=999,
+            fg_color=_UI_EMERALD,
+            hover_color=_UI_EMERALD_HOVER,
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._on_ota_hot_apply,
+        )
+        # Hidden until OTAManifestManager reports a staged patch.
+        try:
+            self._refresh_ota_ui()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _build_episodic_memory_section(self, tab) -> None:  # noqa: ANN001
         """Episodic memory keyword search (SQLite store)."""
@@ -8968,6 +9041,119 @@ class DonnaGUI(ctk.CTk):
             lbl.configure(**kwargs)
         except Exception:  # noqa: BLE001
             pass
+
+    def _ota_mgr(self) -> Any:
+        mgr = getattr(self, "_ota_manager", None)
+        if mgr is not None:
+            return mgr
+        try:
+            from dana.updater.manifest import get_ota_manager
+
+            self._ota_manager = get_ota_manager()
+            return self._ota_manager
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _on_ota_mode_changed(self, choice: str) -> None:
+        mgr = self._ota_mgr()
+        if mgr is None:
+            return
+        try:
+            mgr.set_auto_update_mode("silent" if str(choice).lower() == "silent" else "manual")
+        except Exception as exc:  # noqa: BLE001
+            log("Updater", f"auto_update_mode change failed: {exc}")
+        self._refresh_ota_ui()
+
+    def _refresh_ota_ui(self) -> None:
+        """Sync OTA status pill + Hot Apply visibility (headless-safe)."""
+        mgr = self._ota_mgr()
+        pill = getattr(self, "_ota_pill_lbl", None)
+        btn = getattr(self, "_ota_hot_apply_btn", None)
+        if mgr is None:
+            if pill is not None:
+                try:
+                    pill.configure(text="[UP TO DATE]", text_color=_UI_MUTED)
+                except Exception:  # noqa: BLE001
+                    pass
+            return
+        try:
+            st = mgr.state()
+        except Exception:  # noqa: BLE001
+            return
+        pill_text = st.status_pill()
+        if pill is not None:
+            try:
+                color = _UI_AMBER if st.staged_version else (
+                    _UI_ACCENT if st.update_available else _UI_MUTED
+                )
+                if st.staged_version:
+                    color = _UI_EMERALD
+                pill.configure(text=pill_text, text_color=color)
+            except Exception:  # noqa: BLE001
+                pass
+        if btn is None:
+            return
+        try:
+            if st.staged_version:
+                if not btn.winfo_ismapped():
+                    check = self._update_check_btn
+                    if check is not None and check.winfo_ismapped():
+                        btn.pack(side="right", padx=(0, 8), before=check)
+                    else:
+                        btn.pack(side="right", padx=(0, 8))
+            else:
+                btn.pack_forget()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_ota_hot_apply(self) -> None:
+        """Apply staged OTA patch via DynamicToolReloader (no full restart)."""
+        if self._update_busy:
+            return
+        mgr = self._ota_mgr()
+        if mgr is None:
+            self._set_update_status("OTA manager unavailable.", color="#F87171")
+            return
+        self._update_busy = True
+        try:
+            if self._ota_hot_apply_btn is not None:
+                self._ota_hot_apply_btn.configure(state="disabled")
+        except Exception:  # noqa: BLE001
+            pass
+        self._set_update_status("Hot-applying staged update…", color=_UI_ACCENT)
+
+        def _worker() -> None:
+            err = ""
+            version = ""
+            try:
+                result = mgr.hot_apply()
+                version = str((result or {}).get("version") or "")
+            except Exception as exc:  # noqa: BLE001
+                err = f"{type(exc).__name__}: {exc}"
+                log("Updater", f"hot_apply failed: {err}")
+
+            def _ui() -> None:
+                self._update_busy = False
+                try:
+                    if self._ota_hot_apply_btn is not None:
+                        self._ota_hot_apply_btn.configure(state="normal")
+                except Exception:  # noqa: BLE001
+                    pass
+                if err:
+                    self._set_update_status(f"Hot Apply failed: {err}", color="#F87171")
+                else:
+                    self._set_update_status(
+                        f"Hot Apply complete — v{version or '?'} tools reloaded.",
+                        color="#66BB6A",
+                    )
+                self._refresh_ota_ui()
+
+            try:
+                self.after(0, _ui)
+            except Exception:  # noqa: BLE001
+                _ui()
+
+        threading.Thread(target=_worker, name="OTAHotApply", daemon=True).start()
 
     def _set_update_available(self, available: bool) -> None:
         btn = self._update_apply_btn

@@ -14,6 +14,8 @@ SETTINGS_PATH = str(_SETTINGS_PATH)
 # Production defaults — Tool Forge unlocked; English-only public release.
 DEFAULT_FLAGS: dict[str, Any] = {
     "enable_dynamic_tool_synthesis": True,
+    # OTA / hot-update: "silent" auto-stages patches; "manual" waits for Hot Apply.
+    "auto_update_mode": "manual",
     # Cascade Router: escalate high-complexity turns to an external LLM when available.
     "enable_cascade_router": False,
     # Public release: English-only STT / reply / TTS.

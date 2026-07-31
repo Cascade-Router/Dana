@@ -3,6 +3,7 @@
 
 [project]
 name = "dana"
+version = "0.1.0"
 description = "Dānā: Open-Source Cybernetic Multi-Agent Control Plane"
 readme = "README.md"
 requires-python = ">=3.10"

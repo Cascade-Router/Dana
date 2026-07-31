@@ -19,4 +19,6 @@ except Exception:
 
 from dana.paths import DONNA_WORKSPACE, PROJECT_ROOT
 
-__all__ = ["PROJECT_ROOT", "DONNA_WORKSPACE"]
+__version__ = "0.1.0"
+
+__all__ = ["PROJECT_ROOT", "DONNA_WORKSPACE", "__version__"]
