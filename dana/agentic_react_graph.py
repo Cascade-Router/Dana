@@ -921,8 +921,6 @@ async def run_react_langgraph(
         prompt = f"{prompt}\n\n{ag._STRICT_TOOL_ENFORCEMENT_RULE}"
     if ag._EXPLICIT_TOOL_INVOCATION_RULE not in prompt:
         prompt = f"{prompt}\n\n{ag._EXPLICIT_TOOL_INVOCATION_RULE}"
-    if ag._POWERSHELL_TOOL_ENFORCEMENT_RULE not in prompt:
-        prompt = f"{prompt}\n\n{ag._POWERSHELL_TOOL_ENFORCEMENT_RULE}"
     if ag._R1_REASONING_RULE not in prompt:
         prompt = f"{prompt}\n\n{ag._R1_REASONING_RULE}"
     if ag._VOICE_SANITIZER_RULE not in prompt:
@@ -1160,7 +1158,23 @@ async def run_react_langgraph(
         default_model=model,
         temperature=0.2,
     )
+    # Grammar-constrained tool calling: Ollama native tools schema via
+    # bind_tools(strict=True). Do not set ChatOllama(format="json") on this
+    # path — that would force spoken FINAL into JSON and break tool_calls.
     llm_with_tools = llm.bind_tools(tools, strict=True)
+    if forced_tool is not None and forced_tool.tool_id in bound_names:
+        tid = forced_tool.tool_id
+        try:
+            llm_with_tools = llm.bind_tools(tools, tool_choice=tid, strict=True)
+        except Exception:  # noqa: BLE001
+            try:
+                llm_with_tools = llm.bind_tools(
+                    tools,
+                    tool_choice={"type": "function", "function": {"name": tid}},
+                    strict=True,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     # Two-stage MoA shim: DeepSeek-R1 plans (no tools) → Llama formats tool_calls.
     moa_plan = ""

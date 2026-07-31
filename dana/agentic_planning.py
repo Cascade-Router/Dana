@@ -3,6 +3,10 @@
 Hydrates AgentState with tool + desktop context, forces a structured plan
 before tool execution / final speech, then advances required tools into the
 existing HITL corridor (ticket_validate → jason → ticket_approval → tools).
+
+The structured plan lives in ``execution_plan`` / ``always_include`` state only.
+It is NOT injected into ReAct chat prompts — tool calling is enforced at the
+inference layer via ``llm.bind_tools(..., strict=True)`` (+ ``tool_choice``).
 """
 
 from __future__ import annotations
@@ -14,24 +18,19 @@ from typing import Any
 
 from dana.schema import ReactGraphState
 
-# Identity block injected into planner + system prompts (no generic refusals).
+# Identity block for system prompt builders (persona / context — no plan JSON).
 DANA_CONTROL_PLANE_IDENTITY = (
     "You are Dānā, a local Windows control plane with direct access to desktop "
-    "tools (Florence-2 vision, Win32 ROI, HITL ticket gate). You MUST construct "
-    "an execution plan using your tools for any desktop or window requests. "
-    "Do not issue generic refusals."
+    "tools (Florence-2 vision, Win32 ROI, HITL ticket gate). "
+    "Do not issue generic refusals for desktop or window requests."
 )
 
-_PLANNER_SYSTEM = (
-    f"{DANA_CONTROL_PLANE_IDENTITY}\n\n"
-    "PRE-ANSWER PLANNING PHASE (mandatory):\n"
-    "Before calling tools or speaking a FINAL answer, reason with this structure:\n"
-    "1) Intended Goal\n"
-    "2) Environment Assessment (active window / tools available)\n"
-    "3) Required Tools (ids from the bound catalog)\n"
-    "4) Execution Steps (ordered)\n"
-    "Then invoke the required tools via native tool_calls. "
-    "Never claim a ticket was logged or a window was summarized without tool results."
+# Offline planner schema (state machine only — not ReAct chat text).
+_PLANNER_FIELDS = (
+    "intended_goal",
+    "environment_assessment",
+    "required_tools",
+    "execution_steps",
 )
 
 # Desktop / window / ticket intents that must leave lightweight chat.
@@ -214,19 +213,9 @@ def build_structured_plan(
 
 
 def format_plan_block(plan: dict[str, Any]) -> str:
-    """Human/LLM-readable plan card injected as a SystemMessage."""
-    payload = {
-        "intended_goal": plan.get("intended_goal"),
-        "environment_assessment": plan.get("environment_assessment"),
-        "required_tools": plan.get("required_tools") or [],
-        "execution_steps": plan.get("execution_steps") or [],
-    }
-    body = json.dumps(payload, ensure_ascii=False, indent=2)
-    return (
-        f"{_PLANNER_SYSTEM}\n\n"
-        f"STRUCTURED_PLAN (JSON):\n{body}\n"
-        "Execute Required Tools in order via native tool_calls before FINAL speech."
-    )
+    """Serialize plan for traces/logs — not for ReAct chat injection."""
+    payload = {k: plan.get(k) for k in _PLANNER_FIELDS}
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _extract_user_text(state: ReactGraphState | dict[str, Any]) -> str:
@@ -244,9 +233,11 @@ def _extract_user_text(state: ReactGraphState | dict[str, Any]) -> str:
 
 
 def planner_node(state: ReactGraphState) -> dict[str, Any]:
-    """LangGraph node: hydrate context + attach structured plan (pre-answer)."""
-    from langchain_core.messages import SystemMessage
+    """LangGraph node: hydrate context + attach structured plan (pre-answer).
 
+    Plan-Then-Execute advances tools via ``execution_plan`` / ``always_include``.
+    Does not inject STRUCTURED_PLAN JSON into ReAct chat messages.
+    """
     user_text = _extract_user_text(state)
     tool_ids = hydrate_tool_catalog()
     window = active_window_metadata()
@@ -285,7 +276,6 @@ def planner_node(state: ReactGraphState) -> dict[str, Any]:
         },
         "always_include": always,
         "current_agent": "Planner",
-        "messages": [SystemMessage(content=format_plan_block(plan))],
         "active_intent": user_text or state.get("active_intent") or "",
     }
 
@@ -325,5 +315,5 @@ def executor_node(state: ReactGraphState) -> dict[str, Any]:
 
 
 def planning_system_preamble() -> str:
-    """Short identity + planning mandate for system prompt builders."""
+    """Short identity for system prompt builders (no STRUCTURED_PLAN text)."""
     return DANA_CONTROL_PLANE_IDENTITY

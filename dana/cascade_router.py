@@ -1308,6 +1308,8 @@ def resolve_chat_model(
     _log_cascade(
         f"ChatOllama model={model_id} num_ctx={num_ctx} num_predict={num_predict}"
     )
+    # Leave format unset: native tool grammar comes from bind_tools(tools),
+    # not format="json" (which would constrain spoken FINAL answers to JSON).
     return ChatOllama(
         model=model_id,
         temperature=temperature,
