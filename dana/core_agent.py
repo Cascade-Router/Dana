@@ -7887,6 +7887,50 @@ class DonnaGUI(ctk.CTk):
         self.after(400, self._refresh_stats)
         self.after(100, self.process_telemetry)
         self.after(500, self._pulse_active_cells)
+        # Phase 2A — optional IPC attach (no-op / degrade when daemon down).
+        try:
+            self.after(250, self._init_daemon_client)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _init_daemon_client(self) -> None:
+        """Attach Control Dashboard to Agent Engine sidecar (graceful if absent)."""
+        try:
+            from dana.ui.daemon_client import DaemonClient, daemon_ipc_enabled
+        except Exception:  # noqa: BLE001
+            return
+        if not daemon_ipc_enabled():
+            return
+        if getattr(self, "_daemon_client", None) is not None:
+            return
+
+        def _on_state(state: str, badge: str) -> None:
+            try:
+                self.after(
+                    0,
+                    lambda b=badge, s=state: self._set_daemon_badge(
+                        b if s == "reconnecting" else ""
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            client = DaemonClient(on_state_change=_on_state)
+            self._daemon_client = client
+            client.connect(retries=1)
+            client.start_auto_reconnect()
+        except Exception:  # noqa: BLE001
+            self._daemon_client = None
+
+    def _set_daemon_badge(self, text: str) -> None:
+        lbl = getattr(self, "daemon_badge", None)
+        if lbl is None:
+            return
+        try:
+            lbl.configure(text=text or "")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _mode_accent(self, mode: str | None = None) -> str:
         key = (mode or self._header_mode or "chat").strip().lower()
@@ -7993,6 +8037,16 @@ class DonnaGUI(ctk.CTk):
             pady=4,
         )
         self.mode_badge.pack(side="left", padx=(8, 12), pady=12)
+        # Phase 2A — engine sidecar reconnect badge (hidden until IPC drop).
+        self.daemon_badge = ctk.CTkLabel(
+            header,
+            text="",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color="#FBBF24",
+            fg_color="transparent",
+        )
+        self.daemon_badge.pack(side="left", padx=(0, 8), pady=12)
+        self._daemon_client = None
         # Stage 8.9.2 — emergency kill switch (runs stop_dana.vbs / stop_dana.bat).
         self.stop_donna_btn = ctk.CTkButton(
             header,
