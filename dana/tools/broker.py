@@ -294,6 +294,16 @@ _REPL_SUITE_TOOL_IDS: tuple[str, ...] = (
     "file_editor",
     "run_terminal_command",
 )
+# Windows PowerShell / OS shell actuators — bind even when aliases miss
+# ("Use PowerShell to…") and the multi-step REPL suite regex does not fire.
+_POWERSHELL_HINT_RE = re.compile(
+    r"("
+    r"\b(?:powershell|pwsh|execute_powershell)\b|"
+    r"\b(?:get-netadapter|get-process|get-service|get-childitem)\b|"
+    r"\bnetwork\s+adapters?\b"
+    r")",
+    re.IGNORECASE,
+)
 # Jason/Titan conversational supervisor → Donna coder handoff (not Watchdog).
 _JASON_SUPERVISOR_HINT_RE = re.compile(
     r"("
@@ -515,6 +525,8 @@ def merge_bound_tool_ids(
     OCR/grounding prompts also keep ``ocr_with_region`` (Florence-2) bound.
     Multi-step write/run/read prompts bind the full local REPL suite so
     ``file_editor`` foresight cannot starve ``python_repl`` / ``shell_execute``.
+    PowerShell / network-adapter OS prompts always bind ``execute_powershell``
+    so semantic top-K cannot starve the shell actuator with vision/memory tools.
     """
     if known_ids is None:
         try:
@@ -547,6 +559,8 @@ def merge_bound_tool_ids(
     if not jason_sup:
         for tid in repl_suite_tool_ids(user_text or ""):
             _add(tid)
+        if _POWERSHELL_HINT_RE.search(user_text or ""):
+            _add("execute_powershell")
     for tid in explicit_tool_ids_in_text(user_text, known):
         if jason_sup and tid != "dispatch_jason_supervisor":
             continue
@@ -947,6 +961,17 @@ class IntentBroker:
                 source_lang=lang,
                 raw_text=raw,
                 confidence=0.97,
+            )
+        # Bare PowerShell / network-adapter OS asks (aliases miss "Use PowerShell…").
+        ps_hit = bool(_POWERSHELL_HINT_RE.search(raw))
+        if ps_hit and not mem_write_hit and not forge_hit and not write_hit:
+            _foresight_cascade(raw, "execute_powershell")
+            return ToolCall(
+                tool_id="execute_powershell",
+                arguments={},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.96,
             )
         # Local project file reads beat OCR/vision — "read foo.py" is not on-screen OCR.
         # Skip when this is a REPL chain (handled above).

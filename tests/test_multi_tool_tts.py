@@ -29,6 +29,20 @@ def test_merge_binds_full_repl_suite_not_just_file_editor() -> None:
     assert "shell_execute" in merged
 
 
+def test_merge_binds_execute_powershell_for_network_adapter_prompt() -> None:
+    """System/OS PowerShell asks must bind execute_powershell (not vision top-K)."""
+    q = "Use PowerShell to list network adapters"
+    merged = merge_bound_tool_ids(
+        user_text=q,
+        forced_tool_id=None,
+        mode="developer",
+    )
+    assert "execute_powershell" in merged
+    call = get_broker().parse_utterance(q)
+    assert call is not None
+    assert call.tool_id == "execute_powershell"
+
+
 def test_broker_foresight_prioritizes_python_repl_on_chain() -> None:
     call = get_broker().parse_utterance(MULTI_STEP)
     assert call is not None
