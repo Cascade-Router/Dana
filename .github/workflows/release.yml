@@ -24,16 +24,16 @@ permissions:
 jobs:
   ota-release:
     name: Test, package, publish OTA
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
@@ -67,34 +67,44 @@ jobs:
         run: |
           # Package dana/ core + scripts/. Exclude caches, venvs, and optional
           # heavy TTS ONNX blobs under tts_models/ (download separately if needed).
-          STAGE="$(mktemp -d)"
-          mkdir -p "${STAGE}/dana-engine"
-          rsync -a \
-            --exclude '__pycache__/' \
-            --exclude '*.py[cod]' \
-            --exclude '.venv/' \
-            --exclude 'venv/' \
-            --exclude '*.onnx' \
-            --exclude 'tts_models/' \
-            dana/ "${STAGE}/dana-engine/dana/"
-          if [ -d scripts ]; then
-            rsync -a \
-              --exclude '__pycache__/' \
-              --exclude '*.py[cod]' \
-              scripts/ "${STAGE}/dana-engine/scripts/"
-          fi
-          # Include pyproject.toml so local version fallbacks stay consistent.
-          if [ -f pyproject.toml ]; then
-            cp pyproject.toml "${STAGE}/dana-engine/pyproject.toml"
-          fi
-          tar -C "${STAGE}" -czf "${{ steps.meta.outputs.asset }}" dana-engine
-          ls -lh "${{ steps.meta.outputs.asset }}"
+          # Python packaging avoids rsync (unavailable on windows-latest).
+          python - <<'PY'
+          import tarfile, tempfile
+          from pathlib import Path
+          asset = "${{ steps.meta.outputs.asset }}"
+          stage = Path(tempfile.mkdtemp(prefix="dana-ota-"))
+          root = stage / "dana-engine"
+          root.mkdir(parents=True)
+          exclude_dirs = {"__pycache__", ".venv", "venv", "tts_models"}
+          exclude_suffixes = {".pyc", ".pyo", ".pyd", ".onnx"}
+          def copy_tree(src, dst):
+              for path in src.rglob("*"):
+                  if not path.is_file():
+                      continue
+                  rel = path.relative_to(src)
+                  if any(part in exclude_dirs for part in rel.parts):
+                      continue
+                  if path.suffix.lower() in exclude_suffixes:
+                      continue
+                  target = dst / rel
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  target.write_bytes(path.read_bytes())
+          copy_tree(Path("dana"), root / "dana")
+          if Path("scripts").is_dir():
+              copy_tree(Path("scripts"), root / "scripts")
+          if Path("pyproject.toml").is_file():
+              (root / "pyproject.toml").write_bytes(Path("pyproject.toml").read_bytes())
+          with tarfile.open(asset, "w:gz") as tf:
+              tf.add(str(root), arcname="dana-engine")
+          print(asset, Path(asset).stat().st_size)
+          PY
+
 
       - name: Calculate SHA256 and write latest.json
         shell: bash
         run: |
           ASSET="${{ steps.meta.outputs.asset }}"
-          SHA256="$(sha256sum "${ASSET}" | awk '{print $1}')"
+          SHA256=$(python -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$ASSET")
           # Align with dana/updater/manifest.py ManifestInfo.from_dict:
           #   version (no leading v), url|package_url, sha256
           python - <<PY
