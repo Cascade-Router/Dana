@@ -144,8 +144,8 @@ _TOOL_GRAPH_INTENT_RE = re.compile(
     r"\b(?:ollama|olama|allama|olam)\b|"
     r"\b(?:local\s+server|brain\s+server)\b.*\b(?:online|offline|status|up|down)\b|"
     r"\b(?:online|offline|status)\b.*\b(?:ollama|olama|allama|local\s+server)\b|"
-    r"\b(?:shell_execute|file_editor|python_repl|run_terminal_command|"
-    r"read_local_file)\b|"
+    r"\b(?:shell_execute|execute_powershell|file_editor|python_repl|"
+    r"run_terminal_command|read_local_file)\b|"
     r"\b[\w./\\-]+\.(?:py|json|md|txt|log|csv|yml|yaml|toml|ini)\b|"
     # Desktop / actuator / log intents (mirrors agentic_planning._DESKTOP_PLAN_RE).
     r"\b(?:close|quit|kill|launch|open)\s+(?:[a-zA-Z0-9_-]+\s+)?"

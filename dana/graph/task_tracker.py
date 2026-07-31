@@ -31,6 +31,7 @@ _TERMINAL = frozenset(
 # Human-readable tool activity lines for the GUI Task Tracker timeline.
 _TOOL_ACTIVITY_LABELS: dict[str, str] = {
     "python_repl": "Running Python REPL",
+    "execute_powershell": "Running PowerShell",
     "web_search": "Grounding web search",
     "analyze_visual_context": "Analyzing visual context",
     "ocr_with_region": "Running OCR on region",

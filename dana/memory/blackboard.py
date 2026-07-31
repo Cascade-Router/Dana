@@ -134,6 +134,7 @@ HEAVY_ACTUATOR_TOOLS: frozenset[str] = frozenset(
         "draft_cursor_prompt",
         "file_editor",
         "shell_execute",
+        "execute_powershell",
         "python_repl",
         "architect_new_tool",
         "read_local_file",

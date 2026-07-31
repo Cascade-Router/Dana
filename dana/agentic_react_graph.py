@@ -1455,6 +1455,7 @@ async def run_react_langgraph(
         "dispatch_jason_supervisor": ("query",),
         "run_terminal_command": ("command",),
         "shell_execute": ("command",),
+        "execute_powershell": ("command",),
         "file_editor": ("action", "filepath"),
         "python_repl": ("code",),
         "read_local_file": ("path",),

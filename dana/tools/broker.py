@@ -276,7 +276,7 @@ _OCR_GROUND_HINT_RE = re.compile(
 # REPL suite so foresight cannot starve python_repl for a lone file_editor hit.
 _REPL_SUITE_HINT_RE = re.compile(
     r"("
-    r"\b(?:python_repl|shell_execute|file_editor)\b|"
+    r"\b(?:python_repl|shell_execute|execute_powershell|file_editor)\b|"
     r"\b(?:write|create|generate)\s+(?:a\s+|some\s+)?(?:python\s+|py\s+)?"
     r"(?:script|code|program|snippet)\b|"
     r"\b(?:run|execute)\s+(?:the\s+|this\s+|it\b|them\b|(?:python\s+)?"
@@ -290,6 +290,7 @@ _REPL_SUITE_HINT_RE = re.compile(
 _REPL_SUITE_TOOL_IDS: tuple[str, ...] = (
     "python_repl",
     "shell_execute",
+    "execute_powershell",
     "file_editor",
     "run_terminal_command",
 )

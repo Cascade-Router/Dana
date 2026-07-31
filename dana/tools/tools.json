@@ -581,6 +581,32 @@
       }
     },
     {
+      "id": "execute_powershell",
+      "description_en": "Run a PowerShell CLI command on the Windows host (powershell -NoProfile -NonInteractive -Command). Prefer for PowerShell-native scripting (registry, WMI/CIM, Get-Process, pipelines). Pass script text only — do not wrap with powershell.exe again. Returns returncode/stdout/stderr for agent self-correction.",
+      "parameters": [
+        {
+          "name": "command",
+          "type": "string",
+          "required": true,
+          "description_en": "PowerShell script text to run (not wrapped in powershell -Command).",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "execute_powershell",
+          "run powershell",
+          "powershell command",
+          "run this in powershell"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": [
+          "execute_powershell"
+        ]
+      }
+    },
+    {
       "id": "architect_new_tool",
       "description_en": "Use this tool to WRITE, BUILD, FORGE, or CREATE a brand new custom tool from scratch. This is the code generation engine (Tool Forge: AST + security review + hot-load into custom_tools/). Prefer this whenever the user asks to build/compile/create a new tool.",
       "parameters": [

@@ -27,6 +27,7 @@ _CLOUD_MOCK_TOOLS = frozenset(
         "press_key",
         "type_stealth_text",
         "shell_execute",
+        "execute_powershell",
         "python_repl",
         "file_editor",
         "dispatch_jason_supervisor",

@@ -1951,6 +1951,7 @@ def speak_tool_working_ack(call: ToolCall, reply_lang: str) -> None:
             "read_clipboard_context": " ‌  .",
             "run_terminal_command": "    .",
             "shell_execute": "  .",
+            "execute_powershell": "  .",
             "file_editor": "  .",
             "python_repl": "  .",
             "flush_memory": "  ‌   ‌.",
@@ -1971,6 +1972,7 @@ def speak_tool_working_ack(call: ToolCall, reply_lang: str) -> None:
             "read_clipboard_context": "Let me check the clipboard.",
             "run_terminal_command": "Let me run that in the terminal.",
             "shell_execute": "Running that in the local shell.",
+            "execute_powershell": "Running that in PowerShell.",
             "file_editor": "Working on that file.",
             "python_repl": "Running that in the Python sandbox.",
             "flush_memory": "Okay — wiping short-term memory.",
@@ -4764,6 +4766,14 @@ def execute_tool_call(tc: ToolCall) -> str:
             return "ERROR: missing command"
         return shell_execute(str(command))
 
+    def _handle_execute_powershell(call: ToolCall) -> str:
+        from dana.tools.powershell import execute_powershell
+
+        command = call.arguments.get("command")
+        if command is None or not str(command).strip():
+            return "ERROR: missing command"
+        return execute_powershell(str(command))
+
     def _handle_file_editor(call: ToolCall) -> str:
         from dana.tools.system_repl import file_editor
 
@@ -5175,6 +5185,7 @@ def execute_tool_call(tc: ToolCall) -> str:
         "read_clipboard_context": _handle_read_clipboard,
         "run_terminal_command": _handle_run_terminal,
         "shell_execute": _handle_shell_execute,
+        "execute_powershell": _handle_execute_powershell,
         "file_editor": _handle_file_editor,
         "python_repl": _handle_python_repl,
         "flush_memory": _handle_flush_memory,
