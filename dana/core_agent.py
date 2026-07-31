@@ -7846,6 +7846,8 @@ class DonnaGUI(ctk.CTk):
         self._ota_mode_var: Any = None
         self._ota_mode_menu: ctk.CTkOptionMenu | None = None
         self._ota_pill_lbl: ctk.CTkLabel | None = None
+        self._ota_slot_lbl: ctk.CTkLabel | None = None
+        self._ota_staging_lbl: ctk.CTkLabel | None = None
         self._ota_hot_apply_btn: ctk.CTkButton | None = None
         self._ota_manager: Any = None
         # Stage 8.10 — Dashboard silent text chat.
@@ -8785,6 +8787,29 @@ class DonnaGUI(ctk.CTk):
         )
         self._ota_pill_lbl.pack(fill="x", pady=(0, 4))
 
+        # Phase 2B — Active slot + staging health pills.
+        _slot_active_color = _UI_EMERALD
+        try:
+            _slot_active_color = getattr(_UI_THEME, "STATUS_SLOT_ACTIVE", _UI_EMERALD)
+        except Exception:  # noqa: BLE001
+            _slot_active_color = _UI_EMERALD
+        self._ota_slot_lbl = ctk.CTkLabel(
+            updates,
+            text="Active: Slot A (v0.0.0)",
+            anchor="w",
+            text_color=_slot_active_color,
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        self._ota_slot_lbl.pack(fill="x", pady=(0, 2))
+        self._ota_staging_lbl = ctk.CTkLabel(
+            updates,
+            text="Staging: idle",
+            anchor="w",
+            text_color=_UI_MUTED,
+            font=ctk.CTkFont(size=12),
+        )
+        self._ota_staging_lbl.pack(fill="x", pady=(0, 4))
+
         self._update_status_lbl = ctk.CTkLabel(
             updates,
             text="Status: idle",
@@ -9122,11 +9147,23 @@ class DonnaGUI(ctk.CTk):
         """Sync OTA status pill + Hot Apply visibility (headless-safe)."""
         mgr = self._ota_mgr()
         pill = getattr(self, "_ota_pill_lbl", None)
+        slot_lbl = getattr(self, "_ota_slot_lbl", None)
+        staging_lbl = getattr(self, "_ota_staging_lbl", None)
         btn = getattr(self, "_ota_hot_apply_btn", None)
+
+        def _token(name: str, fallback: str) -> str:
+            try:
+                return str(getattr(_UI_THEME, name, fallback))
+            except Exception:  # noqa: BLE001
+                return fallback
+
         if mgr is None:
             if pill is not None:
                 try:
-                    pill.configure(text="[UP TO DATE]", text_color=_UI_MUTED)
+                    pill.configure(
+                        text="[UP TO DATE]",
+                        text_color=_token("STATUS_IDLE", _UI_MUTED),
+                    )
                 except Exception:  # noqa: BLE001
                     pass
             return
@@ -9135,14 +9172,47 @@ class DonnaGUI(ctk.CTk):
         except Exception:  # noqa: BLE001
             return
         pill_text = st.status_pill()
+        health = str(getattr(st, "staging_health", "idle") or "idle")
         if pill is not None:
             try:
-                color = _UI_AMBER if st.staged_version else (
-                    _UI_ACCENT if st.update_available else _UI_MUTED
-                )
-                if st.staged_version:
-                    color = _UI_EMERALD
+                if health == "checking":
+                    color = _token("STATUS_STAGING", _UI_AMBER)
+                elif health == "failed":
+                    color = _token("STATUS_FAILED", _UI_ROSE)
+                elif health == "healthy":
+                    color = _token("STATUS_HEALTHY", _UI_EMERALD)
+                elif st.staged_version:
+                    color = _token("STATUS_UPDATE_READY", _UI_EMERALD)
+                elif st.update_available:
+                    color = _token("STATUS_UPDATE_AVAILABLE", _UI_ACCENT)
+                else:
+                    color = _token("STATUS_IDLE", _UI_MUTED)
                 pill.configure(text=pill_text, text_color=color)
+            except Exception:  # noqa: BLE001
+                pass
+        if slot_lbl is not None:
+            try:
+                label = str(getattr(st, "active_slot_label", "") or "").strip()
+                if not label:
+                    label = f"Slot A (v{st.local_version.lstrip('vV')})"
+                slot_lbl.configure(
+                    text=f"Active: {label}",
+                    text_color=_token("STATUS_SLOT_ACTIVE", _UI_EMERALD),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        if staging_lbl is not None:
+            try:
+                staging_colors = {
+                    "idle": _token("STATUS_IDLE", _UI_MUTED),
+                    "checking": _token("STATUS_STAGING", _UI_AMBER),
+                    "healthy": _token("STATUS_HEALTHY", _UI_EMERALD),
+                    "failed": _token("STATUS_FAILED", _UI_ROSE),
+                }
+                staging_lbl.configure(
+                    text=f"Staging: {health}",
+                    text_color=staging_colors.get(health, _UI_MUTED),
+                )
             except Exception:  # noqa: BLE001
                 pass
         if btn is None:
@@ -9161,27 +9231,36 @@ class DonnaGUI(ctk.CTk):
             pass
 
     def _on_ota_hot_apply(self) -> None:
-        """Apply staged OTA patch via DynamicToolReloader (no full restart)."""
+        """Promote staged OTA via blue-green health gate + tool reload."""
         if self._update_busy:
             return
         mgr = self._ota_mgr()
         if mgr is None:
             self._set_update_status("OTA manager unavailable.", color="#F87171")
             return
+        # Attach sidecar IPC for hot_restart when available.
+        try:
+            client = getattr(self, "_daemon_client", None)
+            if client is not None and getattr(mgr, "_ipc_client", None) is None:
+                mgr._ipc_client = client
+        except Exception:  # noqa: BLE001
+            pass
         self._update_busy = True
         try:
             if self._ota_hot_apply_btn is not None:
                 self._ota_hot_apply_btn.configure(state="disabled")
         except Exception:  # noqa: BLE001
             pass
-        self._set_update_status("Hot-applying staged update…", color=_UI_ACCENT)
+        self._set_update_status("Blue-green promote + health check…", color=_UI_AMBER)
 
         def _worker() -> None:
             err = ""
             version = ""
+            active_label = ""
             try:
                 result = mgr.hot_apply()
                 version = str((result or {}).get("version") or "")
+                active_label = str((result or {}).get("active_label") or "")
             except Exception as exc:  # noqa: BLE001
                 err = f"{type(exc).__name__}: {exc}"
                 log("Updater", f"hot_apply failed: {err}")
@@ -9196,8 +9275,9 @@ class DonnaGUI(ctk.CTk):
                 if err:
                     self._set_update_status(f"Hot Apply failed: {err}", color="#F87171")
                 else:
+                    suffix = f" — Active: {active_label}" if active_label else ""
                     self._set_update_status(
-                        f"Hot Apply complete — v{version or '?'} tools reloaded.",
+                        f"Hot Apply complete — v{version or '?'}{suffix}",
                         color="#66BB6A",
                     )
                 self._refresh_ota_ui()

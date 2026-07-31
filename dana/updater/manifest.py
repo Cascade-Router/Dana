@@ -145,12 +145,24 @@ class OTAState:
     auto_update_mode: AutoUpdateMode = "manual"
     status: str = "idle"
     last_error: str = ""
+    # Phase 2B — blue-green slot state.
+    active_slot: str = ""
+    active_slot_label: str = ""
+    staging_health: str = "idle"
 
     def status_pill(self) -> str:
+        if self.staging_health == "checking":
+            return "[STAGING: HEALTH CHECK…]"
+        if self.staging_health == "failed":
+            return "[STAGING: FAILED — ROLLED BACK]"
+        if self.staging_health == "healthy" and self.active_slot_label:
+            return f"[ACTIVE: {self.active_slot_label}]"
         if self.staged_version:
             return f"[UPDATE READY: v{self.staged_version.lstrip('vV')}]"
         if self.update_available and self.remote_version:
             return f"[UPDATE AVAILABLE: v{self.remote_version.lstrip('vV')}]"
+        if self.active_slot_label:
+            return f"[ACTIVE: {self.active_slot_label}]"
         return "[UP TO DATE]"
 
 
@@ -165,6 +177,12 @@ class OTAManifestManager:
         fetch_fn: FetchFn | None = None,
         local_version: str | None = None,
         auto_update_mode: AutoUpdateMode | None = None,
+        slot_manager: Any | None = None,
+        slots_dir: Path | str | None = None,
+        verify_fn: Callable[[Path], bool] | None = None,
+        ipc_client: Any | None = None,
+        failure_log: Path | str | None = None,
+        auto_promote: bool | None = None,
     ) -> None:
         self.manifest_url = (manifest_url or DEFAULT_MANIFEST_URL).strip()
         self.staging_dir = Path(staging_dir) if staging_dir else default_staging_dir()
@@ -184,6 +202,13 @@ class OTAManifestManager:
         self._staged_path: Path | None = None
         self._status = "idle"
         self._last_error = ""
+        self._staging_health = "idle"
+        self._verify_fn = verify_fn
+        self._ipc_client = ipc_client
+        self._failure_log = Path(failure_log) if failure_log else None
+        self._auto_promote = auto_promote
+        self._slot_manager = slot_manager
+        self._slots_dir = Path(slots_dir) if slots_dir else None
         self._discover_staged()
 
     # --- mode / state -----------------------------------------------------
@@ -201,12 +226,31 @@ class OTAManifestManager:
         _persist_auto_update_mode(normalized)
         return normalized
 
+    def _get_slot_manager(self) -> Any:
+        if self._slot_manager is not None:
+            return self._slot_manager
+        from dana.updater.slot_manager import SlotManager
+
+        kwargs: dict[str, Any] = {"initial_version": self._local_version}
+        if self._slots_dir is not None:
+            kwargs["base_dir"] = self._slots_dir
+        self._slot_manager = SlotManager(**kwargs)
+        return self._slot_manager
+
     def state(self) -> OTAState:
         with self._lock:
             remote_ver = self._remote.version if self._remote else ""
             available = False
             if remote_ver:
                 available = is_newer_version(remote_ver, self._local_version)
+            active_slot = ""
+            active_label = ""
+            try:
+                sm = self._get_slot_manager()
+                active_slot = sm.active_slot_name()
+                active_label = sm.display_active()
+            except Exception:  # noqa: BLE001
+                pass
             return OTAState(
                 local_version=self._local_version,
                 remote_version=remote_ver,
@@ -216,6 +260,9 @@ class OTAManifestManager:
                 auto_update_mode=self._auto_update_mode,
                 status=self._status,
                 last_error=self._last_error,
+                active_slot=active_slot,
+                active_slot_label=active_label,
+                staging_health=self._staging_health,
             )
 
     # --- fetch / compare --------------------------------------------------
@@ -240,6 +287,9 @@ class OTAManifestManager:
             ):
                 try:
                     self.download_and_stage()
+                    # Silent mode: auto-promote via blue-green health gate.
+                    if self._auto_promote is not False:
+                        self.promote_staged_update()
                 except Exception as exc:  # noqa: BLE001
                     with self._lock:
                         self._last_error = f"{type(exc).__name__}: {exc}"
@@ -309,10 +359,72 @@ class OTAManifestManager:
             self._staged_version = version
             self._staged_path = dest
             self._status = "staged"
+            self._staging_health = "idle"
         return dest
 
+    def promote_staged_update(self) -> dict[str, Any]:
+        """Unpack staged OTA into inactive slot → health-check → switch or rollback."""
+        from dana.updater.health_check import run_slot_health_check
+
+        with self._lock:
+            staged_ver = self._staged_version
+            staged_path = self._staged_path
+            if not staged_ver or staged_path is None or not Path(staged_path).is_file():
+                raise RuntimeError("No staged update ready to promote")
+            self._status = "promoting"
+            self._staging_health = "checking"
+            self._last_error = ""
+
+        sm = self._get_slot_manager()
+        try:
+            candidate = sm.unpack_into_inactive(Path(staged_path), version=staged_ver)
+            hc = run_slot_health_check(
+                candidate,
+                verify_fn=self._verify_fn,
+                ipc_client=self._ipc_client,
+                slot_manager=sm,
+                failure_log=self._failure_log,
+                version=staged_ver,
+            )
+            payload = hc.to_dict() if hasattr(hc, "to_dict") else dict(hc)
+            if payload.get("ok"):
+                with self._lock:
+                    self._local_version = staged_ver
+                    self._status = "applied"
+                    self._staging_health = "healthy"
+                    self._last_error = ""
+                    # Clear staged marker after successful promote.
+                    self._staged_version = ""
+                    self._staged_path = None
+                return {
+                    "ok": True,
+                    "version": staged_ver,
+                    "blue_green": payload,
+                    "active_slot": sm.active_slot_name(),
+                    "active_label": sm.display_active(),
+                }
+            err = str(payload.get("error") or "health check failed")
+            with self._lock:
+                self._status = "promote_failed"
+                self._staging_health = "failed"
+                self._last_error = err
+            return {
+                "ok": False,
+                "version": staged_ver,
+                "blue_green": payload,
+                "error": err,
+                "active_slot": sm.active_slot_name(),
+                "active_label": sm.display_active(),
+            }
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                self._status = "promote_failed"
+                self._staging_health = "failed"
+                self._last_error = f"{type(exc).__name__}: {exc}"
+            raise
+
     def hot_apply(self) -> dict[str, Any]:
-        """Apply a staged patch via DynamicToolReloader (no full process restart)."""
+        """Promote staged update via blue-green gate, then reload tool modules."""
         with self._lock:
             staged_ver = self._staged_version
             staged_path = self._staged_path
@@ -320,9 +432,17 @@ class OTAManifestManager:
                 raise RuntimeError("No staged update ready to hot-apply")
             self._status = "applying"
 
+        # Phase 2B — dual-slot promote + health-check rollback.
+        bg = self.promote_staged_update()
+        if not bg.get("ok"):
+            err = str(bg.get("error") or "blue-green promote failed")
+            with self._lock:
+                self._status = "apply_failed"
+                self._last_error = err
+            raise RuntimeError(err)
+
         reloaded: list[str] = []
         try:
-            # Prefer extracted tool modules when present.
             extract_root = self.staging_dir / "extracted" / staged_ver
             if extract_root.is_dir():
                 _overlay_tool_modules(extract_root)
@@ -334,17 +454,30 @@ class OTAManifestManager:
             with self._lock:
                 self._local_version = staged_ver
                 self._status = "applied"
+                self._staging_health = "healthy"
                 self._last_error = ""
             return {
                 "ok": True,
                 "version": staged_ver,
                 "reloaded": reloaded,
+                "blue_green": bg.get("blue_green") or bg,
+                "active_slot": bg.get("active_slot"),
+                "active_label": bg.get("active_label"),
             }
         except Exception as exc:  # noqa: BLE001
+            # Slot already switched — surface tool-reload failure without undoing promote.
             with self._lock:
-                self._status = "apply_failed"
-                self._last_error = f"{type(exc).__name__}: {exc}"
-            raise
+                self._status = "applied"
+                self._last_error = f"tools reload: {type(exc).__name__}: {exc}"
+            return {
+                "ok": True,
+                "version": staged_ver,
+                "reloaded": reloaded,
+                "blue_green": bg.get("blue_green") or bg,
+                "active_slot": bg.get("active_slot"),
+                "active_label": bg.get("active_label"),
+                "reload_error": f"{type(exc).__name__}: {exc}",
+            }
 
     def _discover_staged(self) -> None:
         meta_path = self.staging_dir / "staged.json"
