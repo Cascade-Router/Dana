@@ -30,11 +30,15 @@ def test_execute_powershell_actuator_online_real() -> None:
 def test_execute_powershell_hermetic_mock() -> None:
     """Offline CI path: mock subprocess so PowerShell need not be installed."""
     fake = MagicMock()
+    fake.pid = 1234
     fake.returncode = 0
-    fake.stdout = "Actuator Online\n"
-    fake.stderr = ""
+    fake.communicate.return_value = ("Actuator Online\n", "")
 
-    with patch("dana.tools.powershell.subprocess.run", return_value=fake) as run:
+    # Keep hermetic: skip real Job Object / ResumeThread side effects on Windows.
+    with (
+        patch("dana.tools.powershell.subprocess.Popen", return_value=fake) as popen,
+        patch("dana.tools.win32_sandbox.JOB_APIS_AVAILABLE", False),
+    ):
         out = execute_powershell('Write-Output "Actuator Online"')
 
     assert "Actuator Online" in out
@@ -42,8 +46,8 @@ def test_execute_powershell_hermetic_mock() -> None:
     assert "stdout:" in out
     assert "stderr:\n(empty)" in out
 
-    run.assert_called_once()
-    args, kwargs = run.call_args
+    popen.assert_called_once()
+    args, kwargs = popen.call_args
     assert args[0] == [
         "powershell",
         "-NoProfile",
@@ -51,7 +55,6 @@ def test_execute_powershell_hermetic_mock() -> None:
         "-Command",
         'Write-Output "Actuator Online"',
     ]
-    assert kwargs.get("capture_output") is True
     assert kwargs.get("text") is True
     if os.name == "nt":
         assert int(kwargs.get("creationflags") or 0) & int(
