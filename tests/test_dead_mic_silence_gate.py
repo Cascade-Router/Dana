@@ -32,12 +32,17 @@ def test_audio_buffer_rms_known_tone() -> None:
 
 
 def test_should_skip_wake_predict_below_and_above_floor() -> None:
-    assert should_skip_wake_predict(0.0) is True
-    assert should_skip_wake_predict(DEAD_MIC_RMS_FLOOR * 0.5) is True
-    assert should_skip_wake_predict(DEAD_MIC_RMS_FLOOR) is False
-    assert should_skip_wake_predict(0.01) is False
+    # Explicit absolute floor (dynamic gate is calibrated at session boot).
+    assert should_skip_wake_predict(0.0, floor=DEAD_MIC_RMS_FLOOR) is True
+    assert should_skip_wake_predict(
+        DEAD_MIC_RMS_FLOOR * 0.5, floor=DEAD_MIC_RMS_FLOOR
+    ) is True
+    assert should_skip_wake_predict(
+        DEAD_MIC_RMS_FLOOR, floor=DEAD_MIC_RMS_FLOOR
+    ) is False
+    assert should_skip_wake_predict(0.01, floor=DEAD_MIC_RMS_FLOOR) is False
     # Near-silent virtual-mic noise still below floor.
-    assert should_skip_wake_predict(5e-5) is True
+    assert should_skip_wake_predict(5e-5, floor=DEAD_MIC_RMS_FLOOR) is True
 
 
 def test_prioritize_text_input_sets_vad_abort() -> None:

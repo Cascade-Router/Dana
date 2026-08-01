@@ -216,6 +216,8 @@ _gui_instance: Optional["DonnaGUI"] = None
 _agent_loop_thread: Optional[threading.Thread] = None
 # Last mic ambient probe — drives adaptive VAD / barge-in floors for quiet headsets.
 _mic_ambient_rms: float = 0.0
+# Dynamic speech gate from calibrate_noise_floor (ambient * 1.5, abs min).
+_dynamic_speech_floor: float = 0.0015
 
 # Live Trace telemetry (background threads → Tk main thread via Queue only).
 gui_telemetry_queue: queue.Queue = queue.Queue()
@@ -554,6 +556,7 @@ _STT_NAME_FIXES: tuple[tuple[re.Pattern[str], str], ...] = (
 # Quiet-mic gain: real Sonar speech often lands at rms≈0.003.
 WHISPER_TARGET_RMS = 0.05
 WHISPER_GAIN_RMS_CEIL = 0.015
+# Fallback speech floor until calibrate_noise_floor() runs (then dynamic).
 WHISPER_MIN_RMS_FOR_GAIN = 0.0015
 WHISPER_MAX_GAIN = 12.0
 # Silero VAD window @ 16 kHz (512 samples ≈ 32 ms).
@@ -698,6 +701,12 @@ tts_busy = threading.Event()
 tts_interrupt_event = threading.Event()
 # Process-wide barge-in controller (shares ``tts_interrupt_event``).
 from dana.audio.tts_worker import get_tts_worker as _get_tts_worker  # noqa: E402
+from dana.audio.noise_floor import (  # noqa: E402
+    ABSOLUTE_MIN_SPEECH_FLOOR,
+    NOISE_FLOOR_MULTIPLIER,
+    compute_ambient_baseline,
+    compute_dynamic_speech_floor,
+)
 
 _tts_barge = _get_tts_worker(barge_in_event=tts_interrupt_event)
 # True while ``record_utterance`` owns the microphone (barge-in watcher must stand down).
@@ -907,13 +916,58 @@ def audio_buffer_rms(samples: np.ndarray | None) -> float:
     return float(np.sqrt(np.mean(np.square(x))))
 
 
+def get_dynamic_speech_floor() -> float:
+    """Current adaptive speech / Whisper RMS gate (post-calibration)."""
+    return float(_dynamic_speech_floor)
+
+
 def should_skip_wake_predict(
     rms: float,
     *,
-    floor: float = DEAD_MIC_RMS_FLOOR,
+    floor: float | None = None,
 ) -> bool:
-    """True when chunk RMS is below the dead-mic floor (skip OpenWakeWord predict)."""
-    return float(rms) < float(floor)
+    """True when chunk RMS is below the speech floor (skip OpenWakeWord predict)."""
+    gate = float(get_dynamic_speech_floor() if floor is None else floor)
+    return float(rms) < gate
+
+
+def calibrate_noise_floor(duration_sec: float = 3.0) -> tuple[float, float]:
+    """Sample mic ambient RMS before wake-word arming; set dynamic speech floor.
+
+    Captures short windows over ``duration_sec``, averages ambient ``rms_raw``,
+    then sets ``dynamic_speech_floor = max(ABSOLUTE_MIN, ambient * 1.5)``.
+
+    Returns ``(ambient_rms_baseline, dynamic_speech_floor)``.
+    """
+    global _mic_ambient_rms, _dynamic_speech_floor
+    window_s = 0.25
+    n_windows = max(1, int(round(float(duration_sec) / window_s)))
+    rms_samples: list[float] = []
+    device_idx = AUDIO_INPUT_DEVICE
+    rate = int(AUDIO_INPUT_RATE or SAMPLE_RATE)
+    for _ in range(n_windows):
+        try:
+            rms_samples.append(
+                float(probe_mic_rms(device_idx, rate, seconds=window_s))
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("Audio", f"WARNING: noise-floor window probe failed: {exc}")
+            rms_samples.append(0.0)
+    baseline = compute_ambient_baseline(rms_samples)
+    floor = compute_dynamic_speech_floor(
+        baseline,
+        multiplier=NOISE_FLOOR_MULTIPLIER,
+        absolute_min=max(ABSOLUTE_MIN_SPEECH_FLOOR, DEAD_MIC_RMS_FLOOR),
+    )
+    _mic_ambient_rms = float(baseline)
+    _dynamic_speech_floor = float(floor)
+    log(
+        "Audio",
+        f"Noise floor calibrated: ambient_rms_baseline={baseline:.6f}, "
+        f"dynamic_speech_floor={floor:.6f} "
+        f"(multiplier={NOISE_FLOOR_MULTIPLIER}, windows={n_windows})",
+    )
+    return float(baseline), float(floor)
 
 
 def abort_vad_listening(*, reason: str = "text_override") -> None:
@@ -4461,12 +4515,14 @@ def prepare_audio_for_whisper(
         return audio
     # Always measure RMS after DC removal (offset-inflated energy mis-scales gain).
     rms_raw = float(np.sqrt(np.mean(np.square(audio))) + 1e-9)
+    speech_floor = get_dynamic_speech_floor()
     if 1e-5 < rms_raw < WHISPER_GAIN_RMS_CEIL:
-        if rms_raw < WHISPER_MIN_RMS_FOR_GAIN:
+        if rms_raw < speech_floor:
             # Near-silence: do not amplify — Whisper invents YouTube filler.
             log(
                 "Conversation",
-                f"Whisper gain skipped (rms_raw={rms_raw:.5f} below speech floor)",
+                f"Whisper gain skipped (rms_raw={rms_raw:.5f} below speech floor "
+                f"{speech_floor:.5f})",
             )
         else:
             gain = min(WHISPER_TARGET_RMS / rms_raw, WHISPER_MAX_GAIN)
@@ -6438,7 +6494,7 @@ def conversation_worker(
                         )
                         end_session_to_idle()
                         break
-                    if (not speech_started) or rms_raw < 5e-5:
+                    if (not speech_started) or rms_raw < get_dynamic_speech_floor():
                         # Quiet-mic miss: keep session open and invite another try.
                         log(
                             "Conversation",
@@ -6498,11 +6554,13 @@ def conversation_worker(
                 )
                 # Low-RMS captures (often with max_timeout) must not contaminate
                 # conversation history — Whisper hallucinates on hush/noise.
-                if rms_raw < WHISPER_MIN_RMS_FOR_GAIN:
+                speech_floor = get_dynamic_speech_floor()
+                if rms_raw < speech_floor:
                     log(
                         "Conversation",
                         f"Discarding STT commit (reason={stop_reason}, "
-                        f"rms_raw={rms_raw:.5f}) — below speech floor"
+                        f"rms_raw={rms_raw:.5f}) — below speech floor "
+                        f"{speech_floor:.5f}"
                         f"{' / max_timeout' if stop_reason == 'max_timeout' else ''}"
                         "; not writing conversation history",
                     )
@@ -10666,6 +10724,9 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
         log("Main", "Aborting: configured speaker is not usable.")
         stop_event.set()
         return 2
+
+    # Adaptive noise floor before wake-word arming (3s ambient baseline).
+    calibrate_noise_floor(duration_sec=3.0)
 
     device = select_device()
     dtype = select_dtype(device)
