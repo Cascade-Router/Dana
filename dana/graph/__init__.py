@@ -33,6 +33,14 @@ from dana.graph.task_tracker import (
     set_shared_task_tracker,
 )
 from dana.graph.workflow import remap_execution_end_to_verifier
+from dana.graph.workers.os_worker import (
+    OS_WORKER_NODE,
+    OS_WORKER_SYSTEM_PROMPT,
+    make_os_worker_node,
+    os_worker_node,
+    route_after_executor,
+    should_route_to_os_worker,
+)
 
 __all__ = (
     "BUMP_SUBGRAPH_RETRY",
@@ -40,6 +48,8 @@ __all__ = (
     "DEFAULT_TOOL_TIMEOUT_S",
     "ESCALATE_SUBGRAPH",
     "MAX_VERIFICATION_ATTEMPTS",
+    "OS_WORKER_NODE",
+    "OS_WORKER_SYSTEM_PROMPT",
     "SUBGRAPH_NODE",
     "SUPERVISOR_NODE",
     "TOOL_TIMEOUT_MESSAGE",
@@ -52,13 +62,17 @@ __all__ = (
     "get_raw_trace",
     "get_shared_task_tracker",
     "humanize_activity",
+    "make_os_worker_node",
     "make_verifier_node",
+    "os_worker_node",
     "remap_execution_end_to_verifier",
     "resolve_subgraph_execution",
+    "route_after_executor",
     "route_after_verifier",
     "route_subgraph_execution",
     "set_shared_task_tracker",
     "should_block_end",
+    "should_route_to_os_worker",
     "store_raw_trace",
     "verifier_node",
 )

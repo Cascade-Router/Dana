@@ -724,12 +724,15 @@ def compile_donna_react_graph(
     hydrate_memory_node_fn: Callable[..., Any] | None = None,
     consolidate_memory_node_fn: Callable[..., Any] | None = None,
     verifier_node_fn: Callable[..., Any] | None = None,
+    os_worker_node_fn: Callable[..., Any] | None = None,
     checkpointer: Any | None = None,
 ) -> Any:
     """Compile the production ReAct StateGraph (same topology as live Donna).
 
     Topology:
-      START → hydrate_memory → planner → executor → agent
+      START → hydrate_memory → planner → executor
+                    ─(OS / PowerShell intent)→ os_worker → verifier
+                    ─(default)→ agent
                     ─(draft_cursor_prompt)→ ticket_validate
                     ─(valid)→ jason_ticket_review → ticket_approval ─(approve)→ tools
                     ─(invalid, <3)→ agent
@@ -746,6 +749,7 @@ def compile_donna_react_graph(
                     ╲(agent halt, no tools)→ consolidate_memory → END
 
     ``planner`` / ``executor`` enforce Plan-Then-Execute before the MoA agent.
+    ``os_worker`` isolates PowerShell / system intents (injectable; no vision/swarm).
     ``ticket_validate`` (Stage 8.9.6) runs Pydantic before Jason / HITL.
     ``jason_ticket_review`` (Stage 8.9) speaks a critique, then
     ``ticket_approval`` HITL-interrupts before heavy / ledger tool execution.
@@ -767,6 +771,11 @@ def compile_donna_react_graph(
     )
     from dana.graph.nodes.memory import hydrate_memory_node as _default_hydrate
     from dana.graph.nodes.verifier import verifier_node as _default_verifier
+    from dana.graph.workers.os_worker import (
+        OS_WORKER_NODE,
+        os_worker_node as _default_os_worker,
+        route_after_executor,
+    )
 
     workflow = StateGraph(ReactGraphState)
     workflow.add_node(
@@ -776,6 +785,10 @@ def compile_donna_react_graph(
     workflow.add_node("planner", planner_node_fn or _default_planner)
     workflow.add_node("executor", executor_node_fn or _default_executor)
     workflow.add_node("agent", agent_node)
+    workflow.add_node(
+        OS_WORKER_NODE,
+        os_worker_node_fn or _default_os_worker,
+    )
     workflow.add_node(
         "ticket_validate",
         ticket_validate_node_fn or ticket_validate_node,
@@ -800,7 +813,17 @@ def compile_donna_react_graph(
     workflow.add_edge(START, "hydrate_memory")
     workflow.add_edge("hydrate_memory", "planner")
     workflow.add_edge("planner", "executor")
-    workflow.add_edge("executor", "agent")
+    # Supervisor fork: OS / PowerShell intents → isolated worker; else MoA agent.
+    workflow.add_conditional_edges(
+        "executor",
+        route_after_executor,
+        {
+            OS_WORKER_NODE: OS_WORKER_NODE,
+            "agent": "agent",
+        },
+    )
+    # Worker output joins the closed-loop verifier → consolidate corridor.
+    workflow.add_edge(OS_WORKER_NODE, "verifier")
     workflow.add_conditional_edges(
         "agent",
         _route_after_agent,
