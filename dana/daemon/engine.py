@@ -458,7 +458,6 @@ async def run_engine_daemon(
 
 
 def main(argv: list[str] | None = None) -> int:
-    raise RuntimeError("CRITICAL OTA TEST: Simulated health-check failure")
     enable_runtime_file_logging()
     parser = argparse.ArgumentParser(description="Dana Agent Engine sidecar daemon")
     parser.add_argument("--host", default=DEFAULT_HOST)
