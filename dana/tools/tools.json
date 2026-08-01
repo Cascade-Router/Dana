@@ -607,6 +607,35 @@
       }
     },
     {
+      "id": "fetch_webpage",
+      "description_en": "Fetch visible page text from a fully qualified http:// or https:// URL using headless Chromium (Playwright). Pass a complete URL with scheme; returns body inner_text for ReAct observation. Navigation timeouts return an ERROR string.",
+      "parameters": [
+        {
+          "name": "url",
+          "type": "string",
+          "required": true,
+          "description_en": "Fully qualified http:// or https:// URL to open.",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "fetch_webpage",
+          "fetch webpage",
+          "fetch the page",
+          "browse url",
+          "open this url",
+          "read this webpage",
+          "scrape the page"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": [
+          "fetch_webpage"
+        ]
+      }
+    },
+    {
       "id": "architect_new_tool",
       "description_en": "Use this tool to WRITE, BUILD, FORGE, or CREATE a brand new custom tool from scratch. This is the code generation engine (Tool Forge: AST + security review + hot-load into custom_tools/). Prefer this whenever the user asks to build/compile/create a new tool.",
       "parameters": [

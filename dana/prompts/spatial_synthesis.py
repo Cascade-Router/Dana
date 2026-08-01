@@ -248,6 +248,7 @@ When the user asks to read on-screen text, find a button/label, or ground UI ele
 - run_terminal_command(command=<shell_command>)
 - shell_execute(command=<shell_command>)  # hardened 15s timeout + 2000-char truncate @ project root
 - execute_powershell(command=<powershell_script>)  # Windows PowerShell CLI (-NoProfile -NonInteractive)
+- fetch_webpage(url=<http(s)_url>)  # headless Chromium; fully qualified http/https URL → body text
 - file_editor(action=read|write, filepath=<path>, content?)  # PROJECT_ROOT jail; blocks path traversal
 - python_repl(code=<python_source>)  # separate python.exe subprocess — never in-process exec
 - flush_memory()  # wipe short-term conversation window (+ custom_tools failsafe)

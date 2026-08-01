@@ -1495,6 +1495,7 @@ async def run_react_langgraph(
         "run_terminal_command": ("command",),
         "shell_execute": ("command",),
         "execute_powershell": ("command",),
+        "fetch_webpage": ("url",),
         "file_editor": ("action", "filepath"),
         "python_repl": ("code",),
         "read_local_file": ("path",),

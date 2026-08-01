@@ -312,6 +312,17 @@ _POWERSHELL_HINT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+# Headless Playwright fetch — bind when the user names the tool or asks to
+# open/fetch a concrete webpage URL (do not steal generic "search the web").
+_BROWSER_HINT_RE = re.compile(
+    r"("
+    r"\b(?:fetch_webpage)\b|"
+    r"\b(?:fetch|load|scrape|read)\s+(?:the\s+)?(?:web\s*)?page\b|"
+    r"\b(?:browse|open)\s+(?:(?:to|the|this)\s+)?(?:url|webpage|web\s*page)\b|"
+    r"https?://\S+"
+    r")",
+    re.IGNORECASE,
+)
 # Jason/Titan conversational supervisor → Donna coder handoff (not Watchdog).
 _JASON_SUPERVISOR_HINT_RE = re.compile(
     r"("
@@ -535,6 +546,8 @@ def merge_bound_tool_ids(
     ``file_editor`` foresight cannot starve ``python_repl`` / ``shell_execute``.
     PowerShell / network-adapter OS prompts always bind ``execute_powershell``
     so semantic top-K cannot starve the shell actuator with vision/memory tools.
+    Browser / concrete-URL prompts always bind ``fetch_webpage`` so top-K
+    cannot starve the Playwright actuator with vision/memory tools.
     """
     if known_ids is None:
         try:
@@ -569,6 +582,8 @@ def merge_bound_tool_ids(
             _add(tid)
         if _POWERSHELL_HINT_RE.search(user_text or ""):
             _add("execute_powershell")
+        if _BROWSER_HINT_RE.search(user_text or ""):
+            _add("fetch_webpage")
     for tid in explicit_tool_ids_in_text(user_text, known):
         if jason_sup and tid != "dispatch_jason_supervisor":
             continue
@@ -977,6 +992,21 @@ class IntentBroker:
             return ToolCall(
                 tool_id="execute_powershell",
                 arguments={},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.96,
+            )
+        # Headless Playwright fetch for concrete URL / fetch_webpage asks.
+        browser_hit = bool(_BROWSER_HINT_RE.search(raw))
+        if browser_hit and not mem_write_hit and not forge_hit and not write_hit:
+            url_arg = ""
+            um = re.search(r"(https?://\S+)", raw, flags=re.I)
+            if um:
+                url_arg = um.group(1).rstrip(").,;]")
+            _foresight_cascade(raw, "fetch_webpage")
+            return ToolCall(
+                tool_id="fetch_webpage",
+                arguments={"url": url_arg} if url_arg else {},
                 source_lang=lang,
                 raw_text=raw,
                 confidence=0.96,

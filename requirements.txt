@@ -34,6 +34,7 @@ onnxruntime>=1.20.0,<2.0.0
 setuptools==80.9.0
 mss==10.2.0
 requests==2.34.2
+playwright==1.62.0
 cryptography==49.0.0
 keyring==25.7.0
 python-dotenv==1.2.2

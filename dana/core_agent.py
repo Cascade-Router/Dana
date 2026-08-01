@@ -2006,6 +2006,7 @@ def speak_tool_working_ack(call: ToolCall, reply_lang: str) -> None:
             "run_terminal_command": "    .",
             "shell_execute": "  .",
             "execute_powershell": "  .",
+            "fetch_webpage": "  .",
             "file_editor": "  .",
             "python_repl": "  .",
             "flush_memory": "  ‌   ‌.",
@@ -2027,6 +2028,7 @@ def speak_tool_working_ack(call: ToolCall, reply_lang: str) -> None:
             "run_terminal_command": "Let me run that in the terminal.",
             "shell_execute": "Running that in the local shell.",
             "execute_powershell": "Running that in PowerShell.",
+            "fetch_webpage": "Let me open that page.",
             "file_editor": "Working on that file.",
             "python_repl": "Running that in the Python sandbox.",
             "flush_memory": "Okay — wiping short-term memory.",
@@ -4830,6 +4832,14 @@ def execute_tool_call(tc: ToolCall) -> str:
             return "ERROR: missing command"
         return execute_powershell(str(command))
 
+    def _handle_fetch_webpage(call: ToolCall) -> str:
+        from dana.tools.browser import fetch_webpage
+
+        url = call.arguments.get("url")
+        if url is None or not str(url).strip():
+            return "ERROR: missing url"
+        return fetch_webpage(str(url))
+
     def _handle_file_editor(call: ToolCall) -> str:
         from dana.tools.system_repl import file_editor
 
@@ -5242,6 +5252,7 @@ def execute_tool_call(tc: ToolCall) -> str:
         "run_terminal_command": _handle_run_terminal,
         "shell_execute": _handle_shell_execute,
         "execute_powershell": _handle_execute_powershell,
+        "fetch_webpage": _handle_fetch_webpage,
         "file_editor": _handle_file_editor,
         "python_repl": _handle_python_repl,
         "flush_memory": _handle_flush_memory,
