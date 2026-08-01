@@ -238,6 +238,12 @@ def planner_node(state: ReactGraphState) -> dict[str, Any]:
     Plan-Then-Execute advances tools via ``execution_plan`` / ``always_include``.
     Does not inject STRUCTURED_PLAN JSON into ReAct chat messages.
     """
+    try:
+        from dana.ui.status_bus import emit_state_change
+
+        emit_state_change("routing", message="Supervisor Routing...")
+    except Exception:  # noqa: BLE001
+        pass
     user_text = _extract_user_text(state)
     tool_ids = hydrate_tool_catalog()
     window = active_window_metadata()

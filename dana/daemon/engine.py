@@ -55,6 +55,10 @@ async def _default_stream_chat(
 ) -> AsyncIterator[dict[str, Any]]:
     """Thin IPC adapter over the live ReAct / LangGraph tool pipeline."""
     yield {"event": "status", "data": {"phase": "thinking", "wake_state": "awake"}}
+    yield {
+        "event": "STATE_CHANGE",
+        "data": {"status": "routing", "message": "Supervisor Routing..."},
+    }
     await asyncio.sleep(0)
     log("Daemon", f"stream_chat start chars={len(message)}")
 
@@ -67,6 +71,12 @@ async def _default_stream_chat(
         tool_starts.append(
             {"name": str(name), "status": "running", "ack": str(phrase or "")}
         )
+        try:
+            from dana.ui.status_bus import emit_state_change
+
+            emit_state_change("executing", tool=str(name))
+        except Exception:  # noqa: BLE001
+            pass
 
     model = str(params.get("model") or os.environ.get("DONNA_OLLAMA_MODEL") or "llama3.2")
     prior = params.get("prior_messages")
@@ -128,6 +138,13 @@ async def _default_stream_chat(
 
     for start in tool_starts:
         yield {"event": "tool", "data": start}
+        yield {
+            "event": "STATE_CHANGE",
+            "data": {
+                "status": "executing",
+                "tool": str(start.get("name") or "tool"),
+            },
+        }
 
     emitted_tools = {str(t.get("name") or "") for t in tool_starts}
     for entry in list(getattr(result, "tool_trace", None) or []):
@@ -172,6 +189,13 @@ async def _default_stream_chat(
                 "iterations": int(getattr(result, "iterations", 0) or 0),
             },
         }
+    yield {"event": "STATE_CHANGE", "data": {"status": "idle"}}
+    try:
+        from dana.ui.status_bus import emit_state_change
+
+        emit_state_change("idle")
+    except Exception:  # noqa: BLE001
+        pass
     log("Daemon", f"stream_chat done chars={len(text)} iters={getattr(result, 'iterations', 0)}")
 
 

@@ -2628,6 +2628,7 @@ async def run_react_langgraph(
                 "tools",
                 "ticket_approval",
                 "jason_ticket_review",
+                "os_worker",
             }:
                 _chain_t0[name] = time.perf_counter()
                 _emit_live_trace(
@@ -2636,6 +2637,19 @@ async def run_react_langgraph(
                     message=f"chain start: {name}",
                     mode=ag.get_donna_mode(),
                 )
+                try:
+                    from dana.ui.status_bus import emit_state_change
+
+                    if name in {"planner", "executor", "agent"}:
+                        emit_state_change(
+                            "routing", message="Supervisor Routing..."
+                        )
+                    elif name == "os_worker":
+                        emit_state_change(
+                            "executing", tool="execute_powershell"
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
             elif kind == "on_chain_end" and name in {
                 "planner",
                 "executor",
@@ -2643,6 +2657,7 @@ async def run_react_langgraph(
                 "tools",
                 "ticket_approval",
                 "jason_ticket_review",
+                "os_worker",
             }:
                 t0 = _chain_t0.pop(name, None)
                 ms = (time.perf_counter() - t0) * 1000.0 if t0 is not None else None
@@ -2667,6 +2682,12 @@ async def run_react_langgraph(
                 # Flush any buffered speech before tool-status TTS.
                 ag.flush_stream_sentence_tts()
                 tool_name = str(event.get("name") or "tool")
+                try:
+                    from dana.ui.status_bus import emit_state_change
+
+                    emit_state_change("executing", tool=tool_name)
+                except Exception:  # noqa: BLE001
+                    pass
                 # Stage 8.8 — tool status lines speak in the owning persona voice.
                 _tool_agent = "broker"
                 tn = tool_name.lower()
@@ -2838,6 +2859,12 @@ async def run_react_langgraph(
         latency_ms=(time.perf_counter() - _graph_t0) * 1000.0,
         state_keys=("session_id", "current_agent", "active_intent", "final_raw"),
     )
+    try:
+        from dana.ui.status_bus import emit_state_change
+
+        emit_state_change("idle")
+    except Exception:  # noqa: BLE001
+        pass
     # Persist assistant turn on Blackboard (durable memory).
     try:
         append_message(session_id, "assistant", answer)

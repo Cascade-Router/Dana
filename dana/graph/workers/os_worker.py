@@ -236,6 +236,13 @@ def make_os_worker_node(
     def os_worker_node(state: ReactGraphState | dict[str, Any]) -> dict[str, Any]:
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+        try:
+            from dana.ui.status_bus import emit_state_change
+
+            emit_state_change("executing", tool="execute_powershell")
+        except Exception:  # noqa: BLE001
+            pass
+
         user_text = _extract_user_text(state)
         bound_tools = tools
         if bound_tools is None:

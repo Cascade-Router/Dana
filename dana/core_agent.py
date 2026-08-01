@@ -891,6 +891,16 @@ def set_ui_state(state: str) -> None:
         update_tray_icon_for_state(state)
     except Exception:  # noqa: BLE001
         pass
+    # Dashboard STATE_CHANGE (mic / system status); headless-safe.
+    try:
+        from dana.ui.status_bus import emit_state_change
+
+        if state in ("listening", "followup"):
+            emit_state_change("listening")
+        elif state == "idle":
+            emit_state_change("idle")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def get_ui_state() -> str:
@@ -4378,6 +4388,7 @@ def record_utterance(
     silence_frames = 0
     speech_frames = 0
     stop_reason = "max_timeout"
+    floor_listening_emitted = False
     t0 = time.perf_counter()
     # Streaming DC / rumble kill — state persists across frames for this utterance.
     dc_blocker = DcBlocker(r=DC_BLOCKER_R)
@@ -4385,6 +4396,7 @@ def record_utterance(
     def consume_frame(frame_idx: int, samples_16k: np.ndarray) -> bool:
         """Return True when recording should stop."""
         nonlocal speech_started, silence_frames, speech_frames, stop_reason
+        nonlocal floor_listening_emitted
 
         # DC-block before Silero so offset cannot inflate probabilities.
         samples_16k = dc_blocker.apply(samples_16k)
@@ -4401,6 +4413,22 @@ def record_utterance(
         except Exception as exc:  # noqa: BLE001
             log("Conversation", f"WARNING: Silero VAD frame error: {exc}")
             is_speech = False
+
+        # STATE_CHANGE listening when dynamic noise floor is breached.
+        if not floor_listening_emitted and not (
+            tts_busy.is_set() or frame_idx < ignore_onset_frames
+        ):
+            try:
+                frame_rms = float(
+                    np.sqrt(np.mean(np.square(samples_16k))) + 1e-9
+                )
+                if frame_rms >= get_dynamic_speech_floor():
+                    floor_listening_emitted = True
+                    from dana.ui.status_bus import emit_state_change
+
+                    emit_state_change("listening")
+            except Exception:  # noqa: BLE001
+                pass
 
         if not speech_started:
             pre_roll.append(samples_16k.copy())
@@ -4475,6 +4503,18 @@ def record_utterance(
         vad_capture_active.clear()
         # Drop residual frames so wake-word standby does not see stale speech.
         flush_audio_buffer_queue()
+
+    # STATE_CHANGE idle when VAD times out without speech onset.
+    if (not speech_started) and stop_reason in (
+        "max_timeout",
+        "silence_cutoff",
+    ):
+        try:
+            from dana.ui.status_bus import emit_state_change
+
+            emit_state_change("idle")
+        except Exception:  # noqa: BLE001
+            pass
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     if not collected:
@@ -7935,6 +7975,11 @@ class DonnaGUI(ctk.CTk):
         self._chat_send_btn: ctk.CTkButton | None = None
         self.transcript_box = None
         self._chat_view = None
+        # VAD / supervisor STATE_CHANGE indicators (above chat input).
+        self._vad_mic_lbl: ctk.CTkLabel | None = None
+        self._system_status_lbl: ctk.CTkLabel | None = None
+        self._vad_listening = False
+        self._vad_pulse_on = False
 
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
@@ -7969,6 +8014,7 @@ class DonnaGUI(ctk.CTk):
         self.after(400, self._refresh_stats)
         self.after(100, self.process_telemetry)
         self.after(500, self._pulse_active_cells)
+        self.after(180, self._poll_state_changes)
         # Phase 2A — optional IPC attach (no-op / degrade when daemon down).
         try:
             self.after(250, self._init_daemon_client)
@@ -8222,7 +8268,7 @@ class DonnaGUI(ctk.CTk):
 
         # --- Bottom input (pack first, side=bottom) ---
         chat_bar = ctk.CTkFrame(tab, fg_color="transparent")
-        chat_bar.pack(side="bottom", fill="x", padx=14, pady=(6, 14))
+        chat_bar.pack(side="bottom", fill="x", padx=14, pady=(0, 14))
         chat_bar.grid_columnconfigure(0, weight=1)
         self.chat_entry = ctk.CTkEntry(
             chat_bar,
@@ -8251,6 +8297,27 @@ class DonnaGUI(ctk.CTk):
             command=self.submit_text_command,
         )
         self._chat_send_btn.grid(row=0, column=1, sticky="e")
+
+        # System Status line + VAD mic pip (packed after chat_bar → sits above it).
+        status_line = ctk.CTkFrame(tab, fg_color="transparent")
+        status_line.pack(side="bottom", fill="x", padx=14, pady=(4, 6))
+        self._vad_mic_lbl = ctk.CTkLabel(
+            status_line,
+            text="●",
+            width=22,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=_UI_MUTED,
+            anchor="w",
+        )
+        self._vad_mic_lbl.pack(side="left", padx=(2, 6))
+        self._system_status_lbl = ctk.CTkLabel(
+            status_line,
+            text="",
+            anchor="w",
+            font=ctk.CTkFont(size=12),
+            text_color=_UI_AMBER,
+        )
+        self._system_status_lbl.pack(side="left", fill="x", expand=True)
 
         # --- Compact Status HUD (fixed height, horizontal) ---
         hud = ctk.CTkFrame(
@@ -10225,6 +10292,56 @@ class DonnaGUI(ctk.CTk):
         except Exception:  # noqa: BLE001
             pass
 
+    def _poll_state_changes(self) -> None:
+        """Drain STATE_CHANGE bus → VAD mic + System Status line (~5 Hz)."""
+        if not self.winfo_exists():
+            return
+        try:
+            from dana.ui.status_bus import drain_state_changes
+
+            events = drain_state_changes(max_items=32)
+            if events:
+                self._apply_state_change(events[-1])
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.after(200, self._poll_state_changes)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _apply_state_change(self, event: dict) -> None:
+        """Update VAD mic pip + System Status line from a STATE_CHANGE payload."""
+        try:
+            from dana.ui.status_bus import format_system_status_line
+        except Exception:  # noqa: BLE001
+            return
+        status = str(event.get("status") or "idle").strip().lower()
+        tool = str(event.get("tool") or "")
+        message = str(event.get("message") or "")
+        self._vad_listening = status == "listening"
+        line = format_system_status_line(
+            status, tool=tool, message=message
+        )
+        lbl = getattr(self, "_system_status_lbl", None)
+        if lbl is not None:
+            try:
+                color = _UI_MUTED
+                if status == "routing":
+                    color = _UI_AMBER
+                elif status == "executing":
+                    color = _UI_ACCENT
+                elif status == "listening":
+                    color = _UI_EMERALD
+                lbl.configure(text=line, text_color=color)
+            except Exception:  # noqa: BLE001
+                pass
+        mic = getattr(self, "_vad_mic_lbl", None)
+        if mic is not None and not self._vad_listening:
+            try:
+                mic.configure(text_color=_UI_MUTED)
+            except Exception:  # noqa: BLE001
+                pass
+
     def _pulse_active_cells(self) -> None:
         if not self.winfo_exists():
             return
@@ -10237,6 +10354,18 @@ class DonnaGUI(ctk.CTk):
             try:
                 cell.configure(
                     border_color=accent if self._pulse_on else dim
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        # Pulsating VAD mic pip while listening (theme emerald ↔ muted).
+        mic = getattr(self, "_vad_mic_lbl", None)
+        if mic is not None and getattr(self, "_vad_listening", False):
+            self._vad_pulse_on = not getattr(self, "_vad_pulse_on", False)
+            try:
+                mic.configure(
+                    text_color=_UI_EMERALD
+                    if self._vad_pulse_on
+                    else _UI_ACCENT
                 )
             except Exception:  # noqa: BLE001
                 pass
