@@ -246,6 +246,16 @@ _VISUAL_HINT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+# Screen OCR foresight (mss + pytesseract analyze_visual_context).
+_VISION_HINT_RE = re.compile(
+    r"("
+    r"\blook\s+at\s+my\s+screen\b|"
+    r"\bwhat(?:'s|\s+is)\s+on\s+my\s+screen\b|"
+    r"\bread\s+the\s+screen\b|"
+    r"\bread\s+this\b"
+    r")",
+    re.IGNORECASE,
+)
 _WEBCAM_HINT_RE = re.compile(
     r"\b(?:webcam|camera|look at me|on camera)\b",
     re.IGNORECASE,
@@ -569,7 +579,7 @@ def merge_bound_tool_ids(
     jason_sup = (forced_tool_id or "").strip() == "dispatch_jason_supervisor" or bool(
         _JASON_SUPERVISOR_HINT_RE.search(user_text or "")
     )
-    if mode_norm == "vision":
+    if mode_norm == "vision" or _VISION_HINT_RE.search(user_text or ""):
         _add("analyze_visual_context")
         if _OCR_GROUND_HINT_RE.search(user_text or ""):
             _add("ocr_with_region")
@@ -1045,7 +1055,19 @@ class IntentBroker:
                 raw_text=raw,
                 confidence=0.96,
             )
-        # Florence-2 OCR / UI grounding before generic YOLO visual look/see.
+        # Screen OCR phrases → mss+pytesseract analyze_visual_context
+        # (before Florence grounding so "read the screen" / "read this" bind here).
+        vision_hint = bool(_VISION_HINT_RE.search(raw))
+        if vision_hint and not mem_write_hit:
+            _foresight_cascade(raw, "analyze_visual_context")
+            return ToolCall(
+                tool_id="analyze_visual_context",
+                arguments={"source": "screen"},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.97,
+            )
+        # Florence-2 OCR / UI grounding before generic visual look/see.
         ocr_hit = bool(_OCR_GROUND_HINT_RE.search(raw))
         if ocr_hit and not mem_write_hit:
             q = ""
@@ -1064,7 +1086,7 @@ class IntentBroker:
                 raw_text=raw,
                 confidence=0.97,
             )
-        # Visual look/see → JIT YOLO analyze_visual_context (bound in LangGraph).
+        # Visual look/see → analyze_visual_context (screen OCR / webcam YOLO).
         if visual_hit and not mem_write_hit:
             source = "webcam" if _WEBCAM_HINT_RE.search(raw) else "screen"
             _foresight_cascade(raw, "analyze_visual_context")

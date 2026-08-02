@@ -62,7 +62,7 @@
     },
     {
       "id": "analyze_visual_context",
-      "description_en": "Captures a frame from the primary monitor or camera and runs object detection to identify visible objects, windows, or visual context.",
+      "description_en": "Captures the primary monitor via mss and reads on-screen text with pytesseract OCR (returns <screen_text>). Webcam source still uses JIT YOLO object detection.",
       "parameters": [
         {
           "name": "source",
@@ -72,7 +72,7 @@
             "screen",
             "webcam"
           ],
-          "description_en": "Where to capture the visual frame from. Defaults to 'screen'.",
+          "description_en": "Where to capture the visual frame from. Defaults to 'screen' (OCR). Use 'webcam' for YOLO.",
           "description_fa": ""
         }
       ],
@@ -80,9 +80,12 @@
         "screen": [
           "what do you see on my screen",
           "what is on my screen",
+          "what's on my screen",
           "check what's on my screen",
           "check what is on my screen",
           "look at my screen",
+          "read the screen",
+          "read this",
           "analyze my screen",
           "what do you see"
         ],

@@ -33,6 +33,7 @@ onnxruntime>=1.20.0,<2.0.0
 # Cap below 81 — pkg_resources / legacy plugin paths still used in places.
 setuptools==80.9.0
 mss==10.2.0
+pytesseract>=0.3.10
 requests==2.34.2
 playwright==1.62.0
 cryptography==49.0.0

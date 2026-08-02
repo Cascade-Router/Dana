@@ -85,12 +85,16 @@ def execute_tool_payload(
         )
 
     if name == "analyze_visual_context":
-        from dana.vision_tools import analyze_visual_context as _analyze
-
         src = str(args.get("source") or "screen").strip().lower() or "screen"
         if src == "camera":
             src = "webcam"
-        return str(_analyze(source=src))
+        if src in {"webcam", "video"}:
+            from dana.vision_tools import analyze_visual_context as _analyze
+
+            return str(_analyze(source=src))
+        from dana.tools.vision import analyze_visual_context as _analyze
+
+        return str(_analyze())
 
     if name == "ocr_with_region":
         from dana.tools.visual_tools import ocr_with_region as _ocr

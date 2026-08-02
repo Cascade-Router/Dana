@@ -4719,9 +4719,7 @@ def execute_tool_call(tc: ToolCall) -> str:
         return f"OK: switched vision to {source}"
 
     def _handle_analyze_visual(call: ToolCall) -> str:
-        """Dispatch to JIT YOLO; observation is already ``[Vision Output] …``."""
-        from dana.vision_tools import analyze_visual_context
-
+        """Screen → mss+pytesseract OCR; webcam → JIT YOLO object detection."""
         source = str(call.arguments.get("source") or "screen").strip().lower()
         if source not in {"screen", "webcam", "camera", "video"}:
             with active_vision_lock:
@@ -4731,7 +4729,13 @@ def execute_tool_call(tc: ToolCall) -> str:
         # Schema enum is screen|webcam; vision_tools also accepts camera.
         if source == "camera":
             source = "webcam"
-        return analyze_visual_context(source=source)
+        if source in {"webcam", "video"}:
+            from dana.vision_tools import analyze_visual_context
+
+            return analyze_visual_context(source=source)
+        from dana.tools.vision import analyze_visual_context
+
+        return analyze_visual_context()
 
     def _handle_ocr_with_region(call: ToolCall) -> str:
         """Florence-2 OCR grounding → text + ROI overlay highlight."""

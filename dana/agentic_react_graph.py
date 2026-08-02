@@ -2315,11 +2315,7 @@ async def run_react_langgraph(
                             observation = terr or TOOL_TIMEOUT_MESSAGE
                             _on_timeout()
                     elif tool_call.tool_id == "analyze_visual_context":
-                        # Direct JIT vision path → ToolMessage content for synthesis.
-                        from dana.vision_tools import (
-                            analyze_visual_context as _analyze_visual,
-                        )
-
+                        # Screen OCR (mss+pytesseract); webcam keeps JIT YOLO.
                         src = str(
                             (tool_call.arguments or {}).get("source") or "screen"
                         ).strip().lower() or "screen"
@@ -2327,7 +2323,17 @@ async def run_react_langgraph(
                             src = "webcam"
 
                         def _run_vision() -> str:
-                            return str(_analyze_visual(source=src))
+                            if src in {"webcam", "video"}:
+                                from dana.vision_tools import (
+                                    analyze_visual_context as _yolo_visual,
+                                )
+
+                                return str(_yolo_visual(source=src))
+                            from dana.tools.vision import (
+                                analyze_visual_context as _ocr_visual,
+                            )
+
+                            return str(_ocr_visual())
 
                         ok, observation, terr = run_with_tool_timeout(
                             _run_vision, timeout_s=_tool_timeout_s
