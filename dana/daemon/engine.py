@@ -53,7 +53,7 @@ def _daemon_execute_tool(tc: Any) -> str:
 async def _default_stream_chat(
     message: str, params: dict[str, Any]
 ) -> AsyncIterator[dict[str, Any]]:
-    """Thin IPC adapter over the live ReAct / LangGraph tool pipeline."""
+    """Thin IPC adapter: lightweight chat fast-path or ReAct / LangGraph."""
     yield {"event": "status", "data": {"phase": "thinking", "wake_state": "awake"}}
     yield {
         "event": "STATE_CHANGE",
@@ -62,7 +62,12 @@ async def _default_stream_chat(
     await asyncio.sleep(0)
     log("Daemon", f"stream_chat start chars={len(message)}")
 
-    from dana.agentic import REACT_MAX_ITERS, run_react_loop
+    from dana.agentic import (
+        REACT_MAX_ITERS,
+        requires_tool_graph,
+        run_lightweight_chat,
+        run_react_loop,
+    )
 
     tool_starts: list[dict[str, Any]] = []
 
@@ -88,6 +93,25 @@ async def _default_stream_chat(
     max_iters = int(params.get("max_iters") or REACT_MAX_ITERS)
     enable_reflection = bool(params.get("enable_reflection", False))
 
+    # Greetings / small-talk bypass LangGraph instantly.
+    use_graph = bool(requires_tool_graph(message))
+    log(
+        "Daemon",
+        f"stream_chat route={'langgraph' if use_graph else 'lightweight'} "
+        f"chars={len(message)}",
+    )
+
+    def _run_lightweight() -> Any:
+        from dana.core_agent import ask_ollama_messages
+
+        return run_lightweight_chat(
+            user_text=message,
+            ask_fn=ask_ollama_messages,
+            model=model,
+            visual_context=visual,
+            prior_messages=prior,
+        )
+
     def _run_live_graph() -> Any:
         return run_react_loop(
             user_text=message,
@@ -102,8 +126,11 @@ async def _default_stream_chat(
             tts_callback=None,
         )
 
+    worker = _run_live_graph if use_graph else _run_lightweight
+    route_name = "react_graph" if use_graph else "lightweight_chat"
+
     # Heartbeat status events so IPC clients (default 10s sock timeout) stay alive.
-    graph_task = asyncio.create_task(asyncio.to_thread(_run_live_graph))
+    graph_task = asyncio.create_task(asyncio.to_thread(worker))
     try:
         while True:
             done, _pending = await asyncio.wait({graph_task}, timeout=2.0)
@@ -117,7 +144,7 @@ async def _default_stream_chat(
     except Exception as exc:  # noqa: BLE001 — keep daemon alive if graph/LLM missing
         if not graph_task.done():
             graph_task.cancel()
-        log("Daemon", f"stream_chat graph error: {type(exc).__name__}: {exc}")
+        log("Daemon", f"stream_chat {route_name} error: {type(exc).__name__}: {exc}")
         yield {
             "event": "token",
             "data": {"text": f"I hit a graph error: {type(exc).__name__}: {exc}"},
@@ -129,7 +156,7 @@ async def _default_stream_chat(
         yield {
             "event": "tool",
             "data": {
-                "name": "react_graph",
+                "name": route_name,
                 "status": "error",
                 "error": f"{type(exc).__name__}: {exc}",
             },
@@ -475,9 +502,27 @@ async def run_engine_daemon(
     port: int = DEFAULT_PORT,
     session_path: Path | str | None = None,
 ) -> None:
+    t0 = time.perf_counter()
     enable_runtime_file_logging()
     log("Daemon", f"engine boot host={host} port={port} pid={os.getpid()}")
     daemon = EngineDaemon(host=host, port=port, session_path=session_path)
+    bound_host, bound_port = await daemon.start()
+    try:
+        from dana.perf import log_perf
+
+        log_perf(
+            "daemon_startup",
+            (time.perf_counter() - t0) * 1000.0,
+            host=bound_host,
+            port=bound_port,
+            pid=os.getpid(),
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    log(
+        "Daemon",
+        f"engine listening host={bound_host} port={bound_port} pid={os.getpid()}",
+    )
     await daemon.serve_forever()
 
 

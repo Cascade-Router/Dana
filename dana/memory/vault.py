@@ -85,7 +85,11 @@ def _emit_executing(tool: str) -> None:
 
 
 class CodebaseVault:
-    """Persistent Chroma collection for local codebase chunks."""
+    """Persistent Chroma collection for local codebase chunks.
+
+    Chroma client + HuggingFace embeddings are constructed on first
+    ingest/search only — import and construction stay cheap.
+    """
 
     def __init__(
         self,
@@ -93,18 +97,30 @@ class CodebaseVault:
         *,
         embeddings: EmbeddingsProtocol | None = None,
     ) -> None:
-        import chromadb
-
         self.persist_directory = Path(
             persist_directory if persist_directory is not None else default_vault_dir()
         )
-        self.persist_directory.mkdir(parents=True, exist_ok=True)
         self._embeddings = embeddings
-        self._client = chromadb.PersistentClient(path=str(self.persist_directory))
-        self._collection = self._client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
+        self._client: Any = None
+        self._collection: Any = None
+        self._client_lock = threading.Lock()
+
+    def _ensure_client(self) -> Any:
+        """Open PersistentClient + collection on first use (not at import/ctor)."""
+        if self._collection is not None:
+            return self._collection
+        with self._client_lock:
+            if self._collection is not None:
+                return self._collection
+            import chromadb
+
+            self.persist_directory.mkdir(parents=True, exist_ok=True)
+            self._client = chromadb.PersistentClient(path=str(self.persist_directory))
+            self._collection = self._client.get_or_create_collection(
+                name=COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
+            return self._collection
 
     @property
     def embeddings(self) -> EmbeddingsProtocol:
@@ -145,12 +161,13 @@ class CodebaseVault:
         if not documents:
             return "OK: ingested 0 chunks into dana_codebase_vault"
 
+        collection = self._ensure_client()
         embeddings = self.embeddings.embed_documents(documents)
         # Chroma upsert in batches to avoid oversized payloads.
         batch = 64
         for start in range(0, len(documents), batch):
             end = start + batch
-            self._collection.upsert(
+            collection.upsert(
                 ids=ids[start:end],
                 documents=documents[start:end],
                 embeddings=embeddings[start:end],
@@ -165,12 +182,13 @@ class CodebaseVault:
         if not q:
             return "ERROR: missing query"
         n = max(1, int(n_results or 5))
-        count = int(self._collection.count() or 0)
+        collection = self._ensure_client()
+        count = int(collection.count() or 0)
         if count == 0:
             return "OK: vault empty (0 matches)"
         n = min(n, count)
         emb = self.embeddings.embed_query(q)
-        result = self._collection.query(
+        result = collection.query(
             query_embeddings=[emb],
             n_results=n,
             include=["documents", "metadatas"],

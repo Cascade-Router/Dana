@@ -149,9 +149,6 @@ import sounddevice as sd
 import soundfile as sf
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw
-from piper import PiperVoice
-from piper.config import SynthesisConfig
-
 from vision_tools import ScreenAgent, VideoAgent
 from dana.paths import (
     ENV_PATH,
@@ -389,7 +386,7 @@ def _piper_hf_urls(voice_id: str) -> tuple[tuple[str, str], tuple[str, str]]:
 
 
 PIPER_MODEL_URLS: tuple[tuple[str, str], ...] = _piper_hf_urls(PIPER_VOICE_ID)
-_piper_voice_cache: dict[str, PiperVoice] = {}
+_piper_voice_cache: dict[str, Any] = {}
 DONNA_WAKEWORD_ONNX = str(WAKEWORD_ONNX)
 
 
@@ -5500,23 +5497,60 @@ def ask_ollama_messages(
     *,
     num_predict: Optional[int] = None,
 ) -> str:
-    """Isolated Ollama chat call (no conversation_history mutation) for ReAct steps."""
+    """Isolated Ollama chat call (no conversation_history mutation) for ReAct steps.
+
+    Streams the response so LLM TTFT can be recorded to ``dana_performance.log``.
+    """
     from dana.agentic import OLLAMA_UNREACHABLE_SPEECH
 
     payload = {
         "model": model,
         "messages": messages,
-        "stream": False,
+        "stream": True,
         # Hard caps for 8GB VRAM: shorter KV cache + bounded generation.
         "options": {
             "num_ctx": 8192,
             "num_predict": 1024 if num_predict is None else int(num_predict),
         },
     }
+    t0 = time.perf_counter()
+    ttft_logged = False
+    parts: list[str] = []
     try:
-        resp = requests.post(OLLAMA_URL, json=payload, timeout=OLLAMA_TIMEOUT_SEC)
-        resp.raise_for_status()
-        data = resp.json()
+        with requests.post(
+            OLLAMA_URL, json=payload, timeout=OLLAMA_TIMEOUT_SEC, stream=True
+        ) as resp:
+            resp.raise_for_status()
+            for raw_line in resp.iter_lines(decode_unicode=True):
+                if not raw_line:
+                    continue
+                line = raw_line.strip() if isinstance(raw_line, str) else raw_line.decode(
+                    "utf-8", errors="replace"
+                ).strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                message = data.get("message") or {}
+                piece = str(message.get("content") or "")
+                if piece:
+                    if not ttft_logged:
+                        ttft_logged = True
+                        try:
+                            from dana.perf import log_perf
+
+                            log_perf(
+                                "llm_ttft",
+                                (time.perf_counter() - t0) * 1000.0,
+                                model=model,
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                    parts.append(piece)
+                if data.get("done"):
+                    break
     except (requests.exceptions.ConnectionError, ConnectionError) as exc:
         raise ConnectionError(OLLAMA_UNREACHABLE_SPEECH) from exc
     except requests.exceptions.Timeout as exc:
@@ -5526,10 +5560,9 @@ def ask_ollama_messages(
     except requests.exceptions.HTTPError as exc:
         raise RuntimeError(f"Ollama HTTP error: {exc}") from exc
 
-    message = data.get("message") or {}
-    content = str(message.get("content", "")).strip()
+    content = "".join(parts).strip()
     if not content:
-        raise RuntimeError(f"Ollama returned empty content: {data!r}")
+        raise RuntimeError("Ollama returned empty content")
     return content
 
 
@@ -6809,20 +6842,33 @@ def piper_model_path_for_text(text: str) -> str:
     return PIPER_EN_ONNX
 
 
-def get_piper_voice(model_path: str) -> PiperVoice:
-    """Load (and cache) a PiperVoice for the given .onnx path."""
+def get_piper_voice(model_path: str) -> Any:
+    """Load (and cache) a PiperVoice for the given .onnx path (lazy onnx import)."""
     voice = _piper_voice_cache.get(model_path)
     if voice is not None:
         return voice
     if not os.path.isfile(model_path):
         raise FileNotFoundError(f"Piper model missing: {model_path}")
+    from piper import PiperVoice
+
     log("Audio", f"Loading Piper voice: {os.path.basename(model_path)}")
+    t_load = time.perf_counter()
     voice = PiperVoice.load(model_path)
     _piper_voice_cache[model_path] = voice
+    try:
+        from dana.perf import log_perf
+
+        log_perf(
+            "piper_voice_load",
+            (time.perf_counter() - t_load) * 1000.0,
+            model=os.path.basename(model_path),
+        )
+    except Exception:  # noqa: BLE001
+        pass
     return voice
 
 
-def synthesize_to_file(voice: PiperVoice, text: str, path: str) -> bool:
+def synthesize_to_file(voice: Any, text: str, path: str) -> bool:
     """Write Piper speech to a WAV path.
 
     Collects audio from ``voice.synthesize`` first so empty/failed TTS never
@@ -6832,6 +6878,8 @@ def synthesize_to_file(voice: PiperVoice, text: str, path: str) -> bool:
         True when a valid WAV was written; False when TTS produced no audio
         (caller should skip playback).
     """
+    from piper.config import SynthesisConfig
+
     # Defaults used when the voice omits format metadata.
     channels = 1
     sampwidth = 2
@@ -6851,6 +6899,7 @@ def synthesize_to_file(voice: PiperVoice, text: str, path: str) -> bool:
     chunks: list[Any] = []
     piper_bytes = 0
     t_piper0 = time.perf_counter()
+    ttfb_logged = False
     syn_config = SynthesisConfig(length_scale=float(PIPER_LENGTH_SCALE))
     try:
         for chunk in voice.synthesize(utterance, syn_config=syn_config):
@@ -6862,6 +6911,18 @@ def synthesize_to_file(voice: PiperVoice, text: str, path: str) -> bool:
                 raw = b""
             if not raw:
                 continue
+            if not ttfb_logged:
+                ttfb_logged = True
+                try:
+                    from dana.perf import log_perf
+
+                    log_perf(
+                        "piper_ttfb",
+                        (time.perf_counter() - t_piper0) * 1000.0,
+                        chars=len(utterance),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             piper_bytes += len(raw)
             chunks.append(chunk)
     except Exception as exc:  # noqa: BLE001
@@ -7479,7 +7540,10 @@ def maybe_play_boot_ready_audio() -> None:
 
 
 def tts_worker() -> None:
-    """TTS consumer: block on ``tts_queue``, honor VAD hold, then play under lock."""
+    """TTS consumer: block on ``tts_queue``, honor VAD hold, then play under lock.
+
+    Piper onnx is loaded on first speak only — never at import or spooler boot.
+    """
     global _tts_worker_thread
     _tts_worker_thread = threading.current_thread()
     _nt_hide_console_if_mp_child()
@@ -7501,18 +7565,16 @@ def tts_worker() -> None:
     else:
         log("TTS", "playback device: system default")
 
-    try:
-        get_piper_voice(PIPER_EN_ONNX)
-        log("TTS", f"Piper voice ready ({os.path.basename(PIPER_EN_ONNX)}).")
-    except Exception as exc:  # noqa: BLE001
-        log("TTS", f"ERROR loading Piper voices: {exc}")
+    # Model files on disk are enough to arm the spooler; onnx loads on first speak.
+    if not _piper_file_ready(PIPER_EN_ONNX):
+        log("TTS", f"ERROR: Piper model missing after download: {PIPER_EN_ONNX}")
         stop_event.set()
         return
-
-    try:
-        ensure_canned_ux_audio_cache()
-    except Exception as exc:  # noqa: BLE001
-        log("TTS", f"WARNING: UX audio cache warm-up failed: {exc}")
+    log(
+        "TTS",
+        f"Piper model present ({os.path.basename(PIPER_EN_ONNX)}); "
+        "onnx load deferred until first speak.",
+    )
 
     # Defer ready audio until Ollama warm-up + wake-word arming also complete.
     piper_voices_ready.set()

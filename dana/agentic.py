@@ -127,6 +127,20 @@ _MODE_SWITCH_RESEARCH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Greetings / small-talk — always stay on lightweight chat (never LangGraph).
+_SMALL_TALK_RE = re.compile(
+    r"(?i)^\s*(?:(?:hey|hi|hello)\s+)?(?:donna\s*[,!]?\s*)?"
+    r"(?:"
+    r"how\s+are\s+you(?:\s+doing)?(?:\s+today)?|"
+    r"how'?s\s+it\s+going|"
+    r"what'?s\s+up|"
+    r"hello|hi|hey|"
+    r"good\s+(?:morning|afternoon|evening)|"
+    r"thanks?(?:\s+you)?|thank\s+you"
+    r")"
+    r"[?.!]?\s*$",
+)
+
 # Aggressive chat→tool escalation: system / filesystem / coding intents must
 # never stay on the lightweight no-tools chat node.
 _TOOL_GRAPH_INTENT_RE = re.compile(
@@ -155,12 +169,18 @@ _TOOL_GRAPH_INTENT_RE = re.compile(
     # Vision / on-screen observe (must not soft-drop to filler chat).
     r"\b(?:what\s+you\s+see|see\s+on\s+(?:my\s+)?screen|on\s+my\s+screen)\b|"
     r"\b(?:describe|summarize)\b.*\b(?:screen|display|desktop|window)\b|"
-    # Episodic / vault memory search intents.
+    # Episodic / vault memory search intents (phrase-level; not bare ``memory``).
     r"\bepisodic\s+memory\b|"
     r"\b(?:search|query|recall|read)\s+(?:the\s+)?(?:episodic\s+|vault\s+)?memory\b|"
     r"\bread_vault_memory\b|"
-    # Chroma / codebase vault cues — must not soft-drop to lightweight chat.
-    r"\b(?:ingest|memory|vault|chroma|directory|codebase)\b"
+    # Chroma / codebase vault cues — phrase-level (bare ``memory`` stays chat).
+    r"\b(?:search\s+your\s+memory|search\s+memory|look\s+in\s+(?:the\s+)?vault|"
+    r"search\s+(?:the\s+)?vault|query\s+chroma|search\s+chroma|look\s+up\s+chroma|"
+    r"ingest\s+(?:this\s+)?(?:directory|folder|codebase)|"
+    r"ingest\s+(?:the\s+)?(?:vault|chroma|memory|codebase)|"
+    r"index\s+(?:this\s+)?(?:directory|folder|codebase)|"
+    r"codebase\s+vault|ingest_local_directory|search_vault|"
+    r"(?:vault|chroma)\s+(?:search|ingest|query|embeddings))\b"
     r")",
     re.IGNORECASE,
 )
@@ -173,16 +193,39 @@ def requires_tool_graph(text: str) -> bool:
     file, coding, or desktop/window/ticket intent forces the tool loop.
     """
     blob = (text or "").strip()
-    if not blob:
-        return False
-    if bool(_TOOL_GRAPH_INTENT_RE.search(blob)):
-        return True
+    t0 = time.perf_counter()
+    decision = "lightweight"
     try:
-        from dana.agentic_planning import desktop_plan_intent
+        if not blob:
+            return False
+        # Greetings / "how are you" must never escalate to LangGraph.
+        if _SMALL_TALK_RE.search(blob):
+            decision = "lightweight_smalltalk"
+            return False
+        if bool(_TOOL_GRAPH_INTENT_RE.search(blob)):
+            decision = "tool_graph"
+            return True
+        try:
+            from dana.agentic_planning import desktop_plan_intent
 
-        return desktop_plan_intent(blob)
-    except Exception:  # noqa: BLE001
+            if desktop_plan_intent(blob):
+                decision = "tool_graph_desktop"
+                return True
+        except Exception:  # noqa: BLE001
+            pass
         return False
+    finally:
+        try:
+            from dana.perf import log_perf
+
+            log_perf(
+                "intent_routing",
+                (time.perf_counter() - t0) * 1000.0,
+                decision=decision,
+                preview=(blob or "")[:80],
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 _MODE_WAKE_PREFIX_RE = re.compile(

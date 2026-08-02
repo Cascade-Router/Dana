@@ -68,13 +68,18 @@ _MEM_WRITE_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 # Chroma codebase vault — ingest folder / semantic search (not SecureMemory KV).
-# Phrase cues + broad vault tokens (ingest|memory|vault|chroma|directory|codebase).
+# Phrase-level cues only — bare ``memory`` must not steal small-talk ("how are you").
 _MEMORY_HINT_RE = re.compile(
     r"(?i)\b(?:"
-    r"search\s+your\s+memory|ingest\s+folder|look\s+in\s+(?:the\s+)?vault|"
-    r"search\s+(?:the\s+)?vault|ingest\s+(?:this\s+)?(?:directory|folder)|"
-    r"search\s+codebase\s+vault|ingest_local_directory|search_vault|"
-    r"ingest|memory|vault|chroma|directory|codebase"
+    r"search\s+your\s+memory|search\s+memory|ingest\s+folder|"
+    r"look\s+in\s+(?:the\s+)?vault|search\s+(?:the\s+)?vault|"
+    r"ingest\s+(?:this\s+)?(?:directory|folder|codebase)|"
+    r"ingest\s+(?:the\s+)?(?:vault|chroma|memory|codebase)|"
+    r"index\s+(?:this\s+)?(?:directory|folder|codebase)|"
+    r"search\s+codebase\s+vault|codebase\s+vault|"
+    r"query\s+chroma|search\s+chroma|look\s+up\s+chroma|"
+    r"ingest_local_directory|search_vault|"
+    r"(?:vault|chroma)\s+(?:search|ingest|query|embeddings)"
     r")\b",
 )
 _MEMORY_INGEST_HINT_RE = re.compile(
