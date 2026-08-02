@@ -77,6 +77,8 @@ logs/
 *.sqlite3
 *.db-wal
 *.db-shm
+# Chroma codebase vault (project-root persistent store)
+.dana/vault/
 memory/
 /memory/
 # Keep Dānā package + tests source trackable (runtime *.db still ignored above).

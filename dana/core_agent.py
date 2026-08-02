@@ -4915,6 +4915,36 @@ def execute_tool_call(tc: ToolCall) -> str:
         cleared = flush_conversation_memory(reason="tool_flush_memory")
         return f"OK: Memory flushed successfully. Cleared {cleared} short-term messages."
 
+    def _handle_ingest_local_directory(call: ToolCall) -> str:
+        from dana.memory.vault import ingest_local_directory
+
+        path = call.arguments.get("path")
+        if path is None or not str(path).strip():
+            raw = str(call.raw_text or "")
+            m = re.search(
+                r"([A-Za-z]:\\[^\s\"']+|/[^\s\"']+|\.{0,2}/[^\s\"']+)",
+                raw,
+            )
+            path = m.group(1) if m else ""
+        if not str(path or "").strip():
+            return "ERROR: missing path for ingest_local_directory"
+        return ingest_local_directory(str(path).strip())
+
+    def _handle_search_vault(call: ToolCall) -> str:
+        from dana.memory.vault import search_vault
+
+        query = call.arguments.get("query")
+        if query is None or not str(query).strip():
+            query = str(call.raw_text or "").strip()
+        if not str(query or "").strip():
+            return "ERROR: missing query for search_vault"
+        n_raw = call.arguments.get("n_results", 5)
+        try:
+            n_results = int(n_raw) if n_raw is not None else 5
+        except (TypeError, ValueError):
+            n_results = 5
+        return search_vault(str(query).strip(), n_results=n_results)
+
     def _handle_publish_tool_to_general(call: ToolCall) -> str:
         from dana.tools.promotion import publish_tool_to_general_impl
 
@@ -5297,6 +5327,8 @@ def execute_tool_call(tc: ToolCall) -> str:
         "file_editor": _handle_file_editor,
         "python_repl": _handle_python_repl,
         "flush_memory": _handle_flush_memory,
+        "ingest_local_directory": _handle_ingest_local_directory,
+        "search_vault": _handle_search_vault,
         "publish_tool_to_general": _handle_publish_tool_to_general,
         "open_application": _handle_open_application,
         "read_local_file": _handle_read_local_file,

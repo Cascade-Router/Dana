@@ -27,6 +27,8 @@ _TOOL_LABELS: dict[str, str] = {
     "dispatch_research_swarm": "Research Swarm",
     "dispatch_jason_supervisor": "Jason",
     "dispatch_watchdog": "Watchdog",
+    "ingest_local_directory": "Vault Ingest",
+    "search_vault": "Vault Search",
 }
 
 

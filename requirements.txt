@@ -68,3 +68,8 @@ rapidfuzz==3.14.5
 win11toast==0.36.3; platform_system=="Windows"
 # Optional: faster ToolRegistry vector search (falls back to NumPy cosine if absent)
 # faiss-cpu>=1.8.0
+# Stage — long-term codebase memory vault (Chroma + MiniLM)
+chromadb
+sentence-transformers
+langchain-huggingface
+langchain-text-splitters

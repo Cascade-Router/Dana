@@ -274,6 +274,63 @@
       }
     },
     {
+      "id": "ingest_local_directory",
+      "description_en": "Ingest a local directory into the long-term ChromaDB codebase vault (chunk + embed source files). Use when the user asks to ingest a folder into memory/vault.",
+      "parameters": [
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description_en": "Absolute or project-relative directory to walk and ingest.",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "ingest folder",
+          "ingest directory",
+          "ingest this folder",
+          "index this folder",
+          "ingest_local_directory"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
+      "id": "search_vault",
+      "description_en": "Semantic search over the ChromaDB codebase vault. Use when the user asks to search memory, look in the vault, or recall ingested code/docs.",
+      "parameters": [
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "description_en": "Natural-language search query against ingested codebase chunks.",
+          "description_fa": ""
+        },
+        {
+          "name": "n_results",
+          "type": "integer",
+          "required": false,
+          "description_en": "Max chunks to return (default 5).",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "search your memory",
+          "look in the vault",
+          "search the vault",
+          "search codebase vault",
+          "search_vault"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
       "id": "inject_keystrokes",
       "description_en": "Safely type plaintext into the focused window on behalf of the user (sanitized; no OS control chords).",
       "parameters": [

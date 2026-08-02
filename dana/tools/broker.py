@@ -67,6 +67,22 @@ _MEM_WRITE_HINT_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+# Chroma codebase vault — ingest folder / semantic search (not SecureMemory KV).
+_MEMORY_HINT_RE = re.compile(
+    r"\b("
+    r"search\s+your\s+memory|ingest\s+folder|look\s+in\s+the\s+vault|"
+    r"search\s+the\s+vault|ingest\s+(?:this\s+)?(?:directory|folder)|"
+    r"search\s+codebase\s+vault|ingest_local_directory|search_vault"
+    r")\b",
+    re.IGNORECASE,
+)
+_MEMORY_INGEST_HINT_RE = re.compile(
+    r"\b("
+    r"ingest\s+folder|ingest\s+(?:this\s+)?(?:directory|folder)|"
+    r"index\s+(?:this\s+)?(?:directory|folder)|ingest_local_directory"
+    r")\b",
+    re.IGNORECASE,
+)
 # Tool Forge / architect — NEVER vault memory or generic chat.
 # Matches singular ("build a tool") and batch ("build three tools", "tools back-to-back").
 _TOOL_FORGE_HINT_RE = re.compile(
@@ -594,6 +610,11 @@ def merge_bound_tool_ids(
             _add("execute_powershell")
         if _BROWSER_HINT_RE.search(user_text or ""):
             _add("fetch_webpage")
+        if _MEMORY_HINT_RE.search(user_text or ""):
+            if _MEMORY_INGEST_HINT_RE.search(user_text or ""):
+                _add("ingest_local_directory")
+            else:
+                _add("search_vault")
     for tid in explicit_tool_ids_in_text(user_text, known):
         if jason_sup and tid != "dispatch_jason_supervisor":
             continue
@@ -882,6 +903,7 @@ class IntentBroker:
         research_hit = bool(_RESEARCH_HINT_RE.search(raw))
         deep_research_hit = bool(_DEEP_RESEARCH_RE.search(raw))
         mem_write_hit = bool(_MEM_WRITE_HINT_RE.search(raw))
+        memory_vault_hit = bool(_MEMORY_HINT_RE.search(raw))
         project_hit = bool(_PROJECT_LIST_RE.search(raw))
         titan_hit = bool(_TITAN_PROTOCOL_RE.search(raw)) or bool(
             _JSON_CODENAME_RE.search(raw)
@@ -959,6 +981,49 @@ class IntentBroker:
             return ToolCall(
                 tool_id="capture_and_analyze_screen",
                 arguments={"prompt": raw},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.96,
+            )
+        # Chroma codebase vault ingest/search (before file/vision force-routes).
+        if memory_vault_hit and not mem_write_hit and not forge_hit:
+            if _MEMORY_INGEST_HINT_RE.search(raw):
+                path_arg = ""
+                pm = re.search(
+                    r"(?:ingest|index)\s+(?:this\s+)?(?:folder|directory)\s+"
+                    r"[\"']?([^\s\"']+)[\"']?",
+                    raw,
+                    flags=re.I,
+                )
+                if not pm:
+                    pm = re.search(
+                        r"([A-Za-z]:\\[^\s\"']+|/[^\s\"']+|\.{0,2}/[^\s\"']+)",
+                        raw,
+                    )
+                if pm:
+                    path_arg = pm.group(1).rstrip(").,;]")
+                _foresight_cascade(raw, "ingest_local_directory")
+                return ToolCall(
+                    tool_id="ingest_local_directory",
+                    arguments={"path": path_arg} if path_arg else {},
+                    source_lang=lang,
+                    raw_text=raw,
+                    confidence=0.96,
+                )
+            q = raw
+            qm = re.search(
+                r"(?:search\s+your\s+memory|look\s+in\s+the\s+vault|"
+                r"search\s+the\s+vault|search\s+codebase\s+vault)"
+                r"(?:\s+for)?\s+(.+)$",
+                raw,
+                flags=re.I,
+            )
+            if qm:
+                q = qm.group(1).strip(" ?.!,")
+            _foresight_cascade(raw, "search_vault")
+            return ToolCall(
+                tool_id="search_vault",
+                arguments={"query": q or raw},
                 source_lang=lang,
                 raw_text=raw,
                 confidence=0.96,
