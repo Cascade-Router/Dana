@@ -68,20 +68,26 @@ _MEM_WRITE_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 # Chroma codebase vault — ingest folder / semantic search (not SecureMemory KV).
+# Phrase cues + broad vault tokens (ingest|memory|vault|chroma|directory|codebase).
 _MEMORY_HINT_RE = re.compile(
-    r"\b("
-    r"search\s+your\s+memory|ingest\s+folder|look\s+in\s+the\s+vault|"
-    r"search\s+the\s+vault|ingest\s+(?:this\s+)?(?:directory|folder)|"
-    r"search\s+codebase\s+vault|ingest_local_directory|search_vault"
+    r"(?i)\b(?:"
+    r"search\s+your\s+memory|ingest\s+folder|look\s+in\s+(?:the\s+)?vault|"
+    r"search\s+(?:the\s+)?vault|ingest\s+(?:this\s+)?(?:directory|folder)|"
+    r"search\s+codebase\s+vault|ingest_local_directory|search_vault|"
+    r"ingest|memory|vault|chroma|directory|codebase"
     r")\b",
-    re.IGNORECASE,
 )
 _MEMORY_INGEST_HINT_RE = re.compile(
-    r"\b("
-    r"ingest\s+folder|ingest\s+(?:this\s+)?(?:directory|folder)|"
-    r"index\s+(?:this\s+)?(?:directory|folder)|ingest_local_directory"
+    r"(?i)\b(?:"
+    r"ingest\s+folder|ingest\s+(?:this\s+)?(?:directory|folder|codebase)|"
+    r"index\s+(?:this\s+)?(?:directory|folder|codebase)|ingest_local_directory|"
+    r"ingest\s+(?:the\s+)?(?:vault|chroma|memory)|"
+    r"ingest"
     r")\b",
-    re.IGNORECASE,
+)
+# Do not force Chroma vault tools for "clear/reset chat memory" utterances.
+_CLEAR_CHAT_MEMORY_HINT_RE = re.compile(
+    r"(?i)\b(?:clear|reset|wipe|forget)\s+(?:the\s+)?(?:chat\s+)?(?:memory|conversation|history)\b",
 )
 # Tool Forge / architect — NEVER vault memory or generic chat.
 # Matches singular ("build a tool") and batch ("build three tools", "tools back-to-back").
@@ -610,7 +616,9 @@ def merge_bound_tool_ids(
             _add("execute_powershell")
         if _BROWSER_HINT_RE.search(user_text or ""):
             _add("fetch_webpage")
-        if _MEMORY_HINT_RE.search(user_text or ""):
+        if _MEMORY_HINT_RE.search(user_text or "") and not _CLEAR_CHAT_MEMORY_HINT_RE.search(
+            user_text or ""
+        ):
             if _MEMORY_INGEST_HINT_RE.search(user_text or ""):
                 _add("ingest_local_directory")
             else:
@@ -903,7 +911,9 @@ class IntentBroker:
         research_hit = bool(_RESEARCH_HINT_RE.search(raw))
         deep_research_hit = bool(_DEEP_RESEARCH_RE.search(raw))
         mem_write_hit = bool(_MEM_WRITE_HINT_RE.search(raw))
-        memory_vault_hit = bool(_MEMORY_HINT_RE.search(raw))
+        memory_vault_hit = bool(_MEMORY_HINT_RE.search(raw)) and not bool(
+            _CLEAR_CHAT_MEMORY_HINT_RE.search(raw)
+        )
         project_hit = bool(_PROJECT_LIST_RE.search(raw))
         titan_hit = bool(_TITAN_PROTOCOL_RE.search(raw)) or bool(
             _JSON_CODENAME_RE.search(raw)
@@ -1012,8 +1022,9 @@ class IntentBroker:
                 )
             q = raw
             qm = re.search(
-                r"(?:search\s+your\s+memory|look\s+in\s+the\s+vault|"
-                r"search\s+the\s+vault|search\s+codebase\s+vault)"
+                r"(?:search\s+your\s+memory|look\s+in\s+(?:the\s+)?vault|"
+                r"search\s+(?:the\s+)?vault|search\s+codebase\s+vault|"
+                r"search\s+memory|query\s+chroma|search\s+chroma)"
                 r"(?:\s+for)?\s+(.+)$",
                 raw,
                 flags=re.I,

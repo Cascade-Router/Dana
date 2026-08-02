@@ -158,7 +158,9 @@ _TOOL_GRAPH_INTENT_RE = re.compile(
     # Episodic / vault memory search intents.
     r"\bepisodic\s+memory\b|"
     r"\b(?:search|query|recall|read)\s+(?:the\s+)?(?:episodic\s+|vault\s+)?memory\b|"
-    r"\bread_vault_memory\b"
+    r"\bread_vault_memory\b|"
+    # Chroma / codebase vault cues — must not soft-drop to lightweight chat.
+    r"\b(?:ingest|memory|vault|chroma|directory|codebase)\b"
     r")",
     re.IGNORECASE,
 )

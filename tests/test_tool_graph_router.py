@@ -73,6 +73,8 @@ def test_readonly_agent_verification_prompts_require_tool_graph() -> None:
         "Can you open your latest logs and summarize the last boot session?",
         "Describe what you see on my screen right now.",
         "Search episodic memory for user preferences.",
+        "Ingest this directory into the vault.",
+        "Search chroma for the purple widget.",
     ]
     for prompt in prompts:
         assert requires_tool_graph(prompt) is True, prompt

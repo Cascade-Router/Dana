@@ -104,8 +104,9 @@ class AssistiveTouchOrb:
         self._orb_x = x
         self._orb_y = y
 
+        # Pack to content only — expand=True left a large transparent hit box.
         self._shell = tk.Frame(self.orb_window, bg=_TRANSPARENT, bd=0, highlightthickness=0)
-        self._shell.pack(fill="both", expand=True)
+        self._shell.pack(anchor="nw")
 
         self._canvas = tk.Canvas(
             self._shell,
@@ -131,6 +132,7 @@ class AssistiveTouchOrb:
 
         self._draw_orb()
         self._apply_compact_geometry()
+        self._apply_transparent_hit_test()
 
         # Drag + hover (Tk main thread only).
         for widget in (self._canvas, self.orb_window, self._shell):
@@ -435,6 +437,15 @@ class AssistiveTouchOrb:
         except Exception:  # noqa: BLE001
             self._pulse_job = None
 
+    def _apply_transparent_hit_test(self) -> None:
+        """Color-key transparent pixels must not steal desktop clicks."""
+        try:
+            from dana.ui.overlay import apply_colorkey_hit_test
+
+            apply_colorkey_hit_test(self.orb_window, key=_TRANSPARENT)
+        except Exception:  # noqa: BLE001
+            pass
+
     def _apply_compact_geometry(self) -> None:
         self._expanded = False
         try:
@@ -443,7 +454,13 @@ class AssistiveTouchOrb:
             pass
         w = _ORB_DIAMETER
         h = _ORB_DIAMETER
+        try:
+            self.orb_window.minsize(w, h)
+            self.orb_window.maxsize(w, h)
+        except Exception:  # noqa: BLE001
+            pass
         self.orb_window.geometry(f"{w}x{h}+{self._orb_x}+{self._orb_y}")
+        self._apply_transparent_hit_test()
 
     def _apply_expanded_geometry(self) -> None:
         self._expanded = True
@@ -458,7 +475,13 @@ class AssistiveTouchOrb:
         x = self._orb_x
         if x + w > screen_w - 8:
             x = max(8, screen_w - w - 8)
+        try:
+            self.orb_window.minsize(w, h)
+            self.orb_window.maxsize(w, h)
+        except Exception:  # noqa: BLE001
+            pass
         self.orb_window.geometry(f"{w}x{h}+{x}+{self._orb_y}")
+        self._apply_transparent_hit_test()
 
     # --------------------------------------------------------------- events
     def _cancel_leave(self) -> None:
@@ -525,6 +548,7 @@ class AssistiveTouchOrb:
             w = self.orb_window.winfo_width()
             h = self.orb_window.winfo_height()
             self.orb_window.geometry(f"{w}x{h}+{x}+{y}")
+            self._apply_transparent_hit_test()
         except Exception:  # noqa: BLE001
             pass
 

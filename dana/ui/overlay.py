@@ -3,6 +3,10 @@
 Frameless, topmost window with Windows color-key transparency so only the
 rounded slate pill is visible. Safe to import on non-Windows / headless CI —
 Tk / CustomTkinter failures become no-ops.
+
+On Windows, ``-transparentcolor`` alone often still hit-tests the keyed pixels;
+``apply_colorkey_hit_test`` installs ``LWA_COLORKEY`` so transparent chrome does
+not intercept desktop clicks while opaque HUD content stays interactive.
 """
 
 from __future__ import annotations
@@ -18,8 +22,51 @@ _PILL_RADIUS = 20
 _LABEL_FG = "#E2E8F0"
 
 
+def _parse_hex_rgb(key: str) -> tuple[int, int, int] | None:
+    raw = (key or "").strip().lstrip("#")
+    if len(raw) != 6:
+        return None
+    try:
+        return int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
+    except ValueError:
+        return None
+
+
+def apply_colorkey_hit_test(root: Any, *, key: str = TRANSPARENT_KEY) -> bool:
+    """Make color-keyed pixels click-through via Win32 ``LWA_COLORKEY``.
+
+    Opaque widgets keep hit-testing. No-op off Windows / on failure.
+    """
+    if root is None or sys.platform != "win32":
+        return False
+    rgb = _parse_hex_rgb(key)
+    if rgb is None:
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        GWL_EXSTYLE = -20
+        WS_EX_LAYERED = 0x00080000
+        LWA_COLORKEY = 0x00000001
+        hwnd = int(root.winfo_id())
+        if hwnd <= 0:
+            return False
+        style = int(user32.GetWindowLongW(hwnd, GWL_EXSTYLE))
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
+        # COLORREF is 0x00BBGGRR
+        colorref = int(rgb[0]) | (int(rgb[1]) << 8) | (int(rgb[2]) << 16)
+        return bool(user32.SetLayeredWindowAttributes(hwnd, colorref, 0, LWA_COLORKEY))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def apply_windows_transparency(root: Any, *, key: str = TRANSPARENT_KEY) -> bool:
-    """Enable Windows ``-transparentcolor`` keying. No-op off Windows / on failure."""
+    """Enable Windows ``-transparentcolor`` keying + color-key hit-test.
+
+    No-op off Windows / on failure. Geometry should still be clamped to content
+    so the layered window does not span unused desktop area.
+    """
     if root is None:
         return False
     try:
@@ -31,11 +78,77 @@ def apply_windows_transparency(root: Any, *, key: str = TRANSPARENT_KEY) -> bool
             pass
     if sys.platform != "win32":
         return False
+    keyed = False
     try:
         root.wm_attributes("-transparentcolor", key)
-        return True
+        keyed = True
     except Exception:  # noqa: BLE001
-        return False
+        keyed = False
+    try:
+        root.update_idletasks()
+    except Exception:  # noqa: BLE001
+        pass
+    hit = apply_colorkey_hit_test(root, key=key)
+    return bool(keyed or hit)
+
+
+def clamp_toplevel_to_content(
+    root: Any,
+    *,
+    content: Any | None = None,
+    pad_x: int = 0,
+    pad_y: int = 0,
+    min_w: int = 1,
+    min_h: int = 1,
+    max_w: int | None = None,
+    max_h: int | None = None,
+    x: int | None = None,
+    y: int | None = None,
+) -> tuple[int, int]:
+    """Resize a toplevel to its content req size (plus pad). Returns (w, h)."""
+    if root is None:
+        return (0, 0)
+    try:
+        root.update_idletasks()
+    except Exception:  # noqa: BLE001
+        pass
+    target = content if content is not None else root
+    try:
+        req_w = int(target.winfo_reqwidth() or 0)
+        req_h = int(target.winfo_reqheight() or 0)
+    except Exception:  # noqa: BLE001
+        req_w, req_h = 0, 0
+    if req_w <= 1 or req_h <= 1:
+        try:
+            req_w = max(req_w, int(root.winfo_reqwidth() or 0))
+            req_h = max(req_h, int(root.winfo_reqheight() or 0))
+        except Exception:  # noqa: BLE001
+            pass
+    w = max(min_w, req_w + max(0, int(pad_x)))
+    h = max(min_h, req_h + max(0, int(pad_y)))
+    if max_w is not None:
+        w = min(w, int(max_w))
+    if max_h is not None:
+        h = min(h, int(max_h))
+    try:
+        cur_x = int(root.winfo_x()) if x is None else int(x)
+        cur_y = int(root.winfo_y()) if y is None else int(y)
+    except Exception:  # noqa: BLE001
+        cur_x, cur_y = 0, 0
+        if x is not None:
+            cur_x = int(x)
+        if y is not None:
+            cur_y = int(y)
+    try:
+        root.geometry(f"{w}x{h}+{cur_x}+{cur_y}")
+        root.minsize(w, h)
+        root.maxsize(w, h)
+    except Exception:  # noqa: BLE001
+        try:
+            root.geometry(f"{w}x{h}+{cur_x}+{cur_y}")
+        except Exception:  # noqa: BLE001
+            pass
+    return (w, h)
 
 
 def build_hud_pill(parent: Any, **kwargs: Any) -> Any | None:
@@ -133,22 +246,59 @@ class FloatingStatusHud:
             self._label.pack(side="left")
 
             try:
-                self.root.update_idletasks()
-                sw = int(self.root.winfo_screenwidth() or 1280)
-                w = max(160, int(self.root.winfo_reqwidth() or 200))
-                h = max(56, int(self.root.winfo_reqheight() or 64))
-                x = max(8, (sw - w) // 2)
-                y = 16
-                self.root.geometry(f"{w}x{h}+{x}+{y}")
+                self._fit_to_content(x=None, y=16, center_x=True)
             except Exception:  # noqa: BLE001
                 pass
         except Exception:  # noqa: BLE001
             self.destroy()
 
+    def _fit_to_content(
+        self,
+        *,
+        x: int | None = None,
+        y: int | None = None,
+        center_x: bool = False,
+    ) -> None:
+        """Clamp the frameless root to the pill bounds (no full-screen chrome)."""
+        if self.root is None:
+            return
+        try:
+            self.root.update_idletasks()
+        except Exception:  # noqa: BLE001
+            pass
+        place_x = x
+        place_y = 16 if y is None else y
+        if center_x:
+            try:
+                sw = int(self.root.winfo_screenwidth() or 1280)
+                # Pre-measure so centering uses the clamped width.
+                probe = self.pill if self.pill is not None else self.root
+                pw = max(160, int(probe.winfo_reqwidth() or 200) + 12)
+                place_x = max(8, (sw - pw) // 2)
+            except Exception:  # noqa: BLE001
+                place_x = 8
+        clamp_toplevel_to_content(
+            self.root,
+            content=self.pill,
+            pad_x=12,
+            pad_y=12,
+            min_w=160,
+            min_h=56,
+            max_w=480,
+            max_h=120,
+            x=place_x,
+            y=place_y,
+        )
+        apply_colorkey_hit_test(self.root, key=TRANSPARENT_KEY)
+
     def set_text(self, text: str) -> None:
         if self._label is not None:
             try:
                 self._label.configure(text=text)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                self._fit_to_content()
             except Exception:  # noqa: BLE001
                 pass
 
