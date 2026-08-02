@@ -2,6 +2,15 @@
 
 from __future__ import annotations
 
+try:
+    import pytesseract
+
+    pytesseract.pytesseract.tesseract_cmd = (
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    )
+except ImportError:
+    pass
+
 
 def analyze_visual_context() -> str:
     """Capture the primary monitor and return OCR text as ``<screen_text>…``.
