@@ -19,15 +19,14 @@ from dana.core_agent import (
 )
 
 
-def test_piper_length_scale_slower_than_realtime_default() -> None:
-    assert PIPER_LENGTH_SCALE >= 1.15
+def test_piper_length_scale_faster_than_realtime_default() -> None:
+    assert PIPER_LENGTH_SCALE == 0.75
 
 
-def test_default_piper_voice_is_commercially_clean_ljspeech() -> None:
-    assert PIPER_VOICE_ID == "en_US-ljspeech-high"
-    assert PIPER_EN_ONNX.endswith("en_US-ljspeech-high.onnx")
+def test_default_piper_voice_is_hfc_female_medium() -> None:
+    assert PIPER_VOICE_ID == "en_US-hfc_female-medium"
+    assert PIPER_EN_ONNX.endswith("en_US-hfc_female-medium.onnx")
     assert DEFAULT_PIPER_ONNX == PIPER_EN_ONNX
-    assert "hfc_female" not in PIPER_EN_ONNX
 
 
 def test_download_piper_falls_back_to_legacy_when_network_fails(
@@ -37,18 +36,18 @@ def test_download_piper_falls_back_to_legacy_when_network_fails(
 
     models = tmp_path / "tts_models"
     models.mkdir()
-    legacy_onnx = models / "en_US-hfc_female-medium.onnx"
-    legacy_json = models / "en_US-hfc_female-medium.onnx.json"
+    legacy_onnx = models / "en_US-ljspeech-high.onnx"
+    legacy_json = models / "en_US-ljspeech-high.onnx.json"
     legacy_onnx.write_bytes(b"legacy-onnx")
     legacy_json.write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(ca, "TTS_MODELS_DIR", str(models))
-    monkeypatch.setattr(ca, "PIPER_VOICE_ID", "en_US-ljspeech-high")
+    monkeypatch.setattr(ca, "PIPER_VOICE_ID", "en_US-hfc_female-medium")
     monkeypatch.setattr(
-        ca, "PIPER_EN_ONNX", str(models / "en_US-ljspeech-high.onnx")
+        ca, "PIPER_EN_ONNX", str(models / "en_US-hfc_female-medium.onnx")
     )
     monkeypatch.setattr(
-        ca, "PIPER_EN_JSON", str(models / "en_US-ljspeech-high.onnx.json")
+        ca, "PIPER_EN_JSON", str(models / "en_US-hfc_female-medium.onnx.json")
     )
     monkeypatch.setattr(ca, "DEFAULT_PIPER_ONNX", ca.PIPER_EN_ONNX)
     monkeypatch.setattr(ca, "_PIPER_LEGACY_ONNX", str(legacy_onnx))
@@ -61,7 +60,7 @@ def test_download_piper_falls_back_to_legacy_when_network_fails(
         download_piper_models()
 
     assert ca.PIPER_EN_ONNX == str(legacy_onnx)
-    assert os.path.basename(ca.PIPER_EN_ONNX) == "en_US-hfc_female-medium.onnx"
+    assert os.path.basename(ca.PIPER_EN_ONNX) == "en_US-ljspeech-high.onnx"
 
 
 def test_sanitize_inserts_pauses_for_ocr_newlines() -> None:

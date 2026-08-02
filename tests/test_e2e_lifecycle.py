@@ -324,10 +324,10 @@ def _force_max_iter_and_gc(report: E2EReport) -> None:
 def _synthesize_language_tts(text: str, out_wav: Path, report: E2EReport) -> None:
     """Offline Piper English TTS (skip gracefully if voice files missing)."""
     project = Path(__file__).resolve().parent.parent
-    en_onnx = project / "tts_models" / "en_US-ljspeech-high.onnx"
+    en_onnx = project / "tts_models" / "en_US-hfc_female-medium.onnx"
     if not en_onnx.is_file():
         # Graceful skip when preferred voice absent (no network in CI).
-        legacy = project / "tts_models" / "en_US-hfc_female-medium.onnx"
+        legacy = project / "tts_models" / "en_US-ljspeech-high.onnx"
         if legacy.is_file():
             en_onnx = legacy
             report.add(f"TTS using legacy fallback {legacy.name}")

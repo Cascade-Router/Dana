@@ -5,7 +5,7 @@ Pipeline (4 threads + agent keep-alive loop + GUI main thread):
   1. Tracker   - YOLOv8n rolling buffer (~2s) from active_vision_tool + live ROI overlay
   2. WakeWord  - OpenWakeWord custom "donna.onnx" on mic @ 16 kHz
   3. Conversation - VAD -> Whisper STT -> tool_router -> YOLO + Ollama LLM -> TTS
-  4. Audio     - offline TTS via piper-tts (en_US-ljspeech-high, public domain)
+  4. Audio     - offline TTS via piper-tts (en_US-hfc_female-medium)
 
 UI:
   - Windows system tray icon (Open Settings / Quit)
@@ -346,27 +346,25 @@ _CANNED_UX_WAV_FILES: dict[str, str] = {
     "Memory cleared.": "memory_cleared.wav",
 }
 # Runtime / conversation log paths live in dana.logging (re-exported above).
-# Default voice: en_US-ljspeech-high (LJ Speech dataset = public domain).
-# Rejected alternatives for the commercial default:
-#   - en_US-hfc_female-medium: CC BY-NC-SA 4.0 (non-commercial)
-#   - en_US-lessac-medium: Blizzard 2013 research license (excludes commercial TTS products)
+# Default voice: en_US-hfc_female-medium (CC BY-NC-SA 4.0 — see docs/LEGAL_AND_IP.md).
+# Override via DONNA_PIPER_VOICE (e.g. en_US-ljspeech-high for public-domain weights).
 PIPER_VOICE_ID = (
-    os.environ.get("DONNA_PIPER_VOICE", "en_US-ljspeech-high").strip()
-    or "en_US-ljspeech-high"
+    os.environ.get("DONNA_PIPER_VOICE", "en_US-hfc_female-medium").strip()
+    or "en_US-hfc_female-medium"
 )
 PIPER_EN_ONNX = os.path.join(TTS_MODELS_DIR, f"{PIPER_VOICE_ID}.onnx")
 PIPER_EN_JSON = os.path.join(TTS_MODELS_DIR, f"{PIPER_VOICE_ID}.onnx.json")
 DEFAULT_PIPER_ONNX = PIPER_EN_ONNX
-# Legacy NC voice kept only as offline migration fallback if preferred download fails.
-_PIPER_LEGACY_VOICE_ID = "en_US-hfc_female-medium"
+# Offline migration fallback if preferred download fails.
+_PIPER_LEGACY_VOICE_ID = "en_US-ljspeech-high"
 _PIPER_LEGACY_ONNX = os.path.join(TTS_MODELS_DIR, f"{_PIPER_LEGACY_VOICE_ID}.onnx")
 _PIPER_LEGACY_JSON = os.path.join(TTS_MODELS_DIR, f"{_PIPER_LEGACY_VOICE_ID}.onnx.json")
-# length_scale > 1.0 slows speech (VITS). Default 1.25 keeps OCR/vision reads intelligible.
+# length_scale < 1.0 speeds speech (VITS). Default 0.75 for snappier replies.
 try:
-    PIPER_LENGTH_SCALE = float(os.environ.get("DONNA_PIPER_LENGTH_SCALE", "1.25"))
+    PIPER_LENGTH_SCALE = float(os.environ.get("DONNA_PIPER_LENGTH_SCALE", "0.75"))
 except ValueError:
-    PIPER_LENGTH_SCALE = 1.25
-PIPER_LENGTH_SCALE = max(0.8, min(2.0, PIPER_LENGTH_SCALE))
+    PIPER_LENGTH_SCALE = 0.75
+PIPER_LENGTH_SCALE = max(0.5, min(2.0, PIPER_LENGTH_SCALE))
 # Incomplete localization voices are disabled for the public release.
 # Related local Piper assets remain gitignored under tts_models/.
 _PIPER_VOICE_RELPATHS: dict[str, str] = {
@@ -420,9 +418,9 @@ def _piper_file_ready(path: str) -> bool:
 def download_piper_models() -> None:
     """Download the English Piper voice into tts_models/ if missing.
 
-    Prefers the commercially clean default (ljspeech-high). If download fails
-    and a legacy hfc_female voice is already on disk, keep that path so offline
-    / mocked test environments do not hard-fail on network.
+    Prefers the configured default (hfc_female-medium). If download fails and a
+    legacy ljspeech voice is already on disk, keep that path so offline /
+    mocked test environments do not hard-fail on network.
     """
     global PIPER_EN_ONNX, PIPER_EN_JSON, DEFAULT_PIPER_ONNX
     os.makedirs(TTS_MODELS_DIR, exist_ok=True)
@@ -453,8 +451,7 @@ def download_piper_models() -> None:
             DEFAULT_PIPER_ONNX = PIPER_EN_ONNX
             print(
                 "[TTS] WARNING: preferred Piper voice download failed; "
-                f"falling back to legacy {_PIPER_LEGACY_VOICE_ID} "
-                "(CC BY-NC-SA — not for commercial redistribution).",
+                f"falling back to legacy {_PIPER_LEGACY_VOICE_ID}.",
                 flush=True,
             )
             return
