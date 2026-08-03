@@ -65,9 +65,14 @@ def test_system_default_label_constant() -> None:
     assert SYSTEM_DEFAULT_LABEL == "System Default (Auto)"
 
 
-def test_gui_audio_menus_prepend_system_default() -> None:
-    """Null mic/speaker settings map to System Default (Auto) in the GUI."""
-    from dana.core_agent import DonnaGUI, set_engine_engaged
+def test_gui_audio_is_autonomous_system_default() -> None:
+    """Mic/Speaker menus removed; streams always use System Default."""
+    from dana.core_agent import DonnaGUI, load_audio_settings, set_engine_engaged
+
+    mic_id, speaker_id, _rate = load_audio_settings()
+    assert mic_id is None
+    assert speaker_id is None
+    assert SYSTEM_DEFAULT_LABEL  # helpers kept
 
     set_engine_engaged(False)
     try:
@@ -77,12 +82,11 @@ def test_gui_audio_menus_prepend_system_default() -> None:
 
         pytest.skip(f"Tk unavailable: {exc}")
     try:
-        assert SYSTEM_DEFAULT_LABEL in list(app.mic_menu.cget("values"))
-        assert SYSTEM_DEFAULT_LABEL in list(app.speaker_menu.cget("values"))
-        assert list(app.mic_menu.cget("values"))[0] == SYSTEM_DEFAULT_LABEL
-        assert list(app.speaker_menu.cget("values"))[0] == SYSTEM_DEFAULT_LABEL
-        assert app._mic_by_label.get(SYSTEM_DEFAULT_LABEL) is None
-        assert app._speaker_by_label.get(SYSTEM_DEFAULT_LABEL) is None
+        assert app.mic_menu is None
+        assert app.speaker_menu is None
+        assert app.apply_note is not None
+        note = str(app.apply_note.cget("text"))
+        assert "System Default" in note
     finally:
         set_engine_engaged(False)
         try:

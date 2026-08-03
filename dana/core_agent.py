@@ -1979,17 +1979,10 @@ def soft_recover_audio_hardware(detail: str = "") -> None:
         list_output_devices()
     except Exception as exc:  # noqa: BLE001
         log_exception("Main", "Failed listing audio devices during soft restart", exc=exc)
-    # Drop sticky explicit indices that may have vanished (Bluetooth unplug).
-    if AUDIO_INPUT_DEVICE is not None and not _validate_mic_id(AUDIO_INPUT_DEVICE):
-        log("Main", f"Soft restart: mic [{AUDIO_INPUT_DEVICE}] invalid → System Default")
-        AUDIO_INPUT_DEVICE = None
-        AUDIO_INPUT_RATE = _device_rate(None)
-    if AUDIO_OUTPUT_DEVICE is not None and not _validate_speaker_id(AUDIO_OUTPUT_DEVICE):
-        log(
-            "Main",
-            f"Soft restart: speaker [{AUDIO_OUTPUT_DEVICE}] invalid → System Default",
-        )
-        AUDIO_OUTPUT_DEVICE = None
+    # Autonomous audio: always rebind System Default (device=None).
+    AUDIO_INPUT_DEVICE = None
+    AUDIO_OUTPUT_DEVICE = None
+    AUDIO_INPUT_RATE = _device_rate(None)
     try:
         from dana.audio.devices import get_default_audio_devices
 
@@ -2624,43 +2617,17 @@ def interactive_audio_setup() -> tuple[Optional[int], Optional[int]]:
 
 
 def load_audio_settings() -> tuple[Optional[int], Optional[int], int]:
-    """Load mic/speaker from settings.json, or use System Default (Auto).
+    """Always bind System Default (``device=None``) for mic + speaker.
 
-    Returns (mic_id, speaker_id, mic_native_rate). ``None`` ids mean OS default.
+    Sticky ``mic_id`` / ``speaker_id`` values in settings.json are ignored so
+    streams follow the live OS default. Helpers in ``dana.audio.devices`` remain
+    available for logging / re-query after PortAudio faults.
     """
     if not os.path.isfile(SETTINGS_FILE):
-        save_audio_settings(None, None)
-        log(
-            "Audio",
-            "No settings.json — using System Default (Auto) for mic/speaker",
-        )
-        return None, None, _device_rate(None)
-
-    try:
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
-            cfg = json.load(fh)
-        if not isinstance(cfg, dict):
-            raise ValueError("settings.json root is not an object")
-        mic_id = _parse_settings_device_id(cfg.get("mic_id"))
-        speaker_id = _parse_settings_device_id(cfg.get("speaker_id"))
-    except Exception as exc:  # noqa: BLE001
-        log("Audio", f"WARNING: settings.json unreadable ({exc}); using System Default.")
-        save_audio_settings(None, None)
-        return None, None, _device_rate(None)
-
-    if mic_id is not None and not _validate_mic_id(mic_id):
-        log(
-            "Audio",
-            f"WARNING: settings.json mic [{mic_id}] invalid — falling back to System Default",
-        )
-        mic_id = None
-    if speaker_id is not None and not _validate_speaker_id(speaker_id):
-        log(
-            "Audio",
-            f"WARNING: settings.json speaker [{speaker_id}] invalid — "
-            "falling back to System Default",
-        )
-        speaker_id = None
+        try:
+            save_audio_settings(None, None)
+        except Exception:  # noqa: BLE001
+            pass
 
     try:
         from dana.audio.devices import get_default_audio_devices
@@ -2668,24 +2635,13 @@ def load_audio_settings() -> tuple[Optional[int], Optional[int], int]:
         din, dout = get_default_audio_devices()
     except Exception:  # noqa: BLE001
         din, dout = None, None
-    devices = sd.query_devices()
-
-    def _name(idx: Optional[int], fallback_idx: Optional[int]) -> str:
-        if idx is None:
-            if fallback_idx is not None and 0 <= int(fallback_idx) < len(devices):
-                return f"System Default ({devices[int(fallback_idx)].get('name', '?')})"
-            return "System Default (Auto)"
-        try:
-            return str(devices[idx].get("name", "?"))
-        except Exception:
-            return "?"
-
+    rate = _device_rate(None)
     log(
         "Audio",
-        f"Loaded settings.json -> mic [{mic_id}] {_name(mic_id, din)} | "
-        f"speaker [{speaker_id}] {_name(speaker_id, dout)}",
+        f"Autonomous audio → System Default "
+        f"(current in={din} out={dout}) @ {rate} Hz",
     )
-    return mic_id, speaker_id, _device_rate(mic_id)
+    return None, None, rate
 
 
 def build_donna_system_prompt(
@@ -4242,6 +4198,7 @@ def input_txt_ingest_worker() -> None:
 
 def mic_ingest_worker() -> None:
     """Continuous producer: open InputStream once, push 16 kHz VAD frames to queue."""
+    global AUDIO_INPUT_DEVICE, AUDIO_INPUT_RATE
     _nt_hide_console_if_mp_child()
     stream: Any = None
     stream_channels = 1
@@ -4266,99 +4223,89 @@ def mic_ingest_worker() -> None:
         _close()
         from dana.audio.devices import get_default_audio_devices, stream_device_kwargs
 
-        # Re-query before each open so Bluetooth / OS default switches bind live.
+        # Always System Default (device=None); re-query so BT/OS switches bind live.
+        AUDIO_INPUT_DEVICE = None
         try:
             din, _dout = get_default_audio_devices()
         except Exception:  # noqa: BLE001
             din = None
-
-        device = AUDIO_INPUT_DEVICE
-        rate = int(AUDIO_INPUT_RATE or SAMPLE_RATE)
-        if device is not None and not _validate_mic_id(device):
+        rate = _device_rate(None)
+        AUDIO_INPUT_RATE = rate
+        if din is not None:
             log(
                 "MicIngest",
-                f"Configured mic [{device}] gone — falling back to System Default",
+                f"Binding System Default input (current=[{din}]) @ {rate} Hz",
             )
-            device = None
-            AUDIO_INPUT_DEVICE = None
-        if device is None:
-            rate = _device_rate(None)
-            AUDIO_INPUT_RATE = rate
-            if din is not None:
-                log(
-                    "MicIngest",
-                    f"Binding System Default input (current=[{din}]) @ {rate} Hz",
-                )
 
         native_frame = max(
             1, int(round(VAD_FRAME_SAMPLES * rate / float(SAMPLE_RATE)))
         )
         last_exc: Optional[BaseException] = None
-        # Try configured device first; on PortAudioError retry OS default (None).
-        device_attempts: list[Optional[int]] = [device]
-        if device is not None:
-            device_attempts.append(None)
-
-        for attempt_device in device_attempts:
-            attempt_rate = rate if attempt_device == device else _device_rate(None)
-            for channels in (1, 2):
-                kwargs: dict[str, Any] = {
-                    "samplerate": attempt_rate,
-                    "channels": channels,
-                    "dtype": "float32",
-                    "blocksize": native_frame,
-                }
-                kwargs.update(stream_device_kwargs(attempt_device))
-                held = mic_lock.acquire(timeout=MIC_STREAM_OPEN_TIMEOUT_S)
-                if not held:
-                    last_exc = TimeoutError("mic_lock timeout")
-                    continue
-                try:
-                    wake_mic_released.clear()
-                    candidate = _open_input_stream_with_timeout(
-                        kwargs,
-                        timeout_s=MIC_STREAM_OPEN_TIMEOUT_S,
-                        label="MicIngest.InputStream.open",
-                    )
-                    if candidate is None:
-                        wake_mic_released.set()
-                        last_exc = TimeoutError("InputStream open timed out")
-                        continue
-                    stream = candidate
-                    stream_channels = channels
-                    if attempt_device is None and device is not None:
-                        log(
-                            "MicIngest",
-                            f"PortAudio fallback: mic [{device}] -> System Default",
-                        )
-                        AUDIO_INPUT_DEVICE = None
-                    AUDIO_INPUT_RATE = int(kwargs["samplerate"])
-                    mic_ingest_ready.set()
+        for channels in (1, 2):
+            kwargs: dict[str, Any] = {
+                "samplerate": rate,
+                "channels": channels,
+                "dtype": "float32",
+                "blocksize": native_frame,
+            }
+            # Omit device → PortAudio OS default.
+            kwargs.update(stream_device_kwargs(None))
+            held = mic_lock.acquire(timeout=MIC_STREAM_OPEN_TIMEOUT_S)
+            if not held:
+                last_exc = TimeoutError("mic_lock timeout")
+                continue
+            try:
+                wake_mic_released.clear()
+                candidate = _open_input_stream_with_timeout(
+                    kwargs,
+                    timeout_s=MIC_STREAM_OPEN_TIMEOUT_S,
+                    label="MicIngest.InputStream.open",
+                )
+                if candidate is None:
                     wake_mic_released.set()
-                    flush_audio_buffer_queue()
+                    last_exc = TimeoutError("InputStream open timed out")
+                    continue
+                stream = candidate
+                stream_channels = channels
+                AUDIO_INPUT_DEVICE = None
+                AUDIO_INPUT_RATE = int(kwargs["samplerate"])
+                mic_ingest_ready.set()
+                wake_mic_released.set()
+                flush_audio_buffer_queue()
+                log(
+                    "MicIngest",
+                    f"InputStream open device=None "
+                    f"rate={AUDIO_INPUT_RATE} ch={channels} "
+                    f"block={native_frame} (-> {VAD_FRAME_MS}ms @16k)",
+                )
+                print(
+                    f"[Debug] MicIngest InputStream open device=None "
+                    f"rate={AUDIO_INPUT_RATE} ch={channels} block={native_frame}",
+                    flush=True,
+                )
+                return True
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                wake_mic_released.set()
+                if _is_portaudio_error(exc):
+                    # Re-query defaults and retry next channel / outer loop.
+                    try:
+                        get_default_audio_devices()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    rate = _device_rate(None)
+                    AUDIO_INPUT_RATE = rate
+                    native_frame = max(
+                        1,
+                        int(round(VAD_FRAME_SAMPLES * rate / float(SAMPLE_RATE))),
+                    )
                     log(
                         "MicIngest",
-                        f"InputStream open device={AUDIO_INPUT_DEVICE} "
-                        f"rate={AUDIO_INPUT_RATE} ch={channels} "
-                        f"block={native_frame} (-> {VAD_FRAME_MS}ms @16k)",
+                        f"PortAudioError on System Default mic — "
+                        f"re-queried defaults, will retry ({exc})",
                     )
-                    print(
-                        f"[Debug] MicIngest InputStream open device={AUDIO_INPUT_DEVICE} "
-                        f"rate={AUDIO_INPUT_RATE} ch={channels} block={native_frame}",
-                        flush=True,
-                    )
-                    return True
-                except Exception as exc:  # noqa: BLE001
-                    last_exc = exc
-                    wake_mic_released.set()
-                    if _is_portaudio_error(exc) and attempt_device is not None:
-                        log(
-                            "MicIngest",
-                            f"PortAudioError on mic [{attempt_device}] — "
-                            "will retry System Default",
-                        )
-                finally:
-                    mic_lock.release()
+            finally:
+                mic_lock.release()
         log("MicIngest", f"ERROR: could not open mic stream ({last_exc})")
         return False
 
@@ -4428,6 +4375,18 @@ def mic_ingest_worker() -> None:
             if now >= next_err_log:
                 log("MicIngest", f"WARNING: read/reopen cycle ({exc})")
                 next_err_log = now + 5.0
+            if _is_portaudio_error(exc):
+                try:
+                    from dana.audio.devices import get_default_audio_devices
+
+                    din, _dout = get_default_audio_devices()
+                    log(
+                        "MicIngest",
+                        f"PortAudioError on read — re-queried defaults in={din}",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                AUDIO_INPUT_DEVICE = None
             _close()
             time.sleep(0.35)
 
@@ -7187,27 +7146,23 @@ def _play_pcm_interruptible(
 
     from dana.audio.devices import get_default_audio_devices, stream_device_kwargs
 
-    # Re-query OS defaults so a mid-session Bluetooth switch is visible.
+    # Autonomous audio: always System Default (device=None).
     try:
         _din, dout = get_default_audio_devices()
     except Exception:  # noqa: BLE001
         dout = None
-    play_device = output_device
-    if play_device is not None and not _validate_speaker_id(play_device):
-        log(
-            "Audio",
-            f"Configured speaker [{play_device}] gone — falling back to System Default"
-            + (f" (current=[{dout}])" if dout is not None else ""),
-        )
-        play_device = None
+    play_device: Optional[int] = None
+    AUDIO_OUTPUT_DEVICE = None
+    if dout is not None:
+        log_debug("Audio", f"System Default speaker current=[{dout}]")
 
     play_rate = int(samplerate)
-    host_rate = _device_output_samplerate(play_device)
+    host_rate = _device_output_samplerate(None)
     if host_rate is not None and host_rate != play_rate:
         log_debug(
             "Audio",
             f"resample PCM {play_rate} Hz -> {host_rate} Hz "
-            f"(device={play_device}) to prevent sped-up playback",
+            f"(device=None) to prevent sped-up playback",
         )
         audio = _resample_pcm(audio, play_rate, host_rate)
         play_rate = host_rate
@@ -7220,7 +7175,7 @@ def _play_pcm_interruptible(
         "dtype": "float32",
         "blocksize": chunk,
     }
-    stream_kwargs.update(stream_device_kwargs(play_device))
+    stream_kwargs.update(stream_device_kwargs(None))
 
     interrupted = False
     used_fallback = False
@@ -7284,31 +7239,39 @@ def _play_pcm_interruptible(
             except Exception as exc:  # noqa: BLE001
                 if interrupted or (interruptible and _tts_barge.is_set()):
                     interrupted = True
-                elif _is_portaudio_error(exc) and play_device is not None:
-                    # Explicit device disconnected — retry Windows system default.
+                elif _is_portaudio_error(exc):
+                    # Re-query OS defaults and retry System Default without crashing.
                     log(
                         "Audio",
-                        f"PortAudioError on speaker [{play_device}] ({exc}); "
-                        "retrying System Default",
+                        f"PortAudioError on System Default speaker ({exc}); "
+                        "re-querying defaults and retrying",
                     )
                     AUDIO_OUTPUT_DEVICE = None
                     play_device = None
+                    try:
+                        get_default_audio_devices()
+                    except Exception:  # noqa: BLE001
+                        pass
                     fallback_kwargs = {
                         "samplerate": int(play_rate),
                         "channels": 1,
                         "dtype": "float32",
                         "blocksize": chunk,
                     }
+                    fallback_kwargs.update(stream_device_kwargs(None))
                     try:
                         with sd.OutputStream(**fallback_kwargs) as stream:
                             _write_chunks(stream)
                     except Exception as exc2:  # noqa: BLE001
                         if _is_portaudio_error(exc2):
                             report_audio_hardware_fault(exc2, where="OutputStream")
-                        raise
-                elif _is_portaudio_error(exc):
-                    report_audio_hardware_fault(exc, where="OutputStream")
-                    raise
+                            # Soft recover on worker thread; do not crash main.
+                            try:
+                                soft_recover_audio_hardware(str(exc2))
+                            except Exception:  # noqa: BLE001
+                                pass
+                        else:
+                            raise
                 else:
                     # Fallback: start play under lock, then poll outside so barge-in can stop.
                     log(
@@ -7320,16 +7283,20 @@ def _play_pcm_interruptible(
                             "samplerate": int(play_rate),
                             "blocking": False,
                         }
-                        kwargs.update(stream_device_kwargs(play_device))
+                        kwargs.update(stream_device_kwargs(None))
                         sd.play(audio, **kwargs)
                         used_fallback = True
                     except Exception as exc2:  # noqa: BLE001
-                        if _is_portaudio_error(exc2) and play_device is not None:
+                        if _is_portaudio_error(exc2):
                             log(
                                 "Audio",
-                                f"PortAudioError on sd.play device [{play_device}]; "
-                                "retrying System Default",
+                                "PortAudioError on sd.play System Default; "
+                                "retrying once after re-query",
                             )
+                            try:
+                                get_default_audio_devices()
+                            except Exception:  # noqa: BLE001
+                                pass
                             try:
                                 sd.play(audio, samplerate=int(play_rate), blocking=False)
                                 used_fallback = True
@@ -7337,15 +7304,14 @@ def _play_pcm_interruptible(
                             except Exception as exc3:  # noqa: BLE001
                                 if _is_portaudio_error(exc3):
                                     report_audio_hardware_fault(exc3, where="sd.play")
+                                    try:
+                                        soft_recover_audio_hardware(str(exc3))
+                                    except Exception:  # noqa: BLE001
+                                        pass
                                 else:
                                     log_exception("Audio", "TTS Engine Failure", exc=exc3)
-                                raise
-                        elif _is_portaudio_error(exc2):
-                            report_audio_hardware_fault(exc2, where="sd.play")
-                            raise
                         else:
                             log_exception("Audio", "TTS Engine Failure", exc=exc2)
-                            raise
 
         if used_fallback and not interrupted:
             duration = audio.size / float(max(1, play_rate))
@@ -8309,10 +8275,20 @@ class DonnaGUI(ctk.CTk):
         self._speaker_labels: list[str] = []
         self._mic_by_label: dict[str, int] = {}
         self._speaker_by_label: dict[str, int] = {}
+        self.mic_menu = None
+        self.speaker_menu = None
+        self.save_btn = None
+        self.apply_note = None
+        self._theme_menu = None
+        self._theme_var = None
         self._trace_cells: dict[str, TraceCell] = {}
         self._pulse_on = False
         self._header_mode = "chat"
         self.assistive_orb: Any | None = None
+        self._perception_feed_job: str | None = None
+        self._perception_feed_img = None
+        self._perception_feed_lbl = None
+        self._perception_feed_busy = False
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
@@ -8336,6 +8312,10 @@ class DonnaGUI(ctk.CTk):
         # Phase 2A — optional IPC attach (no-op / degrade when daemon down).
         try:
             self.after(250, self._init_daemon_client)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.after(700, self._schedule_perception_feed)
         except Exception:  # noqa: BLE001
             pass
 
@@ -8535,7 +8515,7 @@ class DonnaGUI(ctk.CTk):
         tab_perception = tabs.add("Perception")
         tab_memory = tabs.add("Memory & Settings")
 
-        # Responsive grid — Conversation weight=3, Tasks weight=1 (no fixed heights).
+        # Responsive grid — Conversation weight=3, Tasks weight=1 (Chat + Tracker only).
         try:
             tab_assistant.grid_columnconfigure(0, weight=1)
             tab_assistant.grid_rowconfigure(1, weight=3)
@@ -8549,7 +8529,6 @@ class DonnaGUI(ctk.CTk):
 
         self._build_dashboard_tab(tab_assistant)
         self._build_task_tracker_section(tab_assistant)
-        self._build_developer_diagnostics(tab_assistant)
         self._build_perception_tab(tab_perception)
 
         # Memory & Settings: single elastic scroll (cards expand; avoid nested clip).
@@ -8561,6 +8540,7 @@ class DonnaGUI(ctk.CTk):
             pass
         self._build_memory_settings_grid(mem_scroll)
         self._build_settings_tab(mem_scroll)
+        self._build_developer_diagnostics(mem_scroll)
         self._build_behavior_tab(mem_scroll)
 
         try:
@@ -8568,7 +8548,6 @@ class DonnaGUI(ctk.CTk):
         except Exception:  # noqa: BLE001
             pass
 
-        self._reload_device_menus()
         try:
             self.after(300, self.refresh_dictation_sessions)
             self.after(350, self._reload_behavior_sliders)
@@ -8911,13 +8890,13 @@ class DonnaGUI(ctk.CTk):
             log("UI", f"WARNING: TaskTrackerView unavailable ({exc})")
 
     def _build_developer_diagnostics(self, tab) -> None:  # noqa: ANN001
-        """Collapsible Live Trace / LangGraph diagnostics (grid row 3)."""
+        """Collapsible Live Trace / LangGraph diagnostics (Settings tab)."""
         self._diag_expanded = False
         self.live_trace = None
         self.trace_scroll = None
         self._diag_expander = None
         shell = ctk.CTkFrame(tab, fg_color="transparent")
-        shell.grid(row=3, column=0, sticky="ew", padx=14, pady=(0, 4))
+        shell.pack(fill="x", expand=False, padx=8, pady=(4, 8))
         self._diag_shell = shell
         self._diag_btn = ctk.CTkButton(
             shell,
@@ -8934,7 +8913,7 @@ class DonnaGUI(ctk.CTk):
             command=self._toggle_developer_diagnostics,
         )
         self._diag_btn.pack(fill="x")
-        self._diag_body = ctk.CTkFrame(shell, fg_color=_UI_CANVAS)
+        self._diag_body = ctk.CTkFrame(shell, fg_color=_UI_CANVAS, height=220)
         # Hidden until toggled.
         try:
             from dana.ui.trace_window import LiveTracePanel
@@ -8952,21 +8931,16 @@ class DonnaGUI(ctk.CTk):
     def _toggle_developer_diagnostics(self) -> None:
         body = getattr(self, "_diag_body", None)
         btn = getattr(self, "_diag_btn", None)
-        shell = getattr(self, "_diag_shell", None)
         if body is None:
             return
         self._diag_expanded = not bool(getattr(self, "_diag_expanded", False))
         try:
             if self._diag_expanded:
                 body.pack(fill="both", expand=True, pady=(6, 0))
-                if shell is not None:
-                    shell.grid_configure(sticky="nsew")
                 if btn is not None:
                     btn.configure(text="▾ Developer Diagnostics")
             else:
                 body.pack_forget()
-                if shell is not None:
-                    shell.grid_configure(sticky="ew")
                 if btn is not None:
                     btn.configure(text="▸ Developer Diagnostics")
         except Exception:  # noqa: BLE001
@@ -9048,10 +9022,10 @@ class DonnaGUI(ctk.CTk):
         right = ctk.CTkFrame(workspace, fg_color="transparent")
         right.grid(row=0, column=1, sticky="nsew", padx=(6, 4), pady=4)
 
-        roi_card = self._make_card(left, title="ROI / screen preview", padx=4, pady=(0, 0))
+        roi_card = self._make_card(left, title="Live Perception feed", padx=4, pady=(0, 0))
         self._roi_preview_lbl = ctk.CTkLabel(
             roi_card,
-            text="No ROI captured yet. Grounding hits appear here.",
+            text="Live screen feed idle — open this tab to stream (~8 FPS).",
             anchor="w",
             text_color=_UI_MUTED,
             wraplength=360,
@@ -9074,14 +9048,17 @@ class DonnaGUI(ctk.CTk):
             corner_radius=12,
             border_width=1,
             border_color=_UI_CARD_BORDER,
+            height=220,
         )
         self._roi_canvas.pack(fill="both", expand=True, pady=(0, 4))
-        ctk.CTkLabel(
+        self._perception_feed_lbl = ctk.CTkLabel(
             self._roi_canvas,
             text="Screen / ROI preview",
             text_color=_UI_MUTED,
             font=ctk.CTkFont(size=12),
-        ).pack(expand=True, pady=24)
+        )
+        self._perception_feed_lbl.pack(expand=True, fill="both", pady=8, padx=8)
+        self._perception_feed_img = None
 
         tree_card = self._make_card(right, title="Win32 UIA tree", padx=4, pady=(0, 0))
         self._uia_tree_box = ctk.CTkTextbox(
@@ -9288,13 +9265,109 @@ class DonnaGUI(ctk.CTk):
             pass
         threading.Thread(target=_worker, name="UIAInspect", daemon=True).start()
 
+    def _perception_tab_visible(self) -> bool:
+        """True when the Perception tab is the active notebook page."""
+        tabs = getattr(self, "_tabs", None)
+        if tabs is None:
+            return False
+        try:
+            return str(tabs.get()) == "Perception"
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _schedule_perception_feed(self) -> None:
+        """Lightweight ~8 FPS mss feed while Perception tab is visible."""
+        if not self.winfo_exists():
+            return
+        try:
+            if self._perception_tab_visible():
+                self._set_perception_preview_visible(True)
+                if not bool(getattr(self, "_perception_feed_busy", False)):
+                    self._perception_feed_busy = True
+                    threading.Thread(
+                        target=self._capture_perception_frame,
+                        name="PerceptionFeed",
+                        daemon=True,
+                    ).start()
+            else:
+                # Idle when tab hidden — keep UI responsive.
+                lbl = getattr(self, "_roi_preview_lbl", None)
+                if lbl is not None:
+                    try:
+                        lbl.configure(
+                            text="Live screen feed idle — open this tab to stream (~8 FPS)."
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self._perception_feed_job = self.after(125, self._schedule_perception_feed)
+        except Exception:  # noqa: BLE001
+            self._perception_feed_job = None
+
+    def _capture_perception_frame(self) -> None:
+        """Background: grab primary monitor via mss, downscale, push to UI."""
+        pil_img = None
+        err = ""
+        try:
+            import mss
+            from PIL import Image
+
+            factory = getattr(mss, "mss", None) or getattr(mss, "MSS", None)
+            with factory() as sct:
+                mon = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
+                raw = sct.grab(mon)
+                img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+                # Downscale for ~5–10 FPS UI (non-blocking).
+                resample = getattr(
+                    getattr(Image, "Resampling", Image), "BILINEAR", Image.BILINEAR
+                )
+                img.thumbnail((480, 270), resample)
+                pil_img = img
+        except Exception as exc:  # noqa: BLE001
+            err = f"{type(exc).__name__}: {exc}"
+
+        def _apply() -> None:
+            self._perception_feed_busy = False
+            feed = getattr(self, "_perception_feed_lbl", None)
+            if feed is None or not self.winfo_exists():
+                return
+            if pil_img is None:
+                try:
+                    feed.configure(image=None, text=err or "Capture unavailable")
+                    self._perception_feed_img = None
+                except Exception:  # noqa: BLE001
+                    pass
+                return
+            try:
+                ctk_img = ctk.CTkImage(
+                    light_image=pil_img,
+                    dark_image=pil_img,
+                    size=pil_img.size,
+                )
+                self._perception_feed_img = ctk_img
+                feed.configure(image=ctk_img, text="")
+                status = getattr(self, "_roi_preview_lbl", None)
+                if status is not None:
+                    status.configure(text=f"Live feed {pil_img.size[0]}×{pil_img.size[1]}")
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    feed.configure(text=f"Feed error: {type(exc).__name__}")
+                except Exception:  # noqa: BLE001
+                    pass
+
+        try:
+            self.after(0, _apply)
+        except Exception:  # noqa: BLE001
+            self._perception_feed_busy = False
+
     def _build_memory_settings_grid(self, tab) -> None:  # noqa: ANN001
-        """2-column Memory & Settings cards: Updates/Dictation | Memory/Log."""
+        """Cleaner 2-column Memory & Settings: Updates/Dictation | Memory/Log."""
         grid = ctk.CTkFrame(tab, fg_color="transparent")
-        grid.pack(fill="both", expand=True, padx=4, pady=(8, 4))
+        grid.pack(fill="x", expand=False, padx=4, pady=(8, 4))
         grid.grid_columnconfigure(0, weight=1, uniform="mem")
         grid.grid_columnconfigure(1, weight=1, uniform="mem")
-        grid.grid_rowconfigure(0, weight=1)
 
         left = ctk.CTkFrame(grid, fg_color="transparent")
         left.grid(row=0, column=0, sticky="nsew", padx=(4, 6), pady=4)
@@ -9302,9 +9375,7 @@ class DonnaGUI(ctk.CTk):
         right.grid(row=0, column=1, sticky="nsew", padx=(6, 4), pady=4)
         try:
             left.grid_columnconfigure(0, weight=1)
-            left.grid_rowconfigure(1, weight=1)
             right.grid_columnconfigure(0, weight=1)
-            right.grid_rowconfigure(1, weight=1)
         except Exception:  # noqa: BLE001
             pass
 
@@ -9519,17 +9590,18 @@ class DonnaGUI(ctk.CTk):
             pass
 
     def _build_system_log_section(self, tab) -> None:  # noqa: ANN001
-        """Tail viewer for dana_runtime.log (elastic scroll, word wrap)."""
-        card = self._make_card(tab, title="System Log", padx=4, pady=(0, 8), expand=True)
+        """Compact tail viewer for dana_runtime.log."""
+        card = self._make_card(tab, title="System Log", padx=4, pady=(0, 8), expand=False)
         self._system_log_box = ctk.CTkTextbox(
             card,
             wrap="word",
+            height=110,
             font=ctk.CTkFont(family="Consolas", size=11),
             fg_color=_UI_CANVAS,
             text_color=_UI_TEXT,
             corner_radius=10,
         )
-        self._system_log_box.pack(fill="both", expand=True, pady=(0, 8))
+        self._system_log_box.pack(fill="x", expand=False, pady=(0, 8))
         self._system_log_box.insert("1.0", "(log empty — click Refresh)\n")
         self._system_log_box.configure(state="disabled")
         actions = ctk.CTkFrame(card, fg_color="transparent")
@@ -9538,7 +9610,7 @@ class DonnaGUI(ctk.CTk):
             actions,
             text="Refresh log",
             width=110,
-            height=30,
+            height=28,
             corner_radius=999,
             fg_color=_UI_GHOST,
             hover_color="#475569",
@@ -9561,13 +9633,13 @@ class DonnaGUI(ctk.CTk):
             if os.path.isfile(path):
                 with open(path, "r", encoding="utf-8", errors="replace") as fh:
                     lines = fh.readlines()
-                text = "".join(lines[-120:]) or "(log empty)\n"
+                text = "".join(lines[-40:]) or "(log empty)\n"
             else:
                 legacy = os.path.join(os.path.dirname(path), "donna_runtime.log")
                 if os.path.isfile(legacy):
                     with open(legacy, "r", encoding="utf-8", errors="replace") as fh:
                         lines = fh.readlines()
-                    text = "".join(lines[-120:]) or "(log empty)\n"
+                    text = "".join(lines[-40:]) or "(log empty)\n"
                 else:
                     text = f"(no log yet at {path})\n"
         except Exception as exc:  # noqa: BLE001
@@ -9582,24 +9654,23 @@ class DonnaGUI(ctk.CTk):
             pass
 
     def _build_settings_tab(self, tab) -> None:  # noqa: ANN001
-        """Stage 8.9.4 — merged Stats + Audio into one Settings surface."""
+        """Runtime + Appearance (2-col); audio always uses System Default."""
         try:
             tab.configure(fg_color=_UI_CANVAS)
         except Exception:  # noqa: BLE001
             pass
 
         row = ctk.CTkFrame(tab, fg_color="transparent")
-        row.pack(fill="both", expand=True, padx=8, pady=8)
-        row.grid_columnconfigure(0, weight=1)
-        row.grid_columnconfigure(1, weight=1)
-        row.grid_rowconfigure(0, weight=1)
+        row.pack(fill="x", expand=False, padx=8, pady=(4, 8))
+        row.grid_columnconfigure(0, weight=1, uniform="set")
+        row.grid_columnconfigure(1, weight=1, uniform="set")
 
         left_host = ctk.CTkFrame(row, fg_color="transparent")
         left_host.grid(row=0, column=0, sticky="nsew", padx=(4, 6), pady=4)
         right_host = ctk.CTkFrame(row, fg_color="transparent")
         right_host.grid(row=0, column=1, sticky="nsew", padx=(6, 4), pady=4)
 
-        stats_card = self._make_card(left_host, title="Runtime", padx=4, pady=(0, 0))
+        stats_card = self._make_card(left_host, title="Runtime", padx=4, pady=(0, 0), expand=False)
         ctk.CTkLabel(
             stats_card,
             text="Wake word",
@@ -9630,11 +9701,11 @@ class DonnaGUI(ctk.CTk):
             command=self._on_open_window_startup_toggle,
             text_color=_UI_MUTED,
         )
-        self._open_window_chk.pack(anchor="w", pady=(0, 12))
+        self._open_window_chk.pack(anchor="w", pady=(0, 8))
         ctk.CTkLabel(
             stats_card,
             text=(
-                "Audio device changes apply after Save & Apply. "
+                "Mic and speaker follow the OS System Default automatically. "
                 "Pipeline mode is shown in the header and Assistive Orb."
             ),
             anchor="w",
@@ -9643,46 +9714,98 @@ class DonnaGUI(ctk.CTk):
             text_color=_UI_MUTED,
         ).pack(fill="x", pady=(0, 4))
 
-        audio_card = self._make_card(right_host, title="Audio Devices", padx=4, pady=(0, 0))
+        appear_card = self._make_card(
+            right_host, title="Appearance", padx=4, pady=(0, 0), expand=False
+        )
         ctk.CTkLabel(
-            audio_card, text="Microphone", anchor="w", text_color=_UI_MUTED
+            appear_card, text="UI Theme", anchor="w", text_color=_UI_MUTED
         ).pack(fill="x", pady=(0, 4))
         try:
-            from dana.audio.devices import SYSTEM_DEFAULT_LABEL as _audio_default
+            from dana.ui.theme import THEME_NAMES, active_theme_name
+
+            theme_values = list(THEME_NAMES)
+            initial_theme = active_theme_name()
         except Exception:  # noqa: BLE001
-            _audio_default = "System Default (Auto)"
-        self.mic_menu = ctk.CTkOptionMenu(
-            audio_card,
-            values=[_audio_default],
+            theme_values = ["Obsidian Mint", "Cyber Amber", "Ghost Light"]
+            initial_theme = "Obsidian Mint"
+        self._theme_var = ctk.StringVar(value=initial_theme)
+        self._theme_menu = ctk.CTkOptionMenu(
+            appear_card,
+            values=theme_values,
+            variable=self._theme_var,
             corner_radius=10,
+            command=self._on_ui_theme_changed,
         )
-        self.mic_menu.pack(fill="x", pady=(0, 12))
+        self._theme_menu.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(
-            audio_card, text="Speaker", anchor="w", text_color=_UI_MUTED
+            appear_card,
+            text="Obsidian Mint · Cyber Amber · Ghost Light — switches instantly.",
+            anchor="w",
+            justify="left",
+            wraplength=320,
+            text_color=_UI_MUTED,
+            font=ctk.CTkFont(size=11),
         ).pack(fill="x", pady=(0, 4))
-        self.speaker_menu = ctk.CTkOptionMenu(
-            audio_card,
-            values=[_audio_default],
-            corner_radius=10,
-        )
-        self.speaker_menu.pack(fill="x", pady=(0, 16))
-        self.save_btn = ctk.CTkButton(
-            audio_card,
-            text="Save & Apply",
-            command=self._save_and_apply_audio,
-            corner_radius=999,
-            height=32,
-        )
-        self.save_btn.pack(anchor="e", pady=(4, 8))
+        # Compatibility stubs (menus removed — autonomous System Default).
+        self.mic_menu = None
+        self.speaker_menu = None
+        self.save_btn = None
         self.apply_note = ctk.CTkLabel(
-            audio_card,
-            text="",
+            appear_card,
+            text="Audio: System Default (Auto)",
             text_color=_UI_MUTED,
             anchor="w",
             wraplength=320,
             justify="left",
+            font=ctk.CTkFont(size=11),
         )
         self.apply_note.pack(fill="x", pady=(4, 0))
+
+    def _sync_ui_theme_aliases(self) -> None:
+        """Refresh module-level ``_UI_*`` aliases from ``dana.ui.theme``."""
+        global _UI_CANVAS, _UI_CARD, _UI_CARD_BORDER, _UI_GHOST, _UI_MUTED
+        global _UI_TEXT, _UI_ACCENT, _UI_ACCENT_HOVER, _UI_EMERALD, _UI_EMERALD_HOVER
+        global _UI_ROSE, _UI_ROSE_HOVER, _UI_AMBER
+        try:
+            from dana.ui import theme as T
+
+            _UI_CANVAS = T.BG
+            _UI_CARD = T.CARD
+            _UI_CARD_BORDER = T.BORDER
+            _UI_GHOST = T.GHOST
+            _UI_MUTED = T.MUTED
+            _UI_TEXT = T.TEXT
+            _UI_ACCENT = T.ACCENT
+            _UI_ACCENT_HOVER = T.ACCENT_HOVER
+            _UI_EMERALD = T.EMERALD
+            _UI_EMERALD_HOVER = T.EMERALD_HOVER
+            _UI_ROSE = T.ROSE
+            _UI_ROSE_HOVER = T.ROSE_HOVER
+            _UI_AMBER = T.AMBER
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_ui_theme_changed(self, choice: str) -> None:
+        """Runtime theme switch — recolor dashboard tree."""
+        try:
+            from dana.ui.theme import set_theme
+
+            set_theme(str(choice), root=self)
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: theme switch failed ({exc})")
+            return
+        self._sync_ui_theme_aliases()
+        try:
+            self.configure(fg_color=_UI_CANVAS)
+        except Exception:  # noqa: BLE001
+            pass
+        note = getattr(self, "apply_note", None)
+        if note is not None:
+            try:
+                note.configure(text=f"Theme: {choice}")
+            except Exception:  # noqa: BLE001
+                pass
+        log("UI", f"UI Theme → {choice}")
 
     def _set_update_status(self, text: str, *, color: str | None = None) -> None:
         lbl = self._update_status_lbl
@@ -10192,7 +10315,7 @@ class DonnaGUI(ctk.CTk):
                 pass
 
     def _dashboard_open_trace(self) -> None:
-        self._select_tab("Assistant & Tasks")
+        self._select_tab("Memory & Settings")
         try:
             if not bool(getattr(self, "_diag_expanded", False)):
                 self._toggle_developer_diagnostics()
@@ -10379,18 +10502,19 @@ class DonnaGUI(ctk.CTk):
         ).pack(side="right")
 
         sessions_card = self._make_card(
-            tab, title="Recent Sessions", padx=4, pady=(4, 8), expand=True
+            tab, title="Recent Sessions", padx=4, pady=(4, 8), expand=False
         )
         self.dictation_list = ctk.CTkTextbox(
             sessions_card,
             wrap="word",
+            height=100,
             font=ctk.CTkFont(family="Consolas", size=12),
             fg_color=_UI_CANVAS,
             text_color=_UI_TEXT,
             corner_radius=12,
             border_width=0,
         )
-        self.dictation_list.pack(fill="both", expand=True)
+        self.dictation_list.pack(fill="x", expand=False)
         self.dictation_list.insert("1.0", "(no dictation sessions yet)\n")
         self.dictation_list.configure(state="disabled")
         # Sync latch from Blackboard (may already be on).
@@ -10900,56 +11024,15 @@ class DonnaGUI(ctk.CTk):
             pass
 
     def _reload_device_menus(self) -> None:
-        from dana.audio.devices import SYSTEM_DEFAULT_LABEL
-
-        devices = sd.query_devices()
+        """No-op — Mic/Speaker menus removed; streams always use System Default."""
+        try:
+            from dana.audio.devices import SYSTEM_DEFAULT_LABEL
+        except Exception:  # noqa: BLE001
+            SYSTEM_DEFAULT_LABEL = "System Default (Auto)"
         self._mic_labels = [SYSTEM_DEFAULT_LABEL]
         self._speaker_labels = [SYSTEM_DEFAULT_LABEL]
-        self._mic_by_label: dict[str, Optional[int]] = {SYSTEM_DEFAULT_LABEL: None}
-        self._speaker_by_label: dict[str, Optional[int]] = {SYSTEM_DEFAULT_LABEL: None}
-
-        for idx, dev in enumerate(devices):
-            name = str(dev.get("name", f"Device {idx}"))
-            label = _device_menu_label(idx, name)
-            if int(dev.get("max_input_channels", 0)) >= 1:
-                self._mic_labels.append(label)
-                self._mic_by_label[label] = idx
-            if int(dev.get("max_output_channels", 0)) >= 1:
-                self._speaker_labels.append(label)
-                self._speaker_by_label[label] = idx
-
-        self.mic_menu.configure(values=self._mic_labels)
-        self.speaker_menu.configure(values=self._speaker_labels)
-
-        mic_id: Optional[int] = AUDIO_INPUT_DEVICE
-        speaker_id: Optional[int] = AUDIO_OUTPUT_DEVICE
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
-                cfg = json.load(fh)
-            if isinstance(cfg, dict):
-                if "mic_id" in cfg:
-                    mic_id = _parse_settings_device_id(cfg.get("mic_id"))
-                if "speaker_id" in cfg:
-                    speaker_id = _parse_settings_device_id(cfg.get("speaker_id"))
-        except Exception:
-            pass
-
-        if mic_id is None:
-            mic_label = SYSTEM_DEFAULT_LABEL
-        else:
-            mic_label = next(
-                (lbl for lbl, i in self._mic_by_label.items() if i == mic_id),
-                SYSTEM_DEFAULT_LABEL,
-            )
-        if speaker_id is None:
-            speaker_label = SYSTEM_DEFAULT_LABEL
-        else:
-            speaker_label = next(
-                (lbl for lbl, i in self._speaker_by_label.items() if i == speaker_id),
-                SYSTEM_DEFAULT_LABEL,
-            )
-        self.mic_menu.set(mic_label)
-        self.speaker_menu.set(speaker_label)
+        self._mic_by_label = {SYSTEM_DEFAULT_LABEL: None}
+        self._speaker_by_label = {SYSTEM_DEFAULT_LABEL: None}
 
     def _refresh_stats(self) -> None:
         if not self.winfo_exists():
@@ -10984,56 +11067,27 @@ class DonnaGUI(ctk.CTk):
         self.after(500, self._refresh_stats)
 
     def _save_and_apply_audio(self) -> None:
+        """Compatibility stub — audio always binds System Default (device=None)."""
         global AUDIO_INPUT_DEVICE, AUDIO_INPUT_RATE, AUDIO_OUTPUT_DEVICE
 
-        from dana.audio.devices import SYSTEM_DEFAULT_LABEL
-
-        mic_label = self.mic_menu.get()
-        speaker_label = self.speaker_menu.get()
-        if mic_label in self._mic_by_label:
-            mic_id = self._mic_by_label[mic_label]
-        else:
-            mic_id = _parse_device_menu_label(mic_label)
-        if speaker_label in self._speaker_by_label:
-            speaker_id = self._speaker_by_label[speaker_label]
-        else:
-            speaker_id = _parse_device_menu_label(speaker_label)
-
-        if not _validate_mic_id(mic_id):
-            self.apply_note.configure(text="Invalid microphone selection.")
-            return
-        if not _validate_speaker_id(speaker_id):
-            self.apply_note.configure(text="Invalid speaker selection.")
-            return
-
+        AUDIO_INPUT_DEVICE = None
+        AUDIO_OUTPUT_DEVICE = None
+        AUDIO_INPUT_RATE = _device_rate(None)
         try:
-            save_audio_settings(mic_id, speaker_id)
-        except OSError as exc:
-            self.apply_note.configure(text=f"Could not write settings.json: {exc}")
-            return
-
-        # Speaker is read per TTS utterance — apply immediately.
-        AUDIO_OUTPUT_DEVICE = speaker_id
-        # Mic producer rebinds via MicIngest restart (single shared InputStream).
-        AUDIO_INPUT_DEVICE = mic_id
-        AUDIO_INPUT_RATE = _device_rate(mic_id)
+            save_audio_settings(None, None)
+        except Exception:  # noqa: BLE001
+            pass
         request_mic_ingest_restart()
         ensure_mic_ingest_thread()
-        mic_disp = SYSTEM_DEFAULT_LABEL if mic_id is None else str(mic_id)
-        spk_disp = SYSTEM_DEFAULT_LABEL if speaker_id is None else str(speaker_id)
-        self.apply_note.configure(
-            text=(
-                "Saved settings.json. Speaker applied now. "
-                "Microphone ingest stream is rebinding."
-            )
-        )
-        log(
-            "Audio",
-            f"GUI Save & Apply -> mic={mic_disp}, speaker={spk_disp}",
-        )
+        note = getattr(self, "apply_note", None)
+        if note is not None:
+            try:
+                note.configure(text="Audio: System Default (Auto)")
+            except Exception:  # noqa: BLE001
+                pass
+        log("Audio", "GUI audio → System Default (autonomous; menus removed)")
 
     def show_window(self) -> None:
-        self._reload_device_menus()
         self.deiconify()
         self.lift()
         self.focus_force()
@@ -11429,20 +11483,23 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
     list_input_devices()
     list_output_devices()
     mic_id, speaker_id, mic_rate = load_audio_settings()
+    # Autonomous audio — always System Default regardless of settings.json.
+    mic_id, speaker_id = None, None
     log(
         "Audio",
         f"Audio pipeline: mic={mic_id} speaker={speaker_id} rate={mic_rate}",
     )
-    AUDIO_INPUT_DEVICE = mic_id
-    AUDIO_OUTPUT_DEVICE = speaker_id
+    AUDIO_INPUT_DEVICE = None
+    AUDIO_OUTPUT_DEVICE = None
     AUDIO_INPUT_RATE = mic_rate
 
-    # Verify the configured mic is live; System Default (None) is a valid choice.
+    # Verify System Default mic is live (None is a valid choice).
     AUDIO_INPUT_DEVICE, AUDIO_INPUT_RATE = ensure_live_mic(
-        AUDIO_INPUT_DEVICE,
+        None,
         AUDIO_INPUT_RATE,
         allow_fallback=False,
     )
+    AUDIO_INPUT_DEVICE = None  # keep autonomous default after probe
     if not _validate_mic_id(AUDIO_INPUT_DEVICE):
         log("Main", "Aborting: configured microphone is not usable.")
         stop_event.set()

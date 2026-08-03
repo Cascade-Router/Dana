@@ -34,14 +34,19 @@ def test_tab_order_and_dashboard_widgets() -> None:
         assert tabs.get() == "Assistant & Tasks"
         assert app.transcript_box is not None
         assert app.status_value is not None
-        assert app.mic_menu is not None
-        assert app.speaker_menu is not None
+        # Autonomous audio — Mic/Speaker menus removed.
+        assert app.mic_menu is None
+        assert app.speaker_menu is None
+        assert getattr(app, "_theme_menu", None) is not None
         assert hasattr(app, "dictation_btn")
         assert hasattr(app, "_behavior_sliders")
         assert getattr(app, "task_tracker_view", None) is not None
         assert "Dana" in str(app.title())
         assert "Donna" not in str(app.title())
         assert "STOP DANA" in str(app.stop_donna_btn.cget("text"))
+        # Developer Diagnostics lives under Memory & Settings (not Assistant).
+        assert getattr(app, "_diag_shell", None) is not None
+        assert getattr(app, "_diag_btn", None) is not None
 
         tk_text = app._transcript_tk()
         assert tk_text is not None
@@ -77,6 +82,9 @@ def test_gui_source_declares_three_tabs() -> None:
     assert 'self.title("Dana — Control Dashboard")' in src
     assert 'text="STOP DANA"' in src
     assert "TaskTrackerView" in src
+    assert 'text="Save & Apply"' not in src
+    assert "UI Theme" in src
+    assert "_build_developer_diagnostics(mem_scroll)" in src
 
     app = _make_gui()
     try:

@@ -4,8 +4,8 @@ Always-on-top slate pill the operator can drag. Hover expands a mini control
 strip (dictation + HITL + dashboard) without touching LangGraph workers.
 
 Visual: glassmorphic pill ``#0a0e17`` + border ``#1e293b``, 20–24px logo left,
-ACTIVE emerald / STANDBY muted gray. Windows ``LWA_COLORKEY`` ``#000001``
-keeps transparent pixels click-through.
+Hyper Mint ACTIVE / muted STANDBY. Windows ``LWA_COLORKEY`` ``#000001``
+keeps transparent pixels click-through. Popup fades α 0→1 over ~150ms.
 """
 
 from __future__ import annotations
@@ -13,6 +13,11 @@ from __future__ import annotations
 import math
 import tkinter as tk
 from typing import Any, Callable
+
+try:
+    import customtkinter as ctk
+except Exception:  # noqa: BLE001
+    ctk = None  # type: ignore[assignment]
 
 # Chroma-key for Windows layered transparency (must not appear in drawn pixels).
 _TRANSPARENT = "#000001"
@@ -25,6 +30,8 @@ _PANEL_H = 360
 _PAD = 8
 _DRAG_THRESHOLD_PX = 4
 _PULSE_MS = 40  # ~25 FPS status refresh
+_FADE_MS = 150
+_FADE_STEPS = 6
 # Logo pixel size (fixed; no sci-fi pulse scale).
 _ICON_SIZE_MIN = 20
 _ICON_SIZE_MAX = 24
@@ -33,16 +40,16 @@ _LOGO_PX = 22
 _PULSE_BASE_R = float(_LOGO_PX)
 _PULSE_AMP = 0.0
 
-_COLOR_ACTIVE = "#10b981"  # emerald
-_COLOR_STANDBY = "#9CA3AF"  # muted gray
+_COLOR_ACTIVE = "#10b981"  # Hyper Mint ACTIVE
+_COLOR_STANDBY = "#9CA3AF"  # muted STANDBY
 _COLOR_CHAT = _COLOR_ACTIVE
 _COLOR_DICTATION = "#9C27B0"
 _COLOR_EXEC = "#FB8C00"
 _COLOR_HITL = "#388e3c"
 _COLOR_IDLE = _COLOR_STANDBY
-_PANEL_BG = "#1E1E2E"
-_PANEL_FG = "#F3F4F6"
-_MUTED = "#9AA0A6"
+_PANEL_BG = "#131b2e"
+_PANEL_FG = "#F8FAFC"
+_MUTED = "#94A3B8"
 
 
 class AssistiveTouchOrb:
@@ -79,11 +86,13 @@ class AssistiveTouchOrb:
         self._win_start_y = 0
         self._moved = False
         self._leave_job: str | None = None
+        self._fade_job: str | None = None
         self._pulse_phase = 0.0
         self._pulse_job: str | None = None
         self._hitl_pending = False
         self._active_agent = "broker"
         self._status = "STANDBY"
+        self._alpha = 1.0
         # Keep PhotoImage refs alive (Tk GC otherwise blanks the canvas).
         self._logo_photo: Any | None = None
         self._logo_mode = "png"  # "png" | "polygon"
@@ -98,6 +107,10 @@ class AssistiveTouchOrb:
         try:
             # Windows: punch out chroma-key so only the pill/panel are visible.
             self.orb_window.wm_attributes("-transparentcolor", _TRANSPARENT)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.orb_window.attributes("-alpha", 1.0)
         except Exception:  # noqa: BLE001
             pass
         self.orb_window.configure(bg=_TRANSPARENT)
@@ -123,15 +136,27 @@ class AssistiveTouchOrb:
         )
         self._canvas.grid(row=0, column=0, padx=0, pady=0, sticky="nw")
 
-        self._panel = tk.Frame(
-            self._shell,
-            bg=_PANEL_BG,
-            bd=0,
-            highlightthickness=1,
-            highlightbackground="#2A2A3C",
-            width=_PANEL_W,
-            height=_PANEL_H,
-        )
+        # Rounded popup (CTkFrame corner_radius 15–20) when CTk available.
+        if ctk is not None:
+            self._panel = ctk.CTkFrame(
+                self._shell,
+                fg_color=_PANEL_BG,
+                corner_radius=18,
+                border_width=1,
+                border_color=_PILL_BORDER,
+                width=_PANEL_W,
+                height=_PANEL_H,
+            )
+        else:
+            self._panel = tk.Frame(
+                self._shell,
+                bg=_PANEL_BG,
+                bd=0,
+                highlightthickness=1,
+                highlightbackground=_PILL_BORDER,
+                width=_PANEL_W,
+                height=_PANEL_H,
+            )
         # Built but not mapped until hover expand.
         self._build_panel()
 
@@ -159,6 +184,120 @@ class AssistiveTouchOrb:
 
     # ------------------------------------------------------------------ UI
     def _build_panel(self) -> None:
+        use_ctk = type(self._panel).__name__ == "CTkFrame"
+        if use_ctk:
+            title = ctk.CTkLabel(
+                self._panel,
+                text="DĀNĀ",
+                text_color=_PANEL_FG,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                anchor="w",
+            )
+            title.pack(fill="x", padx=12, pady=(12, 2))
+            self._state_lbl = ctk.CTkLabel(
+                self._panel,
+                text="Mode: Chat  ·  ● OFF",
+                text_color=_MUTED,
+                font=ctk.CTkFont(size=11),
+                anchor="w",
+            )
+            self._state_lbl.pack(fill="x", padx=12, pady=(0, 4))
+            self._critique_hdr = ctk.CTkLabel(
+                self._panel,
+                text="Jason Review",
+                text_color="#CE93D8",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                anchor="w",
+            )
+            self._critique_lbl = ctk.CTkLabel(
+                self._panel,
+                text="",
+                fg_color="#2A1840",
+                text_color="#F3E5F5",
+                font=ctk.CTkFont(size=10),
+                anchor="nw",
+                justify="left",
+                wraplength=_PANEL_W - 28,
+                corner_radius=8,
+            )
+            self._ticket_hdr = ctk.CTkLabel(
+                self._panel,
+                text="Drafted Ticket",
+                text_color="#81C784",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                anchor="w",
+            )
+            self._ticket_lbl = ctk.CTkLabel(
+                self._panel,
+                text="",
+                fg_color="#14261A",
+                text_color="#E8F5E9",
+                font=ctk.CTkFont(size=10),
+                anchor="nw",
+                justify="left",
+                wraplength=_PANEL_W - 28,
+                corner_radius=8,
+            )
+            self._dictation_btn = ctk.CTkButton(
+                self._panel,
+                text="●  OFF",
+                fg_color="#2A2A3C",
+                hover_color="#34344A",
+                text_color="#F87171",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                corner_radius=10,
+                command=self._click_dictation,
+            )
+            self._dictation_btn.pack(fill="x", padx=12, pady=(0, 6))
+            self._dash_btn = ctk.CTkButton(
+                self._panel,
+                text="Open Dashboard",
+                fg_color=_COLOR_ACTIVE,
+                hover_color="#059669",
+                text_color="#FFFFFF",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                corner_radius=10,
+                command=self._click_dashboard,
+            )
+            self._dash_btn.pack(fill="x", padx=12, pady=(0, 6))
+            hitl_row = ctk.CTkFrame(self._panel, fg_color="transparent")
+            self._hitl_row = hitl_row
+            self._approve_btn = ctk.CTkButton(
+                hitl_row,
+                text="Approve",
+                fg_color=_COLOR_HITL,
+                hover_color="#2E7D32",
+                text_color="#FFFFFF",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                corner_radius=10,
+                command=self._click_approve,
+                state="disabled",
+            )
+            self._approve_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
+            self._deny_btn = ctk.CTkButton(
+                hitl_row,
+                text="Deny",
+                fg_color="#C62828",
+                hover_color="#B71C1C",
+                text_color="#FFFFFF",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                corner_radius=10,
+                command=self._click_deny,
+                state="disabled",
+            )
+            self._deny_btn.pack(side="left", expand=True, fill="x", padx=(4, 0))
+            self._github_btn = ctk.CTkButton(
+                self._panel,
+                text="\U0001f419 Report Issue on GitHub",
+                fg_color="#24292F",
+                hover_color="#1B1F23",
+                text_color="#FFFFFF",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                corner_radius=10,
+                command=self._click_github,
+            )
+            return
+
         title = tk.Label(
             self._panel,
             text="DĀNĀ",
@@ -480,23 +619,79 @@ class AssistiveTouchOrb:
         except Exception:  # noqa: BLE001
             pass
 
-    def _apply_compact_geometry(self) -> None:
-        self._expanded = False
+    def _set_alpha(self, value: float) -> None:
+        self._alpha = max(0.0, min(1.0, float(value)))
         try:
-            self._panel.grid_forget()
+            self.orb_window.attributes("-alpha", self._alpha)
         except Exception:  # noqa: BLE001
             pass
-        w = _PILL_W
-        h = _PILL_H
-        try:
-            self.orb_window.minsize(w, h)
-            self.orb_window.maxsize(w, h)
-        except Exception:  # noqa: BLE001
-            pass
-        self.orb_window.geometry(f"{w}x{h}+{self._orb_x}+{self._orb_y}")
-        self._apply_transparent_hit_test()
 
-    def _apply_expanded_geometry(self) -> None:
+    def _cancel_fade(self) -> None:
+        if self._fade_job is not None:
+            try:
+                self.orb_window.after_cancel(self._fade_job)
+            except Exception:  # noqa: BLE001
+                pass
+            self._fade_job = None
+
+    def _fade_to(self, target: float, *, on_done: Callable[[], None] | None = None) -> None:
+        """Animate window alpha toward ``target`` over ~150ms."""
+        self._cancel_fade()
+        steps = max(1, _FADE_STEPS)
+        step_ms = max(1, int(_FADE_MS / steps))
+        start = float(self._alpha)
+        delta = float(target) - start
+
+        def _step(i: int = 1) -> None:
+            self._fade_job = None
+            if not self.orb_window.winfo_exists():
+                return
+            t = min(1.0, i / float(steps))
+            self._set_alpha(start + delta * t)
+            if i < steps:
+                try:
+                    self._fade_job = self.orb_window.after(step_ms, lambda: _step(i + 1))
+                except Exception:  # noqa: BLE001
+                    self._set_alpha(target)
+                    if on_done is not None:
+                        on_done()
+            else:
+                self._set_alpha(target)
+                if on_done is not None:
+                    on_done()
+
+        try:
+            self._fade_job = self.orb_window.after(step_ms, lambda: _step(1))
+        except Exception:  # noqa: BLE001
+            self._set_alpha(target)
+            if on_done is not None:
+                on_done()
+
+    def _apply_compact_geometry(self, *, animate: bool = False) -> None:
+        def _collapse() -> None:
+            self._expanded = False
+            try:
+                self._panel.grid_forget()
+            except Exception:  # noqa: BLE001
+                pass
+            w = _PILL_W
+            h = _PILL_H
+            try:
+                self.orb_window.minsize(w, h)
+                self.orb_window.maxsize(w, h)
+            except Exception:  # noqa: BLE001
+                pass
+            self.orb_window.geometry(f"{w}x{h}+{self._orb_x}+{self._orb_y}")
+            self._apply_transparent_hit_test()
+            self._set_alpha(1.0)
+
+        if animate and self._expanded:
+            self._fade_to(0.0, on_done=_collapse)
+        else:
+            self._cancel_fade()
+            _collapse()
+
+    def _apply_expanded_geometry(self, *, animate: bool = True) -> None:
         self._expanded = True
         try:
             self._panel.grid(row=0, column=1, padx=(6, 0), pady=0, sticky="nw")
@@ -515,6 +710,11 @@ class AssistiveTouchOrb:
             pass
         self.orb_window.geometry(f"{w}x{h}+{x}+{self._orb_y}")
         self._apply_transparent_hit_test()
+        if animate:
+            self._set_alpha(0.0)
+            self._fade_to(1.0)
+        else:
+            self._set_alpha(1.0)
 
     # --------------------------------------------------------------- events
     def _cancel_leave(self) -> None:
@@ -529,7 +729,7 @@ class AssistiveTouchOrb:
         self._cancel_leave()
         if not self._expanded and not self._dragging:
             self.refresh_controls()
-            self._apply_expanded_geometry()
+            self._apply_expanded_geometry(animate=True)
 
     def _on_leave(self, _event: Any = None) -> None:
         self._cancel_leave()
@@ -549,12 +749,12 @@ class AssistiveTouchOrb:
                     return
             except Exception:  # noqa: BLE001
                 pass
-            self._apply_compact_geometry()
+            self._apply_compact_geometry(animate=True)
 
         try:
             self._leave_job = self.orb_window.after(180, _shrink)
         except Exception:  # noqa: BLE001
-            self._apply_compact_geometry()
+            self._apply_compact_geometry(animate=True)
 
     def _on_press(self, event: Any) -> None:
         self._dragging = True
@@ -664,22 +864,38 @@ class AssistiveTouchOrb:
             self._hitl_pending = False
 
         if dictating:
-            self._dictation_btn.configure(
-                text="●  DICTATING",
-                bg="#388e3c",
-                fg="#E8F5E9",
-                activebackground="#2E7D32",
-                activeforeground="#E8F5E9",
-            )
+            try:
+                self._dictation_btn.configure(
+                    text="●  DICTATING",
+                    fg_color="#388e3c",
+                    text_color="#E8F5E9",
+                    hover_color="#2E7D32",
+                )
+            except Exception:  # noqa: BLE001 — classic Tk Button fallback
+                self._dictation_btn.configure(
+                    text="●  DICTATING",
+                    bg="#388e3c",
+                    fg="#E8F5E9",
+                    activebackground="#2E7D32",
+                    activeforeground="#E8F5E9",
+                )
             status = "● DICTATING"
         else:
-            self._dictation_btn.configure(
-                text="●  OFF",
-                bg="#2A2A3C",
-                fg="#F87171",
-                activebackground="#34344A",
-                activeforeground="#F87171",
-            )
+            try:
+                self._dictation_btn.configure(
+                    text="●  OFF",
+                    fg_color="#2A2A3C",
+                    text_color="#F87171",
+                    hover_color="#34344A",
+                )
+            except Exception:  # noqa: BLE001
+                self._dictation_btn.configure(
+                    text="●  OFF",
+                    bg="#2A2A3C",
+                    fg="#F87171",
+                    activebackground="#34344A",
+                    activeforeground="#F87171",
+                )
             status = "● OFF"
         display_mode = "Dictation" if dictating else mode.title()
         hitl_bit = "  ·  TICKET PENDING" if self._hitl_pending else ""
@@ -758,7 +974,7 @@ class AssistiveTouchOrb:
         prev = self._hitl_pending
         self.refresh_controls()
         if self._hitl_pending and not prev and not self._expanded:
-            self._apply_expanded_geometry()
+            self._apply_expanded_geometry(animate=True)
         try:
             self.orb_window.after(700, self._status_tick)
         except Exception:  # noqa: BLE001
@@ -766,6 +982,7 @@ class AssistiveTouchOrb:
 
     def destroy(self) -> None:
         self._cancel_leave()
+        self._cancel_fade()
         if self._pulse_job is not None:
             try:
                 self.orb_window.after_cancel(self._pulse_job)

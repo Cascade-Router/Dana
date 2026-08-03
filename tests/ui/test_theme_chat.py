@@ -8,6 +8,7 @@ from dana.ui import theme as T
 
 
 def test_theme_tokens_slate_palette() -> None:
+    T.set_theme("Obsidian Mint")
     assert T.BG == "#0a0e17"
     assert T.CARD == "#131b2e"
     assert T.BORDER == "#1e293b"
@@ -18,18 +19,42 @@ def test_theme_tokens_slate_palette() -> None:
     assert T.ROSE == "#F43F5E"
 
 
+def test_three_theme_catalog() -> None:
+    names = set(T.THEME_NAMES)
+    assert names == {"Obsidian Mint", "Cyber Amber", "Ghost Light"}
+    mint = T.get_theme("Obsidian Mint")
+    amber = T.get_theme("Cyber Amber")
+    ghost = T.get_theme("Ghost Light")
+    assert mint["bg"] == "#0a0e17" and mint["accent"] == "#10b981"
+    assert amber["bg"] == "#070b14" and amber["accent"] == "#f59e0b"
+    assert ghost["bg"] == "#f8fafc" and ghost["accent"] == "#4f46e5"
+    assert ghost["text"] == "#0f172a"
+    T.set_theme("Cyber Amber")
+    assert T.active_theme_name() == "Cyber Amber"
+    assert T.ACCENT == "#f59e0b"
+    T.set_theme("Ghost Light")
+    assert T.BG == "#f8fafc" and T.TEXT == "#0f172a"
+    T.set_theme("Obsidian Mint")
+    assert T.ACCENT == "#10b981"
+
+
 def test_dana_theme_json_and_apply() -> None:
     """Global CTk theme file exists and loads mint primary accents."""
     import json
 
-    path = T.dana_theme_path()
+    T.ensure_theme_json_files()
+    path = T.dana_theme_path("Obsidian Mint")
     assert path.is_file(), f"missing theme: {path}"
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["CTkButton"]["fg_color"][1] == "#10b981"
     assert data["CTkButton"]["hover_color"][1] == "#059669"
     assert data["CTkSegmentedButton"]["selected_color"][1] == "#10b981"
     assert data["CTk"]["fg_color"][1] == "#0a0e17"
-    assert T.apply_dana_ctk_theme() is True
+    amber_path = T.dana_theme_path("Cyber Amber")
+    ghost_path = T.dana_theme_path("Ghost Light")
+    assert amber_path.is_file()
+    assert ghost_path.is_file()
+    assert T.apply_dana_ctk_theme("Obsidian Mint") is True
 
 
 def test_ui_sources_drop_legacy_cyan() -> None:
