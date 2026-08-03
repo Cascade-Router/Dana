@@ -87,6 +87,70 @@ def app_icon_path() -> Path:
     return Path(os.path.abspath(str(root / "dana" / "assets" / "donna.ico")))
 
 
+def packaged_exe_path() -> Path:
+    """``dist/Dana/Dana.exe`` when a PyInstaller build is present."""
+    return Path(os.path.abspath(str(project_root() / "dist" / "Dana" / "Dana.exe")))
+
+
+def shortcut_launch_target() -> Path:
+    """Prefer packaged ``Dana.exe``; else ``start_dana.bat`` (pythonw + run.py)."""
+    exe = packaged_exe_path()
+    if exe.is_file():
+        return exe
+    return Path(os.path.abspath(str(write_start_bat())))
+
+
+def refresh_shell_icon_cache() -> None:
+    """Best-effort Win10/11 shell icon cache refresh after .lnk / .ico updates."""
+    if _system() != "Windows":
+        return
+    try:
+        import subprocess
+
+        creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
+        # ie4uinit -show rebuilds the user icon cache without killing Explorer.
+        subprocess.run(  # noqa: S603
+            ["ie4uinit.exe", "-show"],
+            check=False,
+            capture_output=True,
+            timeout=30,
+            creationflags=creationflags,
+        )
+        # Clear stale IconCache.db when present (Explorer picks up on next paint).
+        cache = Path(os.environ.get("LOCALAPPDATA", "")) / "IconCache.db"
+        if cache.is_file():
+            try:
+                cache.unlink()
+            except OSError:
+                pass
+        # Notify the shell that icons may have changed.
+        subprocess.run(  # noqa: S603
+            [
+                "powershell",
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                (
+                    "Add-Type -Namespace Win32 -Name Native -MemberDefinition '"
+                    "[System.Runtime.InteropServices.DllImport(\"shell32.dll\")] "
+                    "public static extern void SHChangeNotify("
+                    "int eventId, uint flags, System.IntPtr item1, System.IntPtr item2);'; "
+                    "[Win32.Native]::SHChangeNotify(0x08000000, 0x1000, "
+                    "[System.IntPtr]::Zero, [System.IntPtr]::Zero)"
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            timeout=30,
+            creationflags=creationflags,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def desktop_shortcut_path() -> Path:
     """``%USERPROFILE%\\Desktop\\Dana.lnk`` (Windows)."""
     return Path.home() / "Desktop" / "Dana.lnk"
@@ -205,29 +269,41 @@ def _write_windows_shortcut(
 
 
 def write_desktop_shortcut() -> Path | None:
-    """Create/update Desktop ``Dana.lnk`` → ``start_dana.bat`` with app ``.ico``."""
+    """Create/update Desktop ``Dana.lnk`` → Dana.exe or ``start_dana.bat`` + app ``.ico``."""
     if _system() != "Windows":
         return None
-    bat = write_start_bat()
+    target = shortcut_launch_target()
+    workdir = (
+        str(target.parent)
+        if target.name.lower() == "dana.exe"
+        else absolute_workdir()
+    )
     _remove_path_quiet(_legacy_desktop_shortcut_path())
-    return _write_windows_shortcut(
+    lnk = _write_windows_shortcut(
         lnk=desktop_shortcut_path(),
-        target=Path(os.path.abspath(str(bat))),
-        working_directory=absolute_workdir(),
+        target=target,
+        working_directory=workdir,
         description="Dana — local-first voice agent",
     )
+    refresh_shell_icon_cache()
+    return lnk
 
 
 def write_startup_folder_shortcut() -> Path | None:
     """Create/update Startup-folder ``Dana.lnk`` with app ``.ico`` (login launch)."""
     if _system() != "Windows":
         return None
-    bat = write_start_bat()
+    target = shortcut_launch_target()
+    workdir = (
+        str(target.parent)
+        if target.name.lower() == "dana.exe"
+        else absolute_workdir()
+    )
     _remove_path_quiet(_legacy_startup_folder_shortcut_path())
     return _write_windows_shortcut(
         lnk=startup_folder_shortcut_path(),
-        target=Path(os.path.abspath(str(bat))),
-        working_directory=absolute_workdir(),
+        target=target,
+        working_directory=workdir,
         description="Dana — launch at Windows login",
     )
 
