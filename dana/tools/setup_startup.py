@@ -93,10 +93,8 @@ def packaged_exe_path() -> Path:
 
 
 def shortcut_launch_target() -> Path:
-    """Prefer packaged ``Dana.exe``; else ``start_dana.bat`` (pythonw + run.py)."""
-    exe = packaged_exe_path()
-    if exe.is_file():
-        return exe
+    """Prefer source ``start_dana.bat`` (pythonw + run.py) over stale ``Dana.exe``."""
+    # Dev / Desktop shortcuts must track git; packaged dist\\Dana\\Dana.exe lags UI fixes.
     return Path(os.path.abspath(str(write_start_bat())))
 
 
@@ -269,15 +267,12 @@ def _write_windows_shortcut(
 
 
 def write_desktop_shortcut() -> Path | None:
-    """Create/update Desktop ``Dana.lnk`` → Dana.exe or ``start_dana.bat`` + app ``.ico``."""
+    """Create/update Desktop ``Dana.lnk`` → ``start_dana.bat`` + app ``.ico``."""
     if _system() != "Windows":
         return None
     target = shortcut_launch_target()
-    workdir = (
-        str(target.parent)
-        if target.name.lower() == "dana.exe"
-        else absolute_workdir()
-    )
+    workdir = absolute_workdir()
+
     _remove_path_quiet(_legacy_desktop_shortcut_path())
     lnk = _write_windows_shortcut(
         lnk=desktop_shortcut_path(),
@@ -294,11 +289,8 @@ def write_startup_folder_shortcut() -> Path | None:
     if _system() != "Windows":
         return None
     target = shortcut_launch_target()
-    workdir = (
-        str(target.parent)
-        if target.name.lower() == "dana.exe"
-        else absolute_workdir()
-    )
+    workdir = absolute_workdir()
+
     _remove_path_quiet(_legacy_startup_folder_shortcut_path())
     return _write_windows_shortcut(
         lnk=startup_folder_shortcut_path(),
