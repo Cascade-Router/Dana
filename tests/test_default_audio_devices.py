@@ -63,3 +63,29 @@ def test_stream_device_kwargs_omits_none() -> None:
 
 def test_system_default_label_constant() -> None:
     assert SYSTEM_DEFAULT_LABEL == "System Default (Auto)"
+
+
+def test_gui_audio_menus_prepend_system_default() -> None:
+    """Null mic/speaker settings map to System Default (Auto) in the GUI."""
+    from dana.core_agent import DonnaGUI, set_engine_engaged
+
+    set_engine_engaged(False)
+    try:
+        app = DonnaGUI()
+    except Exception as exc:  # noqa: BLE001
+        import pytest
+
+        pytest.skip(f"Tk unavailable: {exc}")
+    try:
+        assert SYSTEM_DEFAULT_LABEL in list(app.mic_menu.cget("values"))
+        assert SYSTEM_DEFAULT_LABEL in list(app.speaker_menu.cget("values"))
+        assert list(app.mic_menu.cget("values"))[0] == SYSTEM_DEFAULT_LABEL
+        assert list(app.speaker_menu.cget("values"))[0] == SYSTEM_DEFAULT_LABEL
+        assert app._mic_by_label.get(SYSTEM_DEFAULT_LABEL) is None
+        assert app._speaker_by_label.get(SYSTEM_DEFAULT_LABEL) is None
+    finally:
+        set_engine_engaged(False)
+        try:
+            app.destroy()
+        except Exception:  # noqa: BLE001
+            pass

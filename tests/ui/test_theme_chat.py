@@ -18,6 +18,18 @@ def test_theme_tokens_slate_palette() -> None:
     assert T.ROSE == "#F43F5E"
 
 
+def test_ui_sources_drop_legacy_cyan() -> None:
+    """Live dashboard surfaces must not hardcode legacy cyan accents."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "dana" / "ui"
+    banned = ("#00ADB5", "#00adb5", "#008E95", "#00a8e8", "#0284c7")
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for token in banned:
+            assert token not in text, f"{path.name} still contains {token}"
+
+
 def test_chat_bubble_view_headless() -> None:
     ctk = pytest.importorskip("customtkinter")
     from dana.ui.chat_view import ChatBubbleView, _classify_role

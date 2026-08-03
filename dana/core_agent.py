@@ -8299,6 +8299,19 @@ class DonnaGUI(ctk.CTk):
             self.configure(fg_color=_UI_CANVAS)
         except Exception:  # noqa: BLE001
             pass
+        # Window icon before chrome paint so taskbar/title bar bind early
+        # (AppUserModelID already set at module import on win32).
+        try:
+            from dana.resources import get_resource_path
+            from dana.ui.logo import apply_window_icon
+
+            try:
+                self.iconbitmap(str(get_resource_path("assets/dana_logo.ico")))
+            except Exception:  # noqa: BLE001
+                pass
+            apply_window_icon(self)
+        except Exception:  # noqa: BLE001
+            pass
 
         self._mic_labels: list[str] = []
         self._speaker_labels: list[str] = []
@@ -8312,12 +8325,6 @@ class DonnaGUI(ctk.CTk):
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
         self.withdraw()
-        try:
-            from dana.ui.logo import apply_window_icon
-
-            apply_window_icon(self)
-        except Exception:  # noqa: BLE001
-            pass
         # Stage 8.7 — floating AssistiveTouch orb (supplements system tray).
         try:
             self.after(200, self._start_assistive_orb)
@@ -9662,9 +9669,13 @@ class DonnaGUI(ctk.CTk):
         ctk.CTkLabel(
             audio_card, text="Microphone", anchor="w", text_color=_UI_MUTED
         ).pack(fill="x", pady=(0, 4))
+        try:
+            from dana.audio.devices import SYSTEM_DEFAULT_LABEL as _audio_default
+        except Exception:  # noqa: BLE001
+            _audio_default = "System Default (Auto)"
         self.mic_menu = ctk.CTkOptionMenu(
             audio_card,
-            values=["(none)"],
+            values=[_audio_default],
             fg_color=_UI_GHOST,
             button_color=_UI_ACCENT,
             button_hover_color=_UI_ACCENT_HOVER,
@@ -9676,7 +9687,7 @@ class DonnaGUI(ctk.CTk):
         ).pack(fill="x", pady=(0, 4))
         self.speaker_menu = ctk.CTkOptionMenu(
             audio_card,
-            values=["(none)"],
+            values=[_audio_default],
             fg_color=_UI_GHOST,
             button_color=_UI_ACCENT,
             button_hover_color=_UI_ACCENT_HOVER,

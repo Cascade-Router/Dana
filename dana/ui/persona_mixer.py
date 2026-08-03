@@ -17,6 +17,7 @@ from dana.memory.blackboard import (
     get_persona_mixer,
     set_persona_trait,
 )
+from dana.ui import theme as T
 
 # Display label → DB trait_name (Stage 8.5 adds Autonomy / Creativity).
 _SLIDER_SPECS: tuple[tuple[str, str], ...] = (
@@ -53,19 +54,20 @@ class PersonaMixerApp(ctk.CTk):
         self.geometry("320x360+80+80")
         self.minsize(280, 320)
         self.attributes("-topmost", True)
-        self.configure(fg_color=("#1a1a1e", "#1a1a1e"))
+        self.configure(fg_color=T.BG)
 
         header = ctk.CTkLabel(
             self,
             text="Receptionist Persona",
             font=ctk.CTkFont(size=16, weight="bold"),
+            text_color=T.TEXT,
         )
         header.pack(padx=16, pady=(14, 4), anchor="w")
         hint = ctk.CTkLabel(
             self,
             text="Sliders write live to blackboard.db",
             font=ctk.CTkFont(size=11),
-            text_color="#9aa0a6",
+            text_color=T.MUTED,
         )
         hint.pack(padx=16, pady=(0, 8), anchor="w")
 
@@ -75,8 +77,12 @@ class PersonaMixerApp(ctk.CTk):
             frame.pack(fill="x", padx=16, pady=6)
             row = ctk.CTkFrame(frame, fg_color="transparent")
             row.pack(fill="x")
-            ctk.CTkLabel(row, text=label, width=90, anchor="w").pack(side="left")
-            val_lbl = ctk.CTkLabel(row, text=str(state.get(key, 0)), width=36)
+            ctk.CTkLabel(
+                row, text=label, width=90, anchor="w", text_color=T.TEXT
+            ).pack(side="left")
+            val_lbl = ctk.CTkLabel(
+                row, text=str(state.get(key, 0)), width=36, text_color=T.TEXT
+            )
             val_lbl.pack(side="right")
             self._value_labels[key] = val_lbl
 
@@ -85,10 +91,10 @@ class PersonaMixerApp(ctk.CTk):
                 from_=0,
                 to=100,
                 number_of_steps=100,
-                progress_color="#00ADB5",
+                progress_color=T.ACCENT,
                 button_color="#E5E7EB",
                 button_hover_color="#F9FAFB",
-                fg_color="#2A2A3C",
+                fg_color=T.BORDER,
                 command=lambda v, k=key: self._on_drag(k, v),
             )
             slider.set(float(state.get(key, PERSONA_MIXER_DEFAULTS.get(key, 50))))
@@ -100,7 +106,13 @@ class PersonaMixerApp(ctk.CTk):
             self._sliders[key] = slider
 
         refresh = ctk.CTkButton(
-            self, text="Reload from DB", width=120, command=self.reload_from_db
+            self,
+            text="Reload from DB",
+            width=120,
+            command=self.reload_from_db,
+            fg_color=T.ACCENT,
+            hover_color=T.ACCENT_HOVER,
+            text_color="#FFFFFF",
         )
         refresh.pack(pady=(12, 16))
 

@@ -233,9 +233,9 @@ class AssistiveTouchOrb:
         self._dash_btn = tk.Button(
             self._panel,
             text="Open Dashboard",
-            bg="#00ADB5",
+            bg=_COLOR_ACTIVE,
             fg="#FFFFFF",
-            activebackground="#008E95",
+            activebackground="#059669",
             activeforeground="#FFFFFF",
             relief="flat",
             bd=0,
