@@ -163,7 +163,66 @@ def verify_environment() -> None:
         )
 
 
-if __name__ == "__main__":
+def _startup_crash_log_path() -> str:
+    return os.path.join(_ROOT, "logs", "startup_crash.log")
+
+
+def _write_startup_crash_log(exc: BaseException) -> str | None:
+    """Persist a full traceback for packaged / pythonw startups."""
+    import traceback
+
+    path = _startup_crash_log_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", errors="replace") as fh:
+            fh.write(traceback.format_exc())
+            if not str(exc):
+                fh.write(f"\n{type(exc).__name__}\n")
+        return path
+    except Exception as write_exc:  # noqa: BLE001
+        print(
+            f"[Main] WARNING: could not write startup_crash.log: {write_exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+
+
+def _show_startup_crash_dialog(exc: BaseException, log_path: str | None) -> None:
+    """Surface the exception via MessageBoxW (Windows) or tkinter.messagebox."""
+    detail = f"{type(exc).__name__}: {exc}"
+    if log_path:
+        detail = f"{detail}\n\nFull traceback written to:\n{log_path}"
+    title = "Dānā Startup Error"
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(0, detail, title, 0x10)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            messagebox.showerror(title, detail)
+        finally:
+            try:
+                root.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+        return
+    except Exception:  # noqa: BLE001
+        pass
+    print(f"[Main] {title}: {detail}", file=sys.stderr, flush=True)
+
+
+def _run_desktop_main() -> int:
     if _wants_no_gui():
         _configure_headless_logging()
 
@@ -175,21 +234,22 @@ if __name__ == "__main__":
         print(msg, flush=True)
         if _wants_no_gui():
             logging.getLogger("dana").error(msg)
-        sys.exit(1)
+        return 1
 
     verify_environment()
 
     # Defer core_agent import until launch so torch/transformers/YOLO stay off
     # the interpreter's critical path during ``run.py`` module load.
-    try:
-        from dana.core_agent import main  # noqa: E402
-    except Exception:
-        if _wants_no_gui():
-            logging.getLogger("dana").exception("Failed importing dana.core_agent")
-        raise
+    from dana.core_agent import main  # noqa: E402
 
+    return int(main() or 0)
+
+
+if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        raise SystemExit(_run_desktop_main())
+    except SystemExit:
+        raise
     except KeyboardInterrupt:
         # Closing the GUI / Ctrl+C should exit quietly (workers log "Stopped.").
         try:
@@ -199,7 +259,16 @@ if __name__ == "__main__":
         except Exception:
             pass
         raise SystemExit(130)
-    except Exception:
+    except Exception as exc:
         if _wants_no_gui():
             logging.getLogger("dana").exception("Unhandled exception in headless boot")
-        raise
+        log_path = _write_startup_crash_log(exc)
+        if not _wants_no_gui():
+            _show_startup_crash_dialog(exc, log_path)
+        else:
+            print(
+                f"[Main] Startup crash — see {log_path or 'stderr'}",
+                file=sys.stderr,
+                flush=True,
+            )
+        raise SystemExit(1) from exc

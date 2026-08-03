@@ -44,10 +44,20 @@ def _frozen_root() -> Path | None:
 
 def _asset_search_roots() -> list[Path]:
     """Ordered roots for logo / icon discovery (dev + frozen)."""
-    roots: list[Path] = [
-        Path(__file__).resolve().parent / "assets",  # dana/ui/assets
-        Path(__file__).resolve().parents[1] / "assets",  # dana/assets
-    ]
+    roots: list[Path] = []
+    try:
+        from dana.resources import get_resource_path
+
+        roots.append(get_resource_path("dana/ui/assets"))
+        roots.append(get_resource_path("dana/assets"))
+    except Exception:  # noqa: BLE001
+        pass
+    roots.extend(
+        [
+            Path(__file__).resolve().parent / "assets",  # dana/ui/assets
+            Path(__file__).resolve().parents[1] / "assets",  # dana/assets
+        ]
+    )
     frozen = _frozen_root()
     if frozen is not None:
         roots.extend(
@@ -58,13 +68,6 @@ def _asset_search_roots() -> list[Path]:
                 frozen / "assets",
             ]
         )
-    try:
-        from dana.paths import PROJECT_ROOT
-
-        roots.append(Path(PROJECT_ROOT) / "dana" / "ui" / "assets")
-        roots.append(Path(PROJECT_ROOT) / "dana" / "assets")
-    except Exception:  # noqa: BLE001
-        pass
     out: list[Path] = []
     seen: set[str] = set()
     for root in roots:
@@ -81,6 +84,14 @@ def _asset_search_roots() -> list[Path]:
 
 def ui_assets_dir() -> Path:
     """``dana/ui/assets`` — drop artist-rendered PNG/SVG exports here."""
+    try:
+        from dana.resources import get_resource_path
+
+        via = get_resource_path("dana/ui/assets")
+        if via.is_dir():
+            return via
+    except Exception:  # noqa: BLE001
+        pass
     for root in _asset_search_roots():
         # Prefer the UI assets tree when present (dev or ``--add-data``).
         if root.name == "assets" and root.parent.name == "ui" and root.is_dir():
@@ -100,6 +111,16 @@ def ui_assets_dir() -> Path:
 
 def resolve_logo_path() -> Path | None:
     """Return the first existing premium logo path, or None."""
+    try:
+        from dana.resources import get_resource_path
+
+        for name in _LOGO_CANDIDATES:
+            for rel in (f"dana/ui/assets/{name}", f"dana/assets/{name}"):
+                path = get_resource_path(rel)
+                if path.is_file():
+                    return path
+    except Exception:  # noqa: BLE001
+        pass
     for root in _asset_search_roots():
         if not root.is_dir():
             continue
@@ -113,17 +134,20 @@ def resolve_logo_path() -> Path | None:
 def app_icon_path() -> Path:
     """Canonical Windows ``.ico`` path (``dana/assets/donna.ico``).
 
-    Resolves via ``dana.paths.PROJECT_ROOT`` and ``sys._MEIPASS`` so packaged
-    + repo launches agree when assets are bundled with ``--add-data``.
+    Resolves via ``dana.resources.get_resource_path`` (``sys._MEIPASS``) so
+    packaged + repo launches agree when assets are bundled with ``--add-data``.
     """
-    candidates: list[Path] = []
     try:
-        from dana.paths import PROJECT_ROOT
+        from dana.resources import get_resource_path
 
-        candidates.append(Path(PROJECT_ROOT) / "dana" / "assets" / "donna.ico")
+        via = get_resource_path("dana/assets/donna.ico")
+        if via.is_file():
+            return via
     except Exception:  # noqa: BLE001
         pass
-    candidates.append(Path(__file__).resolve().parents[1] / "assets" / "donna.ico")
+    candidates: list[Path] = [
+        Path(__file__).resolve().parents[1] / "assets" / "donna.ico",
+    ]
     frozen = _frozen_root()
     if frozen is not None:
         candidates.extend(
@@ -135,7 +159,12 @@ def app_icon_path() -> Path:
     for path in candidates:
         if path.is_file():
             return path
-    return candidates[0] if candidates else Path(__file__).resolve().parents[1] / "assets" / "donna.ico"
+    try:
+        from dana.resources import get_resource_path
+
+        return get_resource_path("dana/assets/donna.ico")
+    except Exception:  # noqa: BLE001
+        return candidates[0]
 
 
 def resolve_app_icon_path() -> Path | None:

@@ -63,11 +63,15 @@ def main() -> int:
         "dana.core_agent",
         "dana.stdio_boot",
         "dana.workspace",
+        "dana.resources",
         "dana.ui",
+        "dana.ui.logo",
+        "dana.ui.startup_tray",
         "dana.tools",
         "dana.tools.vision",
         "dana.memory",
         "dana.memory.vault",
+        "pystray",
     )
 
     args: list[str] = [

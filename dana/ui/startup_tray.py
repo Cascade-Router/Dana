@@ -2,7 +2,33 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+
+# Packaged icon / logo candidates (resolved via ``get_resource_path``).
+_TRAY_ASSET_RELS = (
+    "dana/assets/donna.ico",
+    "dana/ui/assets/dana_logo_highres.png",
+    "dana/ui/assets/orb_logo.png",
+    "dana/assets/orb_logo.png",
+    "dana/ui/assets/donna_logo_highres.png",
+)
+
+
+def resolve_tray_asset_path() -> Path | None:
+    """Return the first existing tray .ico/.png via MEIPASS-aware lookup."""
+    try:
+        from dana.resources import get_resource_path
+    except Exception:  # noqa: BLE001
+        return None
+    for rel in _TRAY_ASSET_RELS:
+        try:
+            path = get_resource_path(rel)
+        except Exception:  # noqa: BLE001
+            continue
+        if path.is_file():
+            return path
+    return None
 
 
 def tray_icon_image(size: tuple[int, int] = (32, 32)) -> Any | None:
@@ -10,7 +36,29 @@ def tray_icon_image(size: tuple[int, int] = (32, 32)) -> Any | None:
     try:
         from dana.ui.logo import get_tray_icon
 
-        return get_tray_icon(size=size)
+        img = get_tray_icon(size=size)
+        if img is not None:
+            return img
+    except Exception:  # noqa: BLE001
+        pass
+    return _load_tray_asset_pil(size)
+
+
+def _load_tray_asset_pil(size: tuple[int, int]) -> Any | None:
+    """Fallback: load .ico/.png through ``get_resource_path`` + alpha mask."""
+    path = resolve_tray_asset_path()
+    if path is None:
+        return None
+    try:
+        from PIL import Image
+
+        from dana.ui.logo import make_transparent_logo
+
+        img = Image.open(path).convert("RGBA")
+        w, h = int(size[0]), int(size[1])
+        if w > 0 and h > 0 and img.size != (w, h):
+            img = img.resize((w, h), Image.Resampling.LANCZOS)
+        return make_transparent_logo(img)
     except Exception:  # noqa: BLE001
         return None
 
@@ -24,7 +72,13 @@ def build_tray_image(mode: str = "idle", size: int = 64) -> Any | None:
     except Exception:  # noqa: BLE001
         return None
 
-    logo = get_tray_icon(size=(size, size))
+    logo = None
+    try:
+        logo = get_tray_icon(size=(size, size))
+    except Exception:  # noqa: BLE001
+        logo = None
+    if logo is None:
+        logo = _load_tray_asset_pil((size, size))
     if logo is None:
         return None
     try:

@@ -7950,51 +7950,55 @@ def _install_signal_handlers(gui: "DonnaGUI") -> None:
             pass
 
 def run_system_tray(gui: "DonnaGUI") -> None:
-    """Blocking pystray loop (run in a daemon thread)."""
+    """Blocking pystray loop — must only run in a daemon thread (never on CTk)."""
     global _tray_icon
 
-    def open_settings(icon: pystray.Icon, _item: Any = None) -> None:
-        gui.after(0, gui.show_window)
-
-    from dana.ui.startup_tray import (
-        check_startup_registry_status,
-        toggle_run_on_startup,
-    )
-    from dana.ui.watchdog import (
-        check_shell_watchdog_status,
-        get_shared_watchdog,
-        toggle_shell_watchdog,
-    )
-
-    # Ensure shared watchdog is constructed (wires toast/planner when enabled).
     try:
-        get_shared_watchdog()
-    except Exception:  # noqa: BLE001
-        pass
+        def open_settings(icon: pystray.Icon, _item: Any = None) -> None:
+            gui.after(0, gui.show_window)
 
-    menu = pystray.Menu(
-        pystray.MenuItem("Open Settings", open_settings, default=True),
-        pystray.MenuItem(
-            "Run on Startup",
+        from dana.ui.startup_tray import (
+            check_startup_registry_status,
             toggle_run_on_startup,
-            checked=lambda item: check_startup_registry_status(item),
-        ),
-        pystray.MenuItem(
-            "Enable Shell Watchdog",
+        )
+        from dana.ui.watchdog import (
+            check_shell_watchdog_status,
+            get_shared_watchdog,
             toggle_shell_watchdog,
-            checked=lambda item: check_shell_watchdog_status(item),
-        ),
-        pystray.MenuItem("Quit", request_donna_quit),
-    )
-    icon = pystray.Icon(
-        "Dana",
-        create_tray_image("idle"),
-        "Dānā · Cybernetic Control Plane",
-        menu,
-    )
-    _tray_icon = icon
-    log("Main", "System tray icon ready (bottom-right notification area).")
-    icon.run()
+        )
+
+        # Ensure shared watchdog is constructed (wires toast/planner when enabled).
+        try:
+            get_shared_watchdog()
+        except Exception:  # noqa: BLE001
+            pass
+
+        menu = pystray.Menu(
+            pystray.MenuItem("Open Settings", open_settings, default=True),
+            pystray.MenuItem(
+                "Run on Startup",
+                toggle_run_on_startup,
+                checked=lambda item: check_startup_registry_status(item),
+            ),
+            pystray.MenuItem(
+                "Enable Shell Watchdog",
+                toggle_shell_watchdog,
+                checked=lambda item: check_shell_watchdog_status(item),
+            ),
+            pystray.MenuItem("Quit", request_donna_quit),
+        )
+        icon = pystray.Icon(
+            "Dana",
+            create_tray_image("idle"),
+            "Dānā · Cybernetic Control Plane",
+            menu,
+        )
+        _tray_icon = icon
+        log("Main", "System tray icon ready (bottom-right notification area).")
+        icon.run()
+    except Exception as exc:  # noqa: BLE001
+        log("Main", f"WARNING: system tray exited ({type(exc).__name__}: {exc})")
+        _tray_icon = None
 
 
 class TraceCell(ctk.CTkFrame):
@@ -11454,6 +11458,14 @@ def main() -> int:
 
     _install_signal_handlers(gui)
 
+    # Tray owns its own daemon thread — never block the CTk mainloop.
+    threading.Thread(
+        target=run_system_tray,
+        name="SystemTray",
+        args=(gui,),
+        daemon=True,
+    ).start()
+
     def _boot_agent_loop() -> None:
         """Deferred background start so Standby chrome paints instantly."""
         global _agent_loop_thread
@@ -11466,12 +11478,6 @@ def main() -> int:
             daemon=True,
         )
         _agent_loop_thread.start()
-        threading.Thread(
-            target=run_system_tray,
-            name="SystemTray",
-            args=(gui,),
-            daemon=True,
-        ).start()
         try:
             emit_trace("STT", "active", "STT: Whisper pipeline arming")
             emit_trace("Router", "active", "Router: waiting for turn")
