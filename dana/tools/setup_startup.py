@@ -76,11 +76,14 @@ def bat_path() -> Path:
 
 
 def app_icon_path() -> Path:
-    """Absolute path to ``dana/assets/dana_icon.ico`` (Windows shortcut IconLocation)."""
+    """Absolute path to ``assets/dana_logo.ico`` (Windows shortcut IconLocation)."""
     root = project_root()
-    preferred = Path(os.path.abspath(str(root / "dana" / "assets" / "dana_icon.ico")))
+    preferred = Path(os.path.abspath(str(root / "assets" / "dana_logo.ico")))
     if preferred.is_file():
         return preferred
+    legacy = Path(os.path.abspath(str(root / "dana" / "assets" / "dana_icon.ico")))
+    if legacy.is_file():
+        return legacy
     return Path(os.path.abspath(str(root / "dana" / "assets" / "donna.ico")))
 
 

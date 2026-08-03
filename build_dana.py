@@ -93,14 +93,17 @@ def main() -> int:
     for mod in hidden_imports:
         args.append(f"--hidden-import={mod}")
 
-    ico = ROOT / "dana" / "assets" / "dana_icon.ico"
+    ico = ROOT / "assets" / "dana_logo.ico"
     if not ico.is_file():
-        ico = ROOT / "dana" / "assets" / "donna.ico"
+        ico = ROOT / "dana" / "assets" / "dana_icon.ico"
     if ico.is_file():
         args.append(f"--icon={ico}")
 
     # Bundle logo / icon trees into onedir extract root (Windows: src;dest).
-    # Runtime resolution uses Path(__file__) and sys._MEIPASS in dana.ui.logo.
+    # Runtime resolution uses get_resource_path / sys._MEIPASS in dana.resources.
+    root_assets = ROOT / "assets"
+    if root_assets.is_dir():
+        args.append(f"--add-data={root_assets}{os.pathsep}assets")
     ui_assets = ROOT / "dana" / "ui" / "assets"
     if ui_assets.is_dir():
         args.append(f"--add-data={ui_assets}{os.pathsep}dana/ui/assets")

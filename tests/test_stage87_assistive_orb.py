@@ -45,12 +45,12 @@ def test_orb_frameless_topmost_drag_expand() -> None:
             topmost = True
         assert topmost
 
-        # Compact geometry is orb-sized
+        # Compact geometry is glassmorphic pill-sized
         app.update_idletasks()
         w0 = int(win.winfo_width())
         h0 = int(win.winfo_height())
-        assert w0 <= 80
-        assert h0 <= 80
+        assert w0 <= 160
+        assert h0 <= 56
 
         # Drag updates geometry
         x0, y0 = int(win.winfo_x()), int(win.winfo_y())

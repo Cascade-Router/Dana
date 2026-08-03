@@ -102,6 +102,7 @@ docs/*.db
 .donna_sandbox.py
 .dana_scratch/
 /_archive/
+/archive/
 .shadow_state/
 
 # Watchdog REPL scratch files (keep package + ledger docs)

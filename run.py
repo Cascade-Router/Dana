@@ -16,7 +16,7 @@ if sys.platform == "win32":
         import ctypes
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "CascadeRouter.Donna.DesktopAgent.1.0"
+            "dana.assistant.desktop.v1"
         )
     except Exception:
         pass

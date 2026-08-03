@@ -10,12 +10,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Preferred filenames under dana/ui/assets/ (first hit wins).
+# Preferred filenames (first hit wins). Root ``assets/`` is the SSoT.
 _LOGO_CANDIDATES = (
-    "dana_logo_highres.png",
-    "orb_logo.png",
-    "donna_logo_highres.png",  # legacy fallback
-    "donna_logo.png",  # legacy fallback
+    "dana_logo.png",
+    "dana_logo_highres.png",  # legacy
+    "orb_logo.png",  # legacy
+    "donna_logo_highres.png",  # legacy
+    "donna_logo.png",  # legacy
 )
 
 # Windows HUD / orb chroma-key (must not appear in opaque logo pixels).
@@ -48,12 +49,14 @@ def _asset_search_roots() -> list[Path]:
     try:
         from dana.resources import get_resource_path
 
+        roots.append(get_resource_path("assets"))
         roots.append(get_resource_path("dana/ui/assets"))
         roots.append(get_resource_path("dana/assets"))
     except Exception:  # noqa: BLE001
         pass
     roots.extend(
         [
+            Path(__file__).resolve().parents[2] / "assets",  # project-root assets/
             Path(__file__).resolve().parent / "assets",  # dana/ui/assets
             Path(__file__).resolve().parents[1] / "assets",  # dana/assets
         ]
@@ -62,10 +65,10 @@ def _asset_search_roots() -> list[Path]:
     if frozen is not None:
         roots.extend(
             [
+                frozen / "assets",
                 frozen / "dana" / "ui" / "assets",
                 frozen / "dana" / "assets",
                 frozen / "ui" / "assets",
-                frozen / "assets",
             ]
         )
     out: list[Path] = []
@@ -115,7 +118,7 @@ def resolve_logo_path() -> Path | None:
         from dana.resources import get_resource_path
 
         for name in _LOGO_CANDIDATES:
-            for rel in (f"dana/ui/assets/{name}", f"dana/assets/{name}"):
+            for rel in (f"assets/{name}", f"dana/ui/assets/{name}", f"dana/assets/{name}"):
                 path = get_resource_path(rel)
                 if path.is_file():
                     return path
@@ -131,19 +134,19 @@ def resolve_logo_path() -> Path | None:
     return None
 
 
-# Preferred Windows app icon filenames (first hit wins).
+# Preferred Windows app icon filenames (first hit wins). Root assets/ is SSoT.
 _APP_ICON_RELS = (
-    "dana/assets/dana_icon.ico",
-    "dana/assets/donna.ico",  # legacy fallback
+    "assets/dana_logo.ico",
+    "dana/assets/dana_icon.ico",  # legacy
+    "dana/assets/donna.ico",  # legacy
 )
 
 
 def app_icon_path() -> Path:
-    """Canonical Windows ``.ico`` path (``dana/assets/dana_icon.ico``).
+    """Canonical Windows ``.ico`` path (``assets/dana_logo.ico``).
 
     Resolves via ``dana.resources.get_resource_path`` (``sys._MEIPASS``) so
     packaged + repo launches agree when assets are bundled with ``--add-data``.
-    Falls back to legacy ``donna.ico`` when the hyper-mint squircle is absent.
     """
     try:
         from dana.resources import get_resource_path
@@ -154,19 +157,20 @@ def app_icon_path() -> Path:
                 return via
     except Exception:  # noqa: BLE001
         pass
-    asset_dir = Path(__file__).resolve().parents[1] / "assets"
+    root_assets = Path(__file__).resolve().parents[2] / "assets"
+    legacy_dir = Path(__file__).resolve().parents[1] / "assets"
     candidates: list[Path] = [
-        asset_dir / "dana_icon.ico",
-        asset_dir / "donna.ico",
+        root_assets / "dana_logo.ico",
+        legacy_dir / "dana_icon.ico",
+        legacy_dir / "donna.ico",
     ]
     frozen = _frozen_root()
     if frozen is not None:
         candidates.extend(
             [
+                frozen / "assets" / "dana_logo.ico",
                 frozen / "dana" / "assets" / "dana_icon.ico",
                 frozen / "dana" / "assets" / "donna.ico",
-                frozen / "assets" / "dana_icon.ico",
-                frozen / "assets" / "donna.ico",
             ]
         )
     for path in candidates:
@@ -175,13 +179,13 @@ def app_icon_path() -> Path:
     try:
         from dana.resources import get_resource_path
 
-        return get_resource_path("dana/assets/dana_icon.ico")
+        return get_resource_path("assets/dana_logo.ico")
     except Exception:  # noqa: BLE001
         return candidates[0]
 
 
 def resolve_app_icon_path() -> Path | None:
-    """Return ``dana/assets/dana_icon.ico`` (or legacy ``donna.ico``) when present."""
+    """Return ``assets/dana_logo.ico`` (or legacy ``.ico``) when present."""
     path = app_icon_path()
     return path if path.is_file() else None
 

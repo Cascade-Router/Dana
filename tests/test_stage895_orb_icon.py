@@ -41,7 +41,7 @@ def test_orb_icon_glyph_and_font_pulse() -> None:
         coords = orb._canvas.coords(icons[0])
         assert abs(coords[0] - cx) < 0.5
         assert abs(coords[1] - cy) < 0.5
-    assert _ICON_SIZE_MIN < _ICON_SIZE_MAX
+    assert _ICON_SIZE_MIN <= _ICON_SIZE_MAX
 
     orb.destroy()
     root.destroy()

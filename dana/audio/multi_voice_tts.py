@@ -350,7 +350,7 @@ def svg_logo_loader_notes() -> dict[str, Any]:
     Returns a small dict describing the preferred asset path convention.
     """
     return {
-        "preferred_asset": "dana/ui/assets/dana_logo_highres.png",
+        "preferred_asset": "assets/dana_logo.png",
         "libraries": ("Pillow", "customtkinter"),
         "canvas_api": "create_image(cx, cy, image=photo) / CTkImage",
         "fallback": "smooth create_polygon mark (AssistiveTouchOrb._draw_smooth_mark)",

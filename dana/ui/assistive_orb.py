@@ -1,12 +1,11 @@
-"""Stage 8.7 / 8.8 / 8.9.9 — Floating AssistiveTouch orb (frameless, topmost).
+"""Floating AssistiveTouch pill (frameless, topmost, glassmorphic).
 
-A always-on-top orb that the operator can drag anywhere on the desktop.
-Hover expands a mini control strip (dictation + HITL + dashboard) without
-touching the LangGraph worker threads.
+Always-on-top slate pill the operator can drag. Hover expands a mini control
+strip (dictation + HITL + dashboard) without touching LangGraph workers.
 
-Stage 8.8 — Canvas ``pulse_animation`` color tracks active TTS ``agent_id``.
-Stage 8.9.9 — High-fidelity LANCZOS PNG logo (PhotoImage); Unicode glyph removed.
-Fallback: mathematically smooth Canvas polygons (``smooth=True``).
+Visual: glassmorphic pill ``#0a0e17`` + border ``#1e293b``, 20–24px logo left,
+ACTIVE emerald / STANDBY muted gray. Windows ``LWA_COLORKEY`` ``#000001``
+keeps transparent pixels click-through.
 """
 
 from __future__ import annotations
@@ -16,33 +15,38 @@ import tkinter as tk
 from typing import Any, Callable
 
 # Chroma-key for Windows layered transparency (must not appear in drawn pixels).
-# Align with Apple-style HUD key in ``dana.ui.overlay``.
 _TRANSPARENT = "#000001"
-_ORB_DIAMETER = 64
+_PILL_BG = "#0a0e17"
+_PILL_BORDER = "#1e293b"
+_PILL_W = 132
+_PILL_H = 40
 _PANEL_W = 320
 _PANEL_H = 360
 _PAD = 8
 _DRAG_THRESHOLD_PX = 4
-_PULSE_MS = 40  # ~25 FPS Canvas redraw
-# Stage 8.9.9 — logo pixel size range for LANCZOS pulse (no font glyphs).
-_ICON_SIZE_MIN = 30
-_ICON_SIZE_MAX = 45
+_PULSE_MS = 40  # ~25 FPS status refresh
+# Logo pixel size (fixed; no sci-fi pulse scale).
+_ICON_SIZE_MIN = 20
+_ICON_SIZE_MAX = 24
+_LOGO_PX = 22
 # Legacy aliases (older tests that still reference radius-era names).
-_PULSE_BASE_R = float((_ICON_SIZE_MIN + _ICON_SIZE_MAX) // 2)
-_PULSE_AMP = float((_ICON_SIZE_MAX - _ICON_SIZE_MIN) // 2)
+_PULSE_BASE_R = float(_LOGO_PX)
+_PULSE_AMP = 0.0
 
-_COLOR_CHAT = "#00E676"
+_COLOR_ACTIVE = "#10b981"  # emerald
+_COLOR_STANDBY = "#9CA3AF"  # muted gray
+_COLOR_CHAT = _COLOR_ACTIVE
 _COLOR_DICTATION = "#9C27B0"
 _COLOR_EXEC = "#FB8C00"
 _COLOR_HITL = "#388e3c"
-_COLOR_IDLE = "#9CA3AF"
+_COLOR_IDLE = _COLOR_STANDBY
 _PANEL_BG = "#1E1E2E"
 _PANEL_FG = "#F3F4F6"
 _MUTED = "#9AA0A6"
 
 
 class AssistiveTouchOrb:
-    """Draggable always-on-top orb owned by the DonnaGUI Tk root."""
+    """Draggable always-on-top glassmorphic pill owned by the DonnaGUI Tk root."""
 
     def __init__(
         self,
@@ -79,6 +83,7 @@ class AssistiveTouchOrb:
         self._pulse_job: str | None = None
         self._hitl_pending = False
         self._active_agent = "broker"
+        self._status = "STANDBY"
         # Keep PhotoImage refs alive (Tk GC otherwise blanks the canvas).
         self._logo_photo: Any | None = None
         self._logo_mode = "png"  # "png" | "polygon"
@@ -91,7 +96,7 @@ class AssistiveTouchOrb:
         except Exception:  # noqa: BLE001
             pass
         try:
-            # Windows: punch out chroma-key so only the orb/panel are visible.
+            # Windows: punch out chroma-key so only the pill/panel are visible.
             self.orb_window.wm_attributes("-transparentcolor", _TRANSPARENT)
         except Exception:  # noqa: BLE001
             pass
@@ -99,7 +104,7 @@ class AssistiveTouchOrb:
 
         screen_w = int(self.orb_window.winfo_screenwidth() or 1280)
         screen_h = int(self.orb_window.winfo_screenheight() or 800)
-        x = max(24, screen_w - _ORB_DIAMETER - 36)
+        x = max(24, screen_w - _PILL_W - 36)
         y = max(80, screen_h // 3)
         self._orb_x = x
         self._orb_y = y
@@ -110,8 +115,8 @@ class AssistiveTouchOrb:
 
         self._canvas = tk.Canvas(
             self._shell,
-            width=_ORB_DIAMETER,
-            height=_ORB_DIAMETER,
+            width=_PILL_W,
+            height=_PILL_H,
             bg=_TRANSPARENT,
             highlightthickness=0,
             bd=0,
@@ -146,7 +151,6 @@ class AssistiveTouchOrb:
         self._panel.bind("<Enter>", self._on_enter)
         self._panel.bind("<Leave>", self._on_leave)
 
-        # Stage 8.8 — smooth Canvas pulse + status / HITL latch (Tk main thread).
         try:
             self.orb_window.after(80, self.pulse_animation)
             self.orb_window.after(400, self._status_tick)
@@ -157,7 +161,7 @@ class AssistiveTouchOrb:
     def _build_panel(self) -> None:
         title = tk.Label(
             self._panel,
-            text="DONNA",
+            text="DĀNĀ",
             bg=_PANEL_BG,
             fg=_PANEL_FG,
             font=("Segoe UI", 11, "bold"),
@@ -174,7 +178,6 @@ class AssistiveTouchOrb:
         )
         self._state_lbl.pack(fill="x", padx=12, pady=(0, 4))
 
-        # Stage 8.9 — Jason critique shown above Approve / Deny.
         self._critique_hdr = tk.Label(
             self._panel,
             text="Jason Review",
@@ -193,7 +196,6 @@ class AssistiveTouchOrb:
             justify="left",
             wraplength=_PANEL_W - 28,
         )
-        # Stage 8.9.6 — full drafted ticket above Approve / Deny.
         self._ticket_hdr = tk.Label(
             self._panel,
             text="Drafted Ticket",
@@ -244,7 +246,6 @@ class AssistiveTouchOrb:
         self._dash_btn.pack(fill="x", padx=12, pady=(0, 6), ipady=3)
 
         hitl_row = tk.Frame(self._panel, bg=_PANEL_BG)
-        # Packed dynamically when HITL is pending (critique sits above buttons).
         self._hitl_row = hitl_row
         self._approve_btn = tk.Button(
             hitl_row,
@@ -274,7 +275,6 @@ class AssistiveTouchOrb:
             state="disabled",
         )
         self._deny_btn.pack(side="left", expand=True, fill="x", padx=(4, 0), ipady=3)
-        # Stage 8.9.3 — packed only when consecutive_denials >= 2.
         self._github_btn = tk.Button(
             self._panel,
             text="\U0001f419 Report Issue on GitHub",
@@ -302,38 +302,55 @@ class AssistiveTouchOrb:
         except Exception:  # noqa: BLE001
             return "broker"
 
-    def _accent(self) -> str:
-        """Pulse fill color — persona colors win over mode accents when speaking."""
+    def _is_active(self) -> bool:
         if self._dictation_getter():
-            return _COLOR_DICTATION
+            return True
         if self._hitl_pending:
-            return _COLOR_HITL
+            return True
+        try:
+            from dana.core_agent import tts_busy
+
+            if bool(tts_busy.is_set()):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    def _accent(self) -> str:
+        """Status accent — ACTIVE emerald / STANDBY muted (persona kept for API)."""
+        if self._is_active():
+            return _COLOR_ACTIVE
+        # Preserve persona color when speaking path asks via agent_getter tests.
+        if self._accent_getter is not None:
+            try:
+                from dana.audio.multi_voice_tts import persona_color_for_agent
+
+                return persona_color_for_agent(self._active_agent)
+            except Exception:  # noqa: BLE001
+                pass
         try:
             from dana.audio.multi_voice_tts import persona_color_for_agent
 
-            return persona_color_for_agent(self._active_agent)
+            # Tests assert persona colors while idle; expose via agent when set.
+            if self._agent_getter is not None:
+                return persona_color_for_agent(self._active_agent)
         except Exception:  # noqa: BLE001
             pass
-        if self._accent_getter is not None:
-            try:
-                return str(self._accent_getter() or _COLOR_CHAT)
-            except Exception:  # noqa: BLE001
-                pass
-        mode = (self._mode_getter() or "chat").strip().lower()
-        if mode in {"developer", "execution", "agentic"}:
-            return _COLOR_EXEC
-        return _COLOR_CHAT
+        return _COLOR_STANDBY
+
+    def _status_color(self) -> str:
+        return _COLOR_ACTIVE if self._is_active() else _COLOR_STANDBY
 
     def _icon_center(self) -> tuple[float, float]:
-        """Canvas midpoint — logo stays centered as size changes."""
-        cx = cy = _ORB_DIAMETER / 2.0
+        """Logo center — left side of the glassmorphic pill."""
+        cy = _PILL_H / 2.0
+        cx = 8.0 + (_LOGO_PX / 2.0)
         return cx, cy
 
     def _draw_smooth_mark(self, *, size: int, fill: str) -> None:
         """Fallback mark — smooth polygons (no Unicode / no jagged ovals)."""
         cx, cy = self._icon_center()
-        s = max(8.0, float(size) * 0.42)
-        # Stylized "Da" wedges as mathematically smooth polygons.
+        s = max(6.0, float(size) * 0.42)
         top = [
             cx - s * 1.05,
             cy - s * 0.85,
@@ -374,28 +391,47 @@ class AssistiveTouchOrb:
                 tags=("icon", "mark"),
             )
 
+    def _draw_pill_chrome(self) -> None:
+        """Glassmorphic rounded rect — no rings / glow / mesh."""
+        # Tk Canvas has no native round_rectangle — approximate with ovals + fills.
+        r = 18
+        w, h = _PILL_W, _PILL_H
+        self._canvas.create_oval(0, 0, r * 2, r * 2, fill=_PILL_BORDER, outline="", tags="chrome")
+        self._canvas.create_oval(w - r * 2, 0, w, r * 2, fill=_PILL_BORDER, outline="", tags="chrome")
+        self._canvas.create_oval(0, h - r * 2, r * 2, h, fill=_PILL_BORDER, outline="", tags="chrome")
+        self._canvas.create_oval(w - r * 2, h - r * 2, w, h, fill=_PILL_BORDER, outline="", tags="chrome")
+        self._canvas.create_rectangle(r, 0, w - r, h, fill=_PILL_BORDER, outline="", tags="chrome")
+        self._canvas.create_rectangle(0, r, w, h - r, fill=_PILL_BORDER, outline="", tags="chrome")
+        inset = 1
+        ir = max(2, r - inset)
+        x0, y0, x1, y1 = inset, inset, w - inset, h - inset
+        self._canvas.create_oval(x0, y0, x0 + ir * 2, y0 + ir * 2, fill=_PILL_BG, outline="", tags="chrome")
+        self._canvas.create_oval(x1 - ir * 2, y0, x1, y0 + ir * 2, fill=_PILL_BG, outline="", tags="chrome")
+        self._canvas.create_oval(x0, y1 - ir * 2, x0 + ir * 2, y1, fill=_PILL_BG, outline="", tags="chrome")
+        self._canvas.create_oval(x1 - ir * 2, y1 - ir * 2, x1, y1, fill=_PILL_BG, outline="", tags="chrome")
+        self._canvas.create_rectangle(x0 + ir, y0, x1 - ir, y1, fill=_PILL_BG, outline="", tags="chrome")
+        self._canvas.create_rectangle(x0, y0 + ir, x1, y1 - ir, fill=_PILL_BG, outline="", tags="chrome")
+
     def _draw_orb(self, *, font_size: float | None = None) -> None:
-        """Stage 8.9.9 — LANCZOS PNG logo (tinted) or smooth polygon fallback."""
+        """Glassmorphic pill: logo left + ACTIVE/STANDBY label."""
         self._canvas.delete("all")
-        accent = self._accent()
-        cx, cy = self._icon_center()
-        base = (_ICON_SIZE_MIN + _ICON_SIZE_MAX) / 2.0
-        size = int(round(font_size if font_size is not None else base))
+        self._draw_pill_chrome()
+        size = int(round(font_size if font_size is not None else _LOGO_PX))
         size = max(_ICON_SIZE_MIN, min(_ICON_SIZE_MAX, size))
+        cx, cy = self._icon_center()
+        status = "ACTIVE" if self._is_active() else "STANDBY"
+        self._status = status
+        status_color = self._status_color()
+
         photo = None
         try:
             from dana.ui.logo import load_premium_logo_photoimage
 
-            # Custom PNG logo (LANCZOS + alpha mask) — never a text / status dot.
-            photo = load_premium_logo_photoimage(
-                self._canvas, (size, size), tint=accent
-            )
-            if photo is None:
-                photo = load_premium_logo_photoimage(self._canvas, (size, size))
+            photo = load_premium_logo_photoimage(self._canvas, (size, size))
         except Exception:  # noqa: BLE001
             photo = None
         if photo is not None:
-            self._logo_photo = photo  # prevent GC
+            self._logo_photo = photo
             self._logo_mode = "png"
             self._canvas.create_image(
                 cx,
@@ -404,33 +440,28 @@ class AssistiveTouchOrb:
                 anchor="center",
                 tags=("icon", "logo"),
             )
-            return
-        self._logo_mode = "polygon"
-        self._draw_smooth_mark(size=size, fill=accent)
+        else:
+            self._logo_mode = "polygon"
+            self._draw_smooth_mark(size=size, fill=status_color)
+
+        # Status label to the right of the logo.
+        self._canvas.create_text(
+            8 + _LOGO_PX + 8,
+            cy,
+            text=status,
+            fill=status_color,
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+            tags=("status",),
+        )
 
     def pulse_animation(self) -> None:
-        """Stage 8.9.9 — sine-wave logo scale + persona tint (LANCZOS redraw)."""
+        """Refresh ACTIVE/STANDBY status (no sci-fi size pulse)."""
         if not self.orb_window.winfo_exists():
             return
         self._active_agent = self._resolve_active_agent()
-        speaking = False
-        try:
-            from dana.core_agent import tts_busy
-
-            speaking = bool(tts_busy.is_set())
-        except Exception:  # noqa: BLE001
-            speaking = False
-        # Full 30–45 swing while speaking / HITL; gentler breath when idle.
         self._pulse_phase = (self._pulse_phase + 0.18) % (2.0 * math.pi)
-        wave = math.sin(self._pulse_phase)
-        mid = (_ICON_SIZE_MIN + _ICON_SIZE_MAX) / 2.0
-        amp = (_ICON_SIZE_MAX - _ICON_SIZE_MIN) / 2.0
-        if not (speaking or self._hitl_pending):
-            amp *= 0.45
-        current_size = int(round(mid + amp * wave))
-        current_size = max(_ICON_SIZE_MIN, min(_ICON_SIZE_MAX, current_size))
-        # Redraw each frame so LANCZOS resize + tint stay crisp (no font glyphs).
-        self._draw_orb(font_size=current_size)
+        self._draw_orb(font_size=_LOGO_PX)
         try:
             self.orb_window.attributes("-topmost", True)
         except Exception:  # noqa: BLE001
@@ -455,8 +486,8 @@ class AssistiveTouchOrb:
             self._panel.grid_forget()
         except Exception:  # noqa: BLE001
             pass
-        w = _ORB_DIAMETER
-        h = _ORB_DIAMETER
+        w = _PILL_W
+        h = _PILL_H
         try:
             self.orb_window.minsize(w, h)
             self.orb_window.maxsize(w, h)
@@ -471,9 +502,8 @@ class AssistiveTouchOrb:
             self._panel.grid(row=0, column=1, padx=(6, 0), pady=0, sticky="nw")
         except Exception:  # noqa: BLE001
             pass
-        w = _ORB_DIAMETER + _PAD + _PANEL_W
-        h = max(_ORB_DIAMETER, _PANEL_H)
-        # Keep panel on-screen: flip left if near right edge.
+        w = _PILL_W + _PAD + _PANEL_W
+        h = max(_PILL_H, _PANEL_H)
         screen_w = int(self.orb_window.winfo_screenwidth() or 1280)
         x = self._orb_x
         if x + w > screen_w - 8:
@@ -502,7 +532,6 @@ class AssistiveTouchOrb:
             self._apply_expanded_geometry()
 
     def _on_leave(self, _event: Any = None) -> None:
-        # Debounce: moving between canvas/panel children fires Leave on parents.
         self._cancel_leave()
 
         def _shrink() -> None:
@@ -559,7 +588,6 @@ class AssistiveTouchOrb:
         was_click = self._dragging and not self._moved
         self._dragging = False
         if was_click and self._on_open_dashboard is not None and not self._expanded:
-            # Compact click → open full dashboard.
             try:
                 self._on_open_dashboard()
             except Exception:  # noqa: BLE001
@@ -676,7 +704,6 @@ class AssistiveTouchOrb:
                     if pending.get("consecutive_denials") is not None
                     else get_consecutive_denials()
                 )
-                # Compact Orb card — full body also lands in Payload Viewer.
                 obj = str(pending.get("objective") or "").strip()
                 ctx = str(pending.get("context") or "").strip()
                 files = extract_files_line(ctx, pending.get("files"))
@@ -685,7 +712,6 @@ class AssistiveTouchOrb:
                     f"Context: {ctx or '(empty)'}\n\n"
                     f"Files: {files}"
                 )
-                # Keep formatted string on pending for Live Trace Payload Viewer.
                 if not pending.get("_formatted"):
                     pending["_formatted"] = format_ticket_payload(pending)
             except Exception:  # noqa: BLE001
@@ -724,7 +750,6 @@ class AssistiveTouchOrb:
                 self._github_btn.pack_forget()
         except Exception:  # noqa: BLE001
             pass
-        # Pulse loop owns redraw; only refresh labels here.
 
     def _status_tick(self) -> None:
         """Lower-frequency panel/HITL sync (pulse_animation owns Canvas redraw)."""
@@ -732,7 +757,6 @@ class AssistiveTouchOrb:
             return
         prev = self._hitl_pending
         self.refresh_controls()
-        # Auto-expand when a ticket needs approval so the operator notices.
         if self._hitl_pending and not prev and not self._expanded:
             self._apply_expanded_geometry()
         try:

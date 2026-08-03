@@ -1,12 +1,11 @@
-"""One-shot: build high-contrast squircle dana_icon.png + dana_icon.ico.
+"""One-shot: build high-contrast squircle ``assets/dana_logo.png`` + ``.ico``.
 
-Dark canvas ``#0a0e17``, 1px border ``#1e293b``, centered emblem from
-``dana/ui/assets`` logo candidates (via ``dana.ui.logo.resolve_logo_path``).
+Dark canvas ``#0a0e17``, 1px border ``#1e293b``, centered emblem from the
+best available transparent logo source (highres / legacy candidates).
 
-Outputs:
-  - dana/ui/assets/dana_icon.png  (512 master)
-  - dana/assets/dana_icon.ico     (16/32/48/64/128/256)
-  - dana/assets/donna.ico         (same multi-res, legacy path compat)
+Outputs (project-root SSoT)::
+  - assets/dana_logo.png  (512 master)
+  - assets/dana_logo.ico  (16 / 32 / 48 / 256)
 """
 
 from __future__ import annotations
@@ -21,9 +20,20 @@ if str(ROOT) not in sys.path:
 BG = (0x0A, 0x0E, 0x17, 255)
 BORDER = (0x1E, 0x29, 0x3B, 255)
 MASTER = 512
-ICO_SIZES = (16, 32, 48, 64, 128, 256)
+ICO_SIZES = (16, 32, 48, 256)
 # Emblem inset as fraction of canvas (leaves squircle margin).
 EMBLEM_FRAC = 0.62
+
+# Source candidates for the centered mark (first existing wins).
+# Prefer transparent highres / legacy marks over an already-composited squircle.
+_EMBLEM_CANDIDATES = (
+    ROOT / "dana" / "ui" / "assets" / "dana_logo_highres.png",
+    ROOT / "dana" / "ui" / "assets" / "orb_logo.png",
+    ROOT / "dana" / "ui" / "assets" / "donna_logo_highres.png",
+    ROOT / "dana" / "ui" / "assets" / "dana_icon.png",
+    ROOT / "dana" / "assets" / "orb_logo.png",
+    ROOT / "assets" / "dana_logo.png",
+)
 
 
 def _squircle_radius(size: int) -> int:
@@ -40,9 +50,6 @@ def _draw_squircle(size: int) -> "Image.Image":
     # Outer fill (border color), then inset fill (bg) → 1px border at any scale.
     draw.rounded_rectangle((0, 0, size - 1, size - 1), radius=r, fill=BORDER)
     inset = 1
-    if size <= 24:
-        # At 16px a true 1px border eats the mark; keep a hairline edge.
-        inset = 1
     inner_r = max(1, r - inset)
     draw.rounded_rectangle(
         (inset, inset, size - 1 - inset, size - 1 - inset),
@@ -52,28 +59,41 @@ def _draw_squircle(size: int) -> "Image.Image":
     return img
 
 
+def _resolve_emblem_path() -> Path | None:
+    for path in _EMBLEM_CANDIDATES:
+        if path.is_file():
+            return path
+    try:
+        from dana.ui.logo import resolve_logo_path
+
+        via = resolve_logo_path()
+        if via is not None and via.is_file():
+            return via
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def _load_emblem(max_side: int):
     from PIL import Image
 
-    from dana.ui.logo import make_transparent_logo, resolve_logo_path
+    from dana.ui.logo import make_transparent_logo
 
-    path = resolve_logo_path()
+    path = _resolve_emblem_path()
     if path is None or not path.is_file():
-        raise SystemExit("No logo asset found under dana/ui/assets (or dana/assets).")
+        raise SystemExit(
+            "No logo asset found (expected dana_logo_highres.png or similar)."
+        )
     emblem = make_transparent_logo(Image.open(path).convert("RGBA"))
-    # Fit emblem into a square box without upscaling past source when possible.
     box = max(8, int(max_side))
     emblem.thumbnail((box, box), Image.Resampling.LANCZOS)
     return emblem
 
 
 def build_master(size: int = MASTER):
-    from PIL import Image
-
     canvas = _draw_squircle(size)
     emblem_box = max(8, int(round(size * EMBLEM_FRAC)))
     emblem = _load_emblem(emblem_box)
-    # Center paste.
     ew, eh = emblem.size
     x = (size - ew) // 2
     y = (size - eh) // 2
@@ -129,25 +149,20 @@ def write_png_ico(path: Path, frames: list) -> None:
 
 
 def main() -> int:
-    ui_assets = ROOT / "dana" / "ui" / "assets"
-    dana_assets = ROOT / "dana" / "assets"
-    ui_assets.mkdir(parents=True, exist_ok=True)
-    dana_assets.mkdir(parents=True, exist_ok=True)
+    out_dir = ROOT / "assets"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Prefer a non-squircle highres as emblem when regenerating over an existing
+    # assets/dana_logo.png (avoid nesting squircle-in-squircle).
     master = build_master(MASTER)
-    png_path = ui_assets / "dana_icon.png"
+    png_path = out_dir / "dana_logo.png"
     master.save(png_path, format="PNG")
     print(f"[generate_dana_icon] wrote {png_path} ({master.size[0]}x{master.size[1]})")
 
     frames = build_ico_frames(master)
-    ico_path = dana_assets / "dana_icon.ico"
+    ico_path = out_dir / "dana_logo.ico"
     write_png_ico(ico_path, frames)
     print(f"[generate_dana_icon] wrote {ico_path} sizes={list(ICO_SIZES)}")
-
-    # Legacy path still referenced by some shortcuts / older resolvers.
-    legacy = dana_assets / "donna.ico"
-    write_png_ico(legacy, frames)
-    print(f"[generate_dana_icon] wrote {legacy} (compat)")
     return 0
 
 

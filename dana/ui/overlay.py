@@ -19,7 +19,8 @@ TRANSPARENT_KEY = "#000001"
 _PILL_FG = "#0a0e17"
 _PILL_BORDER = "#1e293b"
 _PILL_RADIUS = 20
-_LABEL_FG = "#E2E8F0"
+_LABEL_FG = "#9CA3AF"  # STANDBY muted gray
+_LABEL_ACTIVE = "#10b981"  # ACTIVE emerald
 
 
 def _parse_hex_rgb(key: str) -> tuple[int, int, int] | None:
@@ -177,8 +178,8 @@ class FloatingStatusHud:
         self,
         master: Any | None = None,
         *,
-        text: str = "Dānā",
-        logo_size: tuple[int, int] = (48, 48),
+        text: str = "STANDBY",
+        logo_size: tuple[int, int] = (22, 22),
     ) -> None:
         self.root: Any | None = None
         self.pill: Any | None = None
@@ -318,7 +319,14 @@ class FloatingStatusHud:
     def set_text(self, text: str) -> None:
         if self._label is not None:
             try:
-                self._label.configure(text=text)
+                label = str(text or "")
+                color = _LABEL_FG
+                upper = label.strip().upper()
+                if upper in {"ACTIVE", "ENGAGE", "ENGAGED"} or "ACTIVE" in upper:
+                    color = _LABEL_ACTIVE
+                elif upper in {"STANDBY", "IDLE"} or "STANDBY" in upper:
+                    color = _LABEL_FG
+                self._label.configure(text=label, text_color=color)
             except Exception:  # noqa: BLE001
                 pass
             try:

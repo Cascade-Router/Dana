@@ -3,7 +3,7 @@
 Run once:
   python register_startup.py
 
-Also creates Desktop + Startup-folder shortcuts with ``dana/assets/dana_icon.ico``.
+Also creates Desktop + Startup-folder shortcuts with ``assets/dana_logo.ico``.
 Uses ``pythonw.exe`` / ``start_dana.bat`` so no console window appears at logon.
 """
 

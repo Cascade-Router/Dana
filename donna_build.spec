@@ -127,13 +127,12 @@ else:
     print(f"[donna_build.spec] WARNING: missing {_start_bat}")
 
 # Desktop / taskbar / shortcut branding (required for IconLocation + EXE icon).
-_ico = ROOT / "dana" / "assets" / "dana_icon.ico"
+_ico = ROOT / "assets" / "dana_logo.ico"
 if not _ico.is_file():
-    _ico = ROOT / "dana" / "assets" / "donna.ico"
-if _ico.is_file():
-    datas.append((str(_ico), os.path.join("dana", "assets")))
-else:
+    _ico = ROOT / "dana" / "assets" / "dana_icon.ico"
+if not _ico.is_file():
     print(f"[donna_build.spec] WARNING: missing {_ico} — EXE/shortcut icon unavailable")
+_add_tree(ROOT / "assets", "assets")
 _add_tree(ROOT / "dana" / "ui" / "assets", os.path.join("dana", "ui", "assets"))
 _add_tree(ROOT / "dana" / "assets", os.path.join("dana", "assets"))
 

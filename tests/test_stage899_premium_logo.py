@@ -17,6 +17,7 @@ def test_load_premium_logo_lanczos_ctkimage() -> None:
     path = resolve_logo_path()
     assert path is not None
     assert path.name in {
+        "dana_logo.png",
         "dana_logo_highres.png",
         "donna_logo_highres.png",
         "donna_logo.png",
