@@ -92,3 +92,52 @@ def test_stop_donna_still_independent() -> None:
             app.destroy()
         except Exception:  # noqa: BLE001
             pass
+
+
+def test_stop_callback_halts_engine(monkeypatch) -> None:
+    """STOP DANA must deactivate the engine even when kill-script is stubbed."""
+    from dana.core_agent import (
+        DonnaGUI,
+        is_engine_engaged,
+        set_engine_engaged,
+        stop_event,
+    )
+
+    set_engine_engaged(False)
+    stop_event.clear()
+    app = DonnaGUI()
+    try:
+        app.engage_engine()
+        assert app.engine_active is True
+        assert is_engine_engaged() is True
+
+        monkeypatch.setattr(
+            app,
+            "kill_donna_processes",
+            lambda: {"ok": True, "pid": 1, "path": "stub"},
+        )
+        # Avoid deferred Popen; halt must be synchronous in the click handler.
+        monkeypatch.setattr(app, "after", lambda *_a, **_k: None)
+
+        app._on_stop_donna_clicked()
+
+        assert app.engine_active is False
+        assert is_engine_engaged() is False
+        assert bool(getattr(app, "_engine_stopped", False)) is True
+        pill = str(app._engine_status_lbl.cget("text"))
+        assert "STOPPED" in pill
+        assert "Local Engine" in pill
+        assert stop_event.is_set()
+    finally:
+        set_engine_engaged(False)
+        stop_event.clear()
+        try:
+            from dana.middleware.kill_switch import clear_global_halt
+
+            clear_global_halt()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            app.destroy()
+        except Exception:  # noqa: BLE001
+            pass

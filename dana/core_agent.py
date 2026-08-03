@@ -8090,6 +8090,7 @@ class DonnaGUI(ctk.CTk):
         self._behavior_locked = False
         # Stage 8.9.7 — soft LangGraph engine ignition (False = STANDBY).
         self.engine_active = False
+        self._engine_stopped = False
         self._behavior_sliders: dict[str, ctk.CTkSlider] = {}
         self._behavior_labels: dict[str, ctk.CTkLabel] = {}
         self._behavior_last_write: dict[str, float] = {}
@@ -9898,6 +9899,7 @@ class DonnaGUI(ctk.CTk):
     def _refresh_engine_ui(self) -> None:
         """Sync Engage/Standby chrome with ``engine_active``."""
         active = bool(self.engine_active)
+        stopped = bool(getattr(self, "_engine_stopped", False)) and not active
         status = self._engine_status_lbl
         if status is not None:
             try:
@@ -9905,6 +9907,12 @@ class DonnaGUI(ctk.CTk):
                     status.configure(
                         text="  ● ACTIVE | Local Engine  ",
                         text_color=_UI_EMERALD,
+                        fg_color=_UI_GHOST,
+                    )
+                elif stopped:
+                    status.configure(
+                        text="  ● STOPPED | Local Engine  ",
+                        text_color=_UI_ROSE,
                         fg_color=_UI_GHOST,
                     )
                 else:
@@ -9927,6 +9935,7 @@ class DonnaGUI(ctk.CTk):
         """Stage 8.9.7 — arm engine, apply mixer, lock Behavior sliders."""
         applied = self._apply_behavior_mixer_payload()
         self.engine_active = True
+        self._engine_stopped = False
         set_engine_engaged(True)
         self._set_behavior_controls_locked(True)
         self._refresh_engine_ui()
@@ -10961,9 +10970,105 @@ class DonnaGUI(ctk.CTk):
             log("UI", f"WARNING: {msg}")
             return {"ok": False, "error": type(exc).__name__, "message": msg}
 
+    def _halt_engine_full(self) -> None:
+        """In-process full halt: terminate workers, cancel audio/LLM, STOPPED pill.
+
+        Kill-switch ``stop_dana.*`` launch remains separate (see
+        ``_on_stop_donna_clicked``); this path must run even if the batch is
+        missing so the Local Engine goes inactive immediately.
+        """
+        # Drop dictation latch if hot.
+        if self._dictation_active:
+            try:
+                from dana.management.dictation import toggle_dictation_mode
+
+                toggle_dictation_mode(False)
+            except Exception:  # noqa: BLE001
+                pass
+            self._dictation_active = False
+            try:
+                self.dictation_btn.configure(
+                    text="  ●  OFF  ",
+                    fg_color=_UI_GHOST,
+                    hover_color="#34344A",
+                    border_color=_UI_CARD_BORDER,
+                    text_color="#F87171",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        self.engine_active = False
+        self._engine_stopped = True
+        set_engine_engaged(False)
+        # Termination latch — workers / conversation loop exit.
+        try:
+            stop_event.set()
+        except Exception:  # noqa: BLE001
+            pass
+        # Cancel VAD / mic latch + pending TTS.
+        try:
+            is_recording.clear()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            vad_capture_active.clear()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            reset_tts_audio_state("stop_dana", ui_state="idle")
+        except Exception:  # noqa: BLE001
+            pass
+        # Abort pending actuators / Ghost Typist / in-flight LLM actions.
+        try:
+            from dana.middleware.kill_switch import trigger_halt
+
+            trigger_halt(reason="stop_dana")
+        except Exception:  # noqa: BLE001
+            pass
+        # Detach daemon sidecar reconnect (do not hot_restart — hard stop).
+        try:
+            client = getattr(self, "_daemon_client", None)
+            if client is not None:
+                try:
+                    client.stop_auto_reconnect()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    client._drop_socket()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._daemon_client = None
+        except Exception:  # noqa: BLE001
+            pass
+        self._set_behavior_controls_locked(False)
+        self._refresh_engine_ui()
+        try:
+            from dana.ui.status_bus import emit_state_change
+
+            emit_state_change("idle", message="● STOPPED | Local Engine")
+        except Exception:  # noqa: BLE001
+            pass
+        log("UI", "STOP DANA — engine halted (STOPPED)")
+        try:
+            self.log_transcript(
+                "Dana",
+                "Engine STOPPED — Local Engine halted.",
+                agent_id="broker",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self.assistive_orb is not None:
+                self.assistive_orb.refresh_controls()
+        except Exception:  # noqa: BLE001
+            pass
+
     def _on_stop_donna_clicked(self) -> None:
-        """Show TERMINATING… then fire the kill switch (Tk main thread)."""
+        """Halt engine in-process, show TERMINATING…, then fire kill switch."""
         btn = getattr(self, "stop_donna_btn", None)
+        try:
+            self._halt_engine_full()
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: in-process engine halt failed ({exc})")
         try:
             if btn is not None:
                 btn.configure(
