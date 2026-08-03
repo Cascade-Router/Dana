@@ -183,6 +183,7 @@ class FloatingStatusHud:
         self.root: Any | None = None
         self.pill: Any | None = None
         self._logo_img: Any | None = None
+        self._logo_lbl: Any | None = None
         self._label: Any | None = None
         try:
             import customtkinter as ctk
@@ -216,15 +217,19 @@ class FloatingStatusHud:
             row.pack(padx=14, pady=10)
 
             try:
-                from dana.ui.logo import get_overlay_logo
+                from dana.ui.logo import get_overlay_logo, load_premium_logo
 
                 self._logo_img = get_overlay_logo(logo_size)
+                if self._logo_img is None:
+                    # Direct CTkImage path if cache/generator returned None.
+                    self._logo_img = load_premium_logo(logo_size)
             except Exception:  # noqa: BLE001
                 self._logo_img = None
 
             if self._logo_img is not None:
                 try:
                     # CTkImage path — no black box; keyed RGBA embeds cleanly.
+                    # Never substitute a text glyph / status dot for the mark.
                     logo_lbl = ctk.CTkLabel(
                         row,
                         text="",
@@ -232,9 +237,28 @@ class FloatingStatusHud:
                         fg_color="transparent",
                     )
                     logo_lbl.pack(side="left", padx=(0, 10))
+                    self._logo_lbl = logo_lbl
                 except Exception:  # noqa: BLE001
                     # PIL fallback (headless tests) — skip widget bind.
-                    pass
+                    try:
+                        from PIL import Image as _PilImage
+
+                        if isinstance(self._logo_img, _PilImage.Image):
+                            self._logo_img = ctk.CTkImage(
+                                light_image=self._logo_img,
+                                dark_image=self._logo_img,
+                                size=logo_size,
+                            )
+                            logo_lbl = ctk.CTkLabel(
+                                row,
+                                text="",
+                                image=self._logo_img,
+                                fg_color="transparent",
+                            )
+                            logo_lbl.pack(side="left", padx=(0, 10))
+                            self._logo_lbl = logo_lbl
+                    except Exception:  # noqa: BLE001
+                        pass
 
             self._label = ctk.CTkLabel(
                 row,
@@ -307,6 +331,7 @@ class FloatingStatusHud:
         self.root = None
         self.pill = None
         self._logo_img = None
+        self._logo_lbl = None
         self._label = None
         if root is not None:
             try:

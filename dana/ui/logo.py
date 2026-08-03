@@ -6,6 +6,7 @@ transparent with soft edge anti-aliasing for tray, HUD, and toast surfaces.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -17,36 +18,124 @@ _LOGO_CANDIDATES = (
     "donna_logo.png",  # legacy fallback
 )
 
+# Windows HUD / orb chroma-key (must not appear in opaque logo pixels).
+_LWA_COLORKEY_RGB = (0, 0, 1)  # #000001
+_LWA_COLORKEY_LIFT = (1, 1, 2)  # nearby non-key RGB
+
 # Cached generators — key: (kind, width, height)
 _ASSET_CACHE: dict[tuple[str, int, int], Any] = {}
 
 
+def _frozen_root() -> Path | None:
+    """PyInstaller extract root (``sys._MEIPASS``) or onedir exe directory."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        try:
+            return Path(meipass).resolve()
+        except Exception:  # noqa: BLE001
+            return Path(str(meipass))
+    if bool(getattr(sys, "frozen", False)):
+        try:
+            return Path(sys.executable).resolve().parent
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
+def _asset_search_roots() -> list[Path]:
+    """Ordered roots for logo / icon discovery (dev + frozen)."""
+    roots: list[Path] = [
+        Path(__file__).resolve().parent / "assets",  # dana/ui/assets
+        Path(__file__).resolve().parents[1] / "assets",  # dana/assets
+    ]
+    frozen = _frozen_root()
+    if frozen is not None:
+        roots.extend(
+            [
+                frozen / "dana" / "ui" / "assets",
+                frozen / "dana" / "assets",
+                frozen / "ui" / "assets",
+                frozen / "assets",
+            ]
+        )
+    try:
+        from dana.paths import PROJECT_ROOT
+
+        roots.append(Path(PROJECT_ROOT) / "dana" / "ui" / "assets")
+        roots.append(Path(PROJECT_ROOT) / "dana" / "assets")
+    except Exception:  # noqa: BLE001
+        pass
+    out: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        try:
+            key = str(root.resolve())
+        except Exception:  # noqa: BLE001
+            key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(root)
+    return out
+
+
 def ui_assets_dir() -> Path:
     """``dana/ui/assets`` — drop artist-rendered PNG/SVG exports here."""
-    return Path(__file__).resolve().parent / "assets"
+    for root in _asset_search_roots():
+        # Prefer the UI assets tree when present (dev or ``--add-data``).
+        if root.name == "assets" and root.parent.name == "ui" and root.is_dir():
+            return root
+    here = Path(__file__).resolve().parent / "assets"
+    frozen = _frozen_root()
+    if frozen is not None:
+        for candidate in (
+            frozen / "dana" / "ui" / "assets",
+            frozen / "ui" / "assets",
+            frozen / "assets",
+        ):
+            if candidate.is_dir():
+                return candidate
+    return here
 
 
 def resolve_logo_path() -> Path | None:
     """Return the first existing premium logo path, or None."""
-    root = ui_assets_dir()
-    for name in _LOGO_CANDIDATES:
-        path = root / name
-        if path.is_file():
-            return path
+    for root in _asset_search_roots():
+        if not root.is_dir():
+            continue
+        for name in _LOGO_CANDIDATES:
+            path = root / name
+            if path.is_file():
+                return path
     return None
 
 
 def app_icon_path() -> Path:
     """Canonical Windows ``.ico`` path (``dana/assets/donna.ico``).
 
-    Resolves via ``dana.paths.PROJECT_ROOT`` so packaged + repo launches agree.
+    Resolves via ``dana.paths.PROJECT_ROOT`` and ``sys._MEIPASS`` so packaged
+    + repo launches agree when assets are bundled with ``--add-data``.
     """
+    candidates: list[Path] = []
     try:
         from dana.paths import PROJECT_ROOT
 
-        return Path(PROJECT_ROOT) / "dana" / "assets" / "donna.ico"
+        candidates.append(Path(PROJECT_ROOT) / "dana" / "assets" / "donna.ico")
     except Exception:  # noqa: BLE001
-        return Path(__file__).resolve().parents[1] / "assets" / "donna.ico"
+        pass
+    candidates.append(Path(__file__).resolve().parents[1] / "assets" / "donna.ico")
+    frozen = _frozen_root()
+    if frozen is not None:
+        candidates.extend(
+            [
+                frozen / "dana" / "assets" / "donna.ico",
+                frozen / "assets" / "donna.ico",
+            ]
+        )
+    for path in candidates:
+        if path.is_file():
+            return path
+    return candidates[0] if candidates else Path(__file__).resolve().parents[1] / "assets" / "donna.ico"
 
 
 def resolve_app_icon_path() -> Path | None:
@@ -137,13 +226,41 @@ def _load_pil(path: Path):
     return Image.open(path).convert("RGBA")
 
 
-def make_transparent_logo(pil_image: Any, dark_threshold: int = 15) -> Any:
+def _scrub_lwa_colorkey(pil_image: Any) -> Any:
+    """Lift opaque pixels matching ``#000001`` so LWA_COLORKEY cannot punch holes."""
+    from PIL import Image
+
+    if pil_image is None:
+        return None
+    base = pil_image.convert("RGBA")
+    kr, kg, kb = _LWA_COLORKEY_RGB
+    lr, lg, lb = _LWA_COLORKEY_LIFT
+    out_pixels: list[tuple[int, int, int, int]] = []
+    touched = False
+    for r, g, b, a in base.getdata():
+        if int(a) > 0 and int(r) == kr and int(g) == kg and int(b) == kb:
+            out_pixels.append((lr, lg, lb, int(a)))
+            touched = True
+            continue
+        out_pixels.append((int(r), int(g), int(b), int(a)))
+    if not touched:
+        return base
+    out = Image.new("RGBA", base.size)
+    out.putdata(out_pixels)
+    return out
+
+
+def make_transparent_logo(pil_image: Any, dark_threshold: int = 12) -> Any:
     """Key solid dark backgrounds to full transparency with soft edge AA.
 
     When the source is missing meaningful alpha (fully opaque) or samples as a
     solid black backdrop, pixels with RGB channels below ``dark_threshold``
     become ``RGBA(0, 0, 0, 0)``. A short luminance ramp plus a light Gaussian
     blur on the alpha channel softens the cutout edge.
+
+    True-alpha PNGs (preferred for HUD / orb) skip dark keying so near-black
+    logo art is preserved; opaque ``#000001`` pixels are scrubbed so Windows
+    ``LWA_COLORKEY`` cannot punch holes in the mark.
     """
     from PIL import Image, ImageFilter
 
@@ -165,7 +282,8 @@ def make_transparent_logo(pil_image: Any, dark_threshold: int = 15) -> Any:
         px[0, h - 1],
         px[w - 1, h - 1],
     )
-    thr = max(0, int(dark_threshold))
+    # Keep threshold tight — aggressive values punch holes in dark logo strokes.
+    thr = max(0, min(int(dark_threshold), 15))
     # Opaque near-black corners only — already-transparent corners must not re-key.
     solid_black_bg = all(
         int(c[0]) < thr
@@ -175,9 +293,9 @@ def make_transparent_logo(pil_image: Any, dark_threshold: int = 15) -> Any:
         for c in corners
     )
     if not missing_alpha and not solid_black_bg:
-        return base
+        return _scrub_lwa_colorkey(base)
 
-    fade = max(8, thr)
+    fade = max(6, thr)
     out_pixels: list[tuple[int, int, int, int]] = []
     for r, g, b, a in base.getdata():
         mx = max(int(r), int(g), int(b))
@@ -195,7 +313,7 @@ def make_transparent_logo(pil_image: Any, dark_threshold: int = 15) -> Any:
     # Soften keyed edges without destroying already-transparent interiors.
     soft_a = out.getchannel("A").filter(ImageFilter.GaussianBlur(radius=0.65))
     out.putalpha(soft_a)
-    return out
+    return _scrub_lwa_colorkey(out)
 
 
 def _rgba_source(size: tuple[int, int]) -> Any | None:

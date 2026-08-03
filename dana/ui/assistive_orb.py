@@ -386,9 +386,12 @@ class AssistiveTouchOrb:
         try:
             from dana.ui.logo import load_premium_logo_photoimage
 
+            # Custom PNG logo (LANCZOS + alpha mask) — never a text / status dot.
             photo = load_premium_logo_photoimage(
                 self._canvas, (size, size), tint=accent
             )
+            if photo is None:
+                photo = load_premium_logo_photoimage(self._canvas, (size, size))
         except Exception:  # noqa: BLE001
             photo = None
         if photo is not None:

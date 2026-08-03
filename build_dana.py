@@ -93,6 +93,15 @@ def main() -> int:
     if ico.is_file():
         args.append(f"--icon={ico}")
 
+    # Bundle logo / icon trees into onedir extract root (Windows: src;dest).
+    # Runtime resolution uses Path(__file__) and sys._MEIPASS in dana.ui.logo.
+    ui_assets = ROOT / "dana" / "ui" / "assets"
+    if ui_assets.is_dir():
+        args.append(f"--add-data={ui_assets}{os.pathsep}dana/ui/assets")
+    dana_assets = ROOT / "dana" / "assets"
+    if dana_assets.is_dir():
+        args.append(f"--add-data={dana_assets}{os.pathsep}dana/assets")
+
     print("[build_dana] Entry: run.py -> dana.core_agent.main (desktop UI)")
     print("[build_dana] PyInstaller args:")
     for a in args:
