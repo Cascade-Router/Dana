@@ -110,6 +110,9 @@ def main() -> int:
     ui_assets = ROOT / "dana" / "ui" / "assets"
     if ui_assets.is_dir():
         args.append(f"--add-data={ui_assets}{os.pathsep}dana/ui/assets")
+    dana_theme = ROOT / "dana" / "ui" / "dana_theme.json"
+    if dana_theme.is_file():
+        args.append(f"--add-data={dana_theme}{os.pathsep}dana/ui")
     dana_assets = ROOT / "dana" / "assets"
     if dana_assets.is_dir():
         args.append(f"--add-data={dana_assets}{os.pathsep}dana/assets")

@@ -34,6 +34,8 @@ def _stub_premium_logo_unless_stage899(
 
     monkeypatch.setattr("dana.ui.logo.load_premium_logo", lambda *_a, **_k: None)
     monkeypatch.setattr("dana.ui.logo.apply_window_icon", lambda *_a, **_k: False)
+    monkeypatch.setattr("dana.ui.logo.force_apply_window_icon", lambda *_a, **_k: False)
+    monkeypatch.setattr("dana.ui.logo.schedule_window_icon", lambda *_a, **_k: None)
     monkeypatch.setattr(
         "dana.ui.logo.load_premium_logo_photoimage",
         lambda *_a, **_k: None,

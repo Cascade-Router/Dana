@@ -174,6 +174,8 @@ def test_appusermodelid_helper_present_in_entrypoints() -> None:
     from dana.ui import logo as logo_mod
 
     assert hasattr(logo_mod, "apply_window_icon")
+    assert hasattr(logo_mod, "force_apply_window_icon")
+    assert hasattr(logo_mod, "schedule_window_icon")
     print("[PASS] AppUserModelID wired in run.py + core_agent")
 
 

@@ -30,6 +30,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        from dana.ui.theme import apply_dana_ctk_theme
+
+        apply_dana_ctk_theme()
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
         from dana.core_agent import DonnaGUI
     except Exception as exc:  # noqa: BLE001
         print(f"DonnaGUI unavailable: {exc}", file=sys.stderr)

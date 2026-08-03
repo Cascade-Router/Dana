@@ -232,6 +232,117 @@ def apply_window_icon(root: Any) -> bool:
     return applied
 
 
+def app_icon_abspath() -> str:
+    """Absolute ``assets/dana_logo.ico`` path (dev + MEIPASS)."""
+    import os
+
+    try:
+        from dana.resources import get_resource_path
+
+        return os.path.abspath(str(get_resource_path("assets/dana_logo.ico")))
+    except Exception:  # noqa: BLE001
+        return os.path.abspath(str(app_icon_path()))
+
+
+def _win32_set_icon_supplement(root_window: Any, ico_s: str) -> None:
+    """Optional WM_SETICON after iconbitmap — never the primary path."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        WM_SETICON = 0x0080
+        ICON_SMALL = 0
+        ICON_BIG = 1
+        IMAGE_ICON = 1
+        LR_LOADFROMFILE = 0x00000010
+        LR_DEFAULTSIZE = 0x00000020
+
+        hwnd_direct = 0
+        try:
+            hwnd_direct = int(root_window.winfo_id())
+        except Exception:  # noqa: BLE001
+            hwnd_direct = 0
+        hwnd_parent = 0
+        if hwnd_direct:
+            try:
+                hwnd_parent = int(user32.GetParent(hwnd_direct))
+            except Exception:  # noqa: BLE001
+                hwnd_parent = 0
+        targets: list[int] = []
+        for hwnd in (hwnd_direct, hwnd_parent):
+            if hwnd and hwnd not in targets:
+                targets.append(hwnd)
+        if not targets:
+            return
+
+        LoadImageW = user32.LoadImageW
+        LoadImageW.argtypes = [
+            wintypes.HINSTANCE,
+            wintypes.LPCWSTR,
+            wintypes.UINT,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
+        LoadImageW.restype = wintypes.HANDLE
+        hicon = LoadImageW(
+            None,
+            ico_s,
+            IMAGE_ICON,
+            0,
+            0,
+            LR_LOADFROMFILE | LR_DEFAULTSIZE,
+        )
+        if not hicon:
+            return
+        root_window._dana_hicon = hicon  # type: ignore[attr-defined]
+        for hwnd in targets:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon)
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def force_apply_window_icon(root_window: Any, ico_path: str | Path | None = None) -> bool:
+    """Apply titlebar icon via iconbitmap/wm_iconbitmap (Win32 optional).
+
+    Prefer ``schedule_window_icon`` after window init so CTk chrome cannot
+    overwrite the binding. Win32 WM_SETICON is a light supplement only.
+    """
+    ico_s = str(ico_path) if ico_path is not None else app_icon_abspath()
+    if not ico_s:
+        return False
+    applied = False
+    try:
+        root_window.iconbitmap(ico_s)
+        applied = True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        root_window.wm_iconbitmap(ico_s)
+        applied = True
+    except Exception:  # noqa: BLE001
+        pass
+    _win32_set_icon_supplement(root_window, ico_s)
+    return applied
+
+
+def schedule_window_icon(root: Any, delay_ms: int = 100) -> None:
+    """Post-init icon bind: ``root.after(delay, iconbitmap/wm_iconbitmap)``."""
+    ico = app_icon_abspath()
+
+    def _apply() -> None:
+        force_apply_window_icon(root, ico)
+
+    try:
+        root.after(int(delay_ms), _apply)
+    except Exception:  # noqa: BLE001
+        _apply()
+
+
 def load_app_icon_pil(size: tuple[int, int] = (64, 64)) -> Any | None:
     """Load the multi-resolution app ``.ico`` (or PNG fallback) as RGBA PIL image."""
     try:
@@ -412,6 +523,12 @@ def get_overlay_logo(size: tuple[int, int] = (48, 48)) -> Any | None:
         import customtkinter as ctk
 
         if getattr(tk, "_default_root", None) is None:
+            try:
+                from dana.ui.theme import apply_dana_ctk_theme
+
+                apply_dana_ctk_theme()
+            except Exception:  # noqa: BLE001
+                pass
             sentinel = ctk.CTk()
             sentinel.withdraw()
             tk._donna_logo_sentinel = sentinel  # type: ignore[attr-defined]
@@ -539,6 +656,12 @@ def load_premium_logo(size: tuple[int, int]) -> Any | None:
         # CTkImage builds PhotoImage against the default root. Keep a withdrawn
         # sentinel root alive so images survive across DonnaGUI destroy cycles.
         if getattr(tk, "_default_root", None) is None:
+            try:
+                from dana.ui.theme import apply_dana_ctk_theme
+
+                apply_dana_ctk_theme()
+            except Exception:  # noqa: BLE001
+                pass
             sentinel = ctk.CTk()
             sentinel.withdraw()
             tk._donna_logo_sentinel = sentinel  # type: ignore[attr-defined]

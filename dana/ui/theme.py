@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 # Canvas / surfaces
 BG = "#0a0e17"
 CARD = "#131b2e"
@@ -22,6 +25,42 @@ EMERALD_HOVER = "#059669"
 ROSE = "#F43F5E"  # stop / alert
 ROSE_HOVER = "#E11D48"
 AMBER = "#F59E0B"
+
+_THEME_APPLIED = False
+_THEME_REL = "dana/ui/dana_theme.json"
+
+
+def dana_theme_path() -> Path:
+    """Absolute path to ``dana_theme.json`` (dev + MEIPASS)."""
+    try:
+        from dana.resources import get_resource_path
+
+        return Path(os.path.abspath(str(get_resource_path(_THEME_REL))))
+    except Exception:  # noqa: BLE001
+        return Path(os.path.abspath(str(Path(__file__).resolve().parent / "dana_theme.json")))
+
+
+def apply_dana_ctk_theme() -> bool:
+    """Load Dana CTk theme before any widgets/root. Idempotent."""
+    global _THEME_APPLIED
+    if _THEME_APPLIED:
+        return True
+    try:
+        import customtkinter as ctk
+    except Exception:  # noqa: BLE001
+        return False
+    path = dana_theme_path()
+    try:
+        ctk.set_appearance_mode("dark")
+        if path.is_file():
+            ctk.set_default_color_theme(str(path))
+        else:
+            # Source/MEIPASS miss — keep mint-ish green built-in rather than blue.
+            ctk.set_default_color_theme("green")
+        _THEME_APPLIED = True
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 # OTA / blue-green status pills
 STATUS_IDLE = MUTED
@@ -73,4 +112,6 @@ __all__ = (
     "BUBBLE_SYSTEM",
     "CANVAS",
     "CARD_BORDER",
+    "dana_theme_path",
+    "apply_dana_ctk_theme",
 )

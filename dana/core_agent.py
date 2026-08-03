@@ -8245,6 +8245,13 @@ class DonnaGUI(ctk.CTk):
     """Live Trace window with settings tabs; retreats to the tray on close."""
 
     def __init__(self) -> None:
+        # Theme must load before CTk root/widgets (not after super()).
+        try:
+            from dana.ui.theme import apply_dana_ctk_theme
+
+            apply_dana_ctk_theme()
+        except Exception:  # noqa: BLE001
+            pass
         super().__init__()
         self.title("Dana — Control Dashboard")
         self.geometry("980x780")
@@ -8293,23 +8300,8 @@ class DonnaGUI(ctk.CTk):
         self._vad_listening = False
         self._vad_pulse_on = False
 
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("dark-blue")
         try:
             self.configure(fg_color=_UI_CANVAS)
-        except Exception:  # noqa: BLE001
-            pass
-        # Window icon before chrome paint so taskbar/title bar bind early
-        # (AppUserModelID already set at module import on win32).
-        try:
-            from dana.resources import get_resource_path
-            from dana.ui.logo import apply_window_icon
-
-            try:
-                self.iconbitmap(str(get_resource_path("assets/dana_logo.ico")))
-            except Exception:  # noqa: BLE001
-                pass
-            apply_window_icon(self)
         except Exception:  # noqa: BLE001
             pass
 
@@ -8325,6 +8317,13 @@ class DonnaGUI(ctk.CTk):
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
         self.withdraw()
+        # Post-init icon lifecycle (iconbitmap/wm_iconbitmap; Win32 optional).
+        try:
+            from dana.ui.logo import schedule_window_icon
+
+            schedule_window_icon(self, delay_ms=100)
+        except Exception:  # noqa: BLE001
+            pass
         # Stage 8.7 — floating AssistiveTouch orb (supplements system tray).
         try:
             self.after(200, self._start_assistive_orb)
@@ -8517,14 +8516,10 @@ class DonnaGUI(ctk.CTk):
         ).pack(side="right", padx=(8, 4), pady=14)
 
         # Three polished surfaces: Assistant, Perception, Memory & Settings.
+        # Segmented tab accents come from dana_theme.json (CTkSegmentedButton).
         tabs = ctk.CTkTabview(
             self,
             fg_color=_UI_CANVAS,
-            segmented_button_fg_color=_UI_CARD,
-            segmented_button_selected_color=_UI_ACCENT,
-            segmented_button_selected_hover_color=_UI_ACCENT_HOVER,
-            segmented_button_unselected_color=_UI_GHOST,
-            segmented_button_unselected_hover_color="#475569",
             text_color=_UI_TEXT,
             corner_radius=14,
             border_width=0,
@@ -8673,9 +8668,6 @@ class DonnaGUI(ctk.CTk):
             width=96,
             height=30,
             corner_radius=999,
-            fg_color=_UI_EMERALD,
-            hover_color="#059669",
-            text_color="#FFFFFF",
             font=_engage_font,
             command=self.engage_engine,
         )
@@ -8835,15 +8827,13 @@ class DonnaGUI(ctk.CTk):
         )
         self.chat_entry.grid(row=0, column=0, sticky="ew", padx=(0, 10))
         self.chat_entry.bind("<Return>", self.submit_text_command)
+        # Primary button colors from dana_theme.json (CTkButton).
         self._chat_send_btn = ctk.CTkButton(
             chat_bar,
             text="Send",
             width=92,
             height=36,
             corner_radius=999,
-            fg_color=_UI_ACCENT,
-            hover_color=_UI_ACCENT_HOVER,
-            text_color="#FFFFFF",
             font=ctk.CTkFont(size=13, weight="bold"),
             command=self.submit_text_command,
         )
@@ -9043,8 +9033,6 @@ class DonnaGUI(ctk.CTk):
             width=130,
             height=28,
             corner_radius=999,
-            fg_color=_UI_ACCENT,
-            hover_color=_UI_ACCENT_HOVER,
             command=self._inspect_uia_tree,
         ).pack(side="left")
 
@@ -9372,9 +9360,6 @@ class DonnaGUI(ctk.CTk):
             width=110,
             height=28,
             corner_radius=8,
-            fg_color=_UI_GHOST,
-            button_color=_UI_ACCENT,
-            button_hover_color=_UI_ACCENT_HOVER,
             text_color=_UI_TEXT,
             command=self._on_ota_mode_changed,
         )
@@ -9456,9 +9441,6 @@ class DonnaGUI(ctk.CTk):
             width=110,
             height=30,
             corner_radius=999,
-            fg_color=_UI_EMERALD,
-            hover_color=_UI_EMERALD_HOVER,
-            text_color="#FFFFFF",
             font=ctk.CTkFont(size=12, weight="bold"),
             command=self._on_ota_hot_apply,
         )
@@ -9503,8 +9485,6 @@ class DonnaGUI(ctk.CTk):
             width=88,
             height=30,
             corner_radius=999,
-            fg_color=_UI_ACCENT,
-            hover_color=_UI_ACCENT_HOVER,
             command=self._run_episodic_search,
         ).pack(side="right")
 
@@ -9648,8 +9628,6 @@ class DonnaGUI(ctk.CTk):
             text="Open window on startup",
             variable=self._open_window_var,
             command=self._on_open_window_startup_toggle,
-            fg_color=_UI_ACCENT,
-            hover_color=_UI_ACCENT_HOVER,
             text_color=_UI_MUTED,
         )
         self._open_window_chk.pack(anchor="w", pady=(0, 12))
@@ -9676,9 +9654,6 @@ class DonnaGUI(ctk.CTk):
         self.mic_menu = ctk.CTkOptionMenu(
             audio_card,
             values=[_audio_default],
-            fg_color=_UI_GHOST,
-            button_color=_UI_ACCENT,
-            button_hover_color=_UI_ACCENT_HOVER,
             corner_radius=10,
         )
         self.mic_menu.pack(fill="x", pady=(0, 12))
@@ -9688,9 +9663,6 @@ class DonnaGUI(ctk.CTk):
         self.speaker_menu = ctk.CTkOptionMenu(
             audio_card,
             values=[_audio_default],
-            fg_color=_UI_GHOST,
-            button_color=_UI_ACCENT,
-            button_hover_color=_UI_ACCENT_HOVER,
             corner_radius=10,
         )
         self.speaker_menu.pack(fill="x", pady=(0, 16))
@@ -9699,8 +9671,6 @@ class DonnaGUI(ctk.CTk):
             text="Save & Apply",
             command=self._save_and_apply_audio,
             corner_radius=999,
-            fg_color=_UI_ACCENT,
-            hover_color=_UI_ACCENT_HOVER,
             height=32,
         )
         self.save_btn.pack(anchor="e", pady=(4, 8))
@@ -10508,10 +10478,6 @@ class DonnaGUI(ctk.CTk):
                 from_=0,
                 to=100,
                 number_of_steps=100,
-                progress_color=_UI_ACCENT,
-                button_color="#E5E7EB",
-                button_hover_color="#F9FAFB",
-                fg_color=_UI_GHOST,
                 command=lambda v, k=key: self._on_behavior_drag(k, v),
             )
             slider.set(float(val))
@@ -11071,6 +11037,12 @@ class DonnaGUI(ctk.CTk):
         self.deiconify()
         self.lift()
         self.focus_force()
+        try:
+            from dana.ui.logo import schedule_window_icon
+
+            schedule_window_icon(self, delay_ms=100)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self.attributes("-topmost", True)
             self.after(200, lambda: self.attributes("-topmost", False))

@@ -40,6 +40,10 @@ class PersonaMixerApp(ctk.CTk):
         on_change: Callable[[str, int], None] | None = None,
         throttle_s: float = 0.15,
     ) -> None:
+        try:
+            T.apply_dana_ctk_theme()
+        except Exception:  # noqa: BLE001
+            pass
         super().__init__()
         self._db_path = db_path
         self._on_change = on_change
@@ -48,13 +52,16 @@ class PersonaMixerApp(ctk.CTk):
         self._value_labels: dict[str, ctk.CTkLabel] = {}
         self._sliders: dict[str, ctk.CTkSlider] = {}
 
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("dark-blue")
         self.title("Dānā Persona Mixer")
         self.geometry("320x360+80+80")
         self.minsize(280, 320)
         self.attributes("-topmost", True)
-        self.configure(fg_color=T.BG)
+        try:
+            from dana.ui.logo import schedule_window_icon
+
+            schedule_window_icon(self, delay_ms=100)
+        except Exception:  # noqa: BLE001
+            pass
 
         header = ctk.CTkLabel(
             self,
@@ -91,10 +98,6 @@ class PersonaMixerApp(ctk.CTk):
                 from_=0,
                 to=100,
                 number_of_steps=100,
-                progress_color=T.ACCENT,
-                button_color="#E5E7EB",
-                button_hover_color="#F9FAFB",
-                fg_color=T.BORDER,
                 command=lambda v, k=key: self._on_drag(k, v),
             )
             slider.set(float(state.get(key, PERSONA_MIXER_DEFAULTS.get(key, 50))))
@@ -110,9 +113,6 @@ class PersonaMixerApp(ctk.CTk):
             text="Reload from DB",
             width=120,
             command=self.reload_from_db,
-            fg_color=T.ACCENT,
-            hover_color=T.ACCENT_HOVER,
-            text_color="#FFFFFF",
         )
         refresh.pack(pady=(12, 16))
 

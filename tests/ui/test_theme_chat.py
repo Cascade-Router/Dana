@@ -18,16 +18,35 @@ def test_theme_tokens_slate_palette() -> None:
     assert T.ROSE == "#F43F5E"
 
 
+def test_dana_theme_json_and_apply() -> None:
+    """Global CTk theme file exists and loads mint primary accents."""
+    import json
+
+    path = T.dana_theme_path()
+    assert path.is_file(), f"missing theme: {path}"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["CTkButton"]["fg_color"][1] == "#10b981"
+    assert data["CTkButton"]["hover_color"][1] == "#059669"
+    assert data["CTkSegmentedButton"]["selected_color"][1] == "#10b981"
+    assert data["CTk"]["fg_color"][1] == "#0a0e17"
+    assert T.apply_dana_ctk_theme() is True
+
+
 def test_ui_sources_drop_legacy_cyan() -> None:
     """Live dashboard surfaces must not hardcode legacy cyan accents."""
     from pathlib import Path
 
-    root = Path(__file__).resolve().parents[2] / "dana" / "ui"
     banned = ("#00ADB5", "#00adb5", "#008E95", "#00a8e8", "#0284c7")
-    for path in root.rglob("*.py"):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        for token in banned:
-            assert token not in text, f"{path.name} still contains {token}"
+    roots = (
+        Path(__file__).resolve().parents[2] / "dana" / "ui",
+        Path(__file__).resolve().parents[2] / "dana" / "core_agent.py",
+    )
+    for root in roots:
+        paths = [root] if root.is_file() else list(root.rglob("*.py"))
+        for path in paths:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for token in banned:
+                assert token not in text, f"{path.name} still contains {token}"
 
 
 def test_chat_bubble_view_headless() -> None:
@@ -82,6 +101,13 @@ def test_gui_uses_theme_and_chat_view() -> None:
         assert "Type below or say Dana" in raw
         assert app._engage_btn is not None
         assert app._standby_btn is not None
+        # Theme-owned primary accents (no per-widget cyan/mint hardcodes).
+        send_fg = str(app._chat_send_btn.cget("fg_color")).lower()
+        assert "#10b981" in send_fg
+        engage_fg = str(app._engage_btn.cget("fg_color")).lower()
+        assert "#10b981" in engage_fg
+        stop_fg = str(app.stop_donna_btn.cget("fg_color")).lower()
+        assert "#f43f5e" in stop_fg
     finally:
         try:
             app.destroy()
