@@ -73,3 +73,5 @@ chromadb
 sentence-transformers
 langchain-huggingface
 langchain-text-splitters
+# Windows onedir packaging (see build_dana.py)
+pyinstaller>=6.0.0
