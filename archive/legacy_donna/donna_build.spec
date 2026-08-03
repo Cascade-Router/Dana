@@ -111,16 +111,21 @@ except Exception as exc:  # noqa: BLE001
 _add_tree(ROOT / "dana" / "tools", os.path.join("dana", "tools"))
 _add_tree(ROOT / "tts_models", "tts_models")
 
-# Silent shutdown runners (stop_dana.vbs hides the console; bat does PID filtering).
+# Silent shutdown runners (prefer scripts/launchers; fall back to root wrappers).
+_launchers = ROOT / "scripts" / "launchers"
 for _stop in ("stop_dana.bat", "stop_dana.vbs"):
-    _sp = ROOT / _stop
+    _sp = _launchers / _stop
+    if not _sp.is_file():
+        _sp = ROOT / _stop
     if _sp.is_file():
         datas.append((str(_sp), "."))
     else:
-        print(f"[donna_build.spec] WARNING: missing {_sp}")
+        print(f"[donna_build.spec] WARNING: missing {_stop}")
 
 # GUI launcher (generated on install; ship if present in tree).
-_start_bat = ROOT / "start_dana.bat"
+_start_bat = _launchers / "start_dana.bat"
+if not _start_bat.is_file():
+    _start_bat = ROOT / "start_dana.bat"
 if _start_bat.is_file():
     datas.append((str(_start_bat), "."))
 else:
@@ -137,10 +142,16 @@ _add_tree(ROOT / "dana" / "ui" / "assets", os.path.join("dana", "ui", "assets"))
 _add_tree(ROOT / "dana" / "assets", os.path.join("dana", "assets"))
 
 # Optional runtime assets (present when not gitignored / downloaded).
-for _name in ("donna.onnx", "yolov8n.pt", "settings.json"):
-    _p = ROOT / _name
+_models = ROOT / "assets" / "models"
+for _name in ("donna.onnx", "yolov8n.pt"):
+    _p = _models / _name
+    if not _p.is_file():
+        _p = ROOT / _name
     if _p.is_file():
-        datas.append((str(_p), "."))
+        datas.append((str(_p), os.path.join("assets", "models")))
+_settings = ROOT / "settings.json"
+if _settings.is_file():
+    datas.append((str(_settings), "."))
 
 # Deduplicate while preserving order.
 _seen: set[str] = set()

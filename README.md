@@ -78,7 +78,7 @@ python run.py
 python -m dana.tools.setup_startup install
 ```
 
-That writes `start_dana.bat`, Desktop `Dana.lnk`, and the `DanaAssistant` HKCU Run key (migrating any legacy `Donna*` names). Silent teardown (no console flash): run `stop_dana.vbs` (or `stop_dana.bat`).
+That writes `scripts/launchers/start_dana.bat` (plus a thin root wrapper), Desktop `Dana.lnk`, and the `DanaAssistant` HKCU Run key (migrating any legacy `Donna*` names). Silent teardown (no console flash): run `scripts/launchers/stop_dana.vbs` (or the root `stop_dana.vbs` / `stop_dana.bat` wrappers).
 
 Open the Live Trace window from the system tray (**Open Settings**).
 
@@ -149,7 +149,7 @@ Deep dive: [`docs/WHITE_PAPER.md`](docs/WHITE_PAPER.md) · [`docs/architecture.m
 
 ## Documentation / Operator Guide
 
-- **[User Handbook](User%20Handbook.md)** — operating modes, wake/voice commands, and automated system behaviors for day-to-day use of Dānā.
+- **[User Handbook](docs/user_guide/User%20Handbook.md)** — operating modes, wake/voice commands, and automated system behaviors for day-to-day use of Dānā.
 - **Legal & IP:** [`docs/LEGAL_AND_IP.md`](docs/LEGAL_AND_IP.md) — product branding, Class 009/042 scope, bundled-model posture, and license audit linkage
 - **License audit:** [`docs/LICENSE_AUDIT.md`](docs/LICENSE_AUDIT.md) — third-party package inventory (includes GPL/AGPL flags)
 - **White Paper:** [`docs/WHITE_PAPER.md`](docs/WHITE_PAPER.md) — production-hardened cybernetic control plane, 5-phase hardening specs, OSWorld benchmarks

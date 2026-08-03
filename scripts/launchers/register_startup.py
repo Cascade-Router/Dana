@@ -1,10 +1,10 @@
 """Register Dana in the current user's Windows Startup (HKCU Run key).
 
 Run once:
-  python register_startup.py
+  python scripts/launchers/register_startup.py
 
 Also creates Desktop + Startup-folder shortcuts with ``assets/dana_logo.ico``.
-Uses ``pythonw.exe`` / ``start_dana.bat`` so no console window appears at logon.
+Uses ``pythonw.exe`` / ``scripts/launchers/start_dana.bat`` so no console window appears at logon.
 """
 
 from __future__ import annotations

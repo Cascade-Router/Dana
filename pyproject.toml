@@ -33,11 +33,11 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "dana/core_agent.py" = ["E402", "F401"]
 "tests/test_e2e_lifecycle.py" = ["E402"]
-"verify_agentic.py" = ["E402"]
+"scripts/diagnostics/verify_agentic.py" = ["E402"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "scripts", "scripts/diagnostics"]
 addopts = "-q"
 markers = [
   "e2e: live end-to-end OS/vision/browser manipulation tests",
@@ -50,7 +50,7 @@ warn_unused_ignores = false
 check_untyped_defs = true
 files = [
   "dana",
-  "spatial_context.py",
+  "scripts/diagnostics/spatial_context.py",
 ]
 
 [[tool.mypy.overrides]]

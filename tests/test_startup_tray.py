@@ -21,7 +21,7 @@ def test_write_start_bat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     # GUI launcher prefers pythonw when present.
     (venv_scripts / "pythonw.exe").write_bytes(b"")
     bat = setup_startup.write_start_bat()
-    assert bat == tmp_path / "start_dana.bat"
+    assert bat == tmp_path / "scripts" / "launchers" / "start_dana.bat"
     text = bat.read_text(encoding="utf-8")
     assert "run.py" in text
     assert "core_agent.py" not in text
@@ -29,6 +29,9 @@ def test_write_start_bat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert "--no-gui" not in text
     assert "cd /d" in text
     assert "start \"Dana\"" in text or 'start "Dana"' in text
+    wrap = tmp_path / "start_dana.bat"
+    assert wrap.is_file()
+    assert "scripts\\launchers\\start_dana.bat" in wrap.read_text(encoding="utf-8")
     print(f"[PASS] start_dana.bat written: {bat}")
 
 

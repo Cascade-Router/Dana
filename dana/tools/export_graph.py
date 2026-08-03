@@ -5,7 +5,7 @@ asks an LLM to guess the structure.
 
 Usage:
   python -m dana.tools.export_graph
-  python -m dana.tools.export_graph --out donna_architecture.md
+  python -m dana.tools.export_graph --out docs/architecture/donna_architecture.md
 """
 
 from __future__ import annotations
@@ -140,13 +140,13 @@ def main(argv: list[str] | None = None) -> int:
         "--out",
         type=Path,
         default=None,
-        help="Markdown output path (default: <repo>/donna_architecture.md)",
+        help="Markdown output path (default: <repo>/docs/architecture/donna_architecture.md)",
     )
     parser.add_argument(
         "--png",
         type=Path,
         default=None,
-        help="Optional PNG path (default: <repo>/donna_architecture.png when drawable)",
+        help="Optional PNG path (default: <repo>/docs/architecture/donna_architecture.png when drawable)",
     )
     parser.add_argument(
         "--no-png",
@@ -156,8 +156,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     root = _project_root()
-    out_md = args.out or (root / "donna_architecture.md")
-    out_png = args.png or (root / "donna_architecture.png")
+    arch_dir = root / "docs" / "architecture"
+    out_md = args.out or (arch_dir / "donna_architecture.md")
+    out_png = args.png or (arch_dir / "donna_architecture.png")
 
     print("[export_graph] Compiling production ReAct graph…", flush=True)
     app = compile_production_react_app()

@@ -32,6 +32,10 @@ def test_stop_dana_scripts_exist() -> None:
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
+    launchers = root / "scripts" / "launchers"
+    assert (launchers / "stop_dana.bat").is_file()
+    assert (launchers / "stop_dana.vbs").is_file()
+    # Thin root wrappers for Desktop / kill-switch compatibility.
     assert (root / "stop_dana.bat").is_file()
     assert (root / "stop_dana.vbs").is_file()
     assert not (root / "stop_donna.bat").exists()

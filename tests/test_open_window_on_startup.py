@@ -41,11 +41,16 @@ def test_open_window_on_startup_persist(tmp_path: Path, monkeypatch: pytest.Monk
 
 def test_stop_dana_bat_hides_powershell() -> None:
     root = Path(__file__).resolve().parents[1]
-    bat = root / "stop_dana.bat"
-    vbs = root / "stop_dana.vbs"
+    launchers = root / "scripts" / "launchers"
+    bat = launchers / "stop_dana.bat"
+    vbs = launchers / "stop_dana.vbs"
     text = bat.read_text(encoding="utf-8", errors="replace")
     assert bat.is_file()
     assert vbs.is_file()
     assert "-WindowStyle Hidden" in text
     assert ">nul" in text.lower() or "2>&1" in text
     assert "stop_dana.bat" in vbs.read_text(encoding="utf-8", errors="replace")
+    # Root wrappers forward to scripts/launchers.
+    assert "scripts\\launchers\\stop_dana.bat" in (
+        root / "stop_dana.bat"
+    ).read_text(encoding="utf-8", errors="replace")

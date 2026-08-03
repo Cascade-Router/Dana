@@ -65,8 +65,20 @@ start_donna.bat
 # Regenerable pyreverse UML dumps (do not clutter production tree)
 donna_class_uml.md
 donna_module_uml.md
+docs/architecture/donna_class_uml.md
+docs/architecture/donna_module_uml.md
 classes_Donna.*
 packages_Donna.*
+
+# Root triage / scratch dumps (keep tree clean)
+_*_triage*.txt
+_agent_triage*.txt
+_pytest_*.txt
+_commit_check*.txt
+_pkg_new.*
+_new_steps.yml
+_triage_out.txt
+_pyinstaller_build.log
 
 # --- Persistent memory / databases / logs ---
 logs/
@@ -98,7 +110,10 @@ docs/*.db
 /cursor_handoffs/
 /generated_tools/
 /dashboard.md
+docs/user_guide/dashboard.md
 .donna_workspace_migrated
+archive/legacy_donna/.donna_workspace_migrated
+archive/legacy_donna/donna_memory.enc
 .donna_sandbox.py
 .dana_scratch/
 /_archive/
@@ -139,14 +154,19 @@ _training_archive/
 _e2e_*.py
 _e2e_*.json
 donna_branch_diagnostics.md
+docs/architecture/donna_branch_diagnostics.md
 REPO_AUDIT.md
+docs/user_guide/REPO_AUDIT.md
 
 # Debug and local testing utilities
 debug_*.py
 !dana/tools/debug_vision_live.py
 audio_diagnostics.py
+scripts/diagnostics/audio_diagnostics.py
 train_donna_local.py
+scripts/train_donna_local.py
 verify_agentic.py
+scripts/diagnostics/verify_agentic.py
 
 # Live vision diagnostic dumps
 debug_output/

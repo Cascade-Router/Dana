@@ -118,15 +118,24 @@ EVALS_DIR: Path = PROJECT_ROOT / "dana" / "evals"
 
 EVAL_CASES_PATH: Path = EVALS_DIR / "test_cases.json"
 
-# Preferred wake-word ONNX; ``resolve_wakeword_onnx`` falls back to legacy names.
-WAKEWORD_ONNX: Path = PROJECT_ROOT / "dana.onnx"
-WAKEWORD_ONNX_LEGACY: Path = PROJECT_ROOT / "donna.onnx"
-WAKEWORD_ONNX_ALT: Path = PROJECT_ROOT / "wake_word_model.onnx"
+# Preferred wake-word ONNX under assets/models; ``resolve_wakeword_onnx`` also
+# checks legacy repo-root locations for backward compatibility.
+MODELS_DIR: Path = PROJECT_ROOT / "assets" / "models"
+WAKEWORD_ONNX: Path = MODELS_DIR / "dana.onnx"
+WAKEWORD_ONNX_LEGACY: Path = MODELS_DIR / "donna.onnx"
+WAKEWORD_ONNX_ALT: Path = MODELS_DIR / "wake_word_model.onnx"
 
 
 def resolve_wakeword_onnx() -> Path:
     """Return the first existing wake-word model path (dana → alt → legacy)."""
-    for candidate in (WAKEWORD_ONNX, WAKEWORD_ONNX_ALT, WAKEWORD_ONNX_LEGACY):
+    for candidate in (
+        WAKEWORD_ONNX,
+        WAKEWORD_ONNX_ALT,
+        WAKEWORD_ONNX_LEGACY,
+        PROJECT_ROOT / "dana.onnx",
+        PROJECT_ROOT / "wake_word_model.onnx",
+        PROJECT_ROOT / "donna.onnx",
+    ):
         if candidate.is_file():
             return candidate
     return WAKEWORD_ONNX
@@ -137,7 +146,7 @@ TRIGGER_ASK_PATH: Path = PROJECT_ROOT / ".trigger_ask"
 
 TEMP_REPLY_WAV: Path = PROJECT_ROOT / "temp_reply.wav"
 
-YOLO_WEIGHTS_PATH: Path = PROJECT_ROOT / "yolov8n.pt"
+YOLO_WEIGHTS_PATH: Path = MODELS_DIR / "yolov8n.pt"
 
 WORKSPACE_MIGRATION_MARKER: Path = DONNA_WORKSPACE / ".donna_workspace_migrated"
 
@@ -161,6 +170,11 @@ def ensure_project_root_on_syspath() -> Path:
     root = str(PROJECT_ROOT)
     if root not in sys.path:
         sys.path.insert(0, root)
+    # Relocated root utilities (ingest, spatial_context, vision shim).
+    for sub in ("scripts", os.path.join("scripts", "diagnostics")):
+        p = str(PROJECT_ROOT / sub)
+        if p not in sys.path:
+            sys.path.insert(0, p)
     return PROJECT_ROOT
 
 

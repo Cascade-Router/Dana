@@ -72,7 +72,7 @@ def entry_script() -> Path:
 
 
 def bat_path() -> Path:
-    return project_root() / "start_dana.bat"
+    return project_root() / "scripts" / "launchers" / "start_dana.bat"
 
 
 def app_icon_path() -> Path:
@@ -314,7 +314,7 @@ def _ps_quote(value: str) -> str:
 
 
 def write_start_bat() -> Path:
-    """Create ``start_dana.bat``: abs ``cd``, GUI enabled (no ``--no-gui``)."""
+    """Create ``scripts/launchers/start_dana.bat``: abs ``cd``, GUI enabled."""
     root = absolute_workdir()
     # Prefer pythonw for a windowed GUI launch (no console flash).
     py = str(python_launcher(headless=False))
@@ -328,7 +328,17 @@ def write_start_bat() -> Path:
         "",
     ]
     path = bat_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8", newline="\r\n")
+    # Thin root wrapper for Desktop shortcuts that still point at repo root.
+    root_wrap = project_root() / "start_dana.bat"
+    root_wrap.write_text(
+        "@echo off\r\n"
+        "REM Thin root wrapper — canonical script lives under scripts\\launchers\\\r\n"
+        'call "%~dp0scripts\\launchers\\start_dana.bat" %*\r\n',
+        encoding="utf-8",
+        newline="\r\n",
+    )
     _remove_path_quiet(project_root() / "start_donna.bat")
     return path
 

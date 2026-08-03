@@ -111,7 +111,7 @@ flowchart TD
 
 | Script | Purpose |
 |--------|---------|
-| `verify_agentic.py` | Broker + scripted LangChain loop checks |
+| `scripts/diagnostics/verify_agentic.py` | Broker + scripted LangChain loop checks |
 | `test_langchain_tools.py` | Native tool bridge + Watchdog registry |
 | `test_watchdog_graph.py` | Watchdog graph / sandbox cwd |
 | `test_e2e_lifecycle.py` | Lifecycle + resource profiling |

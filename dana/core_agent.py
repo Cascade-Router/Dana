@@ -26,7 +26,7 @@ Triggers:
 
 Setup:
   python -m dana.core_agent --download   # one-time Whisper/OWW cache
-  python audio_diagnostics.py             # verify mic/speaker/TTS
+  python scripts/diagnostics/audio_diagnostics.py  # verify mic/speaker/TTS
   python -m dana.core_agent
 """
 
@@ -149,7 +149,7 @@ import sounddevice as sd
 import soundfile as sf
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw
-from vision_tools import ScreenAgent, VideoAgent
+from dana.vision_tools import ScreenAgent, VideoAgent
 from dana.paths import (
     ENV_PATH,
     PROJECT_ROOT as _PATHS_PROJECT_ROOT,
@@ -161,13 +161,15 @@ from dana.paths import (
     WAKEWORD_ONNX,
     YOLO_WEIGHTS_PATH,
     chdir_project_root,
+    ensure_project_root_on_syspath,
     resolve_wakeword_onnx,
 )
 # TEXT_INJECTION_PATH kept for legacy migrate; ingestion uses task_queue.json.
 
 # Keep bootstrap string and dana.paths.PROJECT_ROOT in sync.
 PROJECT_ROOT = os.path.abspath(str(_PATHS_PROJECT_ROOT))
-import ingest  # noqa: E402 — repo-root input.txt → task_queue.json converter
+ensure_project_root_on_syspath()
+import ingest  # noqa: E402 — scripts/ingest.py → task_queue.json converter
 from dana.secure_memory import SecureMemory, default_vault_path
 from dana.vault_service import VaultClient
 from dana.tools import ToolCall, ToolValidationError, get_broker
@@ -2971,7 +2973,7 @@ def wakeword_worker() -> None:
         print(
             "[Warning] dana.onnx / donna.onnx not found! Temporary Alexa wake-word "
             "enabled for mic debugging. Say 'Alexa' (not Dana). Place dana.onnx "
-            "(or legacy donna.onnx) in the project root to switch back.",
+            "(or legacy donna.onnx) in assets/models/ to switch back.",
             flush=True,
         )
         log(
@@ -10920,11 +10922,19 @@ class DonnaGUI(ctk.CTk):
             root = Path(PROJECT_ROOT)
         except Exception:  # noqa: BLE001
             root = Path(__file__).resolve().parents[1]
-        vbs = root / "stop_dana.vbs"
-        bat = root / "stop_dana.bat"
+        launchers = root / "scripts" / "launchers"
+        vbs = launchers / "stop_dana.vbs"
+        bat = launchers / "stop_dana.bat"
+        if not vbs.is_file() and not bat.is_file():
+            # Fallback: thin root wrappers / legacy layout / unit-test tmp roots.
+            vbs = root / "stop_dana.vbs"
+            bat = root / "stop_dana.bat"
         runner = vbs if vbs.is_file() else bat
         if not runner.is_file():
-            msg = f"stop_dana.vbs / stop_dana.bat not found under {root}"
+            msg = (
+                f"stop_dana.vbs / stop_dana.bat not found under "
+                f"{launchers} or {root}"
+            )
             log("UI", f"WARNING: {msg}")
             return {"ok": False, "error": "FileNotFoundError", "message": msg}
         try:

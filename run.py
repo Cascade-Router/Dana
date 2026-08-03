@@ -24,6 +24,10 @@ if sys.platform == "win32":
 _ROOT = os.path.abspath(os.path.dirname(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+for _sub in ("scripts", os.path.join("scripts", "diagnostics")):
+    _p = os.path.join(_ROOT, _sub)
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
 try:
     os.chdir(_ROOT)
 except OSError:

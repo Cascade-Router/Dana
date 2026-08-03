@@ -104,12 +104,21 @@ def main() -> int:
     root_assets = ROOT / "assets"
     if root_assets.is_dir():
         args.append(f"--add-data={root_assets}{os.pathsep}assets")
+    models = ROOT / "assets" / "models"
+    if models.is_dir():
+        args.append(f"--add-data={models}{os.pathsep}assets/models")
     ui_assets = ROOT / "dana" / "ui" / "assets"
     if ui_assets.is_dir():
         args.append(f"--add-data={ui_assets}{os.pathsep}dana/ui/assets")
     dana_assets = ROOT / "dana" / "assets"
     if dana_assets.is_dir():
         args.append(f"--add-data={dana_assets}{os.pathsep}dana/assets")
+    for _stop in ("stop_dana.bat", "stop_dana.vbs", "start_dana.bat"):
+        cand = ROOT / "scripts" / "launchers" / _stop
+        if not cand.is_file():
+            cand = ROOT / _stop
+        if cand.is_file():
+            args.append(f"--add-data={cand}{os.pathsep}.")
 
     print("[build_dana] Entry: run.py -> dana.core_agent.main (desktop UI)")
     print("[build_dana] PyInstaller args:")

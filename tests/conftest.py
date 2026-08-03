@@ -14,6 +14,10 @@ _ROOT = Path(__file__).resolve().parents[1]
 _root_s = str(_ROOT)
 if _root_s not in sys.path:
     sys.path.insert(0, _root_s)
+for _sub in ("scripts", "scripts/diagnostics"):
+    _p = str(_ROOT / _sub)
+    if Path(_p).is_dir() and _p not in sys.path:
+        sys.path.insert(0, _p)
 
 
 @pytest.fixture(autouse=True)
