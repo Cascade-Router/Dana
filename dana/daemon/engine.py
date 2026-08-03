@@ -531,14 +531,22 @@ async def run_engine_daemon(
         try:
             import sounddevice as sd
 
-            # Default input; short read forces driver + ring-buffer alloc.
+            from dana.audio.devices import get_default_audio_devices, stream_device_kwargs
+
+            # Bind Windows system default input (device=None / sd.default.device).
+            try:
+                din, _dout = get_default_audio_devices()
+            except Exception:  # noqa: BLE001
+                din = None
             frames = max(1, int(16000 * 0.05))
-            stream = sd.InputStream(
-                samplerate=16000,
-                channels=1,
-                dtype="float32",
-                blocksize=min(512, frames),
-            )
+            kwargs = {
+                "samplerate": 16000,
+                "channels": 1,
+                "dtype": "float32",
+                "blocksize": min(512, frames),
+            }
+            kwargs.update(stream_device_kwargs(None))
+            stream = sd.InputStream(**kwargs)
             stream.start()
             try:
                 stream.read(frames)
@@ -552,7 +560,11 @@ async def run_engine_daemon(
                 log_perf("audio_warmup", elapsed_ms, phase="complete")
             except Exception:  # noqa: BLE001
                 pass
-            log("Daemon", f"audio_warmup=complete ({elapsed_ms:.0f} ms)")
+            log(
+                "Daemon",
+                f"audio_warmup=complete ({elapsed_ms:.0f} ms) "
+                f"default_in={din}",
+            )
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = (time.perf_counter() - t_audio) * 1000.0
             try:

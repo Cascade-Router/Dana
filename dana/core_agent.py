@@ -1969,6 +1969,7 @@ def consume_audio_hardware_fault() -> str:
 
 def soft_recover_audio_hardware(detail: str = "") -> None:
     """Main-loop soft restart after PaErrorCode: release locks and log device state."""
+    global AUDIO_INPUT_DEVICE, AUDIO_INPUT_RATE, AUDIO_OUTPUT_DEVICE
     reason = detail or "PortAudio hardware fault"
     log("Main", f"Audio hardware fault — soft restart ({reason})")
     reset_tts_audio_state(f"hardware fault soft-restart: {reason}", ui_state="idle")
@@ -1978,6 +1979,24 @@ def soft_recover_audio_hardware(detail: str = "") -> None:
         list_output_devices()
     except Exception as exc:  # noqa: BLE001
         log_exception("Main", "Failed listing audio devices during soft restart", exc=exc)
+    # Drop sticky explicit indices that may have vanished (Bluetooth unplug).
+    if AUDIO_INPUT_DEVICE is not None and not _validate_mic_id(AUDIO_INPUT_DEVICE):
+        log("Main", f"Soft restart: mic [{AUDIO_INPUT_DEVICE}] invalid → System Default")
+        AUDIO_INPUT_DEVICE = None
+        AUDIO_INPUT_RATE = _device_rate(None)
+    if AUDIO_OUTPUT_DEVICE is not None and not _validate_speaker_id(AUDIO_OUTPUT_DEVICE):
+        log(
+            "Main",
+            f"Soft restart: speaker [{AUDIO_OUTPUT_DEVICE}] invalid → System Default",
+        )
+        AUDIO_OUTPUT_DEVICE = None
+    try:
+        from dana.audio.devices import get_default_audio_devices
+
+        din, dout = get_default_audio_devices()
+        log("Main", f"Soft restart OS defaults: in={din} out={dout}")
+    except Exception as exc:  # noqa: BLE001
+        log_exception("Main", "Failed re-querying default audio devices", exc=exc)
     try:
         # Nudge PortAudio to drop stale streams.
         sd.stop()
@@ -2437,28 +2456,57 @@ def reset_donna_vault() -> None:
 # Dynamic audio configuration (settings.json)
 # ---------------------------------------------------------------------------
 
-def _device_rate(index: int) -> int:
+def _device_rate(index: Optional[int]) -> int:
+    """Native sample rate for a device index, or the OS default input when None."""
+    if index is None:
+        try:
+            from dana.audio.devices import default_device_samplerate
+
+            rate = default_device_samplerate("input")
+            if rate is not None and rate > 0:
+                return int(rate)
+        except Exception:  # noqa: BLE001
+            pass
+        return SAMPLE_RATE
     try:
         return int(round(float(sd.query_devices()[index]["default_samplerate"])))
     except Exception:
         return SAMPLE_RATE
 
 
-def _validate_mic_id(mic_id: int) -> bool:
+def _validate_mic_id(mic_id: Optional[int]) -> bool:
+    """True for System Default (None) or a live INPUT device index."""
+    if mic_id is None:
+        return True
     devices = sd.query_devices()
     if mic_id < 0 or mic_id >= len(devices):
         return False
     return int(devices[mic_id].get("max_input_channels", 0)) >= 1
 
 
-def _validate_speaker_id(speaker_id: int) -> bool:
+def _validate_speaker_id(speaker_id: Optional[int]) -> bool:
+    """True for System Default (None) or a live OUTPUT device index."""
+    if speaker_id is None:
+        return True
     devices = sd.query_devices()
     if speaker_id < 0 or speaker_id >= len(devices):
         return False
     return int(devices[speaker_id].get("max_output_channels", 0)) >= 1
 
 
-def save_audio_settings(mic_id: int, speaker_id: int) -> None:
+def _parse_settings_device_id(raw: Any) -> Optional[int]:
+    """Parse settings.json mic/speaker id; null / missing → System Default."""
+    if raw is None:
+        return None
+    if isinstance(raw, str) and raw.strip().lower() in {"", "none", "null", "default", "auto"}:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def save_audio_settings(mic_id: Optional[int], speaker_id: Optional[int]) -> None:
     # Preserve non-audio flags (e.g. enable_dynamic_tool_synthesis) across audio saves.
     payload: dict[str, Any] = {}
     if os.path.isfile(SETTINGS_FILE):
@@ -2469,8 +2517,8 @@ def save_audio_settings(mic_id: int, speaker_id: int) -> None:
                 payload.update(existing)
         except Exception:  # noqa: BLE001
             pass
-    payload["mic_id"] = int(mic_id)
-    payload["speaker_id"] = int(speaker_id)
+    payload["mic_id"] = None if mic_id is None else int(mic_id)
+    payload["speaker_id"] = None if speaker_id is None else int(speaker_id)
     if "enable_dynamic_tool_synthesis" not in payload:
         payload["enable_dynamic_tool_synthesis"] = True
     if "assistant_language" not in payload:
@@ -2482,11 +2530,15 @@ def save_audio_settings(mic_id: int, speaker_id: int) -> None:
     log("Audio", f"Saved audio settings -> {os.path.basename(SETTINGS_FILE)}")
 
 
-def interactive_audio_setup() -> tuple[int, int]:
-    """First-run terminal wizard: pick mic + speaker, persist to settings.json."""
+def interactive_audio_setup() -> tuple[Optional[int], Optional[int]]:
+    """First-run terminal wizard: pick mic + speaker, persist to settings.json.
+
+    Press Enter with no ID to keep Windows System Default (Auto).
+    """
     print("\n=== Donna first-run audio setup ===", flush=True)
     print(
-        "No settings.json found. Let's configure your microphone and speakers.\n",
+        "No settings.json found. Let's configure your microphone and speakers.\n"
+        "Press Enter with no ID to use System Default (Auto).\n",
         flush=True,
     )
 
@@ -2528,12 +2580,16 @@ def interactive_audio_setup() -> tuple[int, int]:
 
     while True:
         raw = input(
-            "\nPlease enter the ID of your preferred Microphone: "
+            "\nPlease enter the ID of your preferred Microphone "
+            "(Enter = System Default): "
         ).strip()
+        if raw == "":
+            mic_id: Optional[int] = None
+            break
         try:
             mic_id = int(raw)
         except ValueError:
-            print("Please enter a numeric device index.", flush=True)
+            print("Please enter a numeric device index (or Enter for default).", flush=True)
             continue
         if not _validate_mic_id(mic_id):
             print(f"Invalid microphone ID: {mic_id}", flush=True)
@@ -2542,12 +2598,16 @@ def interactive_audio_setup() -> tuple[int, int]:
 
     while True:
         raw = input(
-            "Please enter the ID of your preferred Speaker/Headphones: "
+            "Please enter the ID of your preferred Speaker/Headphones "
+            "(Enter = System Default): "
         ).strip()
+        if raw == "":
+            speaker_id: Optional[int] = None
+            break
         try:
             speaker_id = int(raw)
         except ValueError:
-            print("Please enter a numeric device index.", flush=True)
+            print("Please enter a numeric device index (or Enter for default).", flush=True)
             continue
         if not _validate_speaker_id(speaker_id):
             print(f"Invalid speaker ID: {speaker_id}", flush=True)
@@ -2563,39 +2623,67 @@ def interactive_audio_setup() -> tuple[int, int]:
     return mic_id, speaker_id
 
 
-def load_audio_settings() -> tuple[int, int, int]:
-    """Load mic/speaker from settings.json, or run interactive setup.
+def load_audio_settings() -> tuple[Optional[int], Optional[int], int]:
+    """Load mic/speaker from settings.json, or use System Default (Auto).
 
-    Returns (mic_id, speaker_id, mic_native_rate).
+    Returns (mic_id, speaker_id, mic_native_rate). ``None`` ids mean OS default.
     """
     if not os.path.isfile(SETTINGS_FILE):
-        mic_id, speaker_id = interactive_audio_setup()
-        return mic_id, speaker_id, _device_rate(mic_id)
+        save_audio_settings(None, None)
+        log(
+            "Audio",
+            "No settings.json — using System Default (Auto) for mic/speaker",
+        )
+        return None, None, _device_rate(None)
 
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
             cfg = json.load(fh)
-        mic_id = int(cfg["mic_id"])
-        speaker_id = int(cfg["speaker_id"])
+        if not isinstance(cfg, dict):
+            raise ValueError("settings.json root is not an object")
+        mic_id = _parse_settings_device_id(cfg.get("mic_id"))
+        speaker_id = _parse_settings_device_id(cfg.get("speaker_id"))
     except Exception as exc:  # noqa: BLE001
-        log("Audio", f"WARNING: settings.json unreadable ({exc}); re-running setup.")
-        mic_id, speaker_id = interactive_audio_setup()
-        return mic_id, speaker_id, _device_rate(mic_id)
+        log("Audio", f"WARNING: settings.json unreadable ({exc}); using System Default.")
+        save_audio_settings(None, None)
+        return None, None, _device_rate(None)
 
-    if not _validate_mic_id(mic_id) or not _validate_speaker_id(speaker_id):
+    if mic_id is not None and not _validate_mic_id(mic_id):
         log(
             "Audio",
-            f"WARNING: settings.json devices invalid "
-            f"(mic={mic_id}, speaker={speaker_id}); re-running setup.",
+            f"WARNING: settings.json mic [{mic_id}] invalid — falling back to System Default",
         )
-        mic_id, speaker_id = interactive_audio_setup()
-        return mic_id, speaker_id, _device_rate(mic_id)
+        mic_id = None
+    if speaker_id is not None and not _validate_speaker_id(speaker_id):
+        log(
+            "Audio",
+            f"WARNING: settings.json speaker [{speaker_id}] invalid — "
+            "falling back to System Default",
+        )
+        speaker_id = None
 
+    try:
+        from dana.audio.devices import get_default_audio_devices
+
+        din, dout = get_default_audio_devices()
+    except Exception:  # noqa: BLE001
+        din, dout = None, None
     devices = sd.query_devices()
+
+    def _name(idx: Optional[int], fallback_idx: Optional[int]) -> str:
+        if idx is None:
+            if fallback_idx is not None and 0 <= int(fallback_idx) < len(devices):
+                return f"System Default ({devices[int(fallback_idx)].get('name', '?')})"
+            return "System Default (Auto)"
+        try:
+            return str(devices[idx].get("name", "?"))
+        except Exception:
+            return "?"
+
     log(
         "Audio",
-        f"Loaded settings.json -> mic [{mic_id}] {devices[mic_id].get('name')} | "
-        f"speaker [{speaker_id}] {devices[speaker_id].get('name')}",
+        f"Loaded settings.json -> mic [{mic_id}] {_name(mic_id, din)} | "
+        f"speaker [{speaker_id}] {_name(speaker_id, dout)}",
     )
     return mic_id, speaker_id, _device_rate(mic_id)
 
@@ -3620,7 +3708,11 @@ def find_steelseries_speaker() -> Optional[tuple[int, str]]:
 
 
 def pick_output_device(preferred: Optional[int] = None) -> Optional[int]:
-    """Resolve TTS playback device (honors --speaker when provided)."""
+    """Resolve TTS playback device (honors --speaker when provided).
+
+    ``None`` / System Default keeps PortAudio on the live Windows default so
+    mid-session Bluetooth switches are picked up on the next OutputStream open.
+    """
     devices = sd.query_devices()
     hostapis = sd.query_hostapis()
 
@@ -3642,21 +3734,20 @@ def pick_output_device(preferred: Optional[int] = None) -> Optional[int]:
         )
         return preferred
 
-    steel = find_steelseries_speaker()
-    if steel is not None:
-        idx, name = steel
-        log("Main", f"Auto-selected SteelSeries speaker: {name} (Index {idx})")
-        return idx
-
     try:
-        default_out = sd.default.device[1]
-        if default_out is not None:
+        from dana.audio.devices import get_default_audio_devices
+
+        _din, default_out = get_default_audio_devices()
+        if default_out is not None and 0 <= int(default_out) < len(devices):
             name = devices[int(default_out)].get("name", "?")
-            log("Audio", f"Using default speaker [{default_out}] {name}")
-            return int(default_out)
+            log(
+                "Audio",
+                f"Using System Default speaker (current=[{default_out}] {name})",
+            )
+        else:
+            log("Audio", "Using System Default speaker (sounddevice device=None)")
     except Exception:
-        pass
-    log("Audio", "WARNING: could not resolve speaker device; using system default.")
+        log("Audio", "Using System Default speaker (sounddevice device=None)")
     return None
 
 
@@ -3720,7 +3811,11 @@ def find_steelseries_mic() -> Optional[tuple[int, int, str]]:
 
 
 def pick_input_device(preferred: Optional[int] = None) -> tuple[Optional[int], int]:
-    """Resolve mic index + native sample rate (honors --mic when provided)."""
+    """Resolve mic index + native sample rate (honors --mic when provided).
+
+    When ``preferred`` is None, return System Default (device=None) so the next
+    InputStream open follows the live Windows recording endpoint.
+    """
     devices = sd.query_devices()
     hostapis = sd.query_hostapis()
 
@@ -3730,7 +3825,7 @@ def pick_input_device(preferred: Optional[int] = None) -> tuple[Optional[int], i
         except Exception:
             return ""
 
-    # Explicit --mic always wins; skip SteelSeries auto-search.
+    # Explicit --mic always wins.
     if preferred is not None:
         if preferred < 0 or preferred >= len(devices):
             log("Audio", f"ERROR: --mic {preferred} is out of range.")
@@ -3747,65 +3842,22 @@ def pick_input_device(preferred: Optional[int] = None) -> tuple[Optional[int], i
         )
         return preferred, rate
 
-    steel = find_steelseries_mic()
-    if steel is not None:
-        idx, rate, name = steel
-        log(
-            "Main",
-            f"Auto-selected SteelSeries microphone: {name} (Index {idx})",
-        )
-        return idx, rate
-
-    preferred_substrings = (
-        "usb camera",
-        "high definition aud",
-        "hd audio microphone",
-        "microphone (",
-    )
-    avoid_substrings = ("vb-audio", "cable", "mapper", "primary sound")
-    # Never use WDM-KS for capture — it causes PaErrorCode -9999 spam on this machine.
-    preferred_apis = ("mme", "wasapi", "directsound")
-
-    candidates: list[tuple[int, int, str, str, int]] = []
-    for idx, dev in enumerate(devices):
-        if int(dev.get("max_input_channels", 0)) < 1:
-            continue
-        name = str(dev.get("name", ""))
-        name_l = name.lower()
-        if any(a in name_l for a in avoid_substrings):
-            continue
-        api = hostapi_name(dev)
-        if "wdm-ks" in api:
-            continue
-        api_rank = next(
-            (i for i, token in enumerate(preferred_apis) if token in api),
-            len(preferred_apis),
-        )
-        rate = int(round(float(dev.get("default_samplerate", SAMPLE_RATE))))
-        candidates.append((api_rank, idx, name, api, rate))
-
-    candidates.sort(key=lambda row: (row[0], row[1]))
-
-    for needle in preferred_substrings:
-        for _api_rank, idx, name, api, rate in candidates:
-            if needle in name.lower():
-                log("Audio", f"Selected mic device [{idx}] {name} ({api}, {rate} Hz)")
-                return idx, rate
-
-    if candidates:
-        _api_rank, idx, name, api, rate = candidates[0]
-        log("Audio", f"Selected mic device [{idx}] {name} ({api}, {rate} Hz)")
-        return idx, rate
-
+    rate = _device_rate(None)
     try:
-        default_in = sd.default.device[0]
-        name = devices[default_in]["name"] if default_in is not None else "default"
-        rate = int(round(float(devices[default_in].get("default_samplerate", SAMPLE_RATE))))
-        log("Audio", f"Using default mic device [{default_in}] {name} ({rate} Hz)")
-        return (int(default_in) if default_in is not None else None), rate
+        from dana.audio.devices import get_default_audio_devices
+
+        default_in, _dout = get_default_audio_devices()
+        if default_in is not None and 0 <= int(default_in) < len(devices):
+            name = devices[int(default_in)].get("name", "?")
+            log(
+                "Audio",
+                f"Using System Default mic (current=[{default_in}] {name}, {rate} Hz)",
+            )
+        else:
+            log("Audio", f"Using System Default mic (sounddevice device=None, {rate} Hz)")
     except Exception:
-        log("Audio", "WARNING: could not resolve mic device; using system default")
-        return None, SAMPLE_RATE
+        log("Audio", f"Using System Default mic (sounddevice device=None, {rate} Hz)")
+    return None, rate
 
 
 def probe_mic_rms(device_idx: Optional[int], rate: int, seconds: float = 0.4) -> float:
@@ -4210,59 +4262,103 @@ def mic_ingest_worker() -> None:
 
     def _open() -> bool:
         nonlocal stream, stream_channels
+        global AUDIO_INPUT_DEVICE, AUDIO_INPUT_RATE
         _close()
-        if AUDIO_INPUT_DEVICE is None:
-            log("MicIngest", "ERROR: AUDIO_INPUT_DEVICE is None — producer idle")
-            return False
-        native_frame = max(
-            1, int(round(VAD_FRAME_SAMPLES * AUDIO_INPUT_RATE / float(SAMPLE_RATE)))
-        )
-        last_exc: Optional[BaseException] = None
-        for channels in (1, 2):
-            kwargs: dict[str, Any] = {
-                "device": int(AUDIO_INPUT_DEVICE),
-                "samplerate": AUDIO_INPUT_RATE,
-                "channels": channels,
-                "dtype": "float32",
-                "blocksize": native_frame,
-            }
-            held = mic_lock.acquire(timeout=MIC_STREAM_OPEN_TIMEOUT_S)
-            if not held:
-                last_exc = TimeoutError("mic_lock timeout")
-                continue
-            try:
-                wake_mic_released.clear()
-                candidate = _open_input_stream_with_timeout(
-                    kwargs,
-                    timeout_s=MIC_STREAM_OPEN_TIMEOUT_S,
-                    label="MicIngest.InputStream.open",
-                )
-                if candidate is None:
-                    wake_mic_released.set()
-                    last_exc = TimeoutError("InputStream open timed out")
-                    continue
-                stream = candidate
-                stream_channels = channels
-                mic_ingest_ready.set()
-                wake_mic_released.set()
-                flush_audio_buffer_queue()
+        from dana.audio.devices import get_default_audio_devices, stream_device_kwargs
+
+        # Re-query before each open so Bluetooth / OS default switches bind live.
+        try:
+            din, _dout = get_default_audio_devices()
+        except Exception:  # noqa: BLE001
+            din = None
+
+        device = AUDIO_INPUT_DEVICE
+        rate = int(AUDIO_INPUT_RATE or SAMPLE_RATE)
+        if device is not None and not _validate_mic_id(device):
+            log(
+                "MicIngest",
+                f"Configured mic [{device}] gone — falling back to System Default",
+            )
+            device = None
+            AUDIO_INPUT_DEVICE = None
+        if device is None:
+            rate = _device_rate(None)
+            AUDIO_INPUT_RATE = rate
+            if din is not None:
                 log(
                     "MicIngest",
-                    f"InputStream open device={AUDIO_INPUT_DEVICE} "
-                    f"rate={AUDIO_INPUT_RATE} ch={channels} "
-                    f"block={native_frame} (-> {VAD_FRAME_MS}ms @16k)",
+                    f"Binding System Default input (current=[{din}]) @ {rate} Hz",
                 )
-                print(
-                    f"[Debug] MicIngest InputStream open device={AUDIO_INPUT_DEVICE} "
-                    f"rate={AUDIO_INPUT_RATE} ch={channels} block={native_frame}",
-                    flush=True,
-                )
-                return True
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                wake_mic_released.set()
-            finally:
-                mic_lock.release()
+
+        native_frame = max(
+            1, int(round(VAD_FRAME_SAMPLES * rate / float(SAMPLE_RATE)))
+        )
+        last_exc: Optional[BaseException] = None
+        # Try configured device first; on PortAudioError retry OS default (None).
+        device_attempts: list[Optional[int]] = [device]
+        if device is not None:
+            device_attempts.append(None)
+
+        for attempt_device in device_attempts:
+            attempt_rate = rate if attempt_device == device else _device_rate(None)
+            for channels in (1, 2):
+                kwargs: dict[str, Any] = {
+                    "samplerate": attempt_rate,
+                    "channels": channels,
+                    "dtype": "float32",
+                    "blocksize": native_frame,
+                }
+                kwargs.update(stream_device_kwargs(attempt_device))
+                held = mic_lock.acquire(timeout=MIC_STREAM_OPEN_TIMEOUT_S)
+                if not held:
+                    last_exc = TimeoutError("mic_lock timeout")
+                    continue
+                try:
+                    wake_mic_released.clear()
+                    candidate = _open_input_stream_with_timeout(
+                        kwargs,
+                        timeout_s=MIC_STREAM_OPEN_TIMEOUT_S,
+                        label="MicIngest.InputStream.open",
+                    )
+                    if candidate is None:
+                        wake_mic_released.set()
+                        last_exc = TimeoutError("InputStream open timed out")
+                        continue
+                    stream = candidate
+                    stream_channels = channels
+                    if attempt_device is None and device is not None:
+                        log(
+                            "MicIngest",
+                            f"PortAudio fallback: mic [{device}] -> System Default",
+                        )
+                        AUDIO_INPUT_DEVICE = None
+                    AUDIO_INPUT_RATE = int(kwargs["samplerate"])
+                    mic_ingest_ready.set()
+                    wake_mic_released.set()
+                    flush_audio_buffer_queue()
+                    log(
+                        "MicIngest",
+                        f"InputStream open device={AUDIO_INPUT_DEVICE} "
+                        f"rate={AUDIO_INPUT_RATE} ch={channels} "
+                        f"block={native_frame} (-> {VAD_FRAME_MS}ms @16k)",
+                    )
+                    print(
+                        f"[Debug] MicIngest InputStream open device={AUDIO_INPUT_DEVICE} "
+                        f"rate={AUDIO_INPUT_RATE} ch={channels} block={native_frame}",
+                        flush=True,
+                    )
+                    return True
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    wake_mic_released.set()
+                    if _is_portaudio_error(exc) and attempt_device is not None:
+                        log(
+                            "MicIngest",
+                            f"PortAudioError on mic [{attempt_device}] — "
+                            "will retry System Default",
+                        )
+                finally:
+                    mic_lock.release()
         log("MicIngest", f"ERROR: could not open mic stream ({last_exc})")
         return False
 
@@ -7081,6 +7177,7 @@ def _play_pcm_interruptible(
 
     ``interruptible=False`` plays UI acknowledgments without arming barge-in.
     """
+    global AUDIO_OUTPUT_DEVICE
     audio = np.asarray(audio_data, dtype=np.float32)
     if audio.ndim > 1:
         audio = audio[:, 0]
@@ -7088,13 +7185,29 @@ def _play_pcm_interruptible(
     if audio.size == 0:
         return False
 
+    from dana.audio.devices import get_default_audio_devices, stream_device_kwargs
+
+    # Re-query OS defaults so a mid-session Bluetooth switch is visible.
+    try:
+        _din, dout = get_default_audio_devices()
+    except Exception:  # noqa: BLE001
+        dout = None
+    play_device = output_device
+    if play_device is not None and not _validate_speaker_id(play_device):
+        log(
+            "Audio",
+            f"Configured speaker [{play_device}] gone — falling back to System Default"
+            + (f" (current=[{dout}])" if dout is not None else ""),
+        )
+        play_device = None
+
     play_rate = int(samplerate)
-    host_rate = _device_output_samplerate(output_device)
+    host_rate = _device_output_samplerate(play_device)
     if host_rate is not None and host_rate != play_rate:
         log_debug(
             "Audio",
             f"resample PCM {play_rate} Hz -> {host_rate} Hz "
-            f"(device={output_device}) to prevent sped-up playback",
+            f"(device={play_device}) to prevent sped-up playback",
         )
         audio = _resample_pcm(audio, play_rate, host_rate)
         play_rate = host_rate
@@ -7107,8 +7220,7 @@ def _play_pcm_interruptible(
         "dtype": "float32",
         "blocksize": chunk,
     }
-    if output_device is not None:
-        stream_kwargs["device"] = output_device
+    stream_kwargs.update(stream_device_kwargs(play_device))
 
     interrupted = False
     used_fallback = False
@@ -7118,7 +7230,7 @@ def _play_pcm_interruptible(
     log_debug(
         "Audio",
         f"playback alloc samples={audio.size} sr={play_rate} "
-        f"chunk={chunk} ({BARGE_IN_CHUNK_MS:.0f}ms) device={output_device} "
+        f"chunk={chunk} ({BARGE_IN_CHUNK_MS:.0f}ms) device={play_device} "
         f"interruptible={interruptible}",
     )
     # Honor the turn-level latch when the spooler already called begin_playback;
@@ -7126,6 +7238,40 @@ def _play_pcm_interruptible(
     owns_session = not _tts_barge.is_playback_active()
     if owns_session:
         _tts_barge.begin_playback(interruptible=interruptible)
+
+    def _write_chunks(stream: Any) -> None:
+        nonlocal interrupted, n_chunks, bytes_written
+        if interruptible:
+            _tts_barge.register_output_stream(stream)
+        try:
+            for start in range(0, audio.size, chunk):
+                if stop_event.is_set():
+                    interrupted = True
+                    break
+                if interruptible and _tts_barge.is_set():
+                    interrupted = True
+                    log_debug(
+                        "Audio",
+                        f"playback interrupt at chunk={n_chunks} "
+                        f"offset={start}/{audio.size}",
+                    )
+                    try:
+                        stream.abort()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    break
+                piece = audio[start : start + chunk]
+                if piece.size < chunk:
+                    pad = np.zeros(chunk, dtype=np.float32)
+                    pad[: piece.size] = piece
+                    piece = pad
+                stream.write(piece.reshape(-1, 1))
+                n_chunks += 1
+                bytes_written += int(piece.size) * 4
+        finally:
+            if interruptible:
+                _tts_barge.unregister_output_stream(stream)
+
     try:
         with playback_lock:
             log_debug(
@@ -7134,39 +7280,32 @@ def _play_pcm_interruptible(
             )
             try:
                 with sd.OutputStream(**stream_kwargs) as stream:
-                    if interruptible:
-                        _tts_barge.register_output_stream(stream)
-                    try:
-                        for start in range(0, audio.size, chunk):
-                            if stop_event.is_set():
-                                interrupted = True
-                                break
-                            if interruptible and _tts_barge.is_set():
-                                interrupted = True
-                                log_debug(
-                                    "Audio",
-                                    f"playback interrupt at chunk={n_chunks} "
-                                    f"offset={start}/{audio.size}",
-                                )
-                                try:
-                                    stream.abort()
-                                except Exception:  # noqa: BLE001
-                                    pass
-                                break
-                            piece = audio[start : start + chunk]
-                            if piece.size < chunk:
-                                pad = np.zeros(chunk, dtype=np.float32)
-                                pad[: piece.size] = piece
-                                piece = pad
-                            stream.write(piece.reshape(-1, 1))
-                            n_chunks += 1
-                            bytes_written += int(piece.size) * 4
-                    finally:
-                        if interruptible:
-                            _tts_barge.unregister_output_stream(stream)
+                    _write_chunks(stream)
             except Exception as exc:  # noqa: BLE001
                 if interrupted or (interruptible and _tts_barge.is_set()):
                     interrupted = True
+                elif _is_portaudio_error(exc) and play_device is not None:
+                    # Explicit device disconnected — retry Windows system default.
+                    log(
+                        "Audio",
+                        f"PortAudioError on speaker [{play_device}] ({exc}); "
+                        "retrying System Default",
+                    )
+                    AUDIO_OUTPUT_DEVICE = None
+                    play_device = None
+                    fallback_kwargs = {
+                        "samplerate": int(play_rate),
+                        "channels": 1,
+                        "dtype": "float32",
+                        "blocksize": chunk,
+                    }
+                    try:
+                        with sd.OutputStream(**fallback_kwargs) as stream:
+                            _write_chunks(stream)
+                    except Exception as exc2:  # noqa: BLE001
+                        if _is_portaudio_error(exc2):
+                            report_audio_hardware_fault(exc2, where="OutputStream")
+                        raise
                 elif _is_portaudio_error(exc):
                     report_audio_hardware_fault(exc, where="OutputStream")
                     raise
@@ -7181,16 +7320,32 @@ def _play_pcm_interruptible(
                             "samplerate": int(play_rate),
                             "blocking": False,
                         }
-                        if output_device is not None:
-                            kwargs["device"] = output_device
+                        kwargs.update(stream_device_kwargs(play_device))
                         sd.play(audio, **kwargs)
                         used_fallback = True
                     except Exception as exc2:  # noqa: BLE001
-                        if _is_portaudio_error(exc2):
+                        if _is_portaudio_error(exc2) and play_device is not None:
+                            log(
+                                "Audio",
+                                f"PortAudioError on sd.play device [{play_device}]; "
+                                "retrying System Default",
+                            )
+                            try:
+                                sd.play(audio, samplerate=int(play_rate), blocking=False)
+                                used_fallback = True
+                                AUDIO_OUTPUT_DEVICE = None
+                            except Exception as exc3:  # noqa: BLE001
+                                if _is_portaudio_error(exc3):
+                                    report_audio_hardware_fault(exc3, where="sd.play")
+                                else:
+                                    log_exception("Audio", "TTS Engine Failure", exc=exc3)
+                                raise
+                        elif _is_portaudio_error(exc2):
                             report_audio_hardware_fault(exc2, where="sd.play")
+                            raise
                         else:
                             log_exception("Audio", "TTS Engine Failure", exc=exc2)
-                        raise
+                            raise
 
         if used_fallback and not interrupted:
             duration = audio.size / float(max(1, play_rate))
@@ -7831,6 +7986,12 @@ def _device_menu_label(index: int, name: str) -> str:
 
 
 def _parse_device_menu_label(label: str) -> Optional[int]:
+    from dana.audio.devices import SYSTEM_DEFAULT_LABEL
+
+    if not label or label == SYSTEM_DEFAULT_LABEL:
+        return None
+    if label.strip().lower() in {"system default (auto)", "system default", "(none)"}:
+        return None
     if not label.startswith("[") or "]" not in label:
         return None
     try:
@@ -10762,11 +10923,13 @@ class DonnaGUI(ctk.CTk):
             pass
 
     def _reload_device_menus(self) -> None:
+        from dana.audio.devices import SYSTEM_DEFAULT_LABEL
+
         devices = sd.query_devices()
-        self._mic_labels = []
-        self._speaker_labels = []
-        self._mic_by_label = {}
-        self._speaker_by_label = {}
+        self._mic_labels = [SYSTEM_DEFAULT_LABEL]
+        self._speaker_labels = [SYSTEM_DEFAULT_LABEL]
+        self._mic_by_label: dict[str, Optional[int]] = {SYSTEM_DEFAULT_LABEL: None}
+        self._speaker_by_label: dict[str, Optional[int]] = {SYSTEM_DEFAULT_LABEL: None}
 
         for idx, dev in enumerate(devices):
             name = str(dev.get("name", f"Device {idx}"))
@@ -10778,35 +10941,36 @@ class DonnaGUI(ctk.CTk):
                 self._speaker_labels.append(label)
                 self._speaker_by_label[label] = idx
 
-        if not self._mic_labels:
-            self._mic_labels = ["(no microphones found)"]
-        if not self._speaker_labels:
-            self._speaker_labels = ["(no speakers found)"]
-
         self.mic_menu.configure(values=self._mic_labels)
         self.speaker_menu.configure(values=self._speaker_labels)
 
-        mic_id = AUDIO_INPUT_DEVICE
-        speaker_id = AUDIO_OUTPUT_DEVICE
-        if mic_id is None or speaker_id is None:
-            try:
-                with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
-                    cfg = json.load(fh)
-                mic_id = int(cfg.get("mic_id", mic_id if mic_id is not None else -1))
-                speaker_id = int(
-                    cfg.get("speaker_id", speaker_id if speaker_id is not None else -1)
-                )
-            except Exception:
-                pass
+        mic_id: Optional[int] = AUDIO_INPUT_DEVICE
+        speaker_id: Optional[int] = AUDIO_OUTPUT_DEVICE
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
+                cfg = json.load(fh)
+            if isinstance(cfg, dict):
+                if "mic_id" in cfg:
+                    mic_id = _parse_settings_device_id(cfg.get("mic_id"))
+                if "speaker_id" in cfg:
+                    speaker_id = _parse_settings_device_id(cfg.get("speaker_id"))
+        except Exception:
+            pass
 
-        mic_label = next(
-            (lbl for lbl, i in self._mic_by_label.items() if i == mic_id),
-            self._mic_labels[0],
-        )
-        speaker_label = next(
-            (lbl for lbl, i in self._speaker_by_label.items() if i == speaker_id),
-            self._speaker_labels[0],
-        )
+        if mic_id is None:
+            mic_label = SYSTEM_DEFAULT_LABEL
+        else:
+            mic_label = next(
+                (lbl for lbl, i in self._mic_by_label.items() if i == mic_id),
+                SYSTEM_DEFAULT_LABEL,
+            )
+        if speaker_id is None:
+            speaker_label = SYSTEM_DEFAULT_LABEL
+        else:
+            speaker_label = next(
+                (lbl for lbl, i in self._speaker_by_label.items() if i == speaker_id),
+                SYSTEM_DEFAULT_LABEL,
+            )
         self.mic_menu.set(mic_label)
         self.speaker_menu.set(speaker_label)
 
@@ -10845,19 +11009,23 @@ class DonnaGUI(ctk.CTk):
     def _save_and_apply_audio(self) -> None:
         global AUDIO_INPUT_DEVICE, AUDIO_INPUT_RATE, AUDIO_OUTPUT_DEVICE
 
+        from dana.audio.devices import SYSTEM_DEFAULT_LABEL
+
         mic_label = self.mic_menu.get()
         speaker_label = self.speaker_menu.get()
-        mic_id = self._mic_by_label.get(mic_label)
-        speaker_id = self._speaker_by_label.get(speaker_label)
-        if mic_id is None:
+        if mic_label in self._mic_by_label:
+            mic_id = self._mic_by_label[mic_label]
+        else:
             mic_id = _parse_device_menu_label(mic_label)
-        if speaker_id is None:
+        if speaker_label in self._speaker_by_label:
+            speaker_id = self._speaker_by_label[speaker_label]
+        else:
             speaker_id = _parse_device_menu_label(speaker_label)
 
-        if mic_id is None or not _validate_mic_id(mic_id):
+        if not _validate_mic_id(mic_id):
             self.apply_note.configure(text="Invalid microphone selection.")
             return
-        if speaker_id is None or not _validate_speaker_id(speaker_id):
+        if not _validate_speaker_id(speaker_id):
             self.apply_note.configure(text="Invalid speaker selection.")
             return
 
@@ -10874,6 +11042,8 @@ class DonnaGUI(ctk.CTk):
         AUDIO_INPUT_RATE = _device_rate(mic_id)
         request_mic_ingest_restart()
         ensure_mic_ingest_thread()
+        mic_disp = SYSTEM_DEFAULT_LABEL if mic_id is None else str(mic_id)
+        spk_disp = SYSTEM_DEFAULT_LABEL if speaker_id is None else str(speaker_id)
         self.apply_note.configure(
             text=(
                 "Saved settings.json. Speaker applied now. "
@@ -10882,7 +11052,7 @@ class DonnaGUI(ctk.CTk):
         )
         log(
             "Audio",
-            f"GUI Save & Apply -> mic={mic_id}, speaker={speaker_id}",
+            f"GUI Save & Apply -> mic={mic_disp}, speaker={spk_disp}",
         )
 
     def show_window(self) -> None:
@@ -11284,17 +11454,17 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
     AUDIO_OUTPUT_DEVICE = speaker_id
     AUDIO_INPUT_RATE = mic_rate
 
-    # Verify the configured mic is live; do not silently switch to another device.
+    # Verify the configured mic is live; System Default (None) is a valid choice.
     AUDIO_INPUT_DEVICE, AUDIO_INPUT_RATE = ensure_live_mic(
         AUDIO_INPUT_DEVICE,
         AUDIO_INPUT_RATE,
         allow_fallback=False,
     )
-    if AUDIO_INPUT_DEVICE is None:
+    if not _validate_mic_id(AUDIO_INPUT_DEVICE):
         log("Main", "Aborting: configured microphone is not usable.")
         stop_event.set()
         return 2
-    if not _validate_speaker_id(int(AUDIO_OUTPUT_DEVICE)):
+    if not _validate_speaker_id(AUDIO_OUTPUT_DEVICE):
         log("Main", "Aborting: configured speaker is not usable.")
         stop_event.set()
         return 2

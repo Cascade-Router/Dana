@@ -1,5 +1,10 @@
 """Audio helpers (Silero VAD + TTS barge-in / playback interrupt)."""
 
+from dana.audio.devices import (
+    SYSTEM_DEFAULT_LABEL,
+    get_default_audio_devices,
+    stream_device_kwargs,
+)
 from dana.audio.noise_floor import (
     ABSOLUTE_MIN_SPEECH_FLOOR,
     NOISE_FLOOR_MULTIPLIER,
@@ -20,11 +25,14 @@ __all__ = [
     "NOISE_FLOOR_MULTIPLIER",
     "SILERO_SPEECH_THRESHOLD",
     "SILERO_WINDOW_SAMPLES",
+    "SYSTEM_DEFAULT_LABEL",
     "TtsWorker",
     "compute_ambient_baseline",
     "compute_dynamic_speech_floor",
+    "get_default_audio_devices",
     "get_silero_vad",
     "get_tts_worker",
     "is_speech_frame",
+    "stream_device_kwargs",
     "trigger_tts_barge_in",
 ]
