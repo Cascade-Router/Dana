@@ -5507,6 +5507,8 @@ def ask_ollama_messages(
         "model": model,
         "messages": messages,
         "stream": True,
+        # Keep weights resident in VRAM (avoid cold-load TTFT spikes).
+        "keep_alive": -1,
         # Hard caps for 8GB VRAM: shorter KV cache + bounded generation.
         "options": {
             "num_ctx": 8192,

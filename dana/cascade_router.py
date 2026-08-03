@@ -1315,4 +1315,5 @@ def resolve_chat_model(
         temperature=temperature,
         num_ctx=num_ctx,
         num_predict=num_predict,
+        keep_alive="-1",
     )

@@ -12,6 +12,7 @@ import asyncio
 import inspect
 import json
 import os
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -523,6 +524,40 @@ async def run_engine_daemon(
         "Daemon",
         f"engine listening host={bound_host} port={bound_port} pid={os.getpid()}",
     )
+
+    def _warmup_llm_background() -> None:
+        """Tiny silent ping so Ollama weights land in VRAM (non-blocking)."""
+        t_warm = time.perf_counter()
+        try:
+            from dana.perf import log_perf
+
+            log_perf("llm_warmup", 0.0, phase="start")
+        except Exception:  # noqa: BLE001
+            pass
+        log("Daemon", "LLM warm-up start (background ping)")
+        try:
+            from dana.core_agent import ask_ollama_messages
+
+            ask_ollama_messages(
+                [{"role": "user", "content": "ping"}],
+                num_predict=1,
+            )
+            elapsed_ms = (time.perf_counter() - t_warm) * 1000.0
+            try:
+                from dana.perf import log_perf
+
+                log_perf("llm_warmup", elapsed_ms, phase="done")
+            except Exception:  # noqa: BLE001
+                pass
+            log("Daemon", f"LLM warm-up done ({elapsed_ms:.0f} ms)")
+        except Exception as exc:  # noqa: BLE001
+            log("Daemon", f"LLM warm-up skipped ({type(exc).__name__}: {exc})")
+
+    threading.Thread(
+        target=_warmup_llm_background,
+        name="DaemonOllamaWarmup",
+        daemon=True,
+    ).start()
     await daemon.serve_forever()
 
 
