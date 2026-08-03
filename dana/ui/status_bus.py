@@ -20,6 +20,8 @@ _TOOL_LABELS: dict[str, str] = {
     "execute_powershell": "PowerShell",
     "shell_execute": "PowerShell",
     "run_terminal_command": "PowerShell",
+    "execute_command": "Command",
+    "write_to_file": "File Write",
     "analyze_visual_context": "Vision",
     "ocr_with_region": "OCR",
     "draft_cursor_prompt": "Ticket Draft",

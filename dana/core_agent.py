@@ -2010,6 +2010,8 @@ def speak_tool_working_ack(call: ToolCall, reply_lang: str) -> None:
             "run_terminal_command": "    .",
             "shell_execute": "  .",
             "execute_powershell": "  .",
+            "write_to_file": "  .",
+            "execute_command": "  .",
             "fetch_webpage": "  .",
             "file_editor": "  .",
             "python_repl": "  .",
@@ -2032,6 +2034,8 @@ def speak_tool_working_ack(call: ToolCall, reply_lang: str) -> None:
             "run_terminal_command": "Let me run that in the terminal.",
             "shell_execute": "Running that in the local shell.",
             "execute_powershell": "Running that in PowerShell.",
+            "write_to_file": "Okay — writing that file.",
+            "execute_command": "Okay — running that command.",
             "fetch_webpage": "Let me open that page.",
             "file_editor": "Working on that file.",
             "python_repl": "Running that in the Python sandbox.",
@@ -4870,6 +4874,29 @@ def execute_tool_call(tc: ToolCall) -> str:
             return "ERROR: missing command"
         return execute_powershell(str(command))
 
+    def _handle_write_to_file(call: ToolCall) -> str:
+        from dana.tools.actuators import write_to_file
+
+        filepath = call.arguments.get("filepath")
+        if filepath is None or not str(filepath).strip():
+            return "ERROR: missing filepath"
+        content = call.arguments.get("content")
+        content_s = "" if content is None else str(content)
+        return write_to_file(str(filepath), content_s)
+
+    def _handle_execute_command(call: ToolCall) -> str:
+        from dana.tools.actuators import execute_command
+
+        command = call.arguments.get("command")
+        if command is None or not str(command).strip():
+            return "ERROR: missing command"
+        timeout_raw = call.arguments.get("timeout", 15)
+        try:
+            timeout_sec = int(timeout_raw) if timeout_raw is not None else 15
+        except (TypeError, ValueError):
+            timeout_sec = 15
+        return execute_command(str(command), timeout=timeout_sec)
+
     def _handle_fetch_webpage(call: ToolCall) -> str:
         from dana.tools.browser import fetch_webpage
 
@@ -5320,6 +5347,8 @@ def execute_tool_call(tc: ToolCall) -> str:
         "run_terminal_command": _handle_run_terminal,
         "shell_execute": _handle_shell_execute,
         "execute_powershell": _handle_execute_powershell,
+        "write_to_file": _handle_write_to_file,
+        "execute_command": _handle_execute_command,
         "fetch_webpage": _handle_fetch_webpage,
         "file_editor": _handle_file_editor,
         "python_repl": _handle_python_repl,

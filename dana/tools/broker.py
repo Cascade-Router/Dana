@@ -349,6 +349,25 @@ _POWERSHELL_HINT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+# System actuators (write_to_file / execute_command) — bind on explicit phrases.
+_ACTUATOR_HINT_RE = re.compile(
+    r"("
+    r"\b(?:write_to_file|execute_command)\b|"
+    r"\bwrite\s+to\s+file\b|"
+    r"\brun\s+command\b|"
+    r"\bcreate\s+a\s+script\b|"
+    r"\bexecute\b"
+    r")",
+    re.IGNORECASE,
+)
+_ACTUATOR_WRITE_HINT_RE = re.compile(
+    r"("
+    r"\bwrite_to_file\b|"
+    r"\bwrite\s+to\s+file\b|"
+    r"\bcreate\s+a\s+script\b"
+    r")",
+    re.IGNORECASE,
+)
 # Headless Playwright fetch — bind when the user names the tool or asks to
 # open/fetch a concrete webpage URL (do not steal generic "search the web").
 _BROWSER_HINT_RE = re.compile(
@@ -583,6 +602,8 @@ def merge_bound_tool_ids(
     ``file_editor`` foresight cannot starve ``python_repl`` / ``shell_execute``.
     PowerShell / network-adapter OS prompts always bind ``execute_powershell``
     so semantic top-K cannot starve the shell actuator with vision/memory tools.
+    System-actuator phrases (write to file / run command / execute / create a
+    script) bind ``write_to_file`` + ``execute_command``.
     Browser / concrete-URL prompts always bind ``fetch_webpage`` so top-K
     cannot starve the Playwright actuator with vision/memory tools.
     """
@@ -619,6 +640,9 @@ def merge_bound_tool_ids(
             _add(tid)
         if _POWERSHELL_HINT_RE.search(user_text or ""):
             _add("execute_powershell")
+        if _ACTUATOR_HINT_RE.search(user_text or ""):
+            _add("write_to_file")
+            _add("execute_command")
         if _BROWSER_HINT_RE.search(user_text or ""):
             _add("fetch_webpage")
         if _MEMORY_HINT_RE.search(user_text or "") and not _CLEAR_CHAT_MEMORY_HINT_RE.search(
@@ -1086,6 +1110,29 @@ class IntentBroker:
                 source_lang=lang,
                 raw_text=raw,
                 confidence=0.96,
+            )
+        # System actuators: write_to_file / execute_command (after PS + REPL).
+        actuator_hit = bool(_ACTUATOR_HINT_RE.search(raw))
+        if (
+            actuator_hit
+            and not mem_write_hit
+            and not forge_hit
+            and not write_hit
+            and not repl_chain
+            and not ps_hit
+        ):
+            actuator_id = (
+                "write_to_file"
+                if _ACTUATOR_WRITE_HINT_RE.search(raw)
+                else "execute_command"
+            )
+            _foresight_cascade(raw, actuator_id)
+            return ToolCall(
+                tool_id=actuator_id,
+                arguments={},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.95,
             )
         # Headless Playwright fetch for concrete URL / fetch_webpage asks.
         browser_hit = bool(_BROWSER_HINT_RE.search(raw))

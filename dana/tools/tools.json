@@ -667,6 +667,73 @@
       }
     },
     {
+      "id": "write_to_file",
+      "description_en": "Write text content to a local file (creates parent directories). Returns absolute path and byte size. Use for creating/saving scripts or notes outside the project-root file_editor jail.",
+      "parameters": [
+        {
+          "name": "filepath",
+          "type": "string",
+          "required": true,
+          "description_en": "Absolute or relative path of the file to write.",
+          "description_fa": ""
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "required": true,
+          "description_en": "UTF-8 text content to write.",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "write_to_file",
+          "write to file",
+          "create a script",
+          "save this to a file",
+          "write this file"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": [
+          "write_to_file"
+        ]
+      }
+    },
+    {
+      "id": "execute_command",
+      "description_en": "Run a host command with a hard timeout (PowerShell on Windows). Captures stdout/stderr/returncode. Destructive patterns are blocked by the same sandbox policy as execute_powershell.",
+      "parameters": [
+        {
+          "name": "command",
+          "type": "string",
+          "required": true,
+          "description_en": "Shell/PowerShell command text to run.",
+          "description_fa": ""
+        },
+        {
+          "name": "timeout",
+          "type": "integer",
+          "required": false,
+          "description_en": "Timeout in seconds (default 15).",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "execute_command",
+          "run command",
+          "execute",
+          "run this command"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": [
+          "execute_command"
+        ]
+      }
+    },
+    {
       "id": "fetch_webpage",
       "description_en": "Fetch visible page text from a fully qualified http:// or https:// URL using headless Chromium (Playwright). Pass a complete URL with scheme; returns body inner_text for ReAct observation. Navigation timeouts return an ERROR string.",
       "parameters": [

@@ -32,6 +32,8 @@ _TERMINAL = frozenset(
 _TOOL_ACTIVITY_LABELS: dict[str, str] = {
     "python_repl": "Running Python REPL",
     "execute_powershell": "Running PowerShell",
+    "execute_command": "Running command",
+    "write_to_file": "Writing file",
     "fetch_webpage": "Fetching webpage",
     "web_search": "Grounding web search",
     "analyze_visual_context": "Analyzing visual context",
