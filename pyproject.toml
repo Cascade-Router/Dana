@@ -39,6 +39,9 @@ ignore = [
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
+markers = [
+  "e2e: live end-to-end OS/vision/browser manipulation tests",
+]
 
 [tool.mypy]
 python_version = "3.12"

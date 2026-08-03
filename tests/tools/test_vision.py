@@ -19,7 +19,7 @@ def test_analyze_visual_context_returns_screen_text() -> None:
     fake_sct.__exit__ = MagicMock(return_value=False)
 
     with (
-        patch("mss.mss", return_value=fake_sct),
+        patch("mss.MSS", return_value=fake_sct),
         patch("pytesseract.image_to_string", return_value="Hello Screen\n"),
         patch("dana.ui.status_bus.emit_state_change") as emit,
     ):
@@ -43,7 +43,7 @@ def test_analyze_visual_context_missing_tesseract_binary() -> None:
     fake_sct.__exit__ = MagicMock(return_value=False)
 
     with (
-        patch("mss.mss", return_value=fake_sct),
+        patch("mss.MSS", return_value=fake_sct),
         patch(
             "pytesseract.image_to_string",
             side_effect=TesseractNotFoundError(),

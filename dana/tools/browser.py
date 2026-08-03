@@ -2,7 +2,30 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from urllib.parse import urlparse
+
+
+def _scrub_stale_playwright_browsers_path() -> None:
+    """Drop ``PLAYWRIGHT_BROWSERS_PATH`` when it points at an empty/incomplete install.
+
+    Cursor/sandbox hosts sometimes point this env var at a cache directory that
+    no longer contains Chromium; Playwright then fails with
+    ``Executable doesn't exist`` even when a normal user install is available.
+    """
+    configured = (os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip()
+    if not configured:
+        return
+    root = Path(configured)
+    if not root.is_dir():
+        os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
+        return
+    has_browser = any(root.glob("chromium-*/**/chrome.exe")) or any(
+        root.glob("chromium_headless_shell-*/**/chrome-headless-shell.exe")
+    )
+    if not has_browser:
+        os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
 
 
 def fetch_webpage(url: str) -> str:
@@ -38,6 +61,8 @@ def fetch_webpage(url: str) -> str:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         return f"ERROR: fetch_webpage failed: playwright not installed ({exc})"
+
+    _scrub_stale_playwright_browsers_path()
 
     try:
         with sync_playwright() as p:

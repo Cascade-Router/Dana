@@ -34,7 +34,8 @@ def analyze_visual_context() -> str:
         return f"SYSTEM_ERROR: missing dependency ({exc})."
 
     try:
-        with mss.mss() as sct:
+        # mss.MSS is the supported constructor; mss.mss() is deprecated.
+        with mss.MSS() as sct:
             mon = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
             shot = sct.grab(mon)
             img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
