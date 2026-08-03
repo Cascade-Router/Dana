@@ -18,6 +18,7 @@ def test_engine_engage_standby_locks_behavior() -> None:
         assert app._engage_btn is not None
         assert app._standby_btn is not None
         assert "STANDBY" in str(app._engine_status_lbl.cget("text"))
+        assert "Local Engine" in str(app._engine_status_lbl.cget("text"))
 
         # Sliders editable in STANDBY.
         app._set_behavior_controls_locked(False)
@@ -28,14 +29,14 @@ def test_engine_engage_standby_locks_behavior() -> None:
         assert is_engine_engaged() is True
         assert app._behavior_locked is True
         assert "ACTIVE" in str(app._engine_status_lbl.cget("text"))
-        assert "Locked" in str(app._engine_status_lbl.cget("text"))
+        assert "Local Engine" in str(app._engine_status_lbl.cget("text"))
 
         app.standby_engine()
         assert app.engine_active is False
         assert is_engine_engaged() is False
         assert app._behavior_locked is False
         assert "STANDBY" in str(app._engine_status_lbl.cget("text"))
-        assert "Unlocked" in str(app._engine_status_lbl.cget("text"))
+        assert "Local Engine" in str(app._engine_status_lbl.cget("text"))
     finally:
         set_engine_engaged(False)
         try:

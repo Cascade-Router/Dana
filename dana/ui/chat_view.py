@@ -77,6 +77,27 @@ class ChatBubbleView(ctk.CTkFrame):
         )
         # Off-screen so mirror text never paints under the bubble scroller.
         self.transcript_box.place(x=-10_000, y=-10_000)
+        try:
+            self.bind("<Configure>", self._on_resize, add="+")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def set_wraplength(self, wraplength: int) -> None:
+        """Update bubble text wrap for responsive Conversation width."""
+        self._wraplength = max(200, int(wraplength))
+
+    def _on_resize(self, event: Any) -> None:
+        try:
+            if event is None or getattr(event, "widget", None) is not self:
+                return
+            width = int(getattr(event, "width", 0) or 0)
+        except Exception:  # noqa: BLE001
+            return
+        if width < 240:
+            return
+        new_wrap = max(200, min(720, width - 48))
+        if abs(new_wrap - self._wraplength) >= 16:
+            self._wraplength = new_wrap
 
     def clear_bubbles(self) -> None:
         for row in self._bubbles:

@@ -525,8 +525,59 @@ async def run_engine_daemon(
         f"engine listening host={bound_host} port={bound_port} pid={os.getpid()}",
     )
 
+    def _warmup_audio_probe() -> None:
+        """~50ms open+close InputStream so PortAudio/Silero buffers allocate early."""
+        t_audio = time.perf_counter()
+        try:
+            import sounddevice as sd
+
+            # Default input; short read forces driver + ring-buffer alloc.
+            frames = max(1, int(16000 * 0.05))
+            stream = sd.InputStream(
+                samplerate=16000,
+                channels=1,
+                dtype="float32",
+                blocksize=min(512, frames),
+            )
+            stream.start()
+            try:
+                stream.read(frames)
+            finally:
+                stream.stop()
+                stream.close()
+            elapsed_ms = (time.perf_counter() - t_audio) * 1000.0
+            try:
+                from dana.perf import log_perf
+
+                log_perf("audio_warmup", elapsed_ms, phase="complete")
+            except Exception:  # noqa: BLE001
+                pass
+            log("Daemon", f"audio_warmup=complete ({elapsed_ms:.0f} ms)")
+        except Exception as exc:  # noqa: BLE001
+            elapsed_ms = (time.perf_counter() - t_audio) * 1000.0
+            try:
+                from dana.perf import log_perf
+
+                log_perf(
+                    "audio_warmup",
+                    elapsed_ms,
+                    phase="complete",
+                    error=type(exc).__name__,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            log(
+                "Daemon",
+                f"audio_warmup=complete (skipped {type(exc).__name__}: {exc})",
+            )
+
     def _warmup_llm_background() -> None:
-        """Tiny silent ping so Ollama weights land in VRAM (non-blocking)."""
+        """Tiny silent ping so Ollama weights land in VRAM (non-blocking).
+
+        Runs the ~50ms mic probe in the same warm-up thread before the LLM ping
+        so PortAudio/Silero buffers allocate without delaying serve_forever.
+        """
+        _warmup_audio_probe()
         t_warm = time.perf_counter()
         try:
             from dana.perf import log_perf

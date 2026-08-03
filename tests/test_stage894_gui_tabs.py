@@ -84,12 +84,15 @@ def test_gui_source_declares_three_tabs() -> None:
         app._set_dictation_ui(True)
         app._set_behavior_controls_locked(True)
         assert app._behavior_locked is True
+        overlay = getattr(app, "_behavior_lock_overlay", None)
+        assert overlay is not None
+        assert str(overlay.winfo_manager()) == "place"
         hint = app._behavior_lock_hint
         assert hint is not None
-        assert "LOCKED" in str(hint.cget("text")).upper()
         app._set_dictation_ui(False)
         app._set_behavior_controls_locked(False)
-        assert "unlocked" in str(hint.cget("text")).lower()
+        assert not overlay.winfo_manager() or str(overlay.winfo_manager()) == ""
+        assert "standby" in str(hint.cget("text")).lower()
     finally:
         try:
             app.destroy()
