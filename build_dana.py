@@ -93,7 +93,9 @@ def main() -> int:
     for mod in hidden_imports:
         args.append(f"--hidden-import={mod}")
 
-    ico = ROOT / "dana" / "assets" / "donna.ico"
+    ico = ROOT / "dana" / "assets" / "dana_icon.ico"
+    if not ico.is_file():
+        ico = ROOT / "dana" / "assets" / "donna.ico"
     if ico.is_file():
         args.append(f"--icon={ico}")
 

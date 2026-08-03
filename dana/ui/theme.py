@@ -3,21 +3,21 @@
 from __future__ import annotations
 
 # Canvas / surfaces
-BG = "#0F172A"
-CARD = "#1E293B"
-BORDER = "#334155"
-GHOST = "#334155"
+BG = "#0a0e17"
+CARD = "#131b2e"
+BORDER = "#1e293b"
+GHOST = "#1e293b"
 
 # Text
 TEXT = "#F8FAFC"
 TEXT_SECONDARY = "#94A3B8"
-TEXT_ON_ACCENT = "#0F172A"
+TEXT_ON_ACCENT = "#0a0e17"
 MUTED = TEXT_SECONDARY
 
 # Accents
-ACCENT = "#0EA5E9"  # sky — primary
-ACCENT_HOVER = "#0284C7"
-EMERALD = "#10B981"  # active / success
+ACCENT = "#10b981"  # hyper mint — primary
+ACCENT_HOVER = "#059669"
+EMERALD = "#10b981"  # active / success (mint family)
 EMERALD_HOVER = "#059669"
 ROSE = "#F43F5E"  # stop / alert
 ROSE_HOVER = "#E11D48"
@@ -33,11 +33,11 @@ STATUS_FAILED = ROSE
 STATUS_SLOT_ACTIVE = EMERALD
 
 # Chat bubbles
-BUBBLE_USER = "#0EA5E9"
+BUBBLE_USER = "#10b981"
 BUBBLE_USER_TEXT = "#F8FAFC"
-BUBBLE_DANA = "#1E293B"
-BUBBLE_DANA_BORDER = "#334155"
-BUBBLE_SYSTEM = "#334155"
+BUBBLE_DANA = "#131b2e"
+BUBBLE_DANA_BORDER = "#1e293b"
+BUBBLE_SYSTEM = "#1e293b"
 
 # Compat aliases used by core_agent / views
 CANVAS = BG

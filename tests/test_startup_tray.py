@@ -139,7 +139,7 @@ def test_tray_icon_listening_vs_idle() -> None:
 
 
 def test_app_ico_multi_resolution_exists() -> None:
-    """dana/assets/donna.ico must exist with standard Windows sizes."""
+    """dana/assets/dana_icon.ico must exist with standard Windows sizes."""
     import struct
 
     from dana.paths import PROJECT_ROOT
@@ -148,14 +148,14 @@ def test_app_ico_multi_resolution_exists() -> None:
     ico = resolve_app_icon_path()
     assert ico is not None
     assert ico == app_icon_path()
-    assert ico == Path(PROJECT_ROOT) / "dana" / "assets" / "donna.ico"
+    assert ico == Path(PROJECT_ROOT) / "dana" / "assets" / "dana_icon.ico"
     raw = ico.read_bytes()
     count = struct.unpack_from("<H", raw, 4)[0]
     assert count >= 6
     img = load_app_icon_pil((64, 64))
     assert img is not None
     assert img.size == (64, 64)
-    print(f"[PASS] donna.ico entries={count} bytes={len(raw)}")
+    print(f"[PASS] dana_icon.ico entries={count} bytes={len(raw)}")
 
 
 def test_appusermodelid_helper_present_in_entrypoints() -> None:
@@ -182,7 +182,7 @@ def test_write_desktop_shortcut_sets_icon(monkeypatch: pytest.MonkeyPatch, tmp_p
     venv = tmp_path / ".venv" / "Scripts"
     venv.mkdir(parents=True)
     (venv / "pythonw.exe").write_bytes(b"")
-    ico = tmp_path / "dana" / "assets" / "donna.ico"
+    ico = tmp_path / "dana" / "assets" / "dana_icon.ico"
     ico.parent.mkdir(parents=True)
     ico.write_bytes(b"\x00\x00\x01\x00")
 
@@ -200,8 +200,8 @@ def test_write_desktop_shortcut_sets_icon(monkeypatch: pytest.MonkeyPatch, tmp_p
     joined = " ".join(calls[0])
     assert "IconLocation" in joined
     abs_ico = str(ico.resolve()) if ico.exists() else str(ico)
-    # PowerShell must receive an absolute IconLocation (...\donna.ico,0).
-    assert "donna.ico,0" in joined.replace("''", "'")
+    # PowerShell must receive an absolute IconLocation (...\dana_icon.ico,0).
+    assert "dana_icon.ico,0" in joined.replace("''", "'")
     assert "dana" in joined.lower() and "assets" in joined.lower()
     print("[PASS] desktop shortcut PowerShell includes absolute IconLocation")
 
@@ -209,6 +209,6 @@ def test_write_desktop_shortcut_sets_icon(monkeypatch: pytest.MonkeyPatch, tmp_p
 def test_app_icon_path_is_absolute() -> None:
     path = setup_startup.app_icon_path()
     assert path.is_absolute()
-    assert path.as_posix().endswith("dana/assets/donna.ico")
+    assert path.as_posix().endswith("dana/assets/dana_icon.ico")
     assert path.is_file()
     print(f"[PASS] app_icon_path absolute: {path}")

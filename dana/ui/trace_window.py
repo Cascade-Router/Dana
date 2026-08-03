@@ -91,28 +91,28 @@ def _spawn_headless_boot_terminal() -> str:
     return "Spawned headless boot terminal (python run.py --no-gui)."
 
 _MODE_COLORS = {
-    "chat": "#10B981",
+    "chat": "#10b981",
     "developer": "#F59E0B",
     "agentic": "#F59E0B",
-    "vision": "#0EA5E9",
+    "vision": "#10b981",
     "research": "#F59E0B",
     "dictation": "#A855F7",
     "idle": "#94A3B8",
     "routing": "#F59E0B",
     "tool": "#8B5CF6",
-    "synthesis": "#10B981",
+    "synthesis": "#10b981",
 }
-_CARD_BG = "#1E293B"
-_CANVAS_BG = "#0F172A"
-_GHOST_BG = "#334155"
-_GHOST_BORDER = "#334155"
+_CARD_BG = "#131b2e"
+_CANVAS_BG = "#0a0e17"
+_GHOST_BG = "#1e293b"
+_GHOST_BORDER = "#1e293b"
 
 _STATUS_PILLS = {
     "idle": ("[IDLE]", "#94A3B8"),
     "routing": ("[ROUTING]", "#F59E0B"),
     "tool": ("[TOOL]", "#8B5CF6"),
-    "synthesis": ("[SYNTHESIS]", "#10B981"),
-    "active": ("[ACTIVE]", "#0EA5E9"),
+    "synthesis": ("[SYNTHESIS]", "#10b981"),
+    "active": ("[ACTIVE]", "#10b981"),
 }
 
 

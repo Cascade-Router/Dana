@@ -76,8 +76,12 @@ def bat_path() -> Path:
 
 
 def app_icon_path() -> Path:
-    """Absolute path to ``dana/assets/donna.ico`` (Windows shortcut IconLocation)."""
-    return Path(os.path.abspath(str(project_root() / "dana" / "assets" / "donna.ico")))
+    """Absolute path to ``dana/assets/dana_icon.ico`` (Windows shortcut IconLocation)."""
+    root = project_root()
+    preferred = Path(os.path.abspath(str(root / "dana" / "assets" / "dana_icon.ico")))
+    if preferred.is_file():
+        return preferred
+    return Path(os.path.abspath(str(root / "dana" / "assets" / "donna.ico")))
 
 
 def desktop_shortcut_path() -> Path:
@@ -150,7 +154,7 @@ def _write_windows_shortcut(
     working_directory: str,
     description: str,
 ) -> Path | None:
-    """Create/update a ``.lnk`` with ``IconLocation`` → absolute ``donna.ico``."""
+    """Create/update a ``.lnk`` with ``IconLocation`` → absolute app ``.ico``."""
     if _system() != "Windows":
         return None
     ico = app_icon_path()
@@ -198,7 +202,7 @@ def _write_windows_shortcut(
 
 
 def write_desktop_shortcut() -> Path | None:
-    """Create/update Desktop ``Dana.lnk`` → ``start_dana.bat`` with ``donna.ico``."""
+    """Create/update Desktop ``Dana.lnk`` → ``start_dana.bat`` with app ``.ico``."""
     if _system() != "Windows":
         return None
     bat = write_start_bat()
@@ -212,7 +216,7 @@ def write_desktop_shortcut() -> Path | None:
 
 
 def write_startup_folder_shortcut() -> Path | None:
-    """Create/update Startup-folder ``Dana.lnk`` with ``donna.ico`` (login launch)."""
+    """Create/update Startup-folder ``Dana.lnk`` with app ``.ico`` (login launch)."""
     if _system() != "Windows":
         return None
     bat = write_start_bat()

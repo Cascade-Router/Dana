@@ -236,14 +236,14 @@ try:
     _UI_ROSE_HOVER = _UI_THEME.ROSE_HOVER
     _UI_AMBER = _UI_THEME.AMBER
 except Exception:  # noqa: BLE001
-    _UI_CANVAS = "#0F172A"
-    _UI_CARD = "#1E293B"
-    _UI_CARD_BORDER = "#334155"
-    _UI_GHOST = "#334155"
+    _UI_CANVAS = "#0a0e17"
+    _UI_CARD = "#131b2e"
+    _UI_CARD_BORDER = "#1e293b"
+    _UI_GHOST = "#1e293b"
     _UI_MUTED = "#94A3B8"
     _UI_TEXT = "#F8FAFC"
-    _UI_ACCENT = "#0EA5E9"
-    _UI_ACCENT_HOVER = "#0284C7"
+    _UI_ACCENT = "#10b981"
+    _UI_ACCENT_HOVER = "#059669"
     _UI_EMERALD = "#10B981"
     _UI_EMERALD_HOVER = "#059669"
     _UI_ROSE = "#F43F5E"
@@ -10360,7 +10360,7 @@ class DonnaGUI(ctk.CTk):
         # Dim overlay when engine is engaged (no red warning copy).
         self._behavior_lock_overlay = ctk.CTkFrame(
             mixer_host,
-            fg_color=("#0F172A", "#0F172A"),
+            fg_color=("#0a0e17", "#0a0e17"),
             corner_radius=12,
             border_width=0,
         )
@@ -10395,7 +10395,7 @@ class DonnaGUI(ctk.CTk):
                     except Exception:  # noqa: BLE001
                         pass
                     # Soft dim — CTk has no true alpha; use near-canvas fill.
-                    overlay.configure(fg_color=("#1E293B", "#1E293B"))
+                    overlay.configure(fg_color=("#131b2e", "#131b2e"))
                 else:
                     overlay.place_forget()
             except Exception:  # noqa: BLE001

@@ -131,28 +131,41 @@ def resolve_logo_path() -> Path | None:
     return None
 
 
+# Preferred Windows app icon filenames (first hit wins).
+_APP_ICON_RELS = (
+    "dana/assets/dana_icon.ico",
+    "dana/assets/donna.ico",  # legacy fallback
+)
+
+
 def app_icon_path() -> Path:
-    """Canonical Windows ``.ico`` path (``dana/assets/donna.ico``).
+    """Canonical Windows ``.ico`` path (``dana/assets/dana_icon.ico``).
 
     Resolves via ``dana.resources.get_resource_path`` (``sys._MEIPASS``) so
     packaged + repo launches agree when assets are bundled with ``--add-data``.
+    Falls back to legacy ``donna.ico`` when the hyper-mint squircle is absent.
     """
     try:
         from dana.resources import get_resource_path
 
-        via = get_resource_path("dana/assets/donna.ico")
-        if via.is_file():
-            return via
+        for rel in _APP_ICON_RELS:
+            via = get_resource_path(rel)
+            if via.is_file():
+                return via
     except Exception:  # noqa: BLE001
         pass
+    asset_dir = Path(__file__).resolve().parents[1] / "assets"
     candidates: list[Path] = [
-        Path(__file__).resolve().parents[1] / "assets" / "donna.ico",
+        asset_dir / "dana_icon.ico",
+        asset_dir / "donna.ico",
     ]
     frozen = _frozen_root()
     if frozen is not None:
         candidates.extend(
             [
+                frozen / "dana" / "assets" / "dana_icon.ico",
                 frozen / "dana" / "assets" / "donna.ico",
+                frozen / "assets" / "dana_icon.ico",
                 frozen / "assets" / "donna.ico",
             ]
         )
@@ -162,20 +175,21 @@ def app_icon_path() -> Path:
     try:
         from dana.resources import get_resource_path
 
-        return get_resource_path("dana/assets/donna.ico")
+        return get_resource_path("dana/assets/dana_icon.ico")
     except Exception:  # noqa: BLE001
         return candidates[0]
 
 
 def resolve_app_icon_path() -> Path | None:
-    """Return ``dana/assets/donna.ico`` when present."""
+    """Return ``dana/assets/dana_icon.ico`` (or legacy ``donna.ico``) when present."""
     path = app_icon_path()
     return path if path.is_file() else None
 
 
 def apply_window_icon(root: Any) -> bool:
-    """Bind ``donna.ico`` to a Tk / CustomTkinter root for taskbar + title bar.
+    """Bind app ``.ico`` to a Tk / CustomTkinter root for taskbar + title bar.
 
+    Uses ``iconbitmap`` / ``wm_iconbitmap`` / ``iconphoto`` (wm_iconphoto path).
     Returns True when an icon was applied. Safe no-op on failure / non-Windows.
     """
     ico = resolve_app_icon_path()
@@ -193,7 +207,7 @@ def apply_window_icon(root: Any) -> bool:
         applied = True
     except Exception:  # noqa: BLE001
         pass
-    # iconphoto helps some CTk / multi-monitor taskbar hosts prefer our bitmap.
+    # iconphoto / wm_iconphoto helps some CTk / multi-monitor taskbar hosts.
     try:
         from PIL import Image, ImageTk
 
@@ -202,7 +216,10 @@ def apply_window_icon(root: Any) -> bool:
             img.resize((64, 64), Image.Resampling.LANCZOS),
             master=root,
         )
-        root.iconphoto(True, photo)
+        try:
+            root.wm_iconphoto(True, photo)
+        except Exception:  # noqa: BLE001
+            root.iconphoto(True, photo)
         # Keep a reference so Tk GC does not drop the PhotoImage.
         root._donna_iconphoto = photo  # type: ignore[attr-defined]
         applied = True

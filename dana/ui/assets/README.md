@@ -9,10 +9,12 @@ Place your high-quality, artistically rendered logo here.
 3. `donna_logo.png`
 4. `orb_logo.png` — fallback seed
 
-Windows desktop / taskbar / tray branding also uses the multi-resolution
-ICO generated from the master PNG:
+Windows desktop / taskbar / tray branding uses the high-contrast squircle
+ICO (regenerate via ``python scripts/generate_dana_icon.py``):
 
-- `dana/assets/donna.ico` — sizes 16 / 32 / 48 / 64 / 128 / 256
+- `dana/ui/assets/dana_icon.png` — 512×512 master squircle
+- `dana/assets/dana_icon.ico` — sizes 16 / 32 / 48 / 64 / 128 / 256
+- `dana/assets/donna.ico` — legacy compat copy of the same ICO
 
 ## Format notes
 

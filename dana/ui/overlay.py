@@ -16,8 +16,8 @@ from typing import Any
 
 # Chroma-key must not appear in drawn HUD pixels (near-black, not pure black).
 TRANSPARENT_KEY = "#000001"
-_PILL_FG = "#0F172A"
-_PILL_BORDER = "#1E293B"
+_PILL_FG = "#0a0e17"
+_PILL_BORDER = "#1e293b"
 _PILL_RADIUS = 20
 _LABEL_FG = "#E2E8F0"
 

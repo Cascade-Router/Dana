@@ -8,13 +8,13 @@ from dana.ui import theme as T
 
 
 def test_theme_tokens_slate_palette() -> None:
-    assert T.BG == "#0F172A"
-    assert T.CARD == "#1E293B"
-    assert T.BORDER == "#334155"
+    assert T.BG == "#0a0e17"
+    assert T.CARD == "#131b2e"
+    assert T.BORDER == "#1e293b"
     assert T.TEXT == "#F8FAFC"
     assert T.MUTED == "#94A3B8"
-    assert T.ACCENT == "#0EA5E9"
-    assert T.EMERALD == "#10B981"
+    assert T.ACCENT == "#10b981"
+    assert T.EMERALD == "#10b981"
     assert T.ROSE == "#F43F5E"
 
 

@@ -19,7 +19,7 @@ def test_chat_bar_widgets_and_standby_guard() -> None:
         assert app._chat_send_btn is not None
         assert "Type below or say Dana" in str(app.chat_entry.cget("placeholder_text"))
         accent = str(app._chat_send_btn.cget("fg_color")).lower()
-        assert "#0ea5e9" in accent
+        assert "#10b981" in accent
 
         # Welcome banner once at build; Start Chat must not re-append it.
         box = app.transcript_box

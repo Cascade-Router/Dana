@@ -7,6 +7,8 @@ from typing import Any
 
 # Packaged icon / logo candidates (resolved via ``get_resource_path``).
 _TRAY_ASSET_RELS = (
+    "dana/assets/dana_icon.ico",
+    "dana/ui/assets/dana_icon.png",
     "dana/assets/donna.ico",
     "dana/ui/assets/dana_logo_highres.png",
     "dana/ui/assets/orb_logo.png",
