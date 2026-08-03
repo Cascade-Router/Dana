@@ -28,7 +28,13 @@ def _scrub_stale_playwright_browsers_path() -> None:
         os.environ.pop("PLAYWRIGHT_BROWSERS_PATH", None)
 
 
-def fetch_webpage(url: str) -> str:
+def fetch_webpage(
+    url: str,
+    *,
+    selector: str | None = None,
+    limit: int | None = None,
+    extract_hn_titles: bool = False,
+) -> str:
     """Fetch visible page text from a fully qualified http(s) URL via headless Chromium.
 
     ReAct agent contract
@@ -38,12 +44,15 @@ def fetch_webpage(url: str) -> str:
       ``file:`` / other schemes are rejected with an ``ERROR:`` observation.
     - Returns the page body's visible text (``inner_text``) as the Observation
       for the LLM — not HTML source.
+    - Optional ``selector`` extracts matching elements' text (one per line).
+      ``extract_hn_titles=True`` is a convenience for Hacker News story titles
+      (``.titleline > a``). ``limit`` caps how many matches are returned.
     - Navigation timeouts and launch failures return a clean ``ERROR:`` string
       suitable for ReAct self-correction; this actuator does not raise.
 
     Returns
     -------
-    Page body text, or an ``ERROR:`` observation string.
+    Page body text, selector match lines, or an ``ERROR:`` observation string.
     """
     raw = (url or "").strip()
     if not raw:
@@ -55,6 +64,19 @@ def fetch_webpage(url: str) -> str:
             "ERROR: url must be a fully qualified http:// or https:// URL "
             f"(got {raw!r})"
         )
+
+    sel = (selector or "").strip()
+    if extract_hn_titles and not sel:
+        sel = ".titleline > a"
+
+    max_items: int | None = None
+    if limit is not None:
+        try:
+            max_items = max(1, int(limit))
+        except (TypeError, ValueError):
+            max_items = None
+    elif extract_hn_titles:
+        max_items = 3
 
     try:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -69,6 +91,17 @@ def fetch_webpage(url: str) -> str:
             with p.chromium.launch(headless=True) as browser:
                 page = browser.new_page()
                 page.goto(raw, wait_until="domcontentloaded")
+                if sel:
+                    texts = [
+                        (t or "").strip()
+                        for t in page.locator(sel).all_inner_texts()
+                        if (t or "").strip()
+                    ]
+                    if max_items is not None:
+                        texts = texts[:max_items]
+                    if not texts:
+                        return f"ERROR: no elements matched selector {sel!r}"
+                    return "\n".join(texts)
                 text = page.locator("body").inner_text()
                 return (text or "").strip()
     except PlaywrightTimeoutError:

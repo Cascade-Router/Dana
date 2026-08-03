@@ -4903,7 +4903,23 @@ def execute_tool_call(tc: ToolCall) -> str:
         url = call.arguments.get("url")
         if url is None or not str(url).strip():
             return "ERROR: missing url"
-        return fetch_webpage(str(url))
+        selector = call.arguments.get("selector")
+        limit = call.arguments.get("limit")
+        extract_hn = call.arguments.get("extract_hn_titles", False)
+        extract_hn_titles = bool(extract_hn) and str(extract_hn).strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "",
+        )
+        kwargs: dict[str, object] = {}
+        if selector is not None and str(selector).strip():
+            kwargs["selector"] = str(selector).strip()
+        if limit is not None:
+            kwargs["limit"] = limit
+        if extract_hn_titles:
+            kwargs["extract_hn_titles"] = True
+        return fetch_webpage(str(url), **kwargs)  # type: ignore[arg-type]
 
     def _handle_file_editor(call: ToolCall) -> str:
         from dana.tools.system_repl import file_editor

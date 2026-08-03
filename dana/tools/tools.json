@@ -735,13 +735,34 @@
     },
     {
       "id": "fetch_webpage",
-      "description_en": "Fetch visible page text from a fully qualified http:// or https:// URL using headless Chromium (Playwright). Pass a complete URL with scheme; returns body inner_text for ReAct observation. Navigation timeouts return an ERROR string.",
+      "description_en": "Fetch visible page text from a fully qualified http:// or https:// URL using headless Chromium (Playwright). Pass a complete URL with scheme; returns body inner_text for ReAct observation. Optional selector / extract_hn_titles returns matching element texts (one per line). Navigation timeouts return an ERROR string.",
       "parameters": [
         {
           "name": "url",
           "type": "string",
           "required": true,
           "description_en": "Fully qualified http:// or https:// URL to open.",
+          "description_fa": ""
+        },
+        {
+          "name": "selector",
+          "type": "string",
+          "required": false,
+          "description_en": "Optional CSS selector; when set, return matching elements' text (one per line) instead of full body text.",
+          "description_fa": ""
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "description_en": "Optional max number of selector matches to return.",
+          "description_fa": ""
+        },
+        {
+          "name": "extract_hn_titles",
+          "type": "boolean",
+          "required": false,
+          "description_en": "When true, extract Hacker News story titles (.titleline > a); defaults limit to 3.",
           "description_fa": ""
         }
       ],
