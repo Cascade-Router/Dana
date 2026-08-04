@@ -3,6 +3,7 @@
 from dana.audio.devices import (
     SYSTEM_DEFAULT_LABEL,
     get_default_audio_devices,
+    resolve_live_input_device,
     stream_device_kwargs,
 )
 from dana.audio.noise_floor import (
@@ -33,6 +34,7 @@ __all__ = [
     "get_silero_vad",
     "get_tts_worker",
     "is_speech_frame",
+    "resolve_live_input_device",
     "stream_device_kwargs",
     "trigger_tts_barge_in",
 ]

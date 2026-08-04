@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from dana.audio.devices import (
     SYSTEM_DEFAULT_LABEL,
     get_default_audio_devices,
+    resolve_live_input_device,
     stream_device_kwargs,
 )
 
@@ -59,6 +60,65 @@ def test_get_default_audio_devices_tolerates_query_failure() -> None:
 def test_stream_device_kwargs_omits_none() -> None:
     assert stream_device_kwargs(None) == {}
     assert stream_device_kwargs(3) == {"device": 3}
+
+
+def test_resolve_live_input_device_keeps_live_default() -> None:
+    with (
+        patch("dana.audio.devices._input_samplerate", return_value=44100),
+        patch("dana.audio.devices._probe_input_rms", return_value=0.01),
+    ):
+        idx, rate, reason = resolve_live_input_device(None, floor=1e-4)
+    assert idx is None
+    assert rate == 44100
+    assert reason == "default_live"
+
+
+def test_resolve_live_input_device_fallback_first_live() -> None:
+    devices = [
+        {"max_input_channels": 2, "name": "Silent Default", "hostapi": 0, "default_samplerate": 44100},
+        {"max_input_channels": 2, "name": "Mapper", "hostapi": 0, "default_samplerate": 44100},
+        {"max_input_channels": 2, "name": "HD Audio Mic", "hostapi": 0, "default_samplerate": 48000},
+    ]
+    hostapis = [{"name": "MME"}, {"name": "Windows WDM-KS"}]
+
+    def _rms(device, rate, seconds=0.35):  # noqa: ANN001
+        if device is None or device == 0:
+            return 1e-6
+        if device == 2:
+            return 0.002
+        return 0.0
+
+    with (
+        patch("dana.audio.devices._input_samplerate", return_value=44100),
+        patch("dana.audio.devices._probe_input_rms", side_effect=_rms),
+        patch("dana.audio.devices.get_default_audio_devices", return_value=(0, 5)),
+        patch("sounddevice.query_devices", return_value=devices),
+        patch("sounddevice.query_hostapis", return_value=hostapis),
+    ):
+        idx, rate, reason = resolve_live_input_device(None, floor=1e-4)
+    assert idx == 2
+    assert rate == 48000
+    assert reason == "fallback_live"
+
+
+def test_resolve_live_input_device_quiet_when_none_live() -> None:
+    devices = [
+        {"max_input_channels": 2, "name": "VB-Audio Cable", "hostapi": 0, "default_samplerate": 44100},
+        {"max_input_channels": 2, "name": "Dead Mic", "hostapi": 1, "default_samplerate": 44100},
+    ]
+    hostapis = [{"name": "MME"}, {"name": "Windows WDM-KS"}]
+
+    with (
+        patch("dana.audio.devices._input_samplerate", return_value=44100),
+        patch("dana.audio.devices._probe_input_rms", return_value=0.0),
+        patch("dana.audio.devices.get_default_audio_devices", return_value=(None, None)),
+        patch("sounddevice.query_devices", return_value=devices),
+        patch("sounddevice.query_hostapis", return_value=hostapis),
+    ):
+        idx, rate, reason = resolve_live_input_device(None, floor=1e-4)
+    assert idx is None
+    assert rate == 44100
+    assert reason == "quiet_mic"
 
 
 def test_system_default_label_constant() -> None:

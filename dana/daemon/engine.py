@@ -531,21 +531,18 @@ async def run_engine_daemon(
         try:
             import sounddevice as sd
 
-            from dana.audio.devices import get_default_audio_devices, stream_device_kwargs
+            from dana.audio.devices import resolve_live_input_device, stream_device_kwargs
 
-            # Bind Windows system default input (device=None / sd.default.device).
-            try:
-                din, _dout = get_default_audio_devices()
-            except Exception:  # noqa: BLE001
-                din = None
-            frames = max(1, int(16000 * 0.05))
+            # Acoustic-aware bind: OS default when live, else first live physical mic.
+            live_idx, live_rate, reason = resolve_live_input_device(None)
+            frames = max(1, int(live_rate * 0.05))
             kwargs = {
-                "samplerate": 16000,
+                "samplerate": live_rate,
                 "channels": 1,
                 "dtype": "float32",
                 "blocksize": min(512, frames),
             }
-            kwargs.update(stream_device_kwargs(None))
+            kwargs.update(stream_device_kwargs(live_idx))
             stream = sd.InputStream(**kwargs)
             stream.start()
             try:
@@ -563,7 +560,7 @@ async def run_engine_daemon(
             log(
                 "Daemon",
                 f"audio_warmup=complete ({elapsed_ms:.0f} ms) "
-                f"default_in={din}",
+                f"device={live_idx} rate={live_rate} reason={reason}",
             )
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = (time.perf_counter() - t_audio) * 1000.0

@@ -3855,6 +3855,65 @@ def ensure_live_mic(
 ) -> tuple[Optional[int], int]:
     """Warn / optionally auto-fallback when the selected mic looks muted or silent."""
     global _mic_ambient_rms
+
+    # Keep intentional SteelSeries / --mic choices even if ambient RMS is low.
+    keep_name = ""
+    keep_api = ""
+    try:
+        if device_idx is not None:
+            devices = sd.query_devices()
+            hostapis = sd.query_hostapis()
+            keep_name = str(devices[device_idx].get("name", ""))
+            keep_api = str(hostapis[int(devices[device_idx]["hostapi"])]["name"]).lower()
+    except Exception:
+        keep_name = ""
+    keep_locked = bool(
+        device_idx is not None
+        and (("steelseries" in keep_name.lower()) or ("wdm-ks" in keep_api))
+    )
+
+    # Acoustic-aware scan when fallback is allowed and device is not locked.
+    if allow_fallback and not keep_locked:
+        from dana.audio.devices import resolve_live_input_device
+
+        live_idx, live_rate, reason = resolve_live_input_device(
+            device_idx, floor=float(min_rms)
+        )
+        try:
+            rms = probe_mic_rms(live_idx, live_rate, seconds=0.5)
+        except Exception as exc:  # noqa: BLE001
+            log("Audio", f"WARNING: mic RMS probe failed on [{live_idx}]: {exc}")
+            rms = 0.0
+        _mic_ambient_rms = float(rms)
+        log(
+            "Audio",
+            f"Mic RMS probe [{live_idx}]: {rms:.6f} (resolve={reason})",
+        )
+        if reason == "quiet_mic":
+            quiet_mic_mode.set()
+            wakeword_armed.clear()
+            msg = (
+                "[Audio] No active physical mic detected — falling back to "
+                "Text-Only / Quiet Mic mode"
+            )
+            print(msg, flush=True)
+            log("Audio", msg)
+            log(
+                "Audio",
+                f"WARNING: mic [{device_idx}] ambient RMS is abnormally low; "
+                "enabling quiet-mic adaptive VAD floors + Whisper gain. "
+                "Speak into the headset to verify the endpoint is live.",
+            )
+        else:
+            quiet_mic_mode.clear()
+            if reason == "fallback_live":
+                log(
+                    "Audio",
+                    f"Auto-fallback to live mic [{live_idx}] @ {live_rate} Hz "
+                    f"(RMS={rms:.6f})",
+                )
+        return live_idx, live_rate
+
     try:
         # ~500 ms probe distinguishes dead/virtual endpoints from live ambient.
         rms = probe_mic_rms(device_idx, rate, seconds=0.5)
@@ -3885,18 +3944,7 @@ def ensure_live_mic(
     if rms >= min_rms:
         return device_idx, rate
 
-    # Keep intentional SteelSeries / --mic choices even if ambient RMS is low.
-    keep_name = ""
-    keep_api = ""
-    try:
-        if device_idx is not None:
-            devices = sd.query_devices()
-            hostapis = sd.query_hostapis()
-            keep_name = str(devices[device_idx].get("name", ""))
-            keep_api = str(hostapis[int(devices[device_idx]["hostapi"])]["name"]).lower()
-    except Exception:
-        keep_name = ""
-    if (not allow_fallback) or ("steelseries" in keep_name.lower()) or ("wdm-ks" in keep_api):
+    if (not allow_fallback) or keep_locked:
         # If we somehow landed on WDM-KS, force a SteelSeries MME/WASAPI rematch.
         if "wdm-ks" in keep_api:
             steel = find_steelseries_mic()
@@ -3913,45 +3961,6 @@ def ensure_live_mic(
             "keeping selected device (speak into the headset to verify).",
         )
         return device_idx, rate
-
-    log(
-        "Audio",
-        f"WARNING: mic [{device_idx}] looks dead/muted (RMS={rms:.6f}). "
-        "Scanning for a live INPUT device...",
-    )
-
-    devices = sd.query_devices()
-    hostapis = sd.query_hostapis()
-    best: Optional[tuple[float, int, int]] = None  # rms, idx, rate
-    for idx, dev in enumerate(devices):
-        if int(dev.get("max_input_channels", 0)) < 1:
-            continue
-        name_l = str(dev.get("name", "")).lower()
-        try:
-            api = str(hostapis[int(dev["hostapi"])]["name"]).lower()
-        except Exception:
-            api = ""
-        if "wdm-ks" in api:
-            continue
-        if any(tok in name_l for tok in ("mapper", "primary sound", "cable", "vb-audio")):
-            continue
-        if idx == device_idx:
-            continue
-        cand_rate = int(round(float(dev.get("default_samplerate", SAMPLE_RATE))))
-        try:
-            cand_rms = probe_mic_rms(idx, cand_rate, seconds=0.35)
-        except Exception:
-            continue
-        log("Audio", f"  candidate [{idx}] RMS={cand_rms:.6f} {dev.get('name')}")
-        if best is None or cand_rms > best[0]:
-            best = (cand_rms, idx, cand_rate)
-
-    if best is not None and best[0] >= min_rms:
-        log(
-            "Audio",
-            f"Auto-fallback to live mic [{best[1]}] (RMS={best[0]:.6f})",
-        )
-        return best[1], best[2]
 
     log("Audio", "WARNING: no live mic found; keeping original selection.")
     return device_idx, rate
@@ -4221,20 +4230,27 @@ def mic_ingest_worker() -> None:
         nonlocal stream, stream_channels
         global AUDIO_INPUT_DEVICE, AUDIO_INPUT_RATE
         _close()
-        from dana.audio.devices import get_default_audio_devices, stream_device_kwargs
+        from dana.audio.devices import resolve_live_input_device, stream_device_kwargs
 
-        # Always System Default (device=None); re-query so BT/OS switches bind live.
-        AUDIO_INPUT_DEVICE = None
-        try:
-            din, _dout = get_default_audio_devices()
-        except Exception:  # noqa: BLE001
-            din = None
-        rate = _device_rate(None)
+        # Acoustic-aware: OS default when live, else first live physical index.
+        live_idx, rate, reason = resolve_live_input_device(
+            None, floor=float(DEAD_MIC_RMS_FLOOR)
+        )
+        AUDIO_INPUT_DEVICE = live_idx
         AUDIO_INPUT_RATE = rate
-        if din is not None:
+        if reason == "quiet_mic":
+            quiet_mic_mode.set()
+        elif reason == "fallback_live":
+            quiet_mic_mode.clear()
             log(
                 "MicIngest",
-                f"Binding System Default input (current=[{din}]) @ {rate} Hz",
+                f"Binding fallback live mic [{live_idx}] @ {rate} Hz",
+            )
+        else:
+            quiet_mic_mode.clear()
+            log(
+                "MicIngest",
+                f"Binding System Default input (device={live_idx}) @ {rate} Hz",
             )
 
         native_frame = max(
@@ -4248,8 +4264,7 @@ def mic_ingest_worker() -> None:
                 "dtype": "float32",
                 "blocksize": native_frame,
             }
-            # Omit device → PortAudio OS default.
-            kwargs.update(stream_device_kwargs(None))
+            kwargs.update(stream_device_kwargs(live_idx))
             held = mic_lock.acquire(timeout=MIC_STREAM_OPEN_TIMEOUT_S)
             if not held:
                 last_exc = TimeoutError("mic_lock timeout")
@@ -4267,19 +4282,20 @@ def mic_ingest_worker() -> None:
                     continue
                 stream = candidate
                 stream_channels = channels
-                AUDIO_INPUT_DEVICE = None
+                AUDIO_INPUT_DEVICE = live_idx
                 AUDIO_INPUT_RATE = int(kwargs["samplerate"])
                 mic_ingest_ready.set()
                 wake_mic_released.set()
                 flush_audio_buffer_queue()
                 log(
                     "MicIngest",
-                    f"InputStream open device=None "
+                    f"InputStream open device={live_idx} "
                     f"rate={AUDIO_INPUT_RATE} ch={channels} "
-                    f"block={native_frame} (-> {VAD_FRAME_MS}ms @16k)",
+                    f"block={native_frame} (-> {VAD_FRAME_MS}ms @16k) "
+                    f"reason={reason}",
                 )
                 print(
-                    f"[Debug] MicIngest InputStream open device=None "
+                    f"[Debug] MicIngest InputStream open device={live_idx} "
                     f"rate={AUDIO_INPUT_RATE} ch={channels} block={native_frame}",
                     flush=True,
                 )
@@ -4288,12 +4304,14 @@ def mic_ingest_worker() -> None:
                 last_exc = exc
                 wake_mic_released.set()
                 if _is_portaudio_error(exc):
-                    # Re-query defaults and retry next channel / outer loop.
+                    # Re-resolve live endpoint and retry next channel / outer loop.
                     try:
-                        get_default_audio_devices()
+                        live_idx, rate, reason = resolve_live_input_device(
+                            None, floor=float(DEAD_MIC_RMS_FLOOR)
+                        )
+                        AUDIO_INPUT_DEVICE = live_idx
                     except Exception:  # noqa: BLE001
-                        pass
-                    rate = _device_rate(None)
+                        rate = _device_rate(None)
                     AUDIO_INPUT_RATE = rate
                     native_frame = max(
                         1,
@@ -4301,8 +4319,8 @@ def mic_ingest_worker() -> None:
                     )
                     log(
                         "MicIngest",
-                        f"PortAudioError on System Default mic — "
-                        f"re-queried defaults, will retry ({exc})",
+                        f"PortAudioError on mic device={live_idx} — "
+                        f"re-resolved, will retry ({exc})",
                     )
             finally:
                 mic_lock.release()
@@ -11493,13 +11511,12 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
     AUDIO_OUTPUT_DEVICE = None
     AUDIO_INPUT_RATE = mic_rate
 
-    # Verify System Default mic is live (None is a valid choice).
+    # Acoustic-aware: keep OS default when live; bind physical fallback when quiet.
     AUDIO_INPUT_DEVICE, AUDIO_INPUT_RATE = ensure_live_mic(
         None,
         AUDIO_INPUT_RATE,
-        allow_fallback=False,
+        allow_fallback=True,
     )
-    AUDIO_INPUT_DEVICE = None  # keep autonomous default after probe
     if not _validate_mic_id(AUDIO_INPUT_DEVICE):
         log("Main", "Aborting: configured microphone is not usable.")
         stop_event.set()
