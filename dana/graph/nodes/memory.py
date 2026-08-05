@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from dana.memory.compaction import CompactionEngine
+from dana.memory.episodic_grounding import retrieve_episodic_grounding
 from dana.memory.store import EpisodicMemoryStore, get_episodic_store
 from dana.schema import ReactGraphState
 
@@ -173,12 +174,30 @@ def make_hydrate_memory_node(
         mem = store if store is not None else get_episodic_store(db_path)
         mem.prune_expired_entries()
         query = _extract_user_text(state)
-        matches = mem.search_facts(query) if query else []
+        # SQLite episodic_facts are the primary retrieval source (before vault/vision).
+        grounding = (
+            retrieve_episodic_grounding(query, store=mem)
+            if query
+            else {
+                "matches": [],
+                "contradiction": None,
+                "grounding_block": "",
+                "primary_source": "episodic_facts",
+                "suppress_vault_vision": False,
+                "contradiction_directive": "",
+            }
+        )
+        matches = list(grounding.get("matches") or [])
         # Always staple active preferences so dark-mode etc. survive sparse queries.
         prefs = mem.get_all_preferences()
         context: dict[str, Any] = {
             "preferences": prefs,
             "matches": matches,
+            "primary_source": "episodic_facts",
+            "grounding_block": grounding.get("grounding_block") or "",
+            "contradiction": grounding.get("contradiction"),
+            "contradiction_directive": grounding.get("contradiction_directive") or "",
+            "suppress_vault_vision": bool(grounding.get("suppress_vault_vision")),
         }
         # Flat convenience keys for callers / tests (prefer_dark_mode etc.).
         for k, v in prefs.items():

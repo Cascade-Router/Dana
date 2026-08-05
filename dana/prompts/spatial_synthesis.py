@@ -256,6 +256,7 @@ When the user asks to read on-screen text, find a button/label, or ground UI ele
 - open_application(app_name=<chrome|vscode|notepad|explorer|…>)
 - read_local_file(filepath=<path>)  # repo paths from CAMGRASPER root, e.g. dana/core_agent.py — NEVER dana/core/...
 - architect_new_tool(goal=<user_request>)  # Tool Forge — required goal; never empty args
+- meta_broker(prompt=<macro_intent>)  # Meta-Broker multi-epic DAG + runtime harness (TDD)
 - list_todo_basket()  # summarize PENDING bugs in CAMGRASPER/tracker/bug_tracker.json
 - dispatch_titan_repair(query=<optional>)  # draft fixes into CAMGRASPER/tracker/pending_patches/
 - capture_and_analyze_screen(prompt=<optional>)  # OS screenshot + vision UI summary
@@ -270,10 +271,18 @@ When the user asks to read on-screen text, find a button/label, or ground UI ele
 - dispatch_watchdog(task=<what_to_watch_for>)  # background script / monitor / watchdog
 - kill_watchdog(task_id=<id_from_active_watchdogs>)  # stop a background monitor
 
+Meta-Broker routing (HARD — before Tool Forge):
+- Category ``meta_broker``: massive multi-file refactors, complex feature generation
+  across multiple components, or tasks explicitly requiring Test-Driven Development
+  (TDD) and Epics.
+- Phrases: "Use the Meta-Broker", "/broker …", multi-epic TDD plans → call
+  meta_broker(prompt=<exact user utterance>). Never architect_new_tool. Never chat-only.
+
 Tool Forge routing (HARD):
 - Phrases like "build a tool", "create a tool", "code a script" MUST call
   architect_new_tool(goal=<exact user utterance>). Never read_vault_memory. Never chat-only.
 - If goal/tool_description is missing, pass the full user message as goal.
+- Do NOT use Tool Forge when Meta-Broker applies (epics / TDD / multi-component).
 
 Cursor handoff (HARD):
 - "fix my bug", "delegate to Cursor", "hand off to Cursor" → delegate_to_cursor.

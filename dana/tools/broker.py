@@ -12,6 +12,10 @@ from typing import Any
 from dana.tools.normalize import detect_lang, normalize_text, normalize_tool_arguments
 from dana.tools.schema import ToolCall, ToolSpec, load_tool_registry, tool_schema_public
 
+# Soft alias matches are ~0.85; force-routes use ≥0.95. Below this threshold the
+# proportional router keeps the turn on System-1 lightweight chat (no ReAct).
+HIGH_CONFIDENCE_TOOL_THRESHOLD = 0.95
+
 # LLM-style tool call patterns (EN / FA / mixed).
 _TOOL_CALL_RE = re.compile(
     r"(?:tool|call)\s*[:=]\s*([a-zA-Z_][\w]*)\s*(?:\((.*)\)|\{(.*)\})?",
@@ -94,8 +98,84 @@ _MEMORY_INGEST_HINT_RE = re.compile(
 _CLEAR_CHAT_MEMORY_HINT_RE = re.compile(
     r"(?i)\b(?:clear|reset|wipe|forget)\s+(?:the\s+)?(?:chat\s+)?(?:memory|conversation|history)\b",
 )
+# Day-scoped episodic / log recall — force list_activity_for_day onto the tool graph.
+_TEMPORAL_ACTIVITY_HINT_RE = re.compile(
+    r"(?i)\b(?:"
+    r"yesterday|last\s+night|this\s+morning|previous\s+session|"
+    r"what\s+did\s+you\s+do\s+yesterday|what\s+happened\s+yesterday|"
+    r"list_activity_for_day|activity\s+for\s+(?:yesterday|today)"
+    r")\b",
+)
+# Live CPU / RAM / VRAM telemetry.
+_SYSTEM_TELEMETRY_HINT_RE = re.compile(
+    r"(?i)\b(?:"
+    r"cpu|vram|ram|system\s+utilization|"
+    r"gpu\s+(?:memory|utilization|usage)|"
+    r"memory\s+utilization|"
+    r"get_system_telemetry"
+    r")\b",
+)
+# Idle / USER_AWAY duration from logs/idle_state.log.
+_IDLE_DURATION_HINT_RE = re.compile(
+    r"(?i)\b(?:"
+    r"user_away|idle\s+duration|away\s+time|"
+    r"last\s+user_away|how\s+long\s+(?:was\s+i|i\s+was)\s+away|"
+    r"parse_idle_log_duration|idle_state\.log"
+    r")\b",
+)
+# Named-repo git commit date (cascade-router) → execute_powershell with cwd.
+_CASCADE_GIT_HINT_RE = re.compile(
+    r"(?i)\b(?:"
+    r"cascade[-_]?router|"
+    r"last\s+git\s+commit|"
+    r"date\s+of\s+the\s+last\s+(?:git\s+)?commit"
+    r")\b",
+)
+# Watchdog monitoring graph → read_local_file (exact path).
+_WATCHDOG_GRAPH_HINT_RE = re.compile(
+    r"(?i)\b(?:"
+    r"watchdog\s+(?:monitoring\s+)?graph|"
+    r"watchdog_graph|"
+    r"watchdog\s+monitor"
+    r")\b",
+)
+# LaTeX drafting with negative citation constraints.
+_LATEX_HINT_RE = re.compile(
+    r"(?i)\b(?:"
+    r"latex|\\documentclass|"
+    r"citation\s+tags|\\cite|no\s+auto-generated\s+citation"
+    r")\b",
+)
+# Explicit self-improvement critique (architecture + failure logs).
+_SELF_IMPROVEMENT_HINT_RE = re.compile(
+    r"(?i)\b(?:"
+    r"how\s+can\s+we\s+improve\s+you|how\s+can\s+i\s+improve\s+you|"
+    r"self[- ]?improv(?:e|ement)|improve\s+(?:yourself|your\s+architecture)|"
+    r"how\s+do\s+we\s+make\s+you\s+better"
+    r")\b",
+)
 # Tool Forge / architect — NEVER vault memory or generic chat.
 # Matches singular ("build a tool") and batch ("build three tools", "tools back-to-back").
+def is_meta_broker_intent(text: str) -> bool:
+    """True when the utterance must route to the Meta-Broker DAG (no LLM classify)."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    low = raw.lower()
+    if low.startswith("/broker ") or low == "/broker":
+        return True
+    return "use the meta-broker" in low
+
+
+def extract_meta_broker_prompt(text: str) -> str:
+    """Strip ``/broker`` prefix; keep full text for phrase-triggered Meta-Broker."""
+    raw = (text or "").strip()
+    if raw.lower().startswith("/broker"):
+        rest = raw[7:].lstrip(" \t:.-").strip()
+        return rest or raw
+    return raw
+
+
 _TOOL_FORGE_HINT_RE = re.compile(
     r"\b("
     # Allow adjectives between determiner and "tool" (e.g. "build a custom tool").
@@ -368,6 +448,26 @@ _ACTUATOR_WRITE_HINT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+# Jailed Python sandbox jobs (sync or background) under execution_jail.
+_SANDBOX_PYTHON_HINT_RE = re.compile(
+    r"("
+    r"\b(?:execute_python_script)\b|"
+    r"\brun\s+(?:this\s+)?python\s+script\b|"
+    r"\brun\s+(?:a\s+)?(?:python\s+)?(?:script|job)\s+in\s+(?:the\s+)?sandbox\b|"
+    r"\bbackground\s+python\s+(?:script|job)\b|"
+    r"\bsandbox\s+python\b"
+    r")",
+    re.IGNORECASE,
+)
+_SANDBOX_JOB_STATUS_HINT_RE = re.compile(
+    r"("
+    r"\b(?:get_sandbox_job_status)\b|"
+    r"\b(?:sandbox|python|background)\s+job\s+status\b|"
+    r"\bstatus\s+of\s+(?:my\s+)?(?:sandbox|python|background)\s+job\b|"
+    r"\bcheck\s+(?:the\s+)?(?:sandbox|python)\s+job\b"
+    r")",
+    re.IGNORECASE,
+)
 # Headless Playwright fetch — bind when the user names the tool or asks to
 # open/fetch a concrete webpage URL (do not steal generic "search the web").
 _BROWSER_HINT_RE = re.compile(
@@ -585,6 +685,42 @@ def repl_suite_tool_ids(user_text: str) -> list[str]:
     return [tid for tid in _REPL_SUITE_TOOL_IDS if tid in known]
 
 
+def should_blindfold_vision(
+    *,
+    user_text: str = "",
+    forced_tool_id: str | None = None,
+) -> bool:
+    """True when vision tools must be unbound (research swarm / USER_AWAY).
+
+    Prevents MoA from hallucinating on idle screen frames during background
+    research — text/web tools stay available.
+    """
+    tool = (forced_tool_id or "").strip()
+    if tool == "dispatch_research_swarm":
+        return True
+    text = user_text or ""
+    if text.lstrip().startswith("[BACKGROUND TASK]"):
+        return True
+    if "dispatch_research_swarm" in text.lower():
+        return True
+    # Personal-history / episodic grounding turns must not consult the screen.
+    try:
+        from dana.memory.episodic_grounding import is_episodic_primary_query
+
+        if is_episodic_primary_query(text):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from dana.middleware.idle_monitor import USER_AWAY, get_idle_state
+
+        if get_idle_state() == USER_AWAY:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
 def merge_bound_tool_ids(
     *,
     user_text: str,
@@ -606,6 +742,9 @@ def merge_bound_tool_ids(
     script) bind ``write_to_file`` + ``execute_command``.
     Browser / concrete-URL prompts always bind ``fetch_webpage`` so top-K
     cannot starve the Playwright actuator with vision/memory tools.
+
+    Research swarm / USER_AWAY turns blindfold vision tools so idle frames
+    cannot poison the MoA plan.
     """
     if known_ids is None:
         try:
@@ -614,10 +753,16 @@ def merge_bound_tool_ids(
             known_ids = []
     known = {str(x) for x in known_ids}
     merged: list[str] = []
+    blindfold = should_blindfold_vision(
+        user_text=user_text or "",
+        forced_tool_id=forced_tool_id,
+    )
 
     def _add(tid: str | None) -> None:
         name = (tid or "").strip()
         if not name or name not in known:
+            return
+        if blindfold and name in {"analyze_visual_context", "ocr_with_region"}:
             return
         if name not in merged:
             merged.append(name)
@@ -627,7 +772,10 @@ def merge_bound_tool_ids(
     jason_sup = (forced_tool_id or "").strip() == "dispatch_jason_supervisor" or bool(
         _JASON_SUPERVISOR_HINT_RE.search(user_text or "")
     )
-    if mode_norm == "vision" or _VISION_HINT_RE.search(user_text or ""):
+    if (
+        not blindfold
+        and (mode_norm == "vision" or _VISION_HINT_RE.search(user_text or ""))
+    ):
         _add("analyze_visual_context")
         if _OCR_GROUND_HINT_RE.search(user_text or ""):
             _add("ocr_with_region")
@@ -643,8 +791,25 @@ def merge_bound_tool_ids(
         if _ACTUATOR_HINT_RE.search(user_text or ""):
             _add("write_to_file")
             _add("execute_command")
+        if _SANDBOX_PYTHON_HINT_RE.search(user_text or ""):
+            _add("execute_python_script")
+            _add("get_sandbox_job_status")
+        if _SANDBOX_JOB_STATUS_HINT_RE.search(user_text or ""):
+            _add("get_sandbox_job_status")
         if _BROWSER_HINT_RE.search(user_text or ""):
             _add("fetch_webpage")
+        if _TEMPORAL_ACTIVITY_HINT_RE.search(user_text or ""):
+            _add("list_activity_for_day")
+        if _SYSTEM_TELEMETRY_HINT_RE.search(user_text or ""):
+            _add("get_system_telemetry")
+        if _IDLE_DURATION_HINT_RE.search(user_text or ""):
+            _add("parse_idle_log_duration")
+        if _CASCADE_GIT_HINT_RE.search(user_text or ""):
+            _add("execute_powershell")
+        if _WATCHDOG_GRAPH_HINT_RE.search(user_text or ""):
+            _add("read_local_file")
+        if _SELF_IMPROVEMENT_HINT_RE.search(user_text or ""):
+            _add("read_system_architecture")
         if _MEMORY_HINT_RE.search(user_text or "") and not _CLEAR_CHAT_MEMORY_HINT_RE.search(
             user_text or ""
         ):
@@ -657,8 +822,12 @@ def merge_bound_tool_ids(
             continue
         _add(tid)
     # Stage 4.1 — lightweight Chat never binds live vision; it SELECTs the BB topic.
-    if mode_norm == "chat":
-        return [tid for tid in merged if tid != "analyze_visual_context"]
+    if mode_norm == "chat" or blindfold:
+        return [
+            tid
+            for tid in merged
+            if tid not in {"analyze_visual_context", "ocr_with_region"}
+        ]
     return merged
 
 
@@ -959,6 +1128,17 @@ class IntentBroker:
         slide_review_hit = bool(_SLIDE_REVIEW_HINT_RE.search(raw))
         publish_hit = bool(_PUBLISH_TOOL_HINT_RE.search(raw))
         jason_supervisor_hit = bool(_JASON_SUPERVISOR_HINT_RE.search(raw))
+        # Meta-Broker keyword override — before Tool Forge / ReAct swallowing.
+        if is_meta_broker_intent(raw) and not mem_write_hit:
+            prompt = extract_meta_broker_prompt(raw)
+            _foresight_cascade(raw, "meta_broker")
+            return ToolCall(
+                tool_id="meta_broker",
+                arguments={"prompt": prompt},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.99,
+            )
         if wall_clock_hit and not visual_hit:
             _foresight_cascade(raw, None)
             return None
@@ -994,6 +1174,127 @@ class IntentBroker:
                 source_lang=lang,
                 raw_text=raw,
                 confidence=0.97,
+            )
+        # Named-repo git commit date → execute_powershell with cwd.
+        if (
+            bool(_CASCADE_GIT_HINT_RE.search(raw))
+            and not mem_write_hit
+            and not forge_hit
+        ):
+            try:
+                from dana.tools.os_tools import cascade_git_tool_args
+
+                args = cascade_git_tool_args(raw)
+            except Exception:  # noqa: BLE001
+                args = {
+                    "command": "git log -1 --format=%cd",
+                    "cwd": str(Path.home() / "Desktop" / "cascade-router"),
+                }
+            _foresight_cascade(raw, "execute_powershell")
+            return ToolCall(
+                tool_id="execute_powershell",
+                arguments=args,
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.97,
+            )
+        # Watchdog graph → exact file read (before generic file/vision steals).
+        if (
+            bool(_WATCHDOG_GRAPH_HINT_RE.search(raw))
+            and not mem_write_hit
+            and not forge_hit
+        ):
+            try:
+                from dana.tools.os_tools import watchdog_graph_filepath
+
+                wpath = watchdog_graph_filepath()
+            except Exception:  # noqa: BLE001
+                wpath = "dana/swarm/watchdog_graph.py"
+            _foresight_cascade(raw, "read_local_file")
+            return ToolCall(
+                tool_id="read_local_file",
+                arguments={"filepath": wpath},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.97,
+            )
+        # LaTeX drafting → no forced tool; answer-only with hard citation ban.
+        if bool(_LATEX_HINT_RE.search(raw)) and not mem_write_hit and not forge_hit:
+            _foresight_cascade(raw, None)
+            return None
+        # Live CPU/RAM/VRAM → get_system_telemetry (before vault / vision).
+        telemetry_hit = bool(_SYSTEM_TELEMETRY_HINT_RE.search(raw))
+        if telemetry_hit and not mem_write_hit and not forge_hit:
+            _foresight_cascade(raw, "get_system_telemetry")
+            return ToolCall(
+                tool_id="get_system_telemetry",
+                arguments={},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.97,
+            )
+        # Idle / USER_AWAY duration → parse_idle_log_duration.
+        idle_duration_hit = bool(_IDLE_DURATION_HINT_RE.search(raw))
+        if idle_duration_hit and not mem_write_hit and not forge_hit:
+            _foresight_cascade(raw, "parse_idle_log_duration")
+            return ToolCall(
+                tool_id="parse_idle_log_duration",
+                arguments={},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.97,
+            )
+        # SQLite episodic_facts beat Chroma vault / vision for personal history.
+        try:
+            from dana.memory.episodic_grounding import (
+                is_episodic_primary_query,
+                retrieve_episodic_grounding,
+            )
+
+            if (
+                is_episodic_primary_query(raw)
+                and not mem_write_hit
+                and not forge_hit
+            ):
+                grounding = retrieve_episodic_grounding(raw)
+                if grounding.get("matches") or grounding.get("contradiction"):
+                    _foresight_cascade(raw, None)
+                    return None
+        except Exception:  # noqa: BLE001
+            pass
+        # Temporal day-index → list_activity_for_day (before vault / vision steals).
+        temporal_hit = bool(_TEMPORAL_ACTIVITY_HINT_RE.search(raw))
+        if temporal_hit and not mem_write_hit and not forge_hit:
+            date_arg = "yesterday"
+            low = raw.lower()
+            if "this morning" in low or re.search(r"\btoday\b", low):
+                date_arg = "today"
+            elif "last night" in low:
+                date_arg = "last night"
+            elif "previous session" in low:
+                date_arg = "previous session"
+            _foresight_cascade(raw, "list_activity_for_day")
+            return ToolCall(
+                tool_id="list_activity_for_day",
+                arguments={"date_str": date_arg},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.97,
+            )
+        # Conversational self-improvement critique → architecture (not draft ticket).
+        if (
+            bool(_SELF_IMPROVEMENT_HINT_RE.search(raw))
+            and not draft_cursor_hit
+            and not visual_hit
+            and not mem_write_hit
+        ):
+            _foresight_cascade(raw, "read_system_architecture")
+            return ToolCall(
+                tool_id="read_system_architecture",
+                arguments={},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.96,
             )
         # Self-improvement / upgrade-ticket → draft_cursor_prompt (force high MoA).
         # Prefer this over generic delegate_to_cursor when the async draft tool is named.
@@ -1088,10 +1389,42 @@ class IntentBroker:
                 raw_text=raw,
                 confidence=0.96,
             )
+        # Jailed sandbox Python / job status (before generic python_repl).
+        sandbox_job_hit = bool(_SANDBOX_JOB_STATUS_HINT_RE.search(raw))
+        sandbox_py_hit = bool(_SANDBOX_PYTHON_HINT_RE.search(raw))
+        if sandbox_job_hit and not mem_write_hit and not forge_hit:
+            _foresight_cascade(raw, "get_sandbox_job_status")
+            return ToolCall(
+                tool_id="get_sandbox_job_status",
+                arguments={},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.96,
+            )
+        if (
+            sandbox_py_hit
+            and not mem_write_hit
+            and not forge_hit
+            and not write_hit
+        ):
+            _foresight_cascade(raw, "execute_python_script")
+            return ToolCall(
+                tool_id="execute_python_script",
+                arguments={},
+                source_lang=lang,
+                raw_text=raw,
+                confidence=0.96,
+            )
         # Multi-step write→run→read: force python_repl FIRST so foresight cannot
         # jump straight to file_editor on a not-yet-written path.
         repl_chain = bool(_REPL_SUITE_HINT_RE.search(raw))
-        if repl_chain and not mem_write_hit and not forge_hit:
+        if (
+            repl_chain
+            and not mem_write_hit
+            and not forge_hit
+            and not sandbox_py_hit
+            and not sandbox_job_hit
+        ):
             _foresight_cascade(raw, "python_repl")
             return ToolCall(
                 tool_id="python_repl",
@@ -1120,6 +1453,8 @@ class IntentBroker:
             and not write_hit
             and not repl_chain
             and not ps_hit
+            and not sandbox_py_hit
+            and not sandbox_job_hit
         ):
             actuator_id = (
                 "write_to_file"
@@ -1370,7 +1705,7 @@ class IntentBroker:
                 arguments={"query": raw},
                 source_lang=lang,
                 raw_text=raw,
-                confidence=0.92,
+                confidence=0.95,
             )
 
         if (

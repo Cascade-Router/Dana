@@ -1,4 +1,4 @@
-"""Donna — Batch Proposer: capability-gap discovery via local llama3.2."""
+"""Donna — Batch Proposer: capability-gap discovery via local qwen2.5-coder:7b."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ PROPOSAL_REQUIRED_KEYS = (
 DONNA_SYSTEM_PROMPT = """
 You are Donna, CAMGRASPER's offline capability scout.
 You read recent failure traces / bottleneck logs from an on-device voice agent
-(Whisper STT, bilingual EN/FA routing, YOLO SpatialIR, local llama3.2 ReAct,
+(Whisper STT, bilingual EN/FA routing, YOLO SpatialIR, local qwen2.5-coder:7b ReAct,
 encrypted vault memory, Piper TTS). Your job is to pitch concrete remedies.
 
 Output rules (non-negotiable):
@@ -91,7 +91,7 @@ def _normalize_proposal(item: Any, index: int) -> dict[str, Any]:
 def generate_capability_pitches(
     traces: str | os.PathLike[str] | list[str] | None,
     *,
-    model: str = "llama3.2",
+    model: str = "qwen2.5-coder:7b",
     temperature: float = 0.35,
 ) -> list[dict[str, Any]]:
     """Ask Donna (via Ollama) for exactly five capability pitches.

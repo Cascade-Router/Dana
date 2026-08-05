@@ -84,14 +84,22 @@ def _resolve_jailed(filepath: str) -> Path:
     return candidate
 
 
-def _popen_kwargs() -> dict[str, Any]:
+def _popen_kwargs(cwd: str | None = None) -> dict[str, Any]:
+    workdir = str(_ROOT)
+    if cwd and str(cwd).strip():
+        candidate = Path(str(cwd).strip()).expanduser()
+        try:
+            if candidate.is_dir():
+                workdir = str(candidate.resolve())
+        except OSError:
+            pass
     kwargs: dict[str, Any] = {
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
         "encoding": "utf-8",
         "errors": "replace",
-        "cwd": str(_ROOT),
+        "cwd": workdir,
     }
     if os.name == "nt":
         kwargs["creationflags"] = int(
@@ -133,12 +141,16 @@ def _kill_process_tree(pid: int) -> None:
             pass
 
 
-def _run_shell(command: str) -> tuple[int, str, str] | str:
+def _run_shell(
+    command: str,
+    *,
+    cwd: str | None = None,
+) -> tuple[int, str, str] | str:
     """``subprocess.run``-equivalent with hard timeout + process-tree kill.
 
     Returns ``(returncode, stdout, stderr)`` or a timeout warning string.
     """
-    popen_kwargs = _popen_kwargs()
+    popen_kwargs = _popen_kwargs(cwd=cwd)
     # New process group on POSIX so timeout can signal the whole tree.
     if os.name != "nt":
         popen_kwargs["start_new_session"] = True
@@ -176,8 +188,11 @@ def _run_shell(command: str) -> tuple[int, str, str] | str:
     return int(proc.returncode or 0), stdout or "", stderr or ""
 
 
-def shell_execute(command: str) -> str:
-    """Run a shell command at project root with a hard 15s timeout."""
+def shell_execute(command: str, cwd: str | None = None) -> str:
+    """Run a shell command (default cwd=project root) with a hard 15s timeout.
+
+    Optional ``cwd`` retargets the working directory (e.g. a named git repo).
+    """
     cmd = (command or "").strip()
     if not cmd:
         return "ERROR: empty command"
@@ -188,15 +203,17 @@ def shell_execute(command: str) -> str:
             "safety protocols (e.g. rm -rf, del /s, git reset --hard)."
         )
 
-    result = _run_shell(cmd)
+    result = _run_shell(cmd, cwd=cwd)
     if isinstance(result, str):
         return result
 
     returncode, stdout_raw, stderr_raw = result
     stdout = _truncate_tail(stdout_raw.rstrip())
     stderr = _truncate_tail(stderr_raw.rstrip())
+    workdir = (cwd or "").strip() or str(_ROOT)
     parts = [
         f"exit_code={returncode}",
+        f"cwd={workdir}",
         f"stdout:\n{stdout or '(empty)'}",
     ]
     if stderr:
@@ -205,89 +222,13 @@ def shell_execute(command: str) -> str:
 
 
 def file_editor(action: str, filepath: str, content: str | None = None) -> str:
-    """Read/write files strictly inside PROJECT_ROOT (blocks ../ and abs escapes)."""
-    protected_dirs = ["dana", ".git", ".github"]
-    if action in ["write", "append"]:
-        # Resolve the path to check if it falls inside protected territories
-        raw_path = Path(str(filepath or "").strip()).expanduser()
-        if raw_path.is_absolute():
-            target = raw_path.resolve()
-        else:
-            target = (_ROOT / raw_path).resolve()
-        for p_dir in protected_dirs:
-            protected_path = (_ROOT / p_dir).resolve()
-            if target.is_relative_to(protected_path):
-                return (
-                    f"ERROR: Write access to {p_dir} core system files is "
-                    "denied by safety protocols."
-                )
+    """Read/write files strictly inside PROJECT_ROOT (blocks ../ and abs escapes).
 
-    act = (action or "").strip().lower()
-    if act not in {"read", "write", "append"}:
-        return "ERROR: action must be 'read', 'write', or 'append'"
+    Transactional staging / verify_and_commit live in ``dana.tools.file_editor``.
+    """
+    from dana.tools.file_editor import file_editor as _transactional_file_editor
 
-    try:
-        target = _resolve_jailed(filepath)
-    except ValueError as exc:
-        return f"ERROR: {exc}"
-
-    # Belt-and-suspenders: re-check after jail resolve (symlink / .. normalization).
-    if act in {"write", "append"}:
-        for p_dir in protected_dirs:
-            protected_path = (_ROOT / p_dir).resolve()
-            if target.is_relative_to(protected_path):
-                return (
-                    f"ERROR: Write access to {p_dir} core system files is "
-                    "denied by safety protocols."
-                )
-
-    if act == "read":
-        if not target.is_file():
-            return f"ERROR: file not found: {target.relative_to(_ROOT).as_posix()}"
-        try:
-            body = target.read_text(encoding="utf-8", errors="replace")
-        except Exception as exc:  # noqa: BLE001
-            return f"ERROR: read failed: {exc}"
-        return (
-            f"OK: read {target.relative_to(_ROOT).as_posix()} "
-            f"({len(body)} chars)\n{_truncate_file_body(body)}"
-        )
-
-    # write / append
-    if content is None:
-        return f"ERROR: content is required for {act}"
-    try:
-        from dana.exec.shadow_workspace import get_active_shadow
-
-        shadow = get_active_shadow()
-        if shadow is not None:
-            # Transactional staging: never mutate destinations until commit().
-            if act == "append":
-                prior = ""
-                staged = shadow.map_path(target)
-                if staged.is_file():
-                    prior = staged.read_text(encoding="utf-8")
-                elif target.is_file():
-                    prior = target.read_text(encoding="utf-8", errors="replace")
-                shadow.stage_write(target, prior + str(content))
-            else:
-                shadow.stage_write(target, str(content))
-            return (
-                f"OK: {act} {len(str(content))} chars to "
-                f"{target.relative_to(_ROOT).as_posix()} (shadow staged)"
-            )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if act == "append" and target.is_file():
-            with target.open("a", encoding="utf-8") as fh:
-                fh.write(str(content))
-        else:
-            target.write_text(str(content), encoding="utf-8")
-    except Exception as exc:  # noqa: BLE001
-        return f"ERROR: {act} failed: {exc}"
-    return (
-        f"OK: {act} {len(str(content))} chars to "
-        f"{target.relative_to(_ROOT).as_posix()}"
-    )
+    return _transactional_file_editor(action, filepath, content)
 
 
 def python_repl(code: str) -> str:

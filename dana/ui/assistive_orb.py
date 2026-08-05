@@ -82,6 +82,10 @@ class AssistiveTouchOrb:
         self._dragging = False
         self._drag_start_x = 0
         self._drag_start_y = 0
+        self._drag_offset_x = 0
+        self._drag_offset_y = 0
+        self._win_start_x = 0
+        self._win_start_y = 0
         self._win_start_x = 0
         self._win_start_y = 0
         self._moved = False
@@ -95,6 +99,7 @@ class AssistiveTouchOrb:
         self._alpha = 1.0
         # Keep PhotoImage refs alive (Tk GC otherwise blanks the canvas).
         self._logo_photo: Any | None = None
+        self._chrome_photo: Any | None = None
         self._logo_mode = "png"  # "png" | "polygon"
 
         self.orb_window = tk.Toplevel(master)
@@ -164,11 +169,10 @@ class AssistiveTouchOrb:
         self._apply_compact_geometry()
         self._apply_transparent_hit_test()
 
-        # Drag + hover (Tk main thread only).
-        for widget in (self._canvas, self.orb_window, self._shell):
-            widget.bind("<Button-1>", self._on_press)
-            widget.bind("<B1-Motion>", self._on_drag)
-            widget.bind("<ButtonRelease-1>", self._on_release)
+        # Drag on the solid canvas graphic only — not the toplevel / shell.
+        # Transparent click-through (color-key + SetWindowRgn) drops events on
+        # the parent window; canvas items (chrome/logo/status) still receive them.
+        self._bind_orb_drag_handlers()
         self._shell.bind("<Enter>", self._on_enter)
         self._shell.bind("<Leave>", self._on_leave)
         self._canvas.bind("<Enter>", self._on_enter)
@@ -530,9 +534,59 @@ class AssistiveTouchOrb:
                 tags=("icon", "mark"),
             )
 
+    def _build_aa_pill_photo(self) -> Any | None:
+        """4× supersampled pill; color-key compatible soft edges via LANCZOS.
+
+        Windows ``-transparentcolor #000001`` cannot composite real alpha, so
+        we flatten AA fringes onto the key color — edges read smooth without
+        jagged Tk ``create_oval`` stairs.
+        """
+        try:
+            from PIL import Image, ImageDraw, ImageTk
+        except Exception:  # noqa: BLE001
+            return None
+        scale = 4
+        w, h = _PILL_W, _PILL_H
+        W, H = w * scale, h * scale
+        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        radius = H // 2
+        draw.rounded_rectangle(
+            (0, 0, W - 1, H - 1),
+            radius=radius,
+            fill=(30, 41, 59, 255),  # #1e293b
+        )
+        inset = max(scale, 2)
+        draw.rounded_rectangle(
+            (inset, inset, W - 1 - inset, H - 1 - inset),
+            radius=max(2, radius - inset),
+            fill=(10, 14, 23, 255),  # #0a0e17
+        )
+        out = img.resize((w, h), Image.Resampling.LANCZOS)
+        # Flatten onto chroma-key so LWA_COLORKEY punches true exterior.
+        key = Image.new("RGBA", out.size, (0, 0, 1, 255))  # #000001
+        flat = Image.alpha_composite(key, out).convert("RGB")
+        try:
+            return ImageTk.PhotoImage(flat, master=self._canvas)
+        except Exception:  # noqa: BLE001
+            return None
+
     def _draw_pill_chrome(self) -> None:
-        """Glassmorphic rounded rect — no rings / glow / mesh."""
-        # Tk Canvas has no native round_rectangle — approximate with ovals + fills.
+        """Glassmorphic rounded rect — PIL AA surface (fallback: canvas ovals)."""
+        photo = self._chrome_photo
+        if photo is None:
+            photo = self._build_aa_pill_photo()
+            self._chrome_photo = photo
+        if photo is not None:
+            self._canvas.create_image(
+                0,
+                0,
+                image=photo,
+                anchor="nw",
+                tags="chrome",
+            )
+            return
+        # Fallback if PIL/ImageTk unavailable.
         r = 18
         w, h = _PILL_W, _PILL_H
         self._canvas.create_oval(0, 0, r * 2, r * 2, fill=_PILL_BORDER, outline="", tags="chrome")
@@ -593,6 +647,37 @@ class AssistiveTouchOrb:
             anchor="w",
             tags=("status",),
         )
+        # Re-tag-bind after redraw — ``delete("all")`` drops prior item binds.
+        self._bind_orb_drag_handlers()
+
+    def _bind_orb_drag_handlers(self) -> None:
+        """Bind press/drag/release to the solid pill canvas (and item tags)."""
+        canvas = getattr(self, "_canvas", None)
+        if canvas is None:
+            return
+        # Ensure transparent hosts do not own the drag gesture.
+        for widget in (getattr(self, "orb_window", None), getattr(self, "_shell", None)):
+            if widget is None:
+                continue
+            for seq in ("<Button-1>", "<B1-Motion>", "<ButtonRelease-1>"):
+                try:
+                    widget.unbind(seq)
+                except Exception:  # noqa: BLE001
+                    pass
+        for seq, handler in (
+            ("<Button-1>", self._on_press),
+            ("<B1-Motion>", self._on_drag),
+            ("<ButtonRelease-1>", self._on_release),
+        ):
+            try:
+                canvas.bind(seq, handler)
+            except Exception:  # noqa: BLE001
+                pass
+            for tag in ("chrome", "icon", "logo", "status"):
+                try:
+                    canvas.tag_bind(tag, seq, handler)
+                except Exception:  # noqa: BLE001
+                    pass
 
     def pulse_animation(self) -> None:
         """Refresh ACTIVE/STANDBY status (no sci-fi size pulse)."""
@@ -611,11 +696,39 @@ class AssistiveTouchOrb:
             self._pulse_job = None
 
     def _apply_transparent_hit_test(self) -> None:
-        """Color-key transparent pixels must not steal desktop clicks."""
+        """Color-key + shaped region so transparent pixels do not steal clicks."""
         try:
-            from dana.ui.overlay import apply_colorkey_hit_test
+            from dana.ui.overlay import (
+                apply_colorkey_hit_test,
+                apply_rounded_window_rgn,
+            )
 
             apply_colorkey_hit_test(self.orb_window, key=_TRANSPARENT)
+            if self._expanded:
+                # Pill on the left + panel to the right.
+                total_w = _PILL_W + _PAD + _PANEL_W
+                total_h = max(_PILL_H, _PANEL_H)
+                apply_rounded_window_rgn(
+                    self.orb_window,
+                    width=_PILL_W,
+                    height=_PILL_H,
+                    radius=_PILL_H // 2,
+                    extra_rects=[
+                        (
+                            _PILL_W + 2,
+                            0,
+                            total_w,
+                            total_h,
+                        )
+                    ],
+                )
+            else:
+                apply_rounded_window_rgn(
+                    self.orb_window,
+                    width=_PILL_W,
+                    height=_PILL_H,
+                    radius=_PILL_H // 2,
+                )
         except Exception:  # noqa: BLE001
             pass
 
@@ -756,37 +869,70 @@ class AssistiveTouchOrb:
         except Exception:  # noqa: BLE001
             self._apply_compact_geometry(animate=True)
 
-    def _on_press(self, event: Any) -> None:
+    def _on_press(self, event: Any = None) -> None:
         self._dragging = True
         self._moved = False
-        self._drag_start_x = int(event.x_root)
-        self._drag_start_y = int(event.y_root)
-        self._win_start_x = int(self.orb_window.winfo_x())
-        self._win_start_y = int(self.orb_window.winfo_y())
+        try:
+            px = int(self.orb_window.winfo_pointerx())
+            py = int(self.orb_window.winfo_pointery())
+            rx = int(self.orb_window.winfo_rootx())
+            ry = int(self.orb_window.winfo_rooty())
+            self._drag_offset_x = px - rx
+            self._drag_offset_y = py - ry
+            self._drag_start_x = px
+            self._drag_start_y = py
+            self._win_start_x = int(self.orb_window.winfo_x())
+            self._win_start_y = int(self.orb_window.winfo_y())
+        except Exception:  # noqa: BLE001
+            # Fallback: widget-local coords from the event.
+            try:
+                self._drag_offset_x = int(getattr(event, "x", 0) or 0)
+                self._drag_offset_y = int(getattr(event, "y", 0) or 0)
+                self._drag_start_x = int(getattr(event, "x_root", 0) or 0)
+                self._drag_start_y = int(getattr(event, "y_root", 0) or 0)
+                self._win_start_x = int(self.orb_window.winfo_x())
+                self._win_start_y = int(self.orb_window.winfo_y())
+            except Exception:  # noqa: BLE001
+                pass
         self._cancel_leave()
 
-    def _on_drag(self, event: Any) -> None:
+    def _on_drag(self, event: Any = None) -> None:
         if not self._dragging:
             return
-        dx = int(event.x_root) - self._drag_start_x
-        dy = int(event.y_root) - self._drag_start_y
-        if abs(dx) > _DRAG_THRESHOLD_PX or abs(dy) > _DRAG_THRESHOLD_PX:
+        try:
+            px = int(self.orb_window.winfo_pointerx())
+            py = int(self.orb_window.winfo_pointery())
+        except Exception:  # noqa: BLE001
+            try:
+                px = int(getattr(event, "x_root", 0) or 0)
+                py = int(getattr(event, "y_root", 0) or 0)
+            except Exception:  # noqa: BLE001
+                return
+        if (
+            abs(px - self._drag_start_x) > _DRAG_THRESHOLD_PX
+            or abs(py - self._drag_start_y) > _DRAG_THRESHOLD_PX
+        ):
             self._moved = True
-        x = self._win_start_x + dx
-        y = self._win_start_y + dy
+        # Keep the grab point under the cursor (no snap to top-left).
+        x = px - int(self._drag_offset_x)
+        y = py - int(self._drag_offset_y)
         self._orb_x = x
         self._orb_y = y
         try:
             w = self.orb_window.winfo_width()
             h = self.orb_window.winfo_height()
             self.orb_window.geometry(f"{w}x{h}+{x}+{y}")
-            self._apply_transparent_hit_test()
+            # Do not re-apply Win32 region mid-drag — that drops B1-Motion.
         except Exception:  # noqa: BLE001
             pass
 
     def _on_release(self, _event: Any = None) -> None:
         was_click = self._dragging and not self._moved
         self._dragging = False
+        try:
+            self._apply_transparent_hit_test()
+        except Exception:  # noqa: BLE001
+            pass
         if was_click and self._on_open_dashboard is not None and not self._expanded:
             try:
                 self._on_open_dashboard()

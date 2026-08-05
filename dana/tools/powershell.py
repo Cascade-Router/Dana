@@ -37,7 +37,7 @@ SECURITY_VIOLATION_MSG = (
 _CREATE_SUSPENDED = 0x00000004
 
 
-def execute_powershell(command: str) -> str:
+def execute_powershell(command: str, cwd: str | None = None) -> str:
     """Run a PowerShell command and return structured stdout/stderr/returncode.
 
     Windows OS context for the ReAct agent
@@ -46,6 +46,10 @@ def execute_powershell(command: str) -> str:
     Prefer it when the user asks for PowerShell-native work: registry, WMI/CIM,
     Get-Process / Get-Service, environment variables, Object Pipeline filters,
     or any script that must use PowerShell syntax rather than ``cmd.exe``.
+
+    Optional ``cwd`` sets the process working directory (e.g. a named git repo
+    like ``cascade-router`` on the Desktop) so commands such as
+    ``git log -1 --format=%cd`` run in the correct tree.
 
     Command formatting rules (agent self-correction)
     ------------------------------------------------
@@ -75,6 +79,7 @@ def execute_powershell(command: str) -> str:
     A multi-line observation string::
 
         returncode=<int>
+        cwd=<path or (default)>
         stdout:
         <captured stdout or (empty)>
         stderr:
@@ -87,6 +92,8 @@ def execute_powershell(command: str) -> str:
     if DANGEROUS_COMMANDS_RE.search(cmd):
         return SECURITY_VIOLATION_MSG
 
+    workdir = _normalize_cwd(cwd)
+
     argv = [
         "powershell",
         "-NoProfile",
@@ -97,8 +104,11 @@ def execute_powershell(command: str) -> str:
 
     try:
         if os.name == "nt":
-            return _execute_windows_sandboxed(argv)
-        return _execute_plain(argv)
+            obs = _execute_windows_sandboxed(argv, cwd=workdir)
+        else:
+            obs = _execute_plain(argv, cwd=workdir)
+        # Prepend command so tool-trace truncation still shows git/cwd intent.
+        return f"command={cmd}\n{obs}"
     except FileNotFoundError:
         return (
             "ERROR: execute_powershell failed: powershell executable not found "
@@ -108,17 +118,57 @@ def execute_powershell(command: str) -> str:
         return f"ERROR: execute_powershell failed: {exc}"
 
 
-def _format_observation(returncode: int, stdout: str, stderr: str) -> str:
+def _normalize_cwd(cwd: str | None) -> str | None:
+    raw = (cwd or "").strip()
+    if not raw:
+        return None
+    try:
+        path = os.path.abspath(os.path.expanduser(raw))
+    except OSError:
+        return None
+    if os.path.isdir(path):
+        return path
+    return None
+
+
+def _format_observation(
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    *,
+    cwd: str | None = None,
+) -> str:
     out = (stdout or "").rstrip()
     err = (stderr or "").rstrip()
     return (
         f"returncode={int(returncode)}\n"
+        f"cwd={cwd or '(default)'}\n"
         f"stdout:\n{out or '(empty)'}\n"
         f"stderr:\n{err or '(empty)'}"
     )
 
 
-def _execute_windows_sandboxed(argv: list[str]) -> str:
+def format_powershell_observation(
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    *,
+    cwd: str | None = None,
+    command: str | None = None,
+) -> str:
+    """Observation with command echoed (helps git-cwd evals see ``git``)."""
+    base = _format_observation(returncode, stdout, stderr, cwd=cwd)
+    cmd = (command or "").strip()
+    if not cmd:
+        return base
+    return f"command={cmd}\n{base}"
+
+
+def _execute_windows_sandboxed(
+    argv: list[str],
+    *,
+    cwd: str | None = None,
+) -> str:
     """Popen with CREATE_SUSPENDED + WindowsJob; plain Popen if job APIs missing."""
     from dana.tools.win32_sandbox import (
         JOB_APIS_AVAILABLE,
@@ -127,7 +177,7 @@ def _execute_windows_sandboxed(argv: list[str]) -> str:
     )
 
     if not JOB_APIS_AVAILABLE:
-        return _execute_plain(argv, windows=True)
+        return _execute_plain(argv, windows=True, cwd=cwd)
 
     creationflags = windows_no_window_creationflags(_CREATE_SUSPENDED)
     proc = subprocess.Popen(  # noqa: S603
@@ -138,6 +188,7 @@ def _execute_windows_sandboxed(argv: list[str]) -> str:
         encoding="utf-8",
         errors="replace",
         creationflags=creationflags,
+        cwd=cwd,
     )
     try:
         with WindowsJob() as job:
@@ -158,10 +209,15 @@ def _execute_windows_sandboxed(argv: list[str]) -> str:
         raise
 
     returncode = int(proc.returncode if proc.returncode is not None else 0)
-    return _format_observation(returncode, stdout or "", stderr or "")
+    return _format_observation(returncode, stdout or "", stderr or "", cwd=cwd)
 
 
-def _execute_plain(argv: list[str], *, windows: bool = False) -> str:
+def _execute_plain(
+    argv: list[str],
+    *,
+    windows: bool = False,
+    cwd: str | None = None,
+) -> str:
     """Execute without Job Object (non-Windows or missing job APIs)."""
     popen_kwargs: dict[str, Any] = {
         "stdout": subprocess.PIPE,
@@ -170,10 +226,12 @@ def _execute_plain(argv: list[str], *, windows: bool = False) -> str:
         "encoding": "utf-8",
         "errors": "replace",
     }
+    if cwd:
+        popen_kwargs["cwd"] = cwd
     if windows or os.name == "nt":
         popen_kwargs["creationflags"] = windows_no_window_creationflags()
 
     proc = subprocess.Popen(argv, **popen_kwargs)  # noqa: S603
     stdout, stderr = proc.communicate()
     returncode = int(proc.returncode if proc.returncode is not None else 0)
-    return _format_observation(returncode, stdout or "", stderr or "")
+    return _format_observation(returncode, stdout or "", stderr or "", cwd=cwd)

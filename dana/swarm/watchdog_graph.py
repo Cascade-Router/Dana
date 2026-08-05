@@ -37,7 +37,7 @@ from dana.swarm.watchdog_template import (
     parse_coder_payload,
 )
 
-DEFAULT_MODEL = "llama3.2"
+DEFAULT_MODEL = "qwen2.5-coder:7b"
 MAX_REVISIONS = 3
 DEFAULT_EXEC_TIMEOUT_S = 45.0
 _TTS_MARKER = "__DONNA_TTS__:"
@@ -579,6 +579,16 @@ def repl_executor(
             from dana.logging import log_exception
 
             log_exception("Watchdog", "Watchdog script write preflight failed", exc=exc)
+        except Exception:
+            pass
+        try:
+            from dana.db_core import log_watchdog_event
+
+            log_watchdog_event(
+                f"preflight failed: {exc}",
+                level="error",
+                stage="repl_executor",
+            )
         except Exception:
             pass
         return _with_history(f"repl_executor preflight failed: {exc}", "error")

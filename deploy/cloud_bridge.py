@@ -255,7 +255,7 @@ def run_text_command(message: str, *, history: list | None = None) -> str:
             prior_messages=prior,
             on_tool_start=None,
             visual_context="[CLOUD] No local vision frame.",
-            model=os.environ.get("DONNA_LOCAL_MODEL") or "llama3.2",
+            model=os.environ.get("DONNA_LOCAL_MODEL") or "qwen2.5-coder:7b",
             forced_tool=forced,
             tts_callback=None,
         )

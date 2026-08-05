@@ -12,15 +12,17 @@ import threading
 import time
 from typing import Any, Literal
 
-StateStatus = Literal["idle", "listening", "routing", "executing"]
+StateStatus = Literal["idle", "listening", "processing", "routing", "executing"]
 
-_VALID = frozenset({"idle", "listening", "routing", "executing"})
+_VALID = frozenset({"idle", "listening", "processing", "routing", "executing"})
 
 _TOOL_LABELS: dict[str, str] = {
     "execute_powershell": "PowerShell",
     "shell_execute": "PowerShell",
     "run_terminal_command": "PowerShell",
     "execute_command": "Command",
+    "execute_python_script": "Sandbox Python",
+    "get_sandbox_job_status": "Sandbox Job",
     "write_to_file": "File Write",
     "analyze_visual_context": "Vision",
     "ocr_with_region": "OCR",
@@ -31,6 +33,7 @@ _TOOL_LABELS: dict[str, str] = {
     "dispatch_watchdog": "Watchdog",
     "ingest_local_directory": "Vault Ingest",
     "search_vault": "Vault Search",
+    "proactive_briefing": "Background Briefing",
 }
 
 
@@ -41,7 +44,8 @@ class StatusEventBus:
     _lock = threading.Lock()
 
     def __init__(self) -> None:
-        self._q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=128)
+        # Larger buffer so Tk ``after()`` polls (~5 Hz) never drop state frames.
+        self._q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=256)
         self._snap_lock = threading.Lock()
         self._snapshot: dict[str, Any] = {
             "event": "STATE_CHANGE",
@@ -79,27 +83,32 @@ class StatusEventBus:
             prev = (
                 self._snapshot.get("status"),
                 self._snapshot.get("tool"),
+                self._snapshot.get("message"),
             )
-            cur = (payload["status"], payload["tool"])
+            cur = (payload["status"], payload["tool"], payload["message"])
+            # Always keep snapshot current; only coalesce identical full payloads.
             if prev == cur:
                 return dict(self._snapshot)
             self._snapshot = dict(payload)
         try:
             self._q.put_nowait(payload)
         except queue.Full:
-            try:
-                _ = self._q.get_nowait()
-            except queue.Empty:
-                pass
-            try:
-                self._q.put_nowait(payload)
-            except queue.Full:
-                pass
+            # Drop oldest events until the latest state fits (never lose the tip).
+            for _ in range(8):
+                try:
+                    _ = self._q.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    self._q.put_nowait(payload)
+                    break
+                except queue.Full:
+                    continue
         except Exception:  # noqa: BLE001
             pass
         return payload
 
-    def drain(self, *, max_items: int = 32) -> list[dict[str, Any]]:
+    def drain(self, *, max_items: int = 64) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for _ in range(max(1, int(max_items))):
             try:
@@ -127,7 +136,7 @@ def emit_state_change(
     return get_status_bus().emit(status, tool=tool, message=message)
 
 
-def drain_state_changes(*, max_items: int = 32) -> list[dict[str, Any]]:
+def drain_state_changes(*, max_items: int = 64) -> list[dict[str, Any]]:
     return get_status_bus().drain(max_items=max_items)
 
 
@@ -163,7 +172,11 @@ def format_system_status_line(
     if st == "executing":
         return f"Executing {friendly_tool_label(tool)}..."
     if st == "listening":
-        return "Listening..."
+        return "Listening"
+    if st == "processing":
+        return "Processing"
+    if st == "idle":
+        return "Idle"
     return ""
 
 

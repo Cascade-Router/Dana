@@ -44,6 +44,18 @@ except Exception:
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8", errors="replace")  # type: ignore[assignment]
 
+# Capture fatal main-thread + background-thread crashes before anything else.
+try:
+    from dana.logging import install_fatal_crash_hooks
+
+    install_fatal_crash_hooks()
+except Exception as _fatal_hook_exc:  # noqa: BLE001
+    print(
+        f"[Main] WARNING: fatal crash hooks unavailable ({_fatal_hook_exc})",
+        file=sys.stderr,
+        flush=True,
+    )
+
 # Ensure workspace dirs exist + migrate legacy artifacts before agent boot.
 try:
     from dana.workspace import ensure_donna_workspace
@@ -66,6 +78,27 @@ def _wants_no_gui(argv: list[str] | None = None) -> bool:
 
 def _configure_headless_logging() -> str | None:
     """File logging fallback when OS-level stdout redirect is missing/broken."""
+    # Mark headless early so Meta-Broker IPC starts its queue drainer.
+    os.environ.setdefault("DONNA_NO_GUI", "1")
+    os.environ.setdefault("DONNA_HEADLESS", "1")
+    if not (os.environ.get("DONNA_META_BROKER_LOG") or "").strip():
+        suite = os.path.join(_ROOT, "logs", "lru_cache_suite.log")
+        default = os.path.join(_ROOT, "logs", "meta_broker_headless.log")
+        os.environ["DONNA_META_BROKER_LOG"] = (
+            suite if os.path.isfile(suite) else default
+        )
+    try:
+        from dana.graph.meta_broker_process import start_headless_telemetry_drainer
+
+        start_headless_telemetry_drainer(
+            log_path=os.environ.get("DONNA_META_BROKER_LOG")
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[Main] WARNING: Meta-Broker headless drainer unavailable ({exc})",
+            file=sys.stderr,
+            flush=True,
+        )
     log_path = os.path.join(_ROOT, _HEADLESS_LOG_NAME)
     try:
         root = logging.getLogger()
@@ -266,6 +299,18 @@ if __name__ == "__main__":
     except Exception as exc:
         if _wants_no_gui():
             logging.getLogger("dana").exception("Unhandled exception in headless boot")
+        try:
+            from dana.logging import write_fatal_crash_log
+
+            write_fatal_crash_log(
+                "run.py.__main__",
+                type(exc),
+                exc,
+                exc.__traceback__,
+                thread_name="MainThread",
+            )
+        except Exception:
+            pass
         log_path = _write_startup_crash_log(exc)
         if not _wants_no_gui():
             _show_startup_crash_dialog(exc, log_path)

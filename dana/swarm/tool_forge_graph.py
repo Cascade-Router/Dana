@@ -44,7 +44,7 @@ except Exception:  # noqa: BLE001
     def _forge_log(thread: str, message: str, *, level: str = "info") -> None:  # type: ignore[misc]
         print(f"[{thread}] {message}", flush=True)
 
-DEFAULT_MODEL = "llama3.2"
+DEFAULT_MODEL = "qwen2.5-coder:7b"
 MAX_FORGE_REVISIONS = 3
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.I)
 _TOOL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")

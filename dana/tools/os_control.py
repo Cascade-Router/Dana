@@ -435,6 +435,7 @@ def _vision_describe(png: bytes, *, prompt: str = "") -> str:
             "prompt": ask,
             "images": [b64],
             "stream": False,
+            "keep_alive": 0,
         }
         req = urllib.request.Request(
             os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")

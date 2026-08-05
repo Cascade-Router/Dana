@@ -29,10 +29,25 @@ Offline voice agent for CAMGRASPER: wake-word → STT → native LangChain tool 
 | Memory | Encrypted vault + SQLite Blackboard + episodic TTL/decay | `dana/secure_memory.py`, `dana/memory/blackboard.py`, `dana/memory/compaction.py` |
 | Handoffs | Structured Swarm `Handoff` (deterministic capability switch) | `dana/schema.py`, `dana/handoff.py` |
 | Background | Research swarm + Watchdog (Jason-supervised) | `dana/swarm/`, `dana_jason_loop/` |
-| Speech | Whisper STT + Piper EN/FA TTS | `dana/core_agent.py` audio workers |
+| Speech | Whisper STT + Piper EN/FA TTS via `TTSManager` | `dana/audio/tts_manager.py`, `dana/core_agent.py` audio workers |
 | Paths | Cwd-independent repo root + logs/docs/execution_jail | `dana/paths.py` (`PROJECT_ROOT`) |
-| Telemetry | Live Trace queue + JSONL tags | `dana/telemetry.py` → `logs/donna_telemetry.jsonl` |
+| Telemetry | Live Trace queue + JSONL tags + Meta-Broker IPC | `dana/telemetry.py`, `dana/graph/meta_broker_process.py` |
+| Web (HF) | Gradio headless bridge (no Tkinter) | `app.py`, `dana/web/headless_bridge.py` |
 | Security | Importable gates (do not modify casually) | `dana_security/` |
+
+## Headless multi-process architecture (current)
+
+| Feature | Behavior | Module |
+|---------|----------|--------|
+| **Isolated Meta-Broker** | Epics run in a spawned `multiprocessing.Process`; parent drains a non-blocking Queue (`put_nowait`, drop-on-full) so GUI/headless never deadlocks | `dana/graph/meta_broker_process.py` |
+| **IPC telemetry** | Child `child_queue_put` → parent `on_event` → Task Tracker + optional TTS notifications | `emit_meta_broker_telemetry`, `TTSManager.notify` |
+| **Zero keep-alive** | `DONNA_OLLAMA_KEEP_ALIVE=0` + inter-epic `gc.collect()` reclaim RAM under AST load | `dana/system_health.py`, broker GC hooks |
+| **`manifest.json` contract** | AST `ClassDef` + `FunctionDef` exports written to `.dana_scratch/manifest.json` and prepended to the next epic | `dana/graph/artifact_manifest.py` |
+| **Stdlib-first codegen** | Worker / broker / supervisor prompts require Python stdlib unless the prompt requests third-party packages | `META_BROKER_STDLIB_RULE` |
+| **TTSManager** | One `speech_queue`, one daemon Piper consumer — sequential system-wide voice | `dana/audio/tts_manager.py` |
+| **Gradio HF Space** | `app.py` submits via `HeadlessBrokerBridge` (background thread + poll/stream) | `dana/web/headless_bridge.py` |
+
+Headless boot: `python run.py --no-gui` sets `DONNA_NO_GUI` / `DONNA_HEADLESS` and starts `start_headless_telemetry_drainer`.
 
 > **Stage 3 FSM hybrid:** LangGraph state is minimized to `session_id` / `current_agent` / `active_intent`. Full conversational history and DeepSeek `<think>` traces live on `memory/blackboard.db`. See [`docs/architecture.md`](docs/architecture.md).
 

@@ -132,7 +132,7 @@ def _deterministic_scrub(code: str) -> str:
     return out
 
 
-def _llm_scrub(code: str, *, tool_name: str, model: str = "llama3.2") -> str:
+def _llm_scrub(code: str, *, tool_name: str, model: str = "qwen2.5-coder:7b") -> str:
     """Ask local ChatOllama to scrub personal data; fall back to regex scrub."""
     try:
         from langchain_ollama import ChatOllama
@@ -194,7 +194,7 @@ def _hot_load_general(tool_name: str, path: Path, code: str) -> Any:
 def publish_tool_to_general(
     tool_name: str,
     *,
-    model: str = "llama3.2",
+    model: str = "qwen2.5-coder:7b",
     skip_llm: bool = False,
 ) -> dict[str, Any]:
     """Promote ``tool_name`` from custom_tools → dana/tools/general.

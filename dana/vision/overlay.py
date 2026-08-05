@@ -6,6 +6,7 @@ Windows: layered + transparent + topmost + toolwindow (click-through).
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -14,6 +15,16 @@ from typing import Any, Optional
 
 _OVERLAY_LOCK = threading.Lock()
 _OVERLAY: Optional[RoiOverlay] = None
+
+
+def vision_debug_enabled() -> bool:
+    """ROI / vision debug windows open only when ``DONNA_DEBUG_VISION=1``."""
+    return (os.environ.get("DONNA_DEBUG_VISION") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _enable_click_through(hwnd: int) -> None:
@@ -66,6 +77,9 @@ class RoiOverlay:
         self._visible = False
 
     def start(self) -> None:
+        if not vision_debug_enabled():
+            self._ready.set()
+            return
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
@@ -91,6 +105,8 @@ class RoiOverlay:
 
     def update_roi(self, box_coords: Any, label: str = "") -> None:
         """Draw/move the ROI box. ``box_coords`` = (x1, y1, x2, y2) screen pixels."""
+        if not vision_debug_enabled():
+            return
         try:
             x1, y1, x2, y2 = (int(round(float(v))) for v in list(box_coords)[:4])
         except Exception:  # noqa: BLE001
@@ -262,6 +278,8 @@ def get_overlay() -> RoiOverlay:
 
 
 def update_roi(box_coords: Any, label: str = "") -> None:
+    if not vision_debug_enabled():
+        return
     get_overlay().update_roi(box_coords, label)
 
 
@@ -273,5 +291,6 @@ def clear_roi() -> None:
 
 def ensure_overlay_started() -> RoiOverlay:
     ov = get_overlay()
-    ov.start()
+    if vision_debug_enabled():
+        ov.start()
     return ov

@@ -33,6 +33,36 @@ def _parse_hex_rgb(key: str) -> tuple[int, int, int] | None:
         return None
 
 
+def _toplevel_hwnd(root: Any) -> int:
+    """Resolve the Win32 HWND for a Tk / CTk toplevel (child ids need GetParent)."""
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    try:
+        hwnd = int(root.winfo_id())
+    except Exception:  # noqa: BLE001
+        return 0
+    if hwnd <= 0:
+        return 0
+    # Walk parents — Tk often returns an inner HWND for the content frame.
+    seen: set[int] = set()
+    cur = hwnd
+    best = hwnd
+    for _ in range(6):
+        if cur in seen or cur <= 0:
+            break
+        seen.add(cur)
+        best = cur
+        try:
+            parent = int(user32.GetParent(cur))
+        except Exception:  # noqa: BLE001
+            break
+        if parent <= 0 or parent == cur:
+            break
+        cur = parent
+    return int(best)
+
+
 def apply_colorkey_hit_test(root: Any, *, key: str = TRANSPARENT_KEY) -> bool:
     """Make color-keyed pixels click-through via Win32 ``LWA_COLORKEY``.
 
@@ -50,7 +80,7 @@ def apply_colorkey_hit_test(root: Any, *, key: str = TRANSPARENT_KEY) -> bool:
         GWL_EXSTYLE = -20
         WS_EX_LAYERED = 0x00080000
         LWA_COLORKEY = 0x00000001
-        hwnd = int(root.winfo_id())
+        hwnd = _toplevel_hwnd(root)
         if hwnd <= 0:
             return False
         style = int(user32.GetWindowLongW(hwnd, GWL_EXSTYLE))
@@ -58,6 +88,70 @@ def apply_colorkey_hit_test(root: Any, *, key: str = TRANSPARENT_KEY) -> bool:
         # COLORREF is 0x00BBGGRR
         colorref = int(rgb[0]) | (int(rgb[1]) << 8) | (int(rgb[2]) << 16)
         return bool(user32.SetLayeredWindowAttributes(hwnd, colorref, 0, LWA_COLORKEY))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def apply_rounded_window_rgn(
+    root: Any,
+    *,
+    width: int,
+    height: int,
+    radius: int,
+    extra_rects: list[tuple[int, int, int, int]] | None = None,
+) -> bool:
+    """Clip the OS window to a rounded rect (+ optional rects) via ``SetWindowRgn``.
+
+    Transparent corners outside the region never intercept mouse clicks.
+    ``extra_rects`` are ``(left, top, right, bottom)`` in client coords.
+    """
+    if root is None or sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        hwnd = _toplevel_hwnd(root)
+        if hwnd <= 0:
+            return False
+        w = max(1, int(width))
+        h = max(1, int(height))
+        r = max(1, min(int(radius), w // 2, h // 2))
+        # CreateRoundRectRgn(left, top, right, bottom, widthEllipse, heightEllipse)
+        hrgn = gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, r * 2, r * 2)
+        if not hrgn:
+            return False
+        for box in extra_rects or ():
+            try:
+                l, t, ri, b = (int(x) for x in box)
+            except Exception:  # noqa: BLE001
+                continue
+            if ri <= l or b <= t:
+                continue
+            part = gdi32.CreateRectRgn(l, t, ri + 1, b + 1)
+            if not part:
+                continue
+            gdi32.CombineRgn(hrgn, hrgn, part, 2)  # RGN_OR = 2
+            gdi32.DeleteObject(part)
+        # SetWindowRgn takes ownership of hrgn.
+        return bool(user32.SetWindowRgn(hwnd, hrgn, True))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def clear_window_rgn(root: Any) -> bool:
+    """Restore a rectangular hit region (expanded popup / teardown)."""
+    if root is None or sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        hwnd = _toplevel_hwnd(root)
+        if hwnd <= 0:
+            return False
+        return bool(user32.SetWindowRgn(hwnd, 0, True))
     except Exception:  # noqa: BLE001
         return False
 

@@ -11,7 +11,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-CATEGORIES = frozenset({"user_preference", "environment_fact", "task_outcome"})
+CATEGORIES = frozenset(
+    {"user_preference", "environment_fact", "task_outcome", "screen_history"}
+)
 
 _DEFAULT_DB = Path(__file__).resolve().parent / "memory.db"
 _LOCK = threading.Lock()

@@ -32,16 +32,20 @@ class TaskTrackerView(ctk.CTkFrame):
         *,
         tracker: TaskTracker | None = None,
         tracker_factory: Callable[[], TaskTracker] | None = None,
-        poll_ms: int = 400,
+        poll_ms: int = 200,
         max_rows: int = 48,
+        show_header: bool = True,
+        status_label: Any | None = None,
     ) -> None:
         super().__init__(master, fg_color=T.BG, corner_radius=12)
         self._tracker = tracker
         self._tracker_factory = tracker_factory or get_shared_task_tracker
         self._poll_ms = max(100, int(poll_ms))
         self._max_rows = max(8, int(max_rows))
+        self._show_header = bool(show_header)
         self._rows: list[ctk.CTkFrame] = []
         self._last_sig = ""
+        self._empty_lbl = status_label
         self._build()
         self.after(self._poll_ms, self._poll)
 
@@ -57,23 +61,25 @@ class TaskTrackerView(ctk.CTkFrame):
         self.refresh()
 
     def _build(self) -> None:
-        header = ctk.CTkFrame(self, fg_color=T.CARD, corner_radius=10)
-        header.pack(fill="x", padx=8, pady=(8, 4))
-        ctk.CTkLabel(
-            header,
-            text="Task Tracker",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=T.TEXT,
-            anchor="w",
-        ).pack(side="left", padx=12, pady=8)
-        self._empty_lbl = ctk.CTkLabel(
-            header,
-            text="No active tasks",
-            font=ctk.CTkFont(size=11),
-            text_color=T.MUTED,
-            anchor="e",
-        )
-        self._empty_lbl.pack(side="right", padx=12, pady=8)
+        if self._show_header:
+            header = ctk.CTkFrame(self, fg_color=T.CARD, corner_radius=10)
+            header.pack(fill="x", padx=8, pady=(8, 4))
+            ctk.CTkLabel(
+                header,
+                text="Task Tracker",
+                font=ctk.CTkFont(size=13, weight="bold"),
+                text_color=T.TEXT,
+                anchor="w",
+            ).pack(side="left", padx=12, pady=8)
+            if self._empty_lbl is None:
+                self._empty_lbl = ctk.CTkLabel(
+                    header,
+                    text="No active tasks",
+                    font=ctk.CTkFont(size=11),
+                    text_color=T.MUTED,
+                    anchor="e",
+                )
+                self._empty_lbl.pack(side="right", padx=12, pady=8)
 
         self._scroll = ctk.CTkScrollableFrame(
             self,
@@ -81,6 +87,12 @@ class TaskTrackerView(ctk.CTkFrame):
             corner_radius=0,
         )
         self._scroll.pack(fill="both", expand=True, padx=6, pady=(0, 8))
+        try:
+            sb = getattr(self._scroll, "_scrollbar", None)
+            if sb is not None:
+                sb.grid_configure(sticky="nse")
+        except Exception:  # noqa: BLE001
+            pass
 
     def refresh(self) -> None:
         """Rebuild timeline rows from the current tracker snapshot."""
@@ -94,7 +106,7 @@ class TaskTrackerView(ctk.CTkFrame):
         except Exception:  # noqa: BLE001
             return
 
-        sig = "|".join(
+        sig = f"{tracker.revision()}|" + "|".join(
             f"{a.timestamp}:{a.task_id}:{a.status}:{a.message}" for a in activities
         )
         if sig == self._last_sig:
@@ -109,10 +121,12 @@ class TaskTrackerView(ctk.CTkFrame):
         self._rows.clear()
 
         try:
-            if activities:
-                self._empty_lbl.configure(text=f"{len(tasks)} task(s)")
-            else:
-                self._empty_lbl.configure(text="No active tasks")
+            lbl = self._empty_lbl
+            if lbl is not None:
+                if activities:
+                    lbl.configure(text=f"{len(tasks)} task(s)")
+                else:
+                    lbl.configure(text="No active tasks")
         except Exception:  # noqa: BLE001
             pass
 
@@ -255,6 +269,23 @@ class TaskTrackerView(ctk.CTkFrame):
     def _poll(self) -> None:
         if not self.winfo_exists():
             return
+        try:
+            tracker = self._resolve_tracker()
+            # Drain background notify queue so Meta-Broker updates wake the UI.
+            if hasattr(tracker, "drain_notifications"):
+                notes: list = []
+                for _ in range(4):
+                    batch = tracker.drain_notifications(max_items=64)
+                    if not batch:
+                        break
+                    notes.extend(batch)
+                if notes:
+                    self._last_sig = ""
+            # Revision bump without a queued notify still forces a redraw.
+            elif hasattr(tracker, "revision"):
+                pass
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self.refresh()
         except Exception:  # noqa: BLE001

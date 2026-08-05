@@ -15,7 +15,24 @@ OnComplete = Callable[[str, str], None]  # (topic, spoken_summary)
 
 
 def _default_on_complete(topic: str, summary: str) -> None:
-    """Best-effort TTS handoff — lazy import avoids circular import at module load."""
+    """Best-effort TTS handoff — lazy import avoids circular import at module load.
+
+    While ``USER_AWAY``, queue a proactive briefing instead of speaking immediately.
+    """
+    try:
+        from dana.middleware.idle_monitor import queue_if_user_away
+
+        queued = queue_if_user_away(
+            job_id=f"swarm:{(topic or '')[:48] or 'research'}",
+            status="completed",
+            summary=(summary or "").strip()[:280]
+            or f"Research swarm finished for: {(topic or '')[:80]}",
+            kind="research_swarm",
+        )
+        if queued:
+            return
+    except Exception:
+        pass
     try:
         from dana.core_agent import enqueue_speech
 

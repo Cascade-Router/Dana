@@ -173,12 +173,15 @@ def pending_count(path: Path | None = None) -> int:
 
 
 def claim_pending_tasks(path: Path | None = None) -> list[dict[str, Any]]:
-    """Atomically pop pending tasks: mark ``running`` before any handler runs.
+    """Atomically pop pending tasks: mark ``running`` and persist BEFORE handlers.
 
     Prevents InputIngest / a second drain from re-reading the same work.
-    Returns claimed task copies (id/command/status=running).
+    Returns claimed task copies (id/command/status=running). The on-disk file
+    is rewritten inside the lock so the pop is visible to every other reader
+    before any ReAct dispatch begins.
     """
     with _LOCK:
+        ensure_queue_file(path)
         tasks = load_task_queue(path)
         claimed: list[dict[str, Any]] = []
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -196,6 +199,8 @@ def claim_pending_tasks(path: Path | None = None) -> list[dict[str, Any]]:
                     "started_at": stamp,
                 }
             )
+        # Always persist under the lock — even when empty — so concurrent
+        # readers cannot observe a stale pending snapshot mid-drain.
         if claimed:
             save_task_queue(tasks, path)
         return claimed
@@ -280,6 +285,12 @@ def migrate_legacy_input_txt(
 
     qpath = Path(queue_path) if queue_path is not None else default_queue_path()
     with _LOCK:
+        # Truncate input.txt immediately under the lock before enqueueing so a
+        # concurrent watcher cannot echo the same batch.
+        try:
+            target.write_text("", encoding="utf-8")
+        except OSError:
+            pass
         tasks = load_task_queue(qpath)
         pending_cmds = {
             normalize_command_key(str(t.get("command") or ""))
@@ -305,10 +316,6 @@ def migrate_legacy_input_txt(
             added += 1
         if added:
             save_task_queue(tasks, qpath)
-        try:
-            target.write_text("", encoding="utf-8")
-        except OSError:
-            pass
     return raw_tasks[0] if added else None
 
 

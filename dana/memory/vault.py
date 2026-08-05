@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 COLLECTION_NAME = "dana_codebase_vault"
+IDLE_COLLECTION_NAME = "idle_compressed"
 _DEFAULT_MODEL = "all-MiniLM-L6-v2"
 _SKIP_DIR_NAMES = frozenset({".git", "__pycache__", "node_modules", "build"})
 _INGEST_EXTENSIONS = frozenset(
@@ -62,6 +63,11 @@ def _chunk_id(filepath: str, index: int) -> str:
     return f"chunk_{digest}"
 
 
+def normalize_vault_filepath(path: str | Path) -> str:
+    """Canonical filepath key stored in Chroma metadata (absolute posix)."""
+    return Path(path).expanduser().resolve().as_posix()
+
+
 def _iter_ingest_files(root: Path) -> list[Path]:
     files: list[Path] = []
     for path in root.rglob("*"):
@@ -103,10 +109,11 @@ class CodebaseVault:
         self._embeddings = embeddings
         self._client: Any = None
         self._collection: Any = None
-        self._client_lock = threading.Lock()
+        self._idle_collection: Any = None
+        self._client_lock = threading.RLock()
 
     def _ensure_client(self) -> Any:
-        """Open PersistentClient + collection on first use (not at import/ctor)."""
+        """Open PersistentClient + primary collection on first use (not at import/ctor)."""
         if self._collection is not None:
             return self._collection
         with self._client_lock:
@@ -121,6 +128,20 @@ class CodebaseVault:
                 metadata={"hnsw:space": "cosine"},
             )
             return self._collection
+
+    def _ensure_idle_collection(self) -> Any:
+        """Open the dense ``idle_compressed`` collection (Phase 5)."""
+        if self._idle_collection is not None:
+            return self._idle_collection
+        with self._client_lock:
+            if self._idle_collection is not None:
+                return self._idle_collection
+            self._ensure_client()
+            self._idle_collection = self._client.get_or_create_collection(
+                name=IDLE_COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
+            return self._idle_collection
 
     @property
     def embeddings(self) -> EmbeddingsProtocol:
@@ -149,7 +170,7 @@ class CodebaseVault:
                 continue
             if not (text or "").strip():
                 continue
-            rel = str(file_path.as_posix())
+            rel = normalize_vault_filepath(file_path)
             chunks = splitter.split_text(text)
             for idx, chunk in enumerate(chunks):
                 if not (chunk or "").strip():
@@ -175,35 +196,199 @@ class CodebaseVault:
             )
         return f"OK: ingested {len(documents)} chunks into dana_codebase_vault"
 
+    def purge_filepath(self, filepath: str | Path) -> str:
+        """Delete all vault chunks whose metadata ``filepath`` matches ``filepath``."""
+        key = normalize_vault_filepath(filepath)
+        collection = self._ensure_client()
+        try:
+            # Prefer metadata filter; fall back to id scan when where is unsupported.
+            collection.delete(where={"filepath": key})
+        except Exception:  # noqa: BLE001
+            try:
+                existing = collection.get(include=["metadatas"])
+                ids = list(existing.get("ids") or [])
+                metas = list(existing.get("metadatas") or [])
+                drop = [
+                    cid
+                    for cid, meta in zip(ids, metas)
+                    if str((meta or {}).get("filepath") or "") == key
+                ]
+                if drop:
+                    collection.delete(ids=drop)
+            except Exception as exc:  # noqa: BLE001
+                return f"ERROR: purge failed for {key}: {exc}"
+        return f"OK: purged vault chunks for {key}"
+
+    def reembed_file(self, filepath: str | Path) -> str:
+        """Strip prior embeddings for ``filepath``, then re-chunk and upsert."""
+        path = Path(filepath).expanduser().resolve()
+        key = normalize_vault_filepath(path)
+        purge_msg = self.purge_filepath(key)
+        if not path.is_file():
+            return f"{purge_msg}; skip re-embed (file missing)"
+        if path.suffix.lower() not in _INGEST_EXTENSIONS:
+            return f"{purge_msg}; skip re-embed (unsupported suffix {path.suffix!r})"
+        if any(part in _SKIP_DIR_NAMES for part in path.parts):
+            return f"{purge_msg}; skip re-embed (path in skipped directory)"
+
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError as exc:
+            return f"ERROR: re-embed read failed for {key}: {exc}"
+        if not (text or "").strip():
+            return f"{purge_msg}; skip re-embed (empty file)"
+
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        chunks = [c for c in splitter.split_text(text) if (c or "").strip()]
+        if not chunks:
+            return f"{purge_msg}; skip re-embed (0 chunks)"
+
+        ids = [_chunk_id(key, idx) for idx in range(len(chunks))]
+        metadatas = [{"filepath": key} for _ in chunks]
+        embeddings = self.embeddings.embed_documents(chunks)
+        collection = self._ensure_client()
+        batch = 64
+        for start in range(0, len(chunks), batch):
+            end = start + batch
+            collection.upsert(
+                ids=ids[start:end],
+                documents=chunks[start:end],
+                embeddings=embeddings[start:end],
+                metadatas=metadatas[start:end],
+            )
+        return f"OK: re-embedded {len(chunks)} chunks for {key}"
+
+    def upsert_compressed(
+        self,
+        summary: str,
+        *,
+        metadata: dict[str, Any] | None = None,
+        embedding: list[float] | None = None,
+        doc_id: str | None = None,
+    ) -> str:
+        """Upsert one dense summary into ``idle_compressed`` (Phase 5)."""
+        text = (summary or "").strip()
+        if not text:
+            return "ERROR: empty compressed summary"
+        meta = dict(metadata or {})
+        meta.setdefault("filepath", "idle_compressed")
+        meta.setdefault("source", "idle_compressed")
+        # Chroma metadata values must be str/int/float/bool.
+        clean_meta: dict[str, Any] = {}
+        for key, value in meta.items():
+            if value is None:
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                clean_meta[str(key)] = value
+            else:
+                clean_meta[str(key)] = str(value)
+        emb = list(embedding) if embedding else self.embeddings.embed_documents([text])[0]
+        digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:20]
+        cid = (doc_id or f"idle_{digest}").strip() or f"idle_{digest}"
+        collection = self._ensure_idle_collection()
+        collection.upsert(
+            ids=[cid],
+            documents=[text],
+            embeddings=[emb],
+            metadatas=[clean_meta],
+        )
+        try:
+            self.compact_collections()
+        except Exception:  # noqa: BLE001
+            pass
+        return f"OK: upserted compressed summary into {IDLE_COLLECTION_NAME} id={cid}"
+
+    def compact_collections(self) -> str:
+        """Best-effort Chroma flush + sqlite VACUUM after background ingestion.
+
+        Chroma 1.x has no public ``compact()`` API; touching collection counts
+        settles segment indexes, then VACUUM reclaims space on ``chroma.sqlite3``.
+        """
+        try:
+            self._ensure_client()
+            for getter in (self._ensure_client, self._ensure_idle_collection):
+                try:
+                    coll = getter()
+                    if coll is not None:
+                        _ = int(coll.count() or 0)
+                except Exception:  # noqa: BLE001
+                    continue
+            db = Path(self.persist_directory) / "chroma.sqlite3"
+            if db.is_file():
+                import sqlite3
+
+                con = sqlite3.connect(str(db))
+                try:
+                    con.execute("VACUUM")
+                    con.commit()
+                finally:
+                    con.close()
+            return "OK: vault collections compacted"
+        except Exception as exc:  # noqa: BLE001
+            return f"WARNING: vault compact skipped ({exc})"
+
     def search_vault(self, query: str, n_results: int = 5) -> str:
-        """Return formatted top chunks with filepath metadata."""
+        """Return formatted top chunks; prefer dense ``idle_compressed`` hits first."""
         _emit_executing("search_vault")
         q = (query or "").strip()
         if not q:
             return "ERROR: missing query"
         n = max(1, int(n_results or 5))
-        collection = self._ensure_client()
-        count = int(collection.count() or 0)
-        if count == 0:
-            return "OK: vault empty (0 matches)"
-        n = min(n, count)
         emb = self.embeddings.embed_query(q)
-        result = collection.query(
-            query_embeddings=[emb],
-            n_results=n,
-            include=["documents", "metadatas"],
-        )
-        docs = (result.get("documents") or [[]])[0]
-        metas = (result.get("metadatas") or [[]])[0]
-        if not docs:
-            return "OK: no matching chunks"
         lines: list[str] = []
-        for i, doc in enumerate(docs, start=1):
-            meta = metas[i - 1] if i - 1 < len(metas) else {}
-            fp = (meta or {}).get("filepath") or "(unknown)"
-            body = (doc or "").strip()
-            lines.append(f"[{i}] {fp}\n{body}")
-        return "OK: vault search results\n\n" + "\n\n".join(lines)
+
+        # Phase 5 — prefer high-density idle summaries for fast TTFT context.
+        try:
+            idle = self._ensure_idle_collection()
+            idle_count = int(idle.count() or 0)
+        except Exception:  # noqa: BLE001
+            idle = None
+            idle_count = 0
+        if idle is not None and idle_count > 0:
+            idle_n = min(n, idle_count)
+            idle_result = idle.query(
+                query_embeddings=[emb],
+                n_results=idle_n,
+                include=["documents", "metadatas"],
+            )
+            idle_docs = (idle_result.get("documents") or [[]])[0]
+            idle_metas = (idle_result.get("metadatas") or [[]])[0]
+            for doc, meta in zip(idle_docs, idle_metas):
+                body = (doc or "").strip()
+                if not body:
+                    continue
+                m = meta or {}
+                topic = m.get("topic") or m.get("filepath") or IDLE_COLLECTION_NAME
+                lines.append(f"[idle_compressed] {topic}\n{body}")
+                if len(lines) >= n:
+                    break
+
+        remaining = n - len(lines)
+        if remaining > 0:
+            collection = self._ensure_client()
+            count = int(collection.count() or 0)
+            if count > 0:
+                code_n = min(remaining, count)
+                result = collection.query(
+                    query_embeddings=[emb],
+                    n_results=code_n,
+                    include=["documents", "metadatas"],
+                )
+                docs = (result.get("documents") or [[]])[0]
+                metas = (result.get("metadatas") or [[]])[0]
+                for doc, meta in zip(docs, metas):
+                    body = (doc or "").strip()
+                    if not body:
+                        continue
+                    fp = (meta or {}).get("filepath") or "(unknown)"
+                    lines.append(f"[codebase] {fp}\n{body}")
+
+        if not lines:
+            return "OK: vault empty (0 matches)"
+        numbered = [f"[{i}] {block}" for i, block in enumerate(lines[:n], start=1)]
+        return "OK: vault search results\n\n" + "\n\n".join(numbered)
 
 
 def get_codebase_vault(
@@ -242,3 +427,25 @@ def search_vault(
     return get_codebase_vault(
         persist_directory, embeddings=embeddings
     ).search_vault(query, n_results=n_results)
+
+
+def purge_filepath(
+    filepath: str | Path,
+    *,
+    persist_directory: str | Path | None = None,
+    embeddings: EmbeddingsProtocol | None = None,
+) -> str:
+    return get_codebase_vault(
+        persist_directory, embeddings=embeddings
+    ).purge_filepath(filepath)
+
+
+def reembed_file(
+    filepath: str | Path,
+    *,
+    persist_directory: str | Path | None = None,
+    embeddings: EmbeddingsProtocol | None = None,
+) -> str:
+    return get_codebase_vault(
+        persist_directory, embeddings=embeddings
+    ).reembed_file(filepath)

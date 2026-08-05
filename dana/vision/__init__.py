@@ -9,6 +9,7 @@ from dana.vision.overlay import (
     ensure_overlay_started,
     get_overlay,
     update_roi,
+    vision_debug_enabled,
 )
 from dana.vision.uia_provider import Win32UIAProvider
 
@@ -20,4 +21,5 @@ __all__ = (
     "ensure_overlay_started",
     "get_overlay",
     "update_roi",
+    "vision_debug_enabled",
 )

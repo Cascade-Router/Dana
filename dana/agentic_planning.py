@@ -163,6 +163,45 @@ def build_structured_plan(
 
     wants_vision = bool(_VISION_PLAN_RE.search(text))
     wants_ticket = bool(_TICKET_PLAN_RE.search(text))
+    # Suite 3 orchestration intents override generic vision/ticket heuristics.
+    try:
+        from dana.tools.os_tools import (
+            is_cascade_git_query,
+            is_latex_nocite_query,
+            is_watchdog_graph_query,
+            watchdog_graph_filepath,
+        )
+
+        if is_cascade_git_query(text):
+            wants_vision = False
+            if "execute_powershell" in tools:
+                required.append("execute_powershell")
+            elif "shell_execute" in tools:
+                required.append("shell_execute")
+            steps.append(
+                "Set cwd to the cascade-router repo path and run "
+                "git log -1 --format=%cd; report the commit date."
+            )
+        elif is_watchdog_graph_query(text):
+            wants_vision = False
+            if "read_local_file" in tools:
+                required.append("read_local_file")
+            elif "file_editor" in tools:
+                required.append("file_editor")
+            steps.append(
+                f"Locate and read {watchdog_graph_filepath()}; extract imports/"
+                "nodes from the dependency digest — do not guess."
+            )
+        elif is_latex_nocite_query(text):
+            wants_vision = False
+            wants_ticket = False
+            required = []
+            steps = [
+                "Draft clean LaTeX only; forbid \\cite{}, \\bibliography{}, and "
+                "auto-generated citation tags.",
+            ]
+    except Exception:  # noqa: BLE001
+        pass
 
     if wants_vision:
         if "ocr_with_region" in tools and re.search(
@@ -250,6 +289,36 @@ def planner_node(state: ReactGraphState) -> dict[str, Any]:
     plan = build_structured_plan(
         user_text, tool_ids=tool_ids, window_meta=window
     )
+    # SQLite episodic grounding / LaTeX constraint turns — no vault/vision tools.
+    mem = dict(state.get("memory_context") or {})
+    latex_turn = False
+    try:
+        from dana.tools.os_tools import is_latex_nocite_query
+
+        latex_turn = is_latex_nocite_query(user_text)
+    except Exception:  # noqa: BLE001
+        latex_turn = False
+    episodic_answer_only = bool(
+        mem.get("suppress_vault_vision")
+        and (mem.get("grounding_block") or mem.get("contradiction"))
+    )
+    answer_only = episodic_answer_only or latex_turn
+    if latex_turn:
+        plan["required_tools"] = []
+        plan["execution_steps"] = [
+            "Draft clean LaTeX only; forbid \\cite{}, \\bibliography{}, and "
+            "auto-generated citation tags.",
+        ]
+    elif episodic_answer_only:
+        plan["required_tools"] = []
+        plan["execution_steps"] = [
+            "Answer from IMMUTABLE EPISODIC GROUNDING (SQLite episodic_facts).",
+            "Do not call vault, Chroma, vision, or shell tools.",
+        ]
+        if mem.get("contradiction"):
+            plan["execution_steps"].append(
+                "Refuse the false premise politely and ask for clarification."
+            )
     try:
         from dana.ui.trace_bus import emit_trace_event
 
@@ -269,9 +338,12 @@ def planner_node(state: ReactGraphState) -> dict[str, Any]:
         pass
 
     always = list(state.get("always_include") or [])
-    for tid in plan.get("required_tools") or []:
-        if tid not in always:
-            always.append(tid)
+    if answer_only:
+        always = []
+    else:
+        for tid in plan.get("required_tools") or []:
+            if tid not in always:
+                always.append(tid)
 
     return {
         "execution_plan": plan,
@@ -292,6 +364,22 @@ def executor_node(state: ReactGraphState) -> dict[str, Any]:
     Does not bypass HITL — ``draft_cursor_prompt`` still flows
     agent → ticket_validate → jason → ticket_approval → tools.
     """
+    mem = dict(state.get("memory_context") or {})
+    latex_turn = False
+    try:
+        from dana.tools.os_tools import is_latex_nocite_query
+
+        latex_turn = is_latex_nocite_query(_extract_user_text(state))
+    except Exception:  # noqa: BLE001
+        latex_turn = False
+    if latex_turn or (
+        mem.get("suppress_vault_vision")
+        and (mem.get("grounding_block") or mem.get("contradiction"))
+    ):
+        return {
+            "always_include": [],
+            "current_agent": "Executor",
+        }
     plan = dict(state.get("execution_plan") or {})
     required = [str(t) for t in (plan.get("required_tools") or []) if str(t).strip()]
     always = list(state.get("always_include") or [])

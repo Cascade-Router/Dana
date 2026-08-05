@@ -24,7 +24,117 @@ _LWA_COLORKEY_RGB = (0, 0, 1)  # #000001
 _LWA_COLORKEY_LIFT = (1, 1, 2)  # nearby non-key RGB
 
 # Cached generators — key: (kind, width, height)
-_ASSET_CACHE: dict[tuple[str, int, int], Any] = {}
+_ASSET_CACHE: dict[tuple[Any, ...], Any] = {}
+
+# Disk cache-bust token for Windows shell / explorer icon caches.
+_RUNTIME_ICON_TAG = "v2"
+
+
+def runtime_icon_cache_dir() -> Path:
+    """Per-user temp dir for uniquely named runtime icons (not the source assets)."""
+    import tempfile
+
+    path = Path(tempfile.gettempdir()) / "dana_icon_cache"
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return path
+
+
+def purge_runtime_icon_files() -> None:
+    """Delete prior runtime/temp logo exports so Windows cannot fall back to them."""
+    import tempfile
+
+    patterns = (
+        "dana_logo_runtime_*.png",
+        "dana_logo_runtime_*.ico",
+        "dana_tray_runtime_*.png",
+        "dana_tray_runtime_*.ico",
+        "dana_toast_*.png",
+    )
+    roots = [runtime_icon_cache_dir(), Path(tempfile.gettempdir())]
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for pattern in patterns:
+            try:
+                for path in root.glob(pattern):
+                    try:
+                        path.unlink(missing_ok=True)
+                    except Exception:  # noqa: BLE001
+                        pass
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def invalidate_logo_cache() -> None:
+    """Drop in-memory PIL/CTk/PhotoImage logo caches (force full-bleed reload)."""
+    _ASSET_CACHE.clear()
+    purge_runtime_icon_files()
+
+
+def export_runtime_icon(
+    size: tuple[int, int] = (64, 64),
+    *,
+    kind: str = "logo",
+    fmt: str = "png",
+    img: Any | None = None,
+) -> Path | None:
+    """Write a full-bleed runtime icon to a uniquely named temp file.
+
+    Never reuses a fixed filename — token includes content hash + timestamp so
+    Windows Explorer / taskbar caches cannot keep serving a stale glyph.
+    """
+    import hashlib
+    import time
+
+    try:
+        from PIL import Image
+    except Exception:  # noqa: BLE001
+        return None
+
+    w, h = max(1, int(size[0])), max(1, int(size[1]))
+    work = img
+    if work is None:
+        work = load_premium_logo_pil((w, h))
+    if work is None:
+        work = load_app_icon_pil((w, h))
+    if work is None:
+        return None
+    try:
+        work = make_transparent_logo(work.convert("RGBA"))
+        if work.size != (w, h):
+            work = (
+                full_bleed_rgba(work, (w, h), fill_ratio=0.78)
+                or work.resize((w, h), Image.Resampling.LANCZOS)
+            )
+        digest = hashlib.sha1(work.tobytes()).hexdigest()[:12]
+        token = f"{_RUNTIME_ICON_TAG}_{digest}_{int(time.time() * 1000)}"
+        prefix = "dana_tray_runtime_" if kind == "tray" else "dana_logo_runtime_"
+        ext = "ico" if str(fmt).lower() == "ico" else "png"
+        out = runtime_icon_cache_dir() / f"{prefix}{token}.{ext}"
+        if ext == "ico":
+            # Multi-size ICO helps taskbar + alt-tab hosts.
+            sizes = [(16, 16), (32, 32), (48, 48), (w, h)]
+            frames = []
+            for sw, sh in sizes:
+                frame = (
+                    full_bleed_rgba(work, (sw, sh), fill_ratio=0.78)
+                    or work.resize((sw, sh), Image.Resampling.LANCZOS)
+                )
+                frames.append(frame)
+            frames[0].save(
+                out,
+                format="ICO",
+                sizes=[(f.width, f.height) for f in frames],
+                append_images=frames[1:],
+            )
+        else:
+            work.save(out, format="PNG")
+        return out if out.is_file() else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _frozen_root() -> Path | None:
@@ -191,41 +301,70 @@ def resolve_app_icon_path() -> Path | None:
 
 
 def apply_window_icon(root: Any) -> bool:
-    """Bind app ``.ico`` to a Tk / CustomTkinter root for taskbar + title bar.
+    """Bind a cache-busted runtime icon to Tk / CTk for taskbar + title bar.
 
-    Uses ``iconbitmap`` / ``wm_iconbitmap`` / ``iconphoto`` (wm_iconphoto path).
-    Returns True when an icon was applied. Safe no-op on failure / non-Windows.
+    Exports a uniquely named full-bleed PNG/ICO, then applies ``iconbitmap`` /
+    ``wm_iconphoto``. Keeps ``PhotoImage`` alive on the root so Tk GC cannot
+    drop it (which would revert to a stale/default glyph).
     """
-    ico = resolve_app_icon_path()
-    if ico is None:
-        return False
-    ico_s = str(ico)
+    # Drop prior runtime files + in-memory logo cache so nothing falls back
+    # to a previously exported fixed-looking path.
+    purge_runtime_icon_files()
+    for key in list(_ASSET_CACHE.keys()):
+        try:
+            kind = key[0] if key else ""
+        except Exception:  # noqa: BLE001
+            kind = ""
+        if str(kind).startswith(("tray_", "toast", "overlay", "logo")):
+            _ASSET_CACHE.pop(key, None)
+
+    png_path = export_runtime_icon((64, 64), kind="logo", fmt="png")
+    ico_path = export_runtime_icon((64, 64), kind="logo", fmt="ico")
     applied = False
-    try:
-        root.iconbitmap(ico_s)
-        applied = True
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        root.wm_iconbitmap(ico_s)
-        applied = True
-    except Exception:  # noqa: BLE001
-        pass
-    # iconphoto / wm_iconphoto helps some CTk / multi-monitor taskbar hosts.
+
+    # Prefer unique runtime ICO; fall back to packaged asset only if export fails.
+    ico_s = str(ico_path) if ico_path is not None else ""
+    if not ico_s:
+        legacy = resolve_app_icon_path()
+        ico_s = str(legacy) if legacy is not None else ""
+    if ico_s:
+        try:
+            root.iconbitmap(ico_s)
+            applied = True
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            root.wm_iconbitmap(ico_s)
+            applied = True
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            _win32_set_icon_supplement(root, ico_s)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # iconphoto / wm_iconphoto — load from the unique runtime PNG when possible.
     try:
         from PIL import Image, ImageTk
 
-        img = Image.open(ico).convert("RGBA")
-        photo = ImageTk.PhotoImage(
-            img.resize((64, 64), Image.Resampling.LANCZOS),
-            master=root,
-        )
+        if png_path is not None and png_path.is_file():
+            img = Image.open(png_path).convert("RGBA")
+        else:
+            img = load_premium_logo_pil((64, 64)) or load_app_icon_pil((64, 64))
+            if img is not None:
+                img = full_bleed_rgba(img, (64, 64), fill_ratio=0.78) or img
+        if img is None:
+            return applied
+        photo = ImageTk.PhotoImage(img, master=root)
         try:
             root.wm_iconphoto(True, photo)
         except Exception:  # noqa: BLE001
             root.iconphoto(True, photo)
-        # Keep a reference so Tk GC does not drop the PhotoImage.
+        # Explicit keepalives — prevent GC reverting to a cached/default icon.
+        root._icon_keepalive = photo  # type: ignore[attr-defined]
         root._donna_iconphoto = photo  # type: ignore[attr-defined]
+        root._donna_runtime_icon_png = png_path  # type: ignore[attr-defined]
+        root._donna_runtime_icon_ico = ico_path  # type: ignore[attr-defined]
         applied = True
     except Exception:  # noqa: BLE001
         pass
@@ -233,7 +372,11 @@ def apply_window_icon(root: Any) -> bool:
 
 
 def app_icon_abspath() -> str:
-    """Absolute ``assets/dana_logo.ico`` path (dev + MEIPASS)."""
+    """Absolute packaged ``assets/dana_logo.ico`` path (dev + MEIPASS).
+
+    Runtime cache-busted icons are produced by ``export_runtime_icon`` /
+    ``apply_window_icon`` — this helper remains the SSoT source asset path.
+    """
     import os
 
     try:
@@ -307,14 +450,18 @@ def _win32_set_icon_supplement(root_window: Any, ico_s: str) -> None:
 
 
 def force_apply_window_icon(root_window: Any, ico_path: str | Path | None = None) -> bool:
-    """Apply titlebar icon via iconbitmap/wm_iconbitmap (Win32 optional).
+    """Apply titlebar/taskbar icon via cache-busted runtime export + keepalive.
 
     Prefer ``schedule_window_icon`` after window init so CTk chrome cannot
-    overwrite the binding. Win32 WM_SETICON is a light supplement only.
+    overwrite the binding. When ``ico_path`` is omitted, exports a unique
+    runtime ICO/PNG. Win32 WM_SETICON is a light supplement only.
     """
-    ico_s = str(ico_path) if ico_path is not None else app_icon_abspath()
+    if ico_path is None:
+        return apply_window_icon(root_window)
+
+    ico_s = str(ico_path)
     if not ico_s:
-        return False
+        return apply_window_icon(root_window)
     applied = False
     try:
         root_window.iconbitmap(ico_s)
@@ -327,18 +474,37 @@ def force_apply_window_icon(root_window: Any, ico_path: str | Path | None = None
     except Exception:  # noqa: BLE001
         pass
     _win32_set_icon_supplement(root_window, ico_s)
+    # Still bind PhotoImage from the provided file for hosts that ignore .ico.
+    try:
+        from PIL import Image, ImageTk
+
+        img = Image.open(ico_s).convert("RGBA")
+        img = full_bleed_rgba(img, (64, 64), fill_ratio=0.78) or img.resize(
+            (64, 64), Image.Resampling.LANCZOS
+        )
+        photo = ImageTk.PhotoImage(img, master=root_window)
+        try:
+            root_window.wm_iconphoto(True, photo)
+        except Exception:  # noqa: BLE001
+            root_window.iconphoto(True, photo)
+        root_window._icon_keepalive = photo  # type: ignore[attr-defined]
+        root_window._donna_iconphoto = photo  # type: ignore[attr-defined]
+        applied = True
+    except Exception:  # noqa: BLE001
+        pass
     return applied
 
 
 def schedule_window_icon(root: Any, delay_ms: int = 100) -> None:
-    """Post-init icon bind: ``root.after(delay, iconbitmap/wm_iconbitmap)``."""
-    ico = app_icon_abspath()
+    """Post-init icon bind using a uniquely named runtime export."""
 
     def _apply() -> None:
-        force_apply_window_icon(root, ico)
+        apply_window_icon(root)
 
     try:
         root.after(int(delay_ms), _apply)
+        # Second pass — some CTk builds reset the icon after first layout.
+        root.after(int(delay_ms) + 400, _apply)
     except Exception:  # noqa: BLE001
         _apply()
 
@@ -487,19 +653,122 @@ def _rgba_source(size: tuple[int, int]) -> Any | None:
     return make_transparent_logo(img.convert("RGBA"))
 
 
+def full_bleed_rgba(
+    img: Any,
+    size: tuple[int, int],
+    *,
+    fill_ratio: float = 0.78,
+) -> Any | None:
+    """Crop to opaque content and scale the mark to ``fill_ratio`` of the box.
+
+    Fixes tiny green glyphs sitting inside oversized dark padding for taskbar,
+    tray, and titlebar icons.
+    """
+    try:
+        from PIL import Image
+    except Exception:  # noqa: BLE001
+        return None
+    if img is None:
+        return None
+    try:
+        base = make_transparent_logo(img.convert("RGBA"))
+        w, h = max(1, int(size[0])), max(1, int(size[1]))
+        alpha = base.getchannel("A")
+        # Ignore soft AA fringe / near-clear pixels so dark padding is cropped.
+        try:
+            mask = alpha.point(lambda p: 255 if p > 24 else 0)
+            bbox = mask.getbbox()
+        except Exception:  # noqa: BLE001
+            bbox = alpha.getbbox()
+        if bbox is None:
+            canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            return canvas
+        cropped = base.crop(bbox)
+        cw, ch = cropped.size
+        ratio = max(0.05, min(0.95, float(fill_ratio)))
+        target = max(1.0, ratio * float(min(w, h)))
+        scale = target / float(max(cw, ch, 1))
+        nw = max(1, int(round(cw * scale)))
+        nh = max(1, int(round(ch * scale)))
+        mark = cropped.resize((nw, nh), Image.Resampling.LANCZOS)
+        # Clamp so a bad crop never exceeds the destination tile.
+        if nw > w or nh > h:
+            fit = min(w / float(nw), h / float(nh), 1.0)
+            nw = max(1, int(round(nw * fit)))
+            nh = max(1, int(round(nh * fit)))
+            mark = mark.resize((nw, nh), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        ox = (w - nw) // 2
+        oy = (h - nh) // 2
+        canvas.paste(mark, (ox, oy), mark.split()[-1])
+        return canvas
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _bolster_tray_glyph(img: Any) -> Any:
+    """Full-bleed crop + contrast/stroke so the mark reads on dark taskbars."""
+    try:
+        from PIL import Image, ImageEnhance, ImageFilter
+    except Exception:  # noqa: BLE001
+        return img
+    try:
+        base = img.convert("RGBA")
+        w, h = base.size
+        # Upscale work buffer for cleaner LANCZOS edges.
+        work_size = (max(w * 2, 64), max(h * 2, 64))
+        hi = full_bleed_rgba(base, work_size, fill_ratio=0.78) or base.resize(
+            work_size, Image.Resampling.LANCZOS
+        )
+        hi = ImageEnhance.Contrast(hi).enhance(1.4)
+        hi = ImageEnhance.Color(hi).enhance(1.18)
+        hi = ImageEnhance.Sharpness(hi).enhance(1.25)
+        alpha = hi.getchannel("A")
+        stroke_a = alpha.filter(ImageFilter.MaxFilter(3))
+        stroke = Image.new("RGBA", hi.size, (6, 95, 70, 255))
+        stroke.putalpha(stroke_a)
+        out = Image.alpha_composite(stroke, hi)
+        if out.size != (w, h):
+            out = out.resize((w, h), Image.Resampling.LANCZOS)
+        return make_transparent_logo(out)
+    except Exception:  # noqa: BLE001
+        return img
+
+
 def get_tray_icon(size: tuple[int, int] = (32, 32)) -> Any | None:
-    """Cached clean RGBA PIL image for pystray (transparent backdrop)."""
+    """Cached clean RGBA PIL image for pystray (transparent backdrop).
+
+    Rebuilds from a uniquely named runtime PNG so the OS / pystray cannot keep
+    serving a stale shell-cached glyph from a fixed path.
+    """
     w, h = int(size[0]), int(size[1])
-    key = ("tray", w, h)
+    key = ("tray_fullbleed_runtime", w, h)
     cached = _ASSET_CACHE.get(key)
     if cached is not None:
         try:
             return cached.copy()
         except Exception:  # noqa: BLE001
             return cached
-    img = _rgba_source((w, h))
+    img = _rgba_source((max(w * 2, 64), max(h * 2, 64)))
+    if img is None:
+        img = _rgba_source((w, h))
     if img is None:
         return None
+    img = _bolster_tray_glyph(
+        full_bleed_rgba(img, (w, h), fill_ratio=0.78) or img
+    )
+    try:
+        from PIL import Image
+
+        if img.size != (w, h):
+            img = img.resize((w, h), Image.Resampling.LANCZOS)
+        # Persist + reload via unique path (cache-bust for file-based consumers).
+        path = export_runtime_icon((w, h), kind="tray", fmt="png", img=img)
+        if path is not None and path.is_file():
+            img = Image.open(path).convert("RGBA")
+            _ASSET_CACHE[("tray_runtime_path", w, h)] = path
+    except Exception:  # noqa: BLE001
+        pass
     _ASSET_CACHE[key] = img
     try:
         return img.copy()
@@ -510,13 +779,14 @@ def get_tray_icon(size: tuple[int, int] = (32, 32)) -> Any | None:
 def get_overlay_logo(size: tuple[int, int] = (48, 48)) -> Any | None:
     """Cached RGBA ``CTkImage`` for the floating HUD (PIL fallback if CTk missing)."""
     w, h = int(size[0]), int(size[1])
-    key = ("overlay", w, h)
+    key = ("overlay_fullbleed", w, h)
     cached = _ASSET_CACHE.get(key)
     if cached is not None:
         return cached
     img = _rgba_source((w, h))
     if img is None:
         return None
+    img = full_bleed_rgba(img, (w, h), fill_ratio=0.78) or img
     try:
         import tkinter as tk
 
@@ -544,7 +814,7 @@ def get_overlay_logo(size: tuple[int, int] = (48, 48)) -> Any | None:
 def get_toast_logo(size: tuple[int, int] = (64, 64)) -> Any | None:
     """Cached anti-aliased RGBA PIL logo for Windows notification icons."""
     w, h = int(size[0]), int(size[1])
-    key = ("toast", w, h)
+    key = ("toast_fullbleed", w, h)
     cached = _ASSET_CACHE.get(key)
     if cached is not None:
         try:
@@ -554,6 +824,7 @@ def get_toast_logo(size: tuple[int, int] = (64, 64)) -> Any | None:
     img = _rgba_source((w, h))
     if img is None:
         return None
+    img = full_bleed_rgba(img, (w, h), fill_ratio=0.78) or img
     # Extra light AA pass for toast downscales.
     try:
         from PIL import ImageFilter
@@ -599,7 +870,7 @@ def load_premium_logo_pil(
     *,
     tint: str | None = None,
 ) -> Any | None:
-    """Load + LANCZOS-resize the premium logo; optional hex tint for orb pulses."""
+    """Load + full-bleed LANCZOS resize; optional hex tint for orb pulses."""
     path = resolve_logo_path()
     if path is None:
         return None
@@ -610,7 +881,9 @@ def load_premium_logo_pil(
         w, h = int(size[0]), int(size[1])
         if w < 1 or h < 1:
             return None
-        img = img.resize((w, h), Image.Resampling.LANCZOS)
+        img = full_bleed_rgba(img, (w, h), fill_ratio=0.78) or img.resize(
+            (w, h), Image.Resampling.LANCZOS
+        )
         # Re-key after downscale so LANCZOS fringe blacks stay transparent.
         img = make_transparent_logo(img)
         if tint:

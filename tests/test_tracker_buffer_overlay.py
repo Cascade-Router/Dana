@@ -17,16 +17,21 @@ def test_rolling_buffer_maxlen_and_cadence() -> None:
     assert tr.buffer_len() == 1
     assert tr.should_push_frame(interval_s=tr.FRAME_BUFFER_INTERVAL_S) is False
     assert tr.push_frame(frame, source="screen", force=False) is False
-    for i in range(6):
-        colored = np.full((480, 640, 3), i, dtype=np.uint8)
+    for i in range(tr.FRAME_BUFFER_MAXLEN + 5):
+        colored = np.full((480, 640, 3), i % 255, dtype=np.uint8)
         assert tr.push_frame(colored, source="screen", force=True) is True
-    assert tr.buffer_len() == 5
+    assert tr.buffer_len() == tr.FRAME_BUFFER_MAXLEN
     ctx = tr.get_temporal_context()
-    assert ctx["count"] == 5
+    assert ctx["count"] == tr.FRAME_BUFFER_MAXLEN
+    # Rolling deque stores thumbnails; latest full frame stays point-in-time accurate.
+    thumb = tr.get_buffered_frames()[-1]
+    assert thumb.shape[1] == tr.THUMB_SIZE[0] and thumb.shape[0] == tr.THUMB_SIZE[1]
     latest = tr.get_latest_buffered_frame()
     assert latest is not None
     assert latest.shape == (480, 640, 3)
-    print("[PASS] rolling buffer maxlen=5 + cadence gate")
+    seq = tr.get_recent_frame_sequence(seconds=30.0)
+    assert 1 <= len(seq) <= tr.FRAME_BUFFER_MAXLEN
+    print("[PASS] rolling buffer maxlen=60 thumbs + full-frame + cadence gate")
 
 
 def test_map_box_to_screen() -> None:
@@ -39,7 +44,8 @@ def test_map_box_to_screen() -> None:
     print("[PASS] map_box_to_screen")
 
 
-def test_roi_overlay_update_clear() -> None:
+def test_roi_overlay_update_clear(monkeypatch) -> None:
+    monkeypatch.setenv("DONNA_DEBUG_VISION", "1")
     ov = RoiOverlay()
     ov.start()
     assert ov._ready.wait(timeout=3.0)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -161,12 +162,49 @@ class TaskTracker:
         self._lock = threading.RLock()
         self._tasks: dict[str, TaskRecord] = {}
         self._activity_log: list[ActivityEvent] = []
+        self._revision = 0
+        self._notify: queue.Queue[int] = queue.Queue(maxsize=64)
         self.dropped_log_path = (
             Path(dropped_log_path)
             if dropped_log_path is not None
             else _default_dropped_log_path()
         )
         self.ledger_path = Path(ledger_path) if ledger_path is not None else None
+
+    def revision(self) -> int:
+        """Monotonic counter bumped on every tracker mutation (Tk poll-friendly)."""
+        with self._lock:
+            return int(self._revision)
+
+    def drain_notifications(self, *, max_items: int = 32) -> list[int]:
+        """Thread-safe queue of revision ids for Tk ``after()`` consumers."""
+        out: list[int] = []
+        for _ in range(max(1, int(max_items))):
+            try:
+                out.append(int(self._notify.get_nowait()))
+            except queue.Empty:
+                break
+            except Exception:  # noqa: BLE001
+                break
+        return out
+
+    def _bump_revision_locked(self) -> int:
+        self._revision = int(self._revision) + 1
+        rev = int(self._revision)
+        try:
+            self._notify.put_nowait(rev)
+        except queue.Full:
+            try:
+                _ = self._notify.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._notify.put_nowait(rev)
+            except queue.Full:
+                pass
+        except Exception:  # noqa: BLE001
+            pass
+        return rev
 
     def start_task(self, task_id: str, prompt: str) -> TaskRecord:
         """Register a new task in ``RECEIVED`` (idempotent overwrite)."""
@@ -257,6 +295,7 @@ class TaskTracker:
             self._activity_log = self._activity_log[-200:]
         rec = self._tasks.get(task_id)
         if rec is not None:
+            rec.updated_at = event.timestamp
             rec.activities.append(
                 {
                     "message": event.message,
@@ -266,6 +305,7 @@ class TaskTracker:
             )
             if len(rec.activities) > 40:
                 rec.activities = rec.activities[-40:]
+        self._bump_revision_locked()
         return event
 
     def get_task(self, task_id: str) -> TaskRecord | None:
@@ -412,11 +452,69 @@ class TaskTracker:
             }
 
 
+def emit_meta_broker_telemetry(
+    *,
+    task_id: str,
+    prompt: str = "",
+    phase: str = "",
+    status: str = "",
+    message: str = "",
+    epic_title: str = "",
+    terminal: bool = False,
+) -> None:
+    """Push Meta-Broker background progress into the shared TaskTracker (UI-safe)."""
+    tid = str(task_id or "").strip() or "meta_broker"
+    try:
+        tracker = get_shared_task_tracker()
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        if tracker.get_task(tid) is None:
+            tracker.start_task(tid, prompt or "Meta-Broker")
+            tracker.update_status(tid, TaskStatus.IN_PROGRESS)
+
+        line = str(message or "").strip()
+        if not line:
+            bits = ["Meta-Broker"]
+            if phase:
+                bits.append(str(phase))
+            if epic_title:
+                bits.append(str(epic_title))
+            if status:
+                bits.append(str(status))
+            line = " · ".join(bits)
+
+        st_raw = str(status or "").strip().lower()
+        if terminal:
+            if st_raw in {"completed", "done", "ok", "success"}:
+                final = TaskStatus.COMPLETED
+                meta: dict[str, Any] = {"phase": phase, "source": "meta_broker"}
+            else:
+                final = TaskStatus.FAILED
+                meta = {
+                    "phase": phase,
+                    "source": "meta_broker",
+                    "error": line,
+                }
+            tracker.update_status(tid, final, metadata=meta)
+            return
+
+        tracker.append_activity(
+            tid,
+            line,
+            status=TaskStatus.IN_PROGRESS,
+            metadata={"phase": phase, "epic": epic_title},
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("emit_meta_broker_telemetry failed", exc_info=True)
+
+
 __all__ = (
     "ActivityEvent",
     "TaskRecord",
     "TaskStatus",
     "TaskTracker",
+    "emit_meta_broker_telemetry",
     "get_shared_task_tracker",
     "humanize_activity",
     "set_shared_task_tracker",

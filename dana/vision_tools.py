@@ -182,9 +182,9 @@ def format_vision_payload(detections: list[dict[str, Any]]) -> str:
 def analyze_visual_context(source: str = "screen") -> str:
     """Analyze vision via Tracker rolling buffer (fallback: one cold capture).
 
-    Prefers the latest frame from ``dana.tracker``'s maxlen-5 buffer so the
-    agent gets temporal context without triggering a fresh screenshot when the
-    Tracker is already sampling ``active_vision_tool``.
+    Prefers the latest full frame from ``dana.tracker`` so the agent gets
+    temporal context without a cold screenshot when the Tracker is sampling.
+    Returns a natural-language summary (not raw XML/OCR tags).
     """
     kind = str(source or "screen").strip().lower() or "screen"
     source_label = "webcam" if kind in {"webcam", "camera", "video"} else "screen"
@@ -195,26 +195,26 @@ def analyze_visual_context(source: str = "screen") -> str:
     try:
         from dana.tracker import (
             get_latest_buffered_frame,
+            get_latest_full_frame,
             get_latest_sample,
+            get_recent_frame_sequence,
             get_temporal_context,
         )
 
         ctx = get_temporal_context()
         temporal_n = int(ctx.get("count") or 0)
         sample = get_latest_sample()
+        # Prefer the single retained full-resolution frame for YOLO accuracy.
+        frame = get_latest_full_frame() or get_latest_buffered_frame()
         if sample is not None:
-            # Prefer buffer frames that match the requested source when possible.
+            monitor = sample.monitor
             src = str(sample.source or "").lower()
-            if source_label == "webcam" and src in {"camera", "webcam", "video"}:
-                frame = sample.frame.copy()
-                monitor = sample.monitor
-            elif source_label == "screen" and src in {"screen", ""}:
-                frame = sample.frame.copy()
-                monitor = sample.monitor
-            elif temporal_n > 0 and source_label == "screen":
-                # Screen queries may still use the latest buffer sample.
-                frame = get_latest_buffered_frame()
-                monitor = sample.monitor
+            if source_label == "webcam" and src not in {"camera", "webcam", "video"}:
+                frame = None
+        try:
+            temporal_n = max(temporal_n, len(get_recent_frame_sequence(seconds=30.0)))
+        except Exception:  # noqa: BLE001
+            pass
     except Exception:  # noqa: BLE001
         frame = None
 
@@ -225,13 +225,13 @@ def analyze_visual_context(source: str = "screen") -> str:
             frame = capture_screen_frame()
 
     if frame is None:
-        return f"[Vision Output] Detected: nothing (no {source_label} frame)."
+        return f"I can't see anything on the {source_label} right now (no frame)."
 
     try:
         model = _get_yolo_model()
         results = model.predict(frame, verbose=False, conf=0.35)
     except Exception as exc:  # noqa: BLE001
-        return f"[Vision Output] Detected: nothing (YOLO error: {exc})."
+        return f"Vision check failed (YOLO error: {exc})."
 
     detections = _detections_from_results(results)
 
@@ -253,12 +253,27 @@ def analyze_visual_context(source: str = "screen") -> str:
         except Exception:  # noqa: BLE001
             pass
 
-    payload = format_vision_payload(detections)
+    # Natural-language synthesis (detections + optional OCR screen_history).
+    if detections:
+        counts = Counter(str(d.get("name") or "object") for d in detections)
+        det_bits = [_pluralize(name, count) for name, count in counts.most_common()]
+        summary = "I can see " + ", ".join(det_bits) + "."
+    else:
+        summary = f"No clear objects stood out on the {source_label}."
     if temporal_n > 1:
-        payload = (
-            f"{payload} "
-            f"[Temporal: {temporal_n} buffered frames @ ~2s]."
-        )
+        summary += f" I have about {temporal_n} seconds of recent visual context buffered."
+
+    if source_label == "screen":
+        try:
+            from dana.tools.vision import summarize_visual_history
+
+            ocr_summary = summarize_visual_history(seconds=30.0)
+            if ocr_summary and not str(ocr_summary).startswith("SYSTEM_ERROR:"):
+                summary = f"{summary} {ocr_summary}"
+        except Exception:  # noqa: BLE001
+            pass
+
+    payload = summary.strip()
     # Typed objects topic for Chat / ambient awareness (not OCR).
     try:
         from dana.memory.blackboard import publish_perception_objects

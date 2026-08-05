@@ -1,8 +1,9 @@
 """Lazy YOLOv8 singleton + rolling vision frame buffer for CAMGRASPER Tracker.
 
 Weights load on first vision use only. The Tracker thread pushes frames from
-``active_vision_tool.get_frame()`` into a short deque so tools can read temporal
-context without a cold screenshot.
+``active_vision_tool.get_frame()`` into a circular deque of low-res thumbnails
+(~1 fps × 60 ≈ 60s). Only the latest full-resolution frame is retained for
+live YOLO / OCR.
 """
 
 from __future__ import annotations
@@ -19,16 +20,17 @@ _yolo_lock = threading.Lock()
 _yolo_model: Optional[Any] = None
 _yolo_weights: Optional[str] = None
 
-# Rolling buffer: ~2s cadence × maxlen 5 ≈ 10s of temporal context.
-FRAME_BUFFER_MAXLEN = 5
-FRAME_BUFFER_INTERVAL_S = 2.0
+# Phase 3: ~1s cadence × maxlen 60 ≈ 60s of temporal context (thumbnails).
+FRAME_BUFFER_MAXLEN = 60
+FRAME_BUFFER_INTERVAL_S = 1.0
+THUMB_SIZE = (160, 90)  # (width, height) — ~2.5 MiB for 60 frames
 
 
 @dataclass
 class FrameSample:
-    """One buffered vision frame with optional YOLO dets and capture metadata."""
+    """One buffered vision sample (thumbnail + metadata; optional full frame)."""
 
-    frame: np.ndarray
+    frame: np.ndarray  # low-res thumbnail (BGR)
     timestamp: float
     source: str = "screen"
     dets: tuple[tuple[Any, ...], ...] = ()
@@ -39,6 +41,9 @@ class FrameSample:
 _buffer_lock = threading.Lock()
 _frame_buffer: deque[FrameSample] = deque(maxlen=FRAME_BUFFER_MAXLEN)
 _last_buffer_push_mono = 0.0
+# Single latest full-resolution frame for live OCR / YOLO (not duplicated in deque).
+_latest_full_frame: Optional[np.ndarray] = None
+_latest_full_meta: dict[str, Any] = {}
 
 
 def yolo_is_loaded() -> bool:
@@ -75,10 +80,12 @@ def reset_yolo_model() -> None:
 
 def clear_frame_buffer() -> None:
     """Empty the rolling buffer (tests / mode reset)."""
-    global _last_buffer_push_mono
+    global _last_buffer_push_mono, _latest_full_frame, _latest_full_meta
     with _buffer_lock:
         _frame_buffer.clear()
         _last_buffer_push_mono = 0.0
+        _latest_full_frame = None
+        _latest_full_meta = {}
 
 
 def buffer_len() -> int:
@@ -98,6 +105,25 @@ def should_push_frame(*, interval_s: float = FRAME_BUFFER_INTERVAL_S) -> bool:
     return seconds_since_last_push() >= float(interval_s)
 
 
+def _make_thumbnail(arr: np.ndarray) -> np.ndarray:
+    """Downscale to ``THUMB_SIZE`` (keeps rolling buffer memory bounded)."""
+    tw, th = int(THUMB_SIZE[0]), int(THUMB_SIZE[1])
+    if arr.ndim < 2:
+        return arr.copy()
+    h, w = int(arr.shape[0]), int(arr.shape[1])
+    if w == tw and h == th:
+        return arr.copy()
+    try:
+        import cv2
+
+        return cv2.resize(arr, (tw, th), interpolation=cv2.INTER_AREA)
+    except Exception:  # noqa: BLE001
+        # Fallback without OpenCV: crude stride subsample.
+        ys = max(1, h // th)
+        xs = max(1, w // tw)
+        return np.ascontiguousarray(arr[::ys, ::xs][:th, :tw].copy())
+
+
 def push_frame(
     frame: np.ndarray,
     *,
@@ -107,11 +133,11 @@ def push_frame(
     force: bool = False,
     interval_s: float = FRAME_BUFFER_INTERVAL_S,
 ) -> bool:
-    """Append a frame to the rolling buffer (respects ~2s cadence unless ``force``).
+    """Append a thumbnail to the rolling buffer; retain one latest full frame.
 
-    Returns True when the frame was stored.
+    Returns True when the sample was stored.
     """
-    global _last_buffer_push_mono
+    global _last_buffer_push_mono, _latest_full_frame, _latest_full_meta
     if frame is None:
         return False
     arr = np.asarray(frame)
@@ -119,8 +145,9 @@ def push_frame(
         return False
     if not force and not should_push_frame(interval_s=interval_s):
         return False
+    thumb = _make_thumbnail(arr)
     sample = FrameSample(
-        frame=arr.copy(),
+        frame=thumb,
         timestamp=time.time(),
         source=str(source or "screen"),
         dets=tuple(dets or ()),
@@ -129,13 +156,31 @@ def push_frame(
     )
     with _buffer_lock:
         _frame_buffer.append(sample)
+        _latest_full_frame = arr.copy()
+        _latest_full_meta = {
+            "timestamp": sample.timestamp,
+            "source": sample.source,
+            "dets": sample.dets,
+            "frame_shape": sample.frame_shape,
+            "monitor": sample.monitor,
+        }
         _last_buffer_push_mono = time.monotonic()
     return True
 
 
-def get_latest_buffered_frame() -> Optional[np.ndarray]:
-    """Most recent buffered BGR frame, or None if the buffer is empty."""
+def get_latest_full_frame() -> Optional[np.ndarray]:
+    """Most recent full-resolution BGR frame (not the thumbnail), or None."""
     with _buffer_lock:
+        if _latest_full_frame is None:
+            return None
+        return _latest_full_frame.copy()
+
+
+def get_latest_buffered_frame() -> Optional[np.ndarray]:
+    """Most recent full frame when available; else latest thumbnail."""
+    with _buffer_lock:
+        if _latest_full_frame is not None:
+            return _latest_full_frame.copy()
         if not _frame_buffer:
             return None
         return _frame_buffer[-1].frame.copy()
@@ -149,7 +194,7 @@ def get_latest_sample() -> Optional[FrameSample]:
 
 
 def get_buffered_frames(*, newest_first: bool = False) -> list[np.ndarray]:
-    """Copy of all buffered frames (oldest→newest by default)."""
+    """Copy of buffered thumbnails (oldest→newest by default)."""
     with _buffer_lock:
         frames = [s.frame.copy() for s in _frame_buffer]
     if newest_first:
@@ -157,10 +202,35 @@ def get_buffered_frames(*, newest_first: bool = False) -> list[np.ndarray]:
     return frames
 
 
+def get_recent_frame_sequence(seconds: float = 30.0) -> list[FrameSample]:
+    """Thread-safe recent samples within the last ``seconds`` (oldest→newest).
+
+    Returns shallow copies of ``FrameSample`` with thumbnail arrays copied.
+    """
+    cutoff = time.time() - max(0.0, float(seconds))
+    with _buffer_lock:
+        out: list[FrameSample] = []
+        for s in _frame_buffer:
+            if float(s.timestamp) < cutoff:
+                continue
+            out.append(
+                FrameSample(
+                    frame=s.frame.copy(),
+                    timestamp=s.timestamp,
+                    source=s.source,
+                    dets=s.dets,
+                    frame_shape=s.frame_shape,
+                    monitor=dict(s.monitor) if s.monitor else None,
+                )
+            )
+        return out
+
+
 def get_temporal_context() -> dict[str, Any]:
     """Snapshot for ``analyze_visual_context`` / agent temporal reasoning."""
     with _buffer_lock:
         samples = list(_frame_buffer)
+        full = None if _latest_full_frame is None else _latest_full_frame.copy()
     if not samples:
         return {
             "count": 0,
@@ -170,6 +240,7 @@ def get_temporal_context() -> dict[str, Any]:
             "timestamps": [],
             "latest_dets": [],
             "monitor": None,
+            "full_frame": full,
         }
     latest = samples[-1]
     return {
@@ -181,6 +252,7 @@ def get_temporal_context() -> dict[str, Any]:
         "latest_dets": list(latest.dets),
         "monitor": dict(latest.monitor) if latest.monitor else None,
         "frame_shape": latest.frame_shape,
+        "full_frame": full,
     }
 
 

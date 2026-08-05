@@ -29,11 +29,14 @@ ensure_stdio()
 RUNTIME_LOG_DIR = str(LOGS_DIR)
 RUNTIME_LOG_PATH = str(LOGS_DIR / "dana_runtime.log")
 CONVERSATION_LOG_PATH = str(LOGS_DIR / "dana_conversation.log")
+FATAL_CRASH_LOG_PATH = str(LOGS_DIR / "fatal_crash.log")
 # Legacy filenames — migrated on first enable when still present.
 _LEGACY_RUNTIME_LOG = str(LOGS_DIR / "donna_runtime.log")
 _LEGACY_CONVERSATION_LOG = str(LOGS_DIR / "donna_conversation.log")
 # Keep enough headroom for multi-line ``log_exception`` stack traces.
 RUNTIME_LOG_MAX_LINES = 250
+_fatal_hooks_installed = False
+_fatal_log_lock = threading.Lock()
 
 _stdlib_logger = logging.getLogger("dana")
 
@@ -137,6 +140,123 @@ def log(thread: str, message: str, *, level: str = "info") -> None:
 def log_debug(thread: str, message: str) -> None:
     """Verbose diagnostics — skipped in normal runs."""
     log(thread, message, level="debug")
+
+
+def write_fatal_crash_log(
+    kind: str,
+    exc_type: Any,
+    exc_value: Any,
+    exc_tb: Any,
+    *,
+    thread_name: str = "",
+) -> str | None:
+    """Append a full traceback to ``logs/fatal_crash.log`` (never trimmed).
+
+    Returns the log path on success, else ``None``. Safe for hooks / workers.
+    """
+    try:
+        os.makedirs(RUNTIME_LOG_DIR, exist_ok=True)
+    except Exception:
+        return None
+    try:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        thr = (thread_name or threading.current_thread().name or "").strip()
+        header = (
+            f"\n===== FATAL {kind} {stamp} "
+            f"pid={os.getpid()} thread={thr or '-'} =====\n"
+        )
+        if exc_type is None:
+            body = "(no exception info)\n"
+        else:
+            body = "".join(
+                traceback.format_exception(exc_type, exc_value, exc_tb)
+            )
+        with _fatal_log_lock:
+            with open(
+                FATAL_CRASH_LOG_PATH,
+                "a",
+                encoding="utf-8",
+                errors="replace",
+                newline="",
+            ) as fh:
+                fh.write(header)
+                fh.write(body)
+                if not body.endswith("\n"):
+                    fh.write("\n")
+        # Mirror a short breadcrumb into the circular runtime log.
+        try:
+            name = getattr(exc_type, "__name__", str(exc_type))
+            append_runtime_log(
+                f"[{_stamp()}] [Fatal] {kind}: {name}: {exc_value} "
+                f"→ {FATAL_CRASH_LOG_PATH}\n"
+            )
+        except Exception:
+            pass
+        return FATAL_CRASH_LOG_PATH
+    except Exception:
+        return None
+
+
+def install_fatal_crash_hooks() -> None:
+    """Bind ``sys.excepthook`` + ``threading.excepthook`` → ``fatal_crash.log``.
+
+    Idempotent. Does not replace ``SystemExit`` / ``KeyboardInterrupt`` handling
+    beyond writing a note for unexpected ``SystemExit`` codes.
+    """
+    global _fatal_hooks_installed
+    if _fatal_hooks_installed:
+        return
+
+    prev_sys_hook = sys.excepthook
+
+    def _sys_hook(exc_type, exc_value, exc_tb):  # noqa: ANN001
+        # Quiet exits — do not spam fatal_crash.log.
+        if exc_type is KeyboardInterrupt:
+            return prev_sys_hook(exc_type, exc_value, exc_tb)
+        if exc_type is SystemExit:
+            try:
+                code = getattr(exc_value, "code", exc_value)
+            except Exception:
+                code = None
+            if code in (0, None):
+                return prev_sys_hook(exc_type, exc_value, exc_tb)
+        write_fatal_crash_log(
+            "sys.excepthook",
+            exc_type,
+            exc_value,
+            exc_tb,
+            thread_name="MainThread",
+        )
+        return prev_sys_hook(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _sys_hook
+
+    if hasattr(threading, "excepthook"):
+        prev_thread_hook = threading.excepthook
+
+        def _thread_hook(args):  # noqa: ANN001
+            try:
+                tname = ""
+                thr = getattr(args, "thread", None)
+                if thr is not None:
+                    tname = str(getattr(thr, "name", "") or "")
+                write_fatal_crash_log(
+                    "threading.excepthook",
+                    getattr(args, "exc_type", None),
+                    getattr(args, "exc_value", None),
+                    getattr(args, "exc_traceback", None),
+                    thread_name=tname,
+                )
+            except Exception:
+                pass
+            try:
+                return prev_thread_hook(args)
+            except Exception:
+                return None
+
+        threading.excepthook = _thread_hook
+
+    _fatal_hooks_installed = True
 
 
 def log_exception(

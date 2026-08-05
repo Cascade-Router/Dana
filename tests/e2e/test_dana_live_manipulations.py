@@ -25,6 +25,15 @@ _HELLO = "Hello from the Sandbox"
 _VISION_MARKER = "VISION_GROUNDING_TEST_899"
 
 
+def _debug_vision_enabled() -> bool:
+    return (os.environ.get("DONNA_DEBUG_VISION") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _invoke_live_tool(tool_id: str, **arguments: object) -> str:
     """Dispatch like ``core_agent`` handlers → real actuators (no LLM/router)."""
     call = ToolCall(tool_id=tool_id, arguments=dict(arguments))
@@ -131,11 +140,15 @@ def test_os_manipulation() -> None:
 
 
 @pytest.mark.skipif(
-    os.name != "nt" or not _tesseract_available(),
-    reason="Live vision OCR requires Windows + Tesseract",
+    os.name != "nt" or not _tesseract_available() or not _debug_vision_enabled(),
+    reason="Live vision OCR requires Windows + Tesseract + DONNA_DEBUG_VISION=1",
 )
 def test_vision_manipulation() -> None:
-    """Show a temporary CTk window on the main thread, OCR, assert marker text."""
+    """Show a temporary CTk window on the main thread, OCR, assert marker text.
+
+    Gated behind ``DONNA_DEBUG_VISION=1`` so the grounding window never opens
+    during standard agent / suite runs.
+    """
     ctk = pytest.importorskip("customtkinter")
 
     root = ctk.CTk()
@@ -168,6 +181,10 @@ def test_vision_manipulation() -> None:
         marker_compact = "".join(ch for ch in _VISION_MARKER.upper() if ch.isalnum())
         assert marker_compact in compact or _VISION_MARKER in ocr, ocr
     finally:
+        try:
+            root.withdraw()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             root.destroy()
         except Exception:  # noqa: BLE001

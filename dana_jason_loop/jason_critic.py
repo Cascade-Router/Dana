@@ -186,7 +186,7 @@ def enforce_green_flag_gate(evaluations: list[dict[str, Any]]) -> list[dict[str,
 def evaluate_proposals(
     proposals: list[dict[str, Any]],
     *,
-    model: str = "llama3.2",
+    model: str = "qwen2.5-coder:7b",
     temperature: float = 0.1,
 ) -> dict[str, Any]:
     """Score a Donna batch; return matrix + enforced flag policy."""
@@ -333,7 +333,7 @@ def review_watchdog_code(
     code: str,
     task: str = "",
     *,
-    model: str = "llama3.2",
+    model: str = "qwen2.5-coder:7b",
     temperature: float = 0.1,
     ask_fn: Any | None = None,
 ) -> str:

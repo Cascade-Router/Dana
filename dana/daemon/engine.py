@@ -84,7 +84,7 @@ async def _default_stream_chat(
         except Exception:  # noqa: BLE001
             pass
 
-    model = str(params.get("model") or os.environ.get("DONNA_OLLAMA_MODEL") or "llama3.2")
+    model = str(params.get("model") or os.environ.get("DONNA_OLLAMA_MODEL") or "qwen2.5-coder:7b")
     prior = params.get("prior_messages")
     if not isinstance(prior, list):
         prior = None
@@ -623,6 +623,16 @@ async def run_engine_daemon(
 
 def main(argv: list[str] | None = None) -> int:
     enable_runtime_file_logging()
+    # Sidecar is always headless — drain Meta-Broker IPC so child puts never block.
+    os.environ.setdefault("DONNA_HEADLESS", "1")
+    os.environ.setdefault("DONNA_NO_GUI", "1")
+    try:
+        from dana.graph.meta_broker_process import start_headless_telemetry_drainer
+
+        start_headless_telemetry_drainer()
+        log("Daemon", "Meta-Broker headless telemetry drainer started")
+    except Exception as exc:  # noqa: BLE001
+        log("Daemon", f"WARNING: headless telemetry drainer unavailable ({exc})")
     parser = argparse.ArgumentParser(description="Dana Agent Engine sidecar daemon")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)

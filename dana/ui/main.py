@@ -3,6 +3,7 @@
 Usage::
 
     python -m dana.ui.main
+    python -m dana.ui.main --stay --dag-demo
 
 Headless / CI: constructs ``DonnaGUI`` and exits after a short idle so the
 process does not hang forever. Pass ``--stay`` to keep the window open.
@@ -27,7 +28,25 @@ def main(argv: list[str] | None = None) -> int:
         default=400,
         help="Milliseconds to idle before auto-close when not --stay (default 400).",
     )
+    parser.add_argument(
+        "--dag-demo",
+        action="store_true",
+        help="After paint, run a background multi-step DAG into the live monitor bus.",
+    )
     args = parser.parse_args(argv)
+
+    # Ensure GEMINI_API_KEY / etc. from .env are visible when Hybrid Broker is on.
+    try:
+        from dana.graph.cloud_planner import ensure_dotenv_loaded
+
+        ensure_dotenv_loaded()
+    except Exception:  # noqa: BLE001
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv()
+        except Exception:  # noqa: BLE001
+            pass
 
     try:
         from dana.ui.theme import apply_dana_ctk_theme
@@ -56,9 +75,63 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:  # noqa: BLE001
             pass
 
+        if args.dag_demo:
+            try:
+                from dana.graph.monitor_bus import reset_monitor_bus
+
+                reset_monitor_bus()
+            except Exception:  # noqa: BLE001
+                pass
+            prompt = (
+                "1. Read logs/dag_ui_demo/a.py\n"
+                "2. Edit logs/dag_ui_demo/b.py\n"
+                "3. Write logs/dag_ui_demo/summary.md\n"
+            )
+
+            def _kick() -> None:
+                try:
+                    from pathlib import Path
+
+                    from dana.paths import PROJECT_ROOT
+
+                    demo = Path(PROJECT_ROOT) / "logs" / "dag_ui_demo"
+                    demo.mkdir(parents=True, exist_ok=True)
+                    (demo / "a.py").write_text("A = 1\n", encoding="utf-8")
+                    (demo / "b.py").write_text("B = 0\n", encoding="utf-8")
+                    store = {
+                        "logs/dag_ui_demo/a.py": "A = 1\n",
+                        "logs/dag_ui_demo/b.py": "B = 0\n",
+                        "logs/dag_ui_demo/summary.md": "",
+                    }
+
+                    def tool_fn(
+                        action: str, filepath: str, content: str | None = None
+                    ) -> str:
+                        key = filepath.replace("\\", "/")
+                        if action == "read":
+                            return f"OK: read {key}\n{store.get(key, '')}"
+                        store[key] = str(content or "")
+                        target = Path(PROJECT_ROOT) / key
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_text(store[key], encoding="utf-8")
+                        return f"OK: write {key} (shadow staged)"
+
+                    app.start_dag_monitor_stream(prompt, tool_fn=tool_fn)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"DAG demo failed to start: {exc}", file=sys.stderr)
+
+            try:
+                app.after(120, _kick)
+            except Exception:  # noqa: BLE001
+                _kick()
+
         if args.stay:
             app.mainloop()
             return 0
+
+        idle_ms = max(50, int(args.ms))
+        if args.dag_demo:
+            idle_ms = max(idle_ms, 2500)
 
         def _quit() -> None:
             try:
@@ -66,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:  # noqa: BLE001
                 pass
 
-        app.after(max(50, int(args.ms)), _quit)
+        app.after(idle_ms, _quit)
         app.mainloop()
         print("ui smoke ok")
         return 0

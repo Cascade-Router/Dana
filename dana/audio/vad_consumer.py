@@ -1,7 +1,7 @@
 """Silero VAD speech detection + TTS barge-in onset hooks.
 
 Replaces legacy WebRTC VAD. Mic frames are float32 @ 16 kHz; Silero expects
-512-sample windows. Probability > 0.5 counts as speech (no RMS floors).
+512-sample windows. Probability > 0.38 counts as speech (quiet-mic tuned).
 """
 
 from __future__ import annotations
@@ -19,7 +19,17 @@ _log = logging.getLogger("dana.audio.vad_consumer")
 # Silero v4/v5 window @ 16 kHz (32 ms).
 SILERO_SAMPLE_RATE = 16000
 SILERO_WINDOW_SAMPLES = 512
-SILERO_SPEECH_THRESHOLD = 0.5
+# Headphone / quiet conversational speech — 0.5 was too strict after gain.
+SILERO_SPEECH_THRESHOLD = 0.38
+
+# Quiet-mic path: boost frames for Silero only (capture buffer stays raw).
+# Target matches Whisper normalization; max gain is higher so ~0.0001 RMS speech
+# can still cross speech_prob > 0.38 without inventing onset on dead silence.
+VAD_TARGET_RMS = 0.05
+VAD_GAIN_RMS_CEIL = 0.005
+VAD_MAX_GAIN = 256.0
+# Absolute floor for gain eligibility (below calibrated speech floor when needed).
+VAD_MIN_RMS_FOR_GAIN = 0.00005
 
 _model_lock = threading.Lock()
 _silero_model: Any | None = None
@@ -76,6 +86,46 @@ def reset_silero_states() -> None:
             reset()
     except Exception as exc:  # noqa: BLE001
         _log.debug("Silero reset_states skipped: %s", exc)
+
+
+def frame_rms(samples: np.ndarray) -> float:
+    """RMS of a float PCM frame (never zero — epsilon for log/ratio safety)."""
+    x = np.asarray(samples, dtype=np.float32).reshape(-1)
+    if x.size == 0:
+        return 1e-9
+    return float(np.sqrt(np.mean(np.square(x))) + 1e-9)
+
+
+def prepare_frame_for_silero(
+    samples: np.ndarray,
+    *,
+    noise_floor: float = 0.0,
+    target_rms: float = VAD_TARGET_RMS,
+    gain_ceil: float = VAD_GAIN_RMS_CEIL,
+    max_gain: float = VAD_MAX_GAIN,
+) -> tuple[np.ndarray, float, float]:
+    """Gain-normalize a quiet mic frame before Silero evaluation.
+
+    Applies dynamic gain when ``noise_floor < rms < gain_ceil`` so Silero sees
+    speech-scale energy. Below the noise floor (or already loud enough) the
+    frame is returned unchanged. Peak-clipped to [-1, 1] after boost.
+
+    Returns ``(frame_for_vad, rms_raw, gain_applied)``.
+    """
+    x = np.asarray(samples, dtype=np.float32).reshape(-1).copy()
+    rms = frame_rms(x)
+    # Absolute quiet-mic floor (0.00005). Cap calibrated noise_floor so
+    # ~0.00014 cannot block soft conversational speech around ~0.0001.
+    _ = noise_floor  # retained for API compatibility / future ambient gating
+    floor = float(VAD_MIN_RMS_FOR_GAIN)
+    if rms < floor or rms >= float(gain_ceil):
+        return x, rms, 1.0
+    gain = min(float(target_rms) / rms, float(max_gain))
+    if gain <= 1.01:
+        return x, rms, 1.0
+    x *= float(gain)
+    np.clip(x, -1.0, 1.0, out=x)
+    return x, rms, float(gain)
 
 
 def _to_silero_tensor(samples: np.ndarray) -> Any:

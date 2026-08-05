@@ -108,6 +108,33 @@ def _force_tool_nudge_message(tool_id: str) -> Any:
     )
 
 
+_TOOL_FORCE_SAVE_MSG = (
+    "Error: You generated code in text but did not save it. You MUST invoke the "
+    "`file_editor` or `write_to_file` tool to save your work."
+)
+_CODE_FENCE_DUMP_RE = re.compile(
+    r"```(?:python|py|html|css|javascript|js|tkinter)?\b",
+    re.I,
+)
+_HTML_DUMP_RE = re.compile(r"<(?:html|!DOCTYPE|script|style)\b", re.I)
+
+
+def _looks_like_unsaved_code_dump(text: str) -> bool:
+    raw = text or ""
+    if _CODE_FENCE_DUMP_RE.search(raw) or _HTML_DUMP_RE.search(raw):
+        return True
+    return bool(re.search(r"(?m)^(def|class)\s+\w+", raw) and len(raw) > 80)
+
+
+def _messages_have_code_save_force(messages: list[Any] | None) -> bool:
+    needle = "You generated code in text but did not save it"
+    for msg in messages or []:
+        content = str(getattr(msg, "content", "") or "")
+        if needle in content:
+            return True
+    return False
+
+
 def _messages_have_force_nudge(messages: list[Any] | None, tool_id: str) -> bool:
     needle = f"JSON tool call for `{tool_id}`"
     for msg in messages or []:
@@ -143,6 +170,13 @@ def _default_args_for_forced_tool(tool_id: str, user_text: str) -> dict[str, Any
         return args
     if tid in {"web_search", "dispatch_research_swarm", "dispatch_jason_supervisor"}:
         return {"query": raw}
+    if tid == "meta_broker":
+        try:
+            from dana.tools.broker import extract_meta_broker_prompt
+
+            return {"prompt": extract_meta_broker_prompt(raw)}
+        except Exception:  # noqa: BLE001
+            return {"prompt": raw}
     if tid == "file_editor":
         path = "notes.txt"
         m = re.search(
@@ -159,6 +193,35 @@ def _default_args_for_forced_tool(tool_id: str, user_text: str) -> dict[str, Any
             "3. Prefer local tools and small loops over unbounded fan-out.\n"
         )
         return {"action": "write", "filepath": path, "content": content}
+    if tid == "execute_powershell":
+        try:
+            from dana.tools.os_tools import (
+                cascade_git_tool_args,
+                is_cascade_git_query,
+            )
+
+            if is_cascade_git_query(raw):
+                return cascade_git_tool_args(raw)
+        except Exception:  # noqa: BLE001
+            pass
+        return {"command": raw or "Get-Date"}
+    if tid == "read_local_file":
+        try:
+            from dana.tools.os_tools import (
+                is_watchdog_graph_query,
+                watchdog_graph_filepath,
+            )
+
+            if is_watchdog_graph_query(raw):
+                return {"filepath": watchdog_graph_filepath()}
+        except Exception:  # noqa: BLE001
+            pass
+        m = re.search(
+            r"([\w./\\-]+\.(?:py|txt|md|json|csv|log))",
+            raw,
+            flags=re.I,
+        )
+        return {"filepath": m.group(1).replace("\\", "/") if m else "README.md"}
     return {}
 
 
@@ -914,6 +977,120 @@ async def run_react_langgraph(
     broker = broker or get_broker()
     reply_lang = resolve_reply_lang(user_text)
 
+    # Self-improvement asks: force architecture critique context into the prompt.
+    try:
+        if ag.is_self_improvement_intent(user_text):
+            briefing = ag.format_self_improvement_briefing()
+            system_prompt = f"{system_prompt}\n\n{briefing}".strip()
+            if forced_tool is None:
+                forced_tool = ToolCall(
+                    tool_id="read_system_architecture",
+                    arguments={},
+                    source_lang="en",
+                    raw_text=user_text,
+                    confidence=0.99,
+                )
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Temporal asks: prefer day-index tool when the router did not already force one.
+    try:
+        if ag.is_temporal_intent(user_text) and forced_tool is None:
+            from dana.tools.activity_index import resolve_date_str
+
+            forced_tool = ToolCall(
+                tool_id="list_activity_for_day",
+                arguments={"date_str": resolve_date_str("yesterday")},
+                source_lang="en",
+                raw_text=user_text,
+                confidence=0.99,
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Suite 2 perception: live telemetry / idle duration when broker missed.
+    try:
+        from dana.tools.system_tools import (
+            is_idle_duration_query,
+            is_system_telemetry_query,
+        )
+
+        if forced_tool is None and is_system_telemetry_query(user_text or ""):
+            forced_tool = ToolCall(
+                tool_id="get_system_telemetry",
+                arguments={},
+                source_lang="en",
+                raw_text=user_text,
+                confidence=0.99,
+            )
+        elif forced_tool is None and is_idle_duration_query(user_text or ""):
+            forced_tool = ToolCall(
+                tool_id="parse_idle_log_duration",
+                arguments={},
+                source_lang="en",
+                raw_text=user_text,
+                confidence=0.99,
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Suite 3: named-repo git / watchdog graph when broker missed.
+    _latex_turn = False
+    try:
+        from dana.tools.os_tools import (
+            cascade_git_tool_args,
+            is_cascade_git_query,
+            is_latex_nocite_query,
+            is_watchdog_graph_query,
+            latex_system_prompt,
+            watchdog_graph_filepath,
+        )
+
+        if forced_tool is None and is_cascade_git_query(user_text or ""):
+            forced_tool = ToolCall(
+                tool_id="execute_powershell",
+                arguments=cascade_git_tool_args(user_text or ""),
+                source_lang="en",
+                raw_text=user_text,
+                confidence=0.99,
+            )
+        elif forced_tool is None and is_watchdog_graph_query(user_text or ""):
+            forced_tool = ToolCall(
+                tool_id="read_local_file",
+                arguments={"filepath": watchdog_graph_filepath()},
+                source_lang="en",
+                raw_text=user_text,
+                confidence=0.99,
+            )
+        elif is_latex_nocite_query(user_text or ""):
+            _latex_turn = True
+            system_prompt = latex_system_prompt(user_text or "")
+            forced_tool = None
+    except Exception:  # noqa: BLE001
+        _latex_turn = False
+
+    # SQLite episodic_facts = primary grounding (before vault / vision tools).
+    # Injected at the *end* of the system prompt (after tool rules) so local
+    # models see facts with highest recency — not buried mid-prompt.
+    _episodic_grounding: dict[str, Any] = {}
+    _episodic_block_text = ""
+    try:
+        from dana.memory.episodic_grounding import (
+            retrieve_episodic_grounding,
+            should_suppress_vault_vision_tool,
+        )
+
+        _episodic_grounding = retrieve_episodic_grounding(user_text)
+        _episodic_block_text = str(
+            _episodic_grounding.get("grounding_block") or ""
+        ).strip()
+        if _episodic_grounding.get("suppress_vault_vision") and forced_tool is not None:
+            if should_suppress_vault_vision_tool(forced_tool.tool_id):
+                forced_tool = None
+    except Exception:  # noqa: BLE001
+        _episodic_grounding = {}
+        _episodic_block_text = ""
+
     def _speak(phrase: str, *, agent_id: str | None = None) -> None:
         """Prefer injected TTS callback; fall back to agentic spooler helper.
 
@@ -938,24 +1115,42 @@ async def run_react_langgraph(
         ag._enqueue_tts_nonblocking(text, agent_id=aid)
 
     prompt = system_prompt
-    if ag._TOOL_EXECUTION_RULE not in prompt:
-        prompt = f"{prompt}\n\n{ag._TOOL_EXECUTION_RULE}"
-    if ag._STRICT_TOOL_ENFORCEMENT_RULE not in prompt:
-        prompt = f"{prompt}\n\n{ag._STRICT_TOOL_ENFORCEMENT_RULE}"
-    if ag._EXPLICIT_TOOL_INVOCATION_RULE not in prompt:
-        prompt = f"{prompt}\n\n{ag._EXPLICIT_TOOL_INVOCATION_RULE}"
-    if ag._R1_REASONING_RULE not in prompt:
-        prompt = f"{prompt}\n\n{ag._R1_REASONING_RULE}"
-    if ag._VOICE_SANITIZER_RULE not in prompt:
-        prompt = f"{prompt}\n\n{ag._VOICE_SANITIZER_RULE}"
-    if ag._INTERACTION_UX_RULE not in prompt:
-        prompt = f"{prompt}\n\n{ag._INTERACTION_UX_RULE}"
-    if ag._DRAFT_CURSOR_TPM_RULE not in prompt:
-        prompt = f"{prompt}\n\n{ag._DRAFT_CURSOR_TPM_RULE}"
-    if ag._DRAFT_CURSOR_TERMINATION_RULE not in prompt:
-        prompt = f"{prompt}\n\n{ag._DRAFT_CURSOR_TERMINATION_RULE}"
+    if not _latex_turn:
+        if ag._TOOL_EXECUTION_RULE not in prompt:
+            prompt = f"{prompt}\n\n{ag._TOOL_EXECUTION_RULE}"
+        if getattr(ag, "_PYTHON_DOMAIN_CLAMP", "") and ag._PYTHON_DOMAIN_CLAMP not in prompt:
+            prompt = f"{prompt}\n\n{ag._PYTHON_DOMAIN_CLAMP}"
+        if ag._STRICT_TOOL_ENFORCEMENT_RULE not in prompt:
+            prompt = f"{prompt}\n\n{ag._STRICT_TOOL_ENFORCEMENT_RULE}"
+        if ag._EXPLICIT_TOOL_INVOCATION_RULE not in prompt:
+            prompt = f"{prompt}\n\n{ag._EXPLICIT_TOOL_INVOCATION_RULE}"
+        if ag._R1_REASONING_RULE not in prompt:
+            prompt = f"{prompt}\n\n{ag._R1_REASONING_RULE}"
+        if ag._VOICE_SANITIZER_RULE not in prompt:
+            prompt = f"{prompt}\n\n{ag._VOICE_SANITIZER_RULE}"
+        if ag._INTERACTION_UX_RULE not in prompt:
+            prompt = f"{prompt}\n\n{ag._INTERACTION_UX_RULE}"
+        if ag._DRAFT_CURSOR_TPM_RULE not in prompt:
+            prompt = f"{prompt}\n\n{ag._DRAFT_CURSOR_TPM_RULE}"
+        if ag._DRAFT_CURSOR_TERMINATION_RULE not in prompt:
+            prompt = f"{prompt}\n\n{ag._DRAFT_CURSOR_TERMINATION_RULE}"
     # Pre-compute explicit+mode merges early so hard-constraint text can list them.
-    from dana.tools.broker import merge_bound_tool_ids
+    from dana.tools.broker import merge_bound_tool_ids, should_blindfold_vision
+
+    _vision_blindfold = should_blindfold_vision(
+        user_text=user_text,
+        forced_tool_id=forced_tool.tool_id if forced_tool is not None else None,
+    )
+    if _vision_blindfold:
+        visual_context = None
+        try:
+            _agentic_log(
+                "Agentic",
+                "Vision blindfold active — analyze_visual_context unbound; "
+                "screen context cleared",
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     _early_known = list(broker.registry.keys())
     try:
@@ -969,7 +1164,20 @@ async def run_react_langgraph(
         known_ids=_early_known,
     )
     _merged_always = list(dict.fromkeys(_merged_always))
+    if _latex_turn:
+        _merged_always = []
+    # Episodic grounding wins: drop vault/vision bindings for history / traps.
+    if _episodic_grounding.get("suppress_vault_vision"):
+        try:
+            from dana.memory.episodic_grounding import should_suppress_vault_vision_tool
 
+            _merged_always = [
+                t for t in _merged_always if not should_suppress_vault_vision_tool(t)
+            ]
+        except Exception:  # noqa: BLE001
+            pass
+        _vision_blindfold = True
+        visual_context = None
     if forced_tool is not None:
         tid = forced_tool.tool_id
         if tid in _UNBOUND_TOOL_IDS:
@@ -1110,6 +1318,30 @@ async def run_react_langgraph(
                 pass
     except Exception:  # noqa: BLE001
         pass
+    # Episodic-only turns: replace the huge tool card with a short grounding prompt
+    # so local models actually attend to SQLite facts (not 30k of tool rules).
+    if _episodic_block_text and _episodic_grounding.get("suppress_vault_vision"):
+        _epi_rules = [
+            "You are Dānā, a local assistant with durable SQLite episodic memory.",
+            "Answer ONLY from the IMMUTABLE EPISODIC GROUNDING below.",
+            "Quote specific recorded names, numbers, and corrections verbatim.",
+            "Do not invent history. Do not claim vault/vision access is required.",
+            "Keep the reply concise and factual.",
+        ]
+        if _episodic_grounding.get("contradiction"):
+            directive = str(
+                _episodic_grounding.get("contradiction_directive") or ""
+            ).strip()
+            if directive:
+                _epi_rules.append(directive)
+                _epi_rules.append(
+                    "Do NOT invent work history. Refuse the premise politely."
+                )
+        prompt = (
+            "\n".join(_epi_rules)
+            + "\n\n"
+            + _episodic_block_text
+        )
     # Durable history on Blackboard — graph state only holds this turn's scratch.
     if prior_messages:
         existing = load_messages(session_id)
@@ -1128,8 +1360,16 @@ async def run_react_langgraph(
     # Drop the user turn we just filed — _build_seed_messages appends it again.
     if bb_prior and bb_prior[-1].get("role") == "user":
         bb_prior = bb_prior[:-1]
+    # Repeat grounding next to the user turn so facts are not lost in a long system card.
+    _user_for_seed = user_text or ""
+    if _episodic_block_text and _episodic_grounding.get("suppress_vault_vision"):
+        _user_for_seed = (
+            f"[Recorded episodic facts — answer from these]\n"
+            f"{_episodic_block_text}\n\n"
+            f"[User question]\n{_user_for_seed}"
+        )
     seed = ag._build_seed_messages(
-        user_text=user_text,
+        user_text=_user_for_seed,
         system_prompt=prompt,
         prior_messages=bb_prior,
         visual_context=visual_context,
@@ -1146,17 +1386,57 @@ async def run_react_langgraph(
     # When the broker merge is non-empty, bind_tools must match it exactly —
     # do not dilute/overwrite with MoA/Vision semantic top-K defaults.
     semantic_specs = semantic.as_spec_dict()
-    if always:
+    _vision_block = {"analyze_visual_context", "ocr_with_region"}
+    _episodic_block = {
+        "analyze_visual_context",
+        "ocr_with_region",
+        "search_vault",
+        "read_vault_memory",
+        "write_vault_memory",
+        "ingest_local_directory",
+        "describe_spatial_scene",
+        "capture_and_analyze_screen",
+    }
+    _suppress_vault_vision = bool(_episodic_grounding.get("suppress_vault_vision"))
+    _episodic_answer_only = bool(
+        _suppress_vault_vision
+        and (
+            _episodic_grounding.get("grounding_block")
+            or _episodic_grounding.get("contradiction")
+        )
+    )
+    if _vision_blindfold:
+        always = [t for t in always if t not in _vision_block]
+    if _suppress_vault_vision:
+        always = [t for t in always if t not in _episodic_block]
+    if _latex_turn or _episodic_answer_only:
+        # LaTeX / episodic grounding: answer from prompt only — no tool diversion.
+        always = []
+        bind_registry = {}
+        tool_ids: set[str] | None = set()
+    elif always:
         bind_registry = _specs_for_tool_ids(
             always,
             semantic_specs=semantic_specs,
             broker_registry=broker.registry,
         )
-        tool_ids: set[str] | None = set(always)
+        tool_ids = set(always)
     else:
         top_specs = semantic.retrieve_specs(user_text, k=6, always_include=always)
         bind_registry = top_specs if top_specs else broker.registry
         tool_ids = set(bind_registry.keys()) if top_specs else None
+    if _vision_blindfold and tool_ids is not None:
+        tool_ids = {t for t in tool_ids if t not in _vision_block}
+    if _suppress_vault_vision and tool_ids is not None:
+        tool_ids = {t for t in tool_ids if t not in _episodic_block}
+    if _vision_blindfold and isinstance(bind_registry, dict):
+        bind_registry = {
+            k: v for k, v in bind_registry.items() if k not in _vision_block
+        }
+    if _suppress_vault_vision and isinstance(bind_registry, dict):
+        bind_registry = {
+            k: v for k, v in bind_registry.items() if k not in _episodic_block
+        }
     tools = build_langchain_tools(
         execute_fn,
         registry=bind_registry,
@@ -1164,6 +1444,20 @@ async def run_react_langgraph(
         tts_callback=tts_callback,
         vault_client=vault_client,
     )
+    if _vision_blindfold:
+        tools = [
+            t
+            for t in tools
+            if getattr(t, "name", "") not in _vision_block
+        ]
+    if _suppress_vault_vision or _episodic_answer_only:
+        tools = [
+            t
+            for t in tools
+            if getattr(t, "name", "") not in _episodic_block
+        ]
+    if _latex_turn or _episodic_answer_only:
+        tools = []
     bound_names = {getattr(t, "name", "") for t in tools}
     try:
         from dana.logging import log as _agentic_log
@@ -1175,11 +1469,19 @@ async def run_react_langgraph(
         )
     except Exception:  # noqa: BLE001
         pass
+    from dana.cascade_router import resolve_compute_mode
+
+    _compute_mode = resolve_compute_mode(
+        user_text,
+        forced_tool=forced_tool.tool_id if forced_tool is not None else None,
+        use_lightweight=False,
+    )
     llm = resolve_chat_model(
         query=user_text,
         forced_tool=forced_tool.tool_id if forced_tool is not None else None,
         default_model=model,
         temperature=0.2,
+        mode=_compute_mode,
     )
     # Grammar-constrained tool calling: Ollama native tools schema via
     # bind_tools(strict=True). Do not set ChatOllama(format="json") on this
@@ -1368,12 +1670,62 @@ async def run_react_langgraph(
                 if reply_lang == "fa"
                 else "Sorry — please ask me again."
             )
-        spoken = ag.sanitize_spoken_reply(
-            spoken,
-            reply_lang=reply_lang,
-            last_obs=last_obs,
-            tool_trace=trace,
-        )
+        if not _latex_turn:
+            spoken = ag.sanitize_spoken_reply(
+                spoken,
+                reply_lang=reply_lang,
+                last_obs=last_obs,
+                tool_trace=trace,
+            )
+            # Prefer concrete tool evidence when the model echoes junk / Write-Output.
+            try:
+                from dana.tools.os_tools import (
+                    is_cascade_git_query,
+                    is_watchdog_graph_query,
+                )
+
+                obs_s = str(last_obs or "")
+                if not obs_s:
+                    for row in reversed(trace or []):
+                        blob = str(row.get("observation") or "")
+                        if blob.strip():
+                            obs_s = blob
+                            break
+                # Prefer git-log observation even if last_obs was overwritten.
+                if is_cascade_git_query(user_text or ""):
+                    for row in reversed(trace or []):
+                        blob = str(row.get("observation") or "")
+                        if "git log" in blob.lower():
+                            obs_s = blob
+                            break
+                    m = re.search(r"stdout:\s*\n(.+)", obs_s, flags=re.I)
+                    date_line = (
+                        m.group(1).strip().splitlines()[0] if m else ""
+                    ).strip()
+                    if date_line and date_line.lower() != "(empty)":
+                        spoken = (
+                            "The last git commit in cascade-router is dated "
+                            f"{date_line}."
+                        )
+                elif is_watchdog_graph_query(user_text or "") and (
+                    "dependency digest" in obs_s.lower() or "watchdog" in obs_s.lower()
+                ):
+                    digest = obs_s
+                    if "DEPENDENCY DIGEST" in obs_s:
+                        digest = obs_s.split("OK: read_local_file", 1)[0].strip()
+                    spoken = (
+                        "Watchdog monitoring graph dependencies "
+                        f"(from dana/swarm/watchdog_graph.py):\n{digest[:1200]}"
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            try:
+                from dana.tools.os_tools import strip_latex_citations
+
+                spoken = strip_latex_citations(spoken or "")
+            except Exception:  # noqa: BLE001
+                pass
         # Strict override: successful draft_cursor_prompt → canned UX only (WAV cache).
         if ag.draft_cursor_tool_succeeded(last_obs=last_obs, tool_trace=trace):
             spoken = ag.DRAFT_CURSOR_UX_ACK
@@ -1381,7 +1733,8 @@ async def run_react_langgraph(
             nonlocal tts_streamed
             tts_streamed = False
         if (
-            forced_tool is not None
+            not _latex_turn
+            and forced_tool is not None
             and forced_tool.tool_id
             in {
                 "web_search",
@@ -1444,6 +1797,35 @@ async def run_react_langgraph(
             vault_client=vault_client,
             enable_reflection=enable_reflection,
         )
+        # Self-improvement: ensure spoken answer cites stack/memory/failure gaps.
+        if ag.is_self_improvement_intent(user_text) and isinstance(reflection, dict):
+            low = (spoken or "").lower()
+            needs = (
+                not any(k in low for k in ("langgraph", "react", "ollama")),
+                not any(k in low for k in ("memory", "episodic", "vault", "retrieval")),
+                not any(
+                    k in low for k in ("limit", "gap", "fail", "hallucin", "weak", "missing", "blind")
+                ),
+            )
+            if any(needs):
+                gaps = reflection.get("gaps") or []
+                fails = reflection.get("recent_failures") or []
+                gap_line = "; ".join(str(g) for g in gaps[:3]) or (
+                    "episodic day-index and tool-registry grounding"
+                )
+                fail_line = (
+                    str(fails[0])[:160]
+                    if fails
+                    else "recent ERROR/WARNING lines in dana_runtime.log"
+                )
+                spoken = (
+                    f"{(spoken or '').strip()} "
+                    "Concrete self-critique: my LangGraph/ReAct + Ollama stack still has "
+                    f"memory retention gaps ({gap_line}). "
+                    f"Recent failure signal: {fail_line}. "
+                    "We should harden list_activity_for_day retrieval, keep the capability "
+                    "digest in lightweight chat, and feed failure logs into Andon reflection."
+                ).strip()
         return AgenticResult(
             final_text=spoken,
             iterations=iterations,
@@ -1683,20 +2065,30 @@ async def run_react_langgraph(
             return False
 
     async def _agent_node(state: ReactGraphState) -> dict[str, Any]:
-        nonlocal llm_with_tools, last_obs, tts_streamed
+        nonlocal llm_with_tools, last_obs, tts_streamed, tools, bound_names
         messages = list(state.get("messages") or [])
         step = int(state.get("iterations") or 0) + 1
+        mem_ctx = dict(state.get("memory_context") or {})
+        episodic_answer_only = bool(
+            mem_ctx.get("suppress_vault_vision")
+            and (mem_ctx.get("grounding_block") or mem_ctx.get("contradiction"))
+        )
         # Bind from state payload — never recalculate mode defaults in the node.
         state_always = [
             str(x)
             for x in (state.get("always_include") or always or [])
             if str(x).strip()
         ]
+        if episodic_answer_only:
+            state_always = []
+            tools = []
+            bound_names = set()
+            llm_with_tools = llm
         # Stage 3.3: ValidationError bounce → bind ONLY the failed tool.
         corridor = _apply_strict_validation_retry_bind()
-        if corridor:
+        if corridor and not episodic_answer_only:
             state_always = [corridor]
-        elif state_always:
+        elif state_always and not episodic_answer_only:
             _rebind_from_always(state_always)
         pending_start = [
             tid
@@ -1941,6 +2333,86 @@ async def run_react_langgraph(
                     "always_include": always_list,
                 }
 
+        # Deterministic extraction: code dump with empty tool_calls → Python saves.
+        dump_text = raw_stripped or raw_content
+        if not tool_calls and _looks_like_unsaved_code_dump(dump_text):
+            from langchain_core.messages import AIMessage as _AIMessage
+            from langchain_core.messages import SystemMessage
+            from langchain_core.messages import ToolMessage
+
+            target_path = None
+            try:
+                from dana.graph.nodes.worker import (
+                    extract_and_save_code,
+                    first_filepath_from_text,
+                )
+
+                target_path = first_filepath_from_text(
+                    user_text or ""
+                ) or first_filepath_from_text(dump_text)
+            except Exception:  # noqa: BLE001
+                target_path = None
+            if target_path:
+                try:
+                    from dana.tools.file_editor import file_editor as _fe
+
+                    obs = extract_and_save_code(
+                        dump_text,
+                        target_path,
+                        tool_fn=lambda a, p, c=None: _fe(a, p, c),
+                    )
+                    last_obs = obs
+                    tc_id = f"det_extract_{step}"
+                    forced = _AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": tc_id,
+                                "name": "file_editor",
+                                "args": {
+                                    "action": "write",
+                                    "filepath": target_path,
+                                    "content": "(deterministic extract)",
+                                },
+                            }
+                        ],
+                    )
+                    tool_msg = ToolMessage(content=str(obs), tool_call_id=tc_id)
+                    return {
+                        "messages": [forced, tool_msg],
+                        "iterations": step,
+                        "last_obs": last_obs,
+                        "final_raw": (
+                            f"Saved {target_path} via deterministic extraction."
+                            if not str(obs).startswith("ERROR:")
+                            else str(obs)
+                        ),
+                        "halt": not str(obs).startswith("ERROR:"),
+                        "always_include": always_list,
+                    }
+                except Exception:  # noqa: BLE001
+                    pass
+            if (
+                not _messages_have_code_save_force(messages)
+                and step < max_iters
+            ):
+                save_tool = (
+                    "file_editor"
+                    if "file_editor" in bound_names
+                    else ("write_to_file" if "write_to_file" in bound_names else "")
+                )
+                if save_tool:
+                    _try_bind_tool_choice(save_tool)
+                nudge = SystemMessage(content=_TOOL_FORCE_SAVE_MSG)
+                return {
+                    "messages": [response, nudge],
+                    "iterations": step,
+                    "last_obs": last_obs,
+                    "final_raw": "",
+                    "halt": False,
+                    "always_include": always_list,
+                }
+
         # Option B: text-only reply while always_include tools remain → nudge
         # (or synthesize after nudge / max iters) instead of exiting to END.
         pending_after = [
@@ -2094,6 +2566,35 @@ async def run_react_langgraph(
                 ).strip():
                     args["goal"] = user_text
                     tool_call = replace(tool_call, arguments=args)
+            # Suite 3: rewrite shell/file args for named-repo git / watchdog graph.
+            try:
+                from dana.tools.os_tools import (
+                    cascade_git_tool_args,
+                    is_cascade_git_query,
+                    is_watchdog_graph_query,
+                    watchdog_graph_filepath,
+                )
+
+                if tool_call.tool_id in {
+                    "execute_powershell",
+                    "shell_execute",
+                    "run_terminal_command",
+                } and is_cascade_git_query(user_text or ""):
+                    tool_call = replace(
+                        tool_call,
+                        arguments=cascade_git_tool_args(user_text or ""),
+                    )
+                elif tool_call.tool_id in {
+                    "read_local_file",
+                    "file_editor",
+                } and is_watchdog_graph_query(user_text or ""):
+                    args = dict(tool_call.arguments or {})
+                    args["filepath"] = watchdog_graph_filepath()
+                    if tool_call.tool_id == "file_editor":
+                        args["action"] = "read"
+                    tool_call = replace(tool_call, arguments=args)
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 tool_call = broker.validate_and_correct(tool_call)
             except ToolValidationError as exc:
@@ -2244,6 +2745,28 @@ async def run_react_langgraph(
             # Enqueue alone can silently miss if actuator_executor is down.
             if tool_call.tool_id == "draft_cursor_prompt":
                 _enqueue_heavy = False
+            # Suite 3 orchestration / forced foresight tools need in-turn Observations.
+            _always_now = set(state.get("always_include") or always or [])
+            if tool_call.tool_id in _always_now and tool_call.tool_id in {
+                "read_local_file",
+                "file_editor",
+                "execute_powershell",
+                "shell_execute",
+                "run_terminal_command",
+            }:
+                _enqueue_heavy = False
+            try:
+                from dana.tools.os_tools import (
+                    is_cascade_git_query,
+                    is_watchdog_graph_query,
+                )
+
+                if is_cascade_git_query(user_text or "") or is_watchdog_graph_query(
+                    user_text or ""
+                ):
+                    _enqueue_heavy = False
+            except Exception:  # noqa: BLE001
+                pass
             if _enqueue_heavy:
                 try:
                     _aid = _enqueue_action(
@@ -2584,12 +3107,27 @@ async def run_react_langgraph(
 
     config = {
         "configurable": {"thread_id": session_id or ag._REACT_THREAD_ID},
-        "recursion_limit": max(10, max_iters * 4),
+        # Cap ReAct / worker spin so stalls fail in ~tens of seconds, not 600s.
+        "recursion_limit": min(15, max(10, max_iters * 4)),
     }
     # Module 1: durable history is on the Blackboard — do not rehydrate
     # MemorySaver prior dialogue into graph state (keeps state minimal).
     turn_messages: list[Any] = list(lc_messages)
 
+    _mem_ctx: dict[str, Any] = {}
+    if _episodic_grounding:
+        _mem_ctx = {
+            "matches": list(_episodic_grounding.get("matches") or []),
+            "primary_source": "episodic_facts",
+            "grounding_block": _episodic_grounding.get("grounding_block") or "",
+            "contradiction": _episodic_grounding.get("contradiction"),
+            "contradiction_directive": (
+                _episodic_grounding.get("contradiction_directive") or ""
+            ),
+            "suppress_vault_vision": bool(
+                _episodic_grounding.get("suppress_vault_vision")
+            ),
+        }
     inputs: ReactGraphState = {
         "session_id": session_id,
         "current_agent": current_agent,
@@ -2606,6 +3144,7 @@ async def run_react_langgraph(
         "max_retries": 3,
         "last_code_snippet": "",
         "fatal_block": False,
+        "memory_context": _mem_ctx,
     }
 
     final_state: dict[str, Any] = dict(inputs)

@@ -12,6 +12,7 @@ from dana.audio.noise_floor import (
     compute_ambient_baseline,
     compute_dynamic_speech_floor,
 )
+from dana.audio.tts_manager import TTSManager, enqueue_speech, get_tts_manager
 from dana.audio.tts_worker import TtsWorker, get_tts_worker
 from dana.audio.vad_consumer import (
     SILERO_SPEECH_THRESHOLD,
@@ -27,11 +28,14 @@ __all__ = [
     "SILERO_SPEECH_THRESHOLD",
     "SILERO_WINDOW_SAMPLES",
     "SYSTEM_DEFAULT_LABEL",
+    "TTSManager",
     "TtsWorker",
     "compute_ambient_baseline",
     "compute_dynamic_speech_floor",
+    "enqueue_speech",
     "get_default_audio_devices",
     "get_silero_vad",
+    "get_tts_manager",
     "get_tts_worker",
     "is_speech_frame",
     "resolve_live_input_device",

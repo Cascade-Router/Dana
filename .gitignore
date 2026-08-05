@@ -89,6 +89,14 @@ logs/
 *.sqlite3
 *.db-wal
 *.db-shm
+# Local Chroma / vector stores (never commit embeddings)
+**/chroma/
+**/.chroma/
+*.chroma
+chroma.sqlite3
+# Runtime Dana scratch + local vault mirrors
+.dana/
+.dana_scratch/
 # Chroma codebase vault (project-root persistent store)
 .dana/vault/
 memory/

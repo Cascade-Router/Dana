@@ -9,7 +9,7 @@ from typing import Any
 import requests
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
-OLLAMA_MODEL = "llama3.2"
+OLLAMA_MODEL = "qwen2.5-coder:7b"
 OLLAMA_TIMEOUT_SEC = 180.0
 
 
@@ -28,6 +28,7 @@ def ask_ollama(
             {"role": "user", "content": user_prompt},
         ],
         "stream": False,
+        "keep_alive": 0,
         "options": {"temperature": temperature},
     }
     try:
@@ -37,7 +38,7 @@ def ask_ollama(
     except requests.exceptions.ConnectionError as exc:
         raise RuntimeError(
             "Cannot reach Ollama at http://localhost:11434. "
-            "Ensure Ollama is running and llama3.2 is pulled."
+            "Ensure Ollama is running and qwen2.5-coder:7b is pulled."
         ) from exc
     except requests.exceptions.Timeout as exc:
         raise RuntimeError(f"Ollama timed out after {OLLAMA_TIMEOUT_SEC:.0f}s") from exc

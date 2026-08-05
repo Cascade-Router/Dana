@@ -13,7 +13,7 @@ UI:
 
 Dual-engine cascade:
   - Eyes: YOLO spatial labels from ScreenAgent / VideoAgent
-  - Brain: local Ollama chat API (llama3.2 / 3B)
+  - Brain: local Ollama chat API (qwen2.5-coder:7b)
 
 Audio devices are configured via settings.json (interactive first-run setup or GUI).
 Long-term user profile is stored in an AES-256 encrypted vault (donna_memory.enc).
@@ -469,13 +469,18 @@ YOLO_WEIGHTS = str(YOLO_WEIGHTS_PATH)
 FRAME_SIZE = (640, 480)  # (width, height)
 MAX_NEW_TOKENS = 50  # legacy SmolVLM cap (unused in Ollama cascade)
 YOLO_CONF = 0.35
-# Tracker samples active_vision_tool into a maxlen-5 buffer every ~2s (low CPU).
+# Tracker samples active_vision_tool into a maxlen-60 thumbnail buffer @ ~1 fps.
 TRACKER_SLEEP_SEC = 0.25
-TRACKER_BUFFER_INTERVAL_S = 2.0
+TRACKER_BUFFER_INTERVAL_S = 1.0
 
 # Local Ollama conversational brain
 OLLAMA_URL = "http://localhost:11434/api/chat"
-OLLAMA_MODEL = "llama3.2"
+# Prefer DONNA_OLLAMA_MODEL / OLLAMA_MODEL so Suite 11 can pin Qwen2.5-Coder.
+OLLAMA_MODEL = (
+    (os.environ.get("DONNA_OLLAMA_MODEL") or os.environ.get("OLLAMA_MODEL") or "")
+    .strip()
+    or "qwen2.5-coder:7b"
+)
 OLLAMA_TIMEOUT_SEC = 180.0
 
 # Intent-router keywords for dynamic vision tool switching.
@@ -487,7 +492,7 @@ SAMPLE_RATE = 16000
 WAKE_CHUNK = 1280  # 80 ms @ 16 kHz
 # Local donna.onnx is sticky on this mic (can sit at ~0.99 on hush).
 # Require a real onset: score must rise from low -> high, not stay pegged.
-WAKE_THRESHOLD = 0.80
+WAKE_THRESHOLD = 0.65
 WAKE_MIN_CONSECUTIVE = 3  # ~240 ms of consecutive high scores
 WAKE_ONSET_BELOW = 0.45  # must have been below this recently before a hit
 WAKE_ONSET_LOOKBACK = 12  # ~1 s of score history
@@ -549,12 +554,12 @@ _STT_NAME_FIXES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bwhy time'?s on\b", re.I), "what time it is"),
     (re.compile(r"\bwhat time'?s on\b", re.I), "what time it is"),
 )
-# Quiet-mic gain: real Sonar speech often lands at rms≈0.003.
+# Quiet-mic / headphone gain: soft speech often lands at rms≈0.0001–0.01.
 WHISPER_TARGET_RMS = 0.05
-WHISPER_GAIN_RMS_CEIL = 0.015
-# Fallback speech floor until calibrate_noise_floor() runs (then dynamic).
-WHISPER_MIN_RMS_FOR_GAIN = 0.0015
-WHISPER_MAX_GAIN = 12.0
+WHISPER_GAIN_RMS_CEIL = 0.02
+# Absolute floor for Whisper gain (headphone conversational levels).
+WHISPER_MIN_RMS_FOR_GAIN = 0.00005
+WHISPER_MAX_GAIN = 64.0
 # Silero VAD window @ 16 kHz (512 samples ≈ 32 ms).
 VAD_FRAME_SAMPLES = 512
 VAD_FRAME_MS = int(round(1000.0 * VAD_FRAME_SAMPLES / SAMPLE_RATE))
@@ -680,8 +685,12 @@ _injected_already_logged: bool = False
 # TTS Output Spooler — producers push (text, interruptible); consumer owns PortAudio.
 # ``interruptible=False`` = UI ack exemption (no self-barge-in on speaker bleed).
 # Stage 8.8 — spool items are (text, interruptible, agent_id).
-tts_queue: queue.Queue[Optional[tuple[str, bool, str]]] = queue.Queue(maxsize=16)
-speech_queue = tts_queue  # backward-compatible alias
+# Canonical owner: ``dana.audio.tts_manager.TTSManager`` (shared speech_queue).
+from dana.audio.tts_manager import get_tts_manager as _get_tts_manager  # noqa: E402
+
+_tts_manager = _get_tts_manager()
+tts_queue: queue.Queue[Optional[tuple[str, bool, str]]] = _tts_manager.speech_queue
+speech_queue = tts_queue  # backward-compatible alias / TTSManager.speech_queue
 # Serialize TTS enqueue / flush mutations.
 _tts_enqueue_lock = threading.Lock()
 _speech_enqueue_lock = _tts_enqueue_lock  # alias
@@ -893,6 +902,8 @@ def set_ui_state(state: str) -> None:
 
         if state in ("listening", "followup"):
             emit_state_change("listening")
+        elif state in ("transcribing", "thinking"):
+            emit_state_change("processing")
         elif state == "idle":
             emit_state_change("idle")
     except Exception:  # noqa: BLE001
@@ -981,6 +992,12 @@ def abort_vad_listening(*, reason: str = "text_override") -> None:
     vad_abort_event.set()
     if vad_capture_active.is_set():
         log("Audio", f"VAD abort requested ({reason}) — resetting voice to standby")
+        try:
+            from dana.db_core import log_vad_state
+
+            log_vad_state("abort", detail=str(reason or ""), route="standby")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def prioritize_text_input(*, reason: str = "text") -> None:
@@ -1810,6 +1827,17 @@ def enqueue_speech(
                 break
 
 
+# Bind canonical TTSManager → this process's Piper spooler (chunking + barge rules).
+try:
+    _tts_manager.bind(
+        speech_queue=tts_queue,
+        worker=None,  # started from main via TTSManager.start(worker=tts_worker)
+        enqueue_impl=enqueue_speech,
+    )
+except Exception:  # noqa: BLE001
+    pass
+
+
 def _parse_tts_spool_item(item: Any) -> tuple[str, bool, str]:
     """Normalize queue items to ``(text, interruptible, agent_id)``."""
     if isinstance(item, tuple) and item:
@@ -2026,6 +2054,8 @@ def speak_tool_working_ack(call: ToolCall, reply_lang: str) -> None:
             "execute_powershell": "  .",
             "write_to_file": "  .",
             "execute_command": "  .",
+            "execute_python_script": "  .",
+            "get_sandbox_job_status": "  .",
             "fetch_webpage": "  .",
             "file_editor": "  .",
             "python_repl": "  .",
@@ -2050,6 +2080,8 @@ def speak_tool_working_ack(call: ToolCall, reply_lang: str) -> None:
             "execute_powershell": "Running that in PowerShell.",
             "write_to_file": "Okay — writing that file.",
             "execute_command": "Okay — running that command.",
+            "execute_python_script": "Okay — running that Python script in the sandbox.",
+            "get_sandbox_job_status": "Let me check that sandbox job.",
             "fetch_webpage": "Let me open that page.",
             "file_editor": "Working on that file.",
             "python_repl": "Running that in the Python sandbox.",
@@ -2751,12 +2783,12 @@ def tracker_worker(device) -> None:
     log(
         "Tracker",
         f"Rolling buffer every {buf_interval:.1f}s from "
-        f"active_vision_tool.get_frame() (maxlen=5).",
+        f"active_vision_tool.get_frame() (maxlen=60 thumbnails).",
     )
 
     frames = 0
     while not stop_event.is_set():
-        # Wait out the ~2s cadence before grabbing (avoids busy mss polling).
+        # Wait out the ~1s cadence before grabbing (avoids busy mss polling).
         if not should_push_frame(interval_s=buf_interval):
             rem = buf_interval - seconds_since_last_push()
             if rem == float("inf"):
@@ -2849,6 +2881,15 @@ def tracker_worker(device) -> None:
             force=True,
         )
 
+        # Phase 3 — paced screen_history extraction (~12s; OCR, not every frame).
+        if tool_name == "screen":
+            try:
+                from dana.tools.vision import maybe_extract_screen_history
+
+                maybe_extract_screen_history()
+            except Exception:  # noqa: BLE001
+                pass
+
         frames += 1
         if frames % 15 == 0:
             from dana.tracker import buffer_len
@@ -2856,7 +2897,7 @@ def tracker_worker(device) -> None:
             log_debug(
                 "Tracker",
                 f"Alive - {frames} samples via {tool_name}; "
-                f"buffer={buffer_len()}/5; last=[{format_class_list(labels)}]",
+                f"buffer={buffer_len()}/60; last=[{format_class_list(labels)}]",
             )
 
         time.sleep(TRACKER_SLEEP_SEC)
@@ -3191,14 +3232,33 @@ def wakeword_worker() -> None:
 
         audio_ring.append(audio.copy())
         chunk_rms = audio_buffer_rms(audio)
+        skip_wake = should_skip_wake_predict(chunk_rms)
 
         now = time.monotonic()
         if now >= next_rms_log:
             log_debug("Debug", f"Live Mic RMS: {chunk_rms:.6f}")
-            next_rms_log = now + 3.0
+            # TEMP WIRETAP: wake-path diagnosis
+            try:
+                _dev_idx = AUDIO_INPUT_DEVICE
+                if _dev_idx is not None:
+                    _dev_name = str(sd.query_devices(int(_dev_idx)).get("name", "?"))
+                else:
+                    _dev_name = str(sd.query_devices(None).get("name", "?"))
+            except Exception:
+                _dev_idx = AUDIO_INPUT_DEVICE
+                _dev_name = "?"
+            print(
+                f"!!! [WIRETAP] Mic: [{_dev_idx}] {_dev_name} "
+                f"| Stream Rate: {AUDIO_INPUT_RATE} "
+                f"| Array Shape: {audio.shape} "
+                f"| RMS: {chunk_rms:.6f} "
+                f"| Skipping: {skip_wake}",
+                flush=True,
+            )
+            next_rms_log = now + 2.0
 
         # Dead / virtual mic silence: skip OpenWakeWord to prevent phantom wakes.
-        if should_skip_wake_predict(chunk_rms):
+        if skip_wake:
             consecutive_hits = 0
             continue
 
@@ -3211,7 +3271,8 @@ def wakeword_worker() -> None:
                 f"Physical mic energy detected (rms={chunk_rms:.6f}) — "
                 "re-arming wake-word polling",
             )
-            maybe_play_boot_ready_audio()
+            # Do NOT replay boot-ready TTS here — that caused random
+            # "Donna is ready" mid-session when quiet-mic mode cleared.
 
         pcm = np.clip(audio * 32767.0, -32768, 32767).astype(np.int16)
         try:
@@ -3234,7 +3295,14 @@ def wakeword_worker() -> None:
             key_l = str(key).lower()
             if wake_token in key_l:
                 best_score = max(best_score, value)
-            if value > 0.20:
+            if value >= 0.50:
+                # Near-miss / hit visibility for live threshold tuning.
+                log(
+                    "WakeWord",
+                    f"score={value:.3f} key={key} "
+                    f"(threshold={WAKE_THRESHOLD:.2f})",
+                )
+            elif value > 0.20:
                 log_debug("Debug", f"Wake word score: {value:.4f} ({key})")
 
         score_history.append(best_score)
@@ -3386,22 +3454,26 @@ def load_whisper(local_files_only: bool, device):
 
 
 def _sanitize_whisper_generation_config(model: Any) -> None:
-    """Drop conflicting length / processor fields from Whisper generation_config."""
-    gc = getattr(model, "generation_config", None)
-    if gc is None:
-        return
-    # max_new_tokens alone must control length (do not keep max_length).
-    if getattr(gc, "max_length", None) is not None:
-        try:
-            gc.max_length = None
-        except Exception:  # noqa: BLE001
-            pass
-    # Never keep a stale max_new_tokens on the config — callers pass it per call.
-    if hasattr(gc, "max_new_tokens"):
-        try:
-            gc.max_new_tokens = None
-        except Exception:  # noqa: BLE001
-            pass
+    """Drop conflicting length / processor fields from Whisper generation_config.
+
+    Transformers warns when both ``max_length`` (often a tiny leftover like 20
+    or the stock 448) and ``max_new_tokens`` are set. Callers pass
+    ``max_new_tokens`` per generate(); strip every length field from config.
+    """
+    for obj_name in ("generation_config", "config"):
+        gc = getattr(model, obj_name, None)
+        if gc is None:
+            continue
+        for attr in ("max_length", "max_new_tokens", "min_length"):
+            if not hasattr(gc, attr):
+                continue
+            try:
+                setattr(gc, attr, None)
+            except Exception:  # noqa: BLE001
+                try:
+                    delattr(gc, attr)
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 def _whisper_is_english_only(model: Any | None = None) -> bool:
@@ -3427,9 +3499,10 @@ def _whisper_generate_kwargs(
     kwargs: dict[str, Any] = {
         "max_new_tokens": int(max_new_tokens),
         "condition_on_prev_tokens": False,
-        # Intentionally omitted: max_length, logits_processor, suppress_tokens,
-        # begin_suppress_tokens — transformers builds SuppressTokens* processors
-        # from generation_config; passing them again duplicates and warns.
+        # Intentionally omitted: max_length (including any leftover max_length=20),
+        # logits_processor, suppress_tokens, begin_suppress_tokens — transformers
+        # builds SuppressTokens* processors from generation_config; passing them
+        # again duplicates and warns. Length is controlled only by max_new_tokens.
     }
     # English-only Distil-Whisper raises if language/task are set.
     if not _whisper_is_english_only(model):
@@ -4434,6 +4507,7 @@ def record_utterance(
     from dana.audio.vad_consumer import (
         SILERO_SPEECH_THRESHOLD,
         is_speech_frame,
+        prepare_frame_for_silero,
         reset_silero_states,
     )
 
@@ -4481,8 +4555,14 @@ def record_utterance(
         elif samples_16k.size > VAD_FRAME_SAMPLES:
             samples_16k = samples_16k[:VAD_FRAME_SAMPLES]
 
+        # Quiet-mic: boost a copy for Silero only; keep raw frames for Whisper.
+        speech_floor = get_dynamic_speech_floor()
+        vad_frame, frame_rms_raw, vad_gain = prepare_frame_for_silero(
+            samples_16k,
+            noise_floor=speech_floor,
+        )
         try:
-            is_speech = bool(is_speech_frame(samples_16k, sample_rate=SAMPLE_RATE))
+            is_speech = bool(is_speech_frame(vad_frame, sample_rate=SAMPLE_RATE))
         except Exception as exc:  # noqa: BLE001
             log("Conversation", f"WARNING: Silero VAD frame error: {exc}")
             is_speech = False
@@ -4492,10 +4572,7 @@ def record_utterance(
             tts_busy.is_set() or frame_idx < ignore_onset_frames
         ):
             try:
-                frame_rms = float(
-                    np.sqrt(np.mean(np.square(samples_16k))) + 1e-9
-                )
-                if frame_rms >= get_dynamic_speech_floor():
+                if frame_rms_raw >= speech_floor:
                     floor_listening_emitted = True
                     from dana.ui.status_bus import emit_state_change
 
@@ -4517,9 +4594,13 @@ def record_utterance(
                 collected.extend(pre_roll)
                 speech_frames = 1
                 silence_frames = 0
+                gain_note = (
+                    f", vad_gain=x{vad_gain:.1f}" if vad_gain > 1.01 else ""
+                )
                 log_debug(
                     "Conversation",
-                    f"Speech onset at {(frame_idx + 1) * VAD_FRAME_MS} ms",
+                    f"Speech onset at {(frame_idx + 1) * VAD_FRAME_MS} ms "
+                    f"(rms_raw={frame_rms_raw:.5f}{gain_note})",
                 )
             return False
 
@@ -4585,7 +4666,11 @@ def record_utterance(
         try:
             from dana.ui.status_bus import emit_state_change
 
-            emit_state_change("idle")
+            emit_state_change(
+                "idle",
+                tool="vad_timeout",
+                message="No speech detected — disarmed",
+            )
         except Exception:  # noqa: BLE001
             pass
 
@@ -4630,19 +4715,22 @@ def prepare_audio_for_whisper(
         return audio
     # Always measure RMS after DC removal (offset-inflated energy mis-scales gain).
     rms_raw = float(np.sqrt(np.mean(np.square(audio))) + 1e-9)
-    speech_floor = get_dynamic_speech_floor()
-    if 1e-5 < rms_raw < WHISPER_GAIN_RMS_CEIL:
-        if rms_raw < speech_floor:
-            # Near-silence: do not amplify — Whisper invents YouTube filler.
-            log(
-                "Conversation",
-                f"Whisper gain skipped (rms_raw={rms_raw:.5f} below speech floor "
-                f"{speech_floor:.5f})",
-            )
-        else:
-            gain = min(WHISPER_TARGET_RMS / rms_raw, WHISPER_MAX_GAIN)
-            audio = audio * float(gain)
-            log_debug("Conversation", f"Whisper gain x{gain:.1f} (rms_raw={rms_raw:.5f})")
+    # Soft headphone path: normalize toward target whenever below soft ceil.
+    # Absolute min (0.00005) replaces the stricter calibrated speech floor so
+    # conversational quiet speech still reaches Whisper crisply.
+    if WHISPER_MIN_RMS_FOR_GAIN < rms_raw < WHISPER_GAIN_RMS_CEIL:
+        gain = min(WHISPER_TARGET_RMS / rms_raw, WHISPER_MAX_GAIN)
+        audio = audio * float(gain)
+        log_debug(
+            "Conversation",
+            f"Whisper gain x{gain:.1f} (rms_raw={rms_raw:.5f})",
+        )
+    elif rms_raw <= WHISPER_MIN_RMS_FOR_GAIN:
+        log(
+            "Conversation",
+            f"Whisper gain skipped (rms_raw={rms_raw:.5f} below "
+            f"{WHISPER_MIN_RMS_FOR_GAIN:.5f})",
+        )
     peak = float(np.max(np.abs(audio)) + 1e-9)
     if peak > 1e-4:
         audio = np.clip(audio / peak * 0.9, -1.0, 1.0)
@@ -4934,20 +5022,43 @@ def execute_tool_call(tc: ToolCall) -> str:
         return f"OK: clipboard chars={len(text)}{trunc} text={text!r}"
 
     def _handle_shell_execute(call: ToolCall) -> str:
+        from dana.tools.os_tools import (
+            cascade_git_tool_args,
+            is_cascade_git_query,
+        )
         from dana.tools.system_repl import shell_execute
 
         command = call.arguments.get("command")
+        cwd = call.arguments.get("cwd")
+        cwd_s = str(cwd).strip() if cwd is not None else ""
+        raw = str(call.raw_text or "")
+        if is_cascade_git_query(raw):
+            forced = cascade_git_tool_args(raw)
+            command = forced["command"]
+            cwd_s = forced["cwd"]
         if command is None or not str(command).strip():
             return "ERROR: missing command"
-        return shell_execute(str(command))
+        return shell_execute(str(command), cwd=cwd_s or None)
 
     def _handle_execute_powershell(call: ToolCall) -> str:
+        from dana.tools.os_tools import (
+            cascade_git_tool_args,
+            is_cascade_git_query,
+        )
         from dana.tools.powershell import execute_powershell
 
         command = call.arguments.get("command")
+        cwd = call.arguments.get("cwd")
+        cwd_s = str(cwd).strip() if cwd is not None else ""
+        raw = str(call.raw_text or "")
+        # Named-repo git asks: always retarget cwd + git log (ignore bad LLM args).
+        if is_cascade_git_query(raw):
+            forced = cascade_git_tool_args(raw)
+            command = forced["command"]
+            cwd_s = forced["cwd"]
         if command is None or not str(command).strip():
             return "ERROR: missing command"
-        return execute_powershell(str(command))
+        return execute_powershell(str(command), cwd=cwd_s or None)
 
     def _handle_write_to_file(call: ToolCall) -> str:
         from dana.tools.actuators import write_to_file
@@ -4971,6 +5082,38 @@ def execute_tool_call(tc: ToolCall) -> str:
         except (TypeError, ValueError):
             timeout_sec = 15
         return execute_command(str(command), timeout=timeout_sec)
+
+    def _handle_execute_python_script(call: ToolCall) -> str:
+        from dana.tools.actuators import execute_python_script
+
+        script_path = call.arguments.get("script_path")
+        if script_path is None or not str(script_path).strip():
+            return "ERROR: missing script_path"
+        timeout_raw = call.arguments.get("timeout", 300)
+        try:
+            timeout_sec = int(timeout_raw) if timeout_raw is not None else 300
+        except (TypeError, ValueError):
+            timeout_sec = 300
+        background = call.arguments.get("background", False)
+        bg = bool(background) and str(background).strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "",
+        }
+        return execute_python_script(
+            str(script_path),
+            args=call.arguments.get("args"),
+            timeout=timeout_sec,
+            background=bg,
+        )
+
+    def _handle_get_sandbox_job_status(call: ToolCall) -> str:
+        from dana.tools.actuators import get_sandbox_job_status
+
+        job_id = call.arguments.get("job_id")
+        key = None if job_id is None or not str(job_id).strip() else str(job_id).strip()
+        return get_sandbox_job_status(key)
 
     def _handle_fetch_webpage(call: ToolCall) -> str:
         from dana.tools.browser import fetch_webpage
@@ -4997,6 +5140,7 @@ def execute_tool_call(tc: ToolCall) -> str:
         return fetch_webpage(str(url), **kwargs)  # type: ignore[arg-type]
 
     def _handle_file_editor(call: ToolCall) -> str:
+        from dana.tools.os_tools import append_dependency_digest
         from dana.tools.system_repl import file_editor
 
         action = str(call.arguments.get("action") or "").strip()
@@ -5005,7 +5149,10 @@ def execute_tool_call(tc: ToolCall) -> str:
             return "ERROR: missing filepath"
         content = call.arguments.get("content")
         content_s = None if content is None else str(content)
-        return file_editor(action, str(filepath), content_s)
+        obs = file_editor(action, str(filepath), content_s)
+        if str(action).lower() == "read":
+            return append_dependency_digest(str(filepath), obs)
+        return obs
 
     def _handle_python_repl(call: ToolCall) -> str:
         from dana.tools.system_repl import python_repl
@@ -5088,14 +5235,27 @@ def execute_tool_call(tc: ToolCall) -> str:
 
     def _handle_read_local_file(call: ToolCall) -> str:
         from dana.os_automation import read_local_file
+        from dana.tools.os_tools import (
+            append_dependency_digest,
+            is_watchdog_graph_query,
+            watchdog_graph_filepath,
+        )
 
         filepath = call.arguments.get("filepath")
         if filepath is None or not str(filepath).strip():
+            filepath = call.arguments.get("path")
+        raw = str(call.raw_text or "")
+        # Watchdog graph asks: force the exact module path (ignore bad LLM args).
+        if is_watchdog_graph_query(raw):
+            filepath = watchdog_graph_filepath()
+        if filepath is None or not str(filepath).strip():
             return "ERROR: missing filepath"
-        result = read_local_file(str(filepath))
+        path_s = str(filepath).strip()
+        result = read_local_file(path_s)
         if str(result).upper().startswith("ERROR"):
             return str(result)
-        return f"OK: read_local_file path={str(filepath)!r}\n{result}"
+        obs = f"OK: read_local_file path={path_s!r}\n{result}"
+        return append_dependency_digest(path_s, obs)
 
     def _handle_architect(call: ToolCall) -> str:
         """Tool Forge entry — accept goal/tool_description; never crash on empty args."""
@@ -5311,6 +5471,202 @@ def execute_tool_call(tc: ToolCall) -> str:
         ).strip()
         return dispatch_titan_repair(query)
 
+    def _handle_meta_broker(call: ToolCall) -> str:
+        """Closed-loop Meta-Broker DAG — bypasses Tool Forge / generic ReAct."""
+        import logging
+        import traceback as _tb
+
+        from dana.graph.artifact_manifest import META_BROKER_STDLIB_RULE
+        from dana.graph.meta_broker_process import run_meta_broker_isolated
+        from dana.graph.monitor_bus import (
+            get_monitor_bus,
+            publish_graph_error,
+            write_broker_crash_dump,
+        )
+        from dana.tools.broker import extract_meta_broker_prompt
+
+        prompt = str(
+            call.arguments.get("prompt")
+            or call.arguments.get("goal")
+            or call.arguments.get("query")
+            or call.raw_text
+            or ""
+        ).strip()
+        prompt = extract_meta_broker_prompt(prompt)
+        if not prompt:
+            return "ERROR: meta_broker missing prompt"
+        # Prompt builder: stamp stdlib-only epic codegen constraint on the macro.
+        if META_BROKER_STDLIB_RULE not in prompt:
+            prompt = f"{META_BROKER_STDLIB_RULE}\n\n{prompt}"
+        try:
+            bus = get_monitor_bus(create=True)
+            if bus is not None:
+                bus.publish("status", status="meta_broker_running")
+                bus.publish("tool", message=f"meta_broker start: {prompt[:160]}")
+        except Exception:  # noqa: BLE001
+            pass
+        log(
+            "MetaBroker",
+            f"dispatch run_meta_broker (isolated process) chars={len(prompt)}",
+        )
+
+        def _on_broker_event(event: dict) -> None:
+            if str(event.get("type") or "") != "telemetry":
+                return
+            msg = str(event.get("message") or "")
+            phase = str(event.get("phase") or "")
+            status = str(event.get("status") or "")
+            epic_title = str(event.get("epic_title") or "")
+            terminal = bool(event.get("terminal"))
+            try:
+                from dana.graph.task_tracker import emit_meta_broker_telemetry
+
+                emit_meta_broker_telemetry(
+                    task_id="meta_broker",
+                    prompt=prompt,
+                    phase=phase,
+                    status=status,
+                    message=msg,
+                    epic_title=epic_title,
+                    terminal=terminal,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                from dana.ui.status_bus import emit_state_change
+
+                if terminal:
+                    emit_state_change(
+                        "idle",
+                        tool="meta_broker",
+                        message=msg[:120] or "Meta-Broker idle",
+                    )
+                else:
+                    emit_state_change(
+                        "processing",
+                        tool="meta_broker",
+                        message=msg[:120] or "Meta-Broker running",
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                from dana.audio.tts_manager import get_tts_manager
+
+                mgr = get_tts_manager()
+                low = msg.lower()
+                if "dispatch epic" in low or low.startswith("starting epic"):
+                    # "Starting Epic 1: Title" / legacy "Dispatch epic 1: …"
+                    spoken = msg
+                    if "dispatch epic" in low:
+                        spoken = msg.replace("Dispatch epic", "Starting Epic", 1)
+                        spoken = spoken.replace("dispatch epic", "Starting Epic", 1)
+                    mgr.notify(spoken.split(":")[0].strip() + ".")
+                elif terminal and status.lower() in {
+                    "completed",
+                    "done",
+                    "ok",
+                    "success",
+                }:
+                    mgr.notify("Task complete.")
+                elif "ram" in low:
+                    mgr.notify("Warning: RAM limit exceeded.")
+                elif terminal and status.lower() in {"failed", "error"}:
+                    mgr.notify("Task failed.")
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                bus2 = get_monitor_bus(create=False)
+                if bus2 is not None:
+                    bus2.publish(
+                        "tool",
+                        message=msg[:200],
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            final = run_meta_broker_isolated(
+                prompt,
+                on_event=_on_broker_event,
+                timeout_s=float(
+                    os.environ.get("DONNA_META_BROKER_TIMEOUT_S") or "300"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            tb_text = "".join(_tb.format_exception(type(exc), exc, exc.__traceback__))
+            logging.getLogger("dana.meta_broker").exception(
+                "run_meta_broker crashed: %s", exc
+            )
+            dump = write_broker_crash_dump(
+                exc,
+                context=f"_handle_meta_broker prompt={prompt[:200]!r}",
+                traceback_text=tb_text,
+            )
+            try:
+                publish_graph_error(
+                    f"run_meta_broker raised {type(exc).__name__}: {exc}",
+                    exc=exc,
+                    node="meta_broker_dispatch",
+                    dump=False,
+                    prompt_preview=prompt[:200],
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            err = (
+                f"ERROR: meta_broker failed: {type(exc).__name__}: {exc}\n"
+                f"crash_dump={dump}"
+            )
+            log("MetaBroker", err)
+            return err
+        status = str(final.get("status") or "")
+        epics = list(final.get("epics") or [])
+        response = str(final.get("final_response") or "").strip()
+        epic_log = list(final.get("epic_log") or [])
+        err_field = str(final.get("error") or "").strip()
+        if status == "failed" or err_field:
+            try:
+                publish_graph_error(
+                    err_field or response or "meta_broker finished with status=failed",
+                    node="meta_broker_result",
+                    dump=True,
+                    status=status,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        summary = (
+            f"OK: meta_broker status={status} epics={len(epics)}\n"
+            f"{response or '(no final_response)'}\n"
+            f"epic_log: {'; '.join(str(x) for x in epic_log[-8:])}"
+        )
+        if status == "failed":
+            summary = (
+                f"ERROR: meta_broker status=failed epics={len(epics)}\n"
+                f"{err_field or response or '(no detail)'}\n"
+                f"epic_log: {'; '.join(str(x) for x in epic_log[-8:])}"
+            )
+        try:
+            bus = get_monitor_bus(create=False)
+            if bus is not None:
+                bus.publish(
+                    "dag",
+                    status=status,
+                    tasks=[
+                        {
+                            "task_id": e.get("epic_id"),
+                            "action": e.get("title") or e.get("goal"),
+                            "status": e.get("status"),
+                        }
+                        for e in epics
+                        if isinstance(e, dict)
+                    ],
+                )
+                bus.publish("status", status=status or "completed")
+                bus.publish("done", status=status or "completed")
+                bus.publish("tool", message=summary[:400])
+        except Exception:  # noqa: BLE001
+            pass
+        return summary
+
     def _handle_read_architecture(call: ToolCall) -> str:
         from dana.architecture import read_system_architecture
 
@@ -5328,6 +5684,35 @@ def execute_tool_call(tc: ToolCall) -> str:
             f"--- ARCHITECTURE.md ---\n{arch}\n"
             f"--- TOOLS SCHEMA SUMMARY ---\n{schema}"
         )
+
+    def _handle_list_activity_for_day(call: ToolCall) -> str:
+        from dana.tools.activity_index import handle_list_activity_for_day
+
+        date_str = call.arguments.get("date_str")
+        if date_str is None or not str(date_str).strip():
+            # Infer from raw utterance when the LLM omits the arg.
+            raw = str(call.raw_text or "")
+            date_str = "yesterday"
+            low = raw.lower()
+            if "this morning" in low or "today" in low:
+                date_str = "today"
+            elif "last night" in low:
+                date_str = "last night"
+            elif "previous session" in low:
+                date_str = "previous session"
+        return handle_list_activity_for_day(str(date_str))
+
+    def _handle_get_system_telemetry(call: ToolCall) -> str:
+        from dana.tools.system_tools import handle_get_system_telemetry
+
+        return handle_get_system_telemetry()
+
+    def _handle_parse_idle_log_duration(call: ToolCall) -> str:
+        from dana.tools.system_tools import handle_parse_idle_log_duration
+
+        log_path = call.arguments.get("log_path")
+        path_arg = str(log_path).strip() if log_path is not None else ""
+        return handle_parse_idle_log_duration(path_arg or None)
 
     def _handle_web_search(call: ToolCall) -> str:
         from dana.web_search import format_search_observation, web_search
@@ -5440,6 +5825,8 @@ def execute_tool_call(tc: ToolCall) -> str:
         "execute_powershell": _handle_execute_powershell,
         "write_to_file": _handle_write_to_file,
         "execute_command": _handle_execute_command,
+        "execute_python_script": _handle_execute_python_script,
+        "get_sandbox_job_status": _handle_get_sandbox_job_status,
         "fetch_webpage": _handle_fetch_webpage,
         "file_editor": _handle_file_editor,
         "python_repl": _handle_python_repl,
@@ -5457,7 +5844,11 @@ def execute_tool_call(tc: ToolCall) -> str:
         "evaluate_slide_and_type": _handle_evaluate_slide_and_type,
         "delegate_to_cursor": _handle_delegate_to_cursor,
         "dispatch_titan_repair": _handle_dispatch_titan_repair,
+        "meta_broker": _handle_meta_broker,
         "read_system_architecture": _handle_read_architecture,
+        "list_activity_for_day": _handle_list_activity_for_day,
+        "get_system_telemetry": _handle_get_system_telemetry,
+        "parse_idle_log_duration": _handle_parse_idle_log_duration,
         "web_search": _handle_web_search,
         "dispatch_research_swarm": _handle_dispatch_research_swarm,
         "dispatch_jason_supervisor": _handle_dispatch_jason_supervisor,
@@ -5468,9 +5859,16 @@ def execute_tool_call(tc: ToolCall) -> str:
         "__dynamic__": _handle_dynamic,
     }
     try:
-        return str(broker.dispatch(tc, handlers))
+        raw_obs = str(broker.dispatch(tc, handlers))
     except ToolValidationError as exc:
-        return f"ERROR: dispatch failed ({exc})"
+        raw_obs = f"ERROR: dispatch failed ({exc})"
+    # Scratchpad: compress before ReAct messages / blackboard / telemetry see it.
+    try:
+        from dana.middleware.scratchpad import compress_tool_output
+
+        return compress_tool_output(raw_obs)
+    except Exception:  # noqa: BLE001
+        return raw_obs
 
 
 def tool_router(whisper_text: str) -> tuple[str, Optional[ToolCall]]:
@@ -5479,6 +5877,9 @@ def tool_router(whisper_text: str) -> tuple[str, Optional[ToolCall]]:
     Returns ``(possibly_corrected_text, deferred_tool_or_None)``.
     Bound deferred tools are forced into the agentic loop; unbound tools
     (e.g. describe_spatial_scene) only inject a hard visual-context constraint.
+
+    Soft alias hits below ``HIGH_CONFIDENCE_TOOL_THRESHOLD`` are ignored unless
+    ``requires_tool_graph`` already demands ReAct — keeps System-1 strict.
     """
     # STT vocabulary middleware (Notepad phonetic repairs, name fixes, …).
     whisper_text = correct_known_stt_names(whisper_text or "")
@@ -5492,6 +5893,22 @@ def tool_router(whisper_text: str) -> tuple[str, Optional[ToolCall]]:
 
     if call is None:
         return whisper_text, None
+
+    try:
+        from dana.tools.broker import HIGH_CONFIDENCE_TOOL_THRESHOLD
+
+        conf = float(getattr(call, "confidence", 0.0) or 0.0)
+        if conf < float(HIGH_CONFIDENCE_TOOL_THRESHOLD) and not requires_tool_graph(
+            whisper_text or ""
+        ):
+            log(
+                "Router",
+                f"Soft tool alias ignored for System-1 "
+                f"({call.tool_id} conf={conf:.2f} < {HIGH_CONFIDENCE_TOOL_THRESHOLD})",
+            )
+            return whisper_text, None
+    except Exception:  # noqa: BLE001
+        pass
 
     if call.tool_id == "switch_vision_source":
         obs = execute_tool_call(call)
@@ -5616,25 +6033,70 @@ def ask_ollama_messages(
     model: str = OLLAMA_MODEL,
     *,
     num_predict: Optional[int] = None,
+    response_format: Any = None,
+    temperature: Optional[float] = None,
 ) -> str:
     """Isolated Ollama chat call (no conversation_history mutation) for ReAct steps.
 
     Streams the response so LLM TTFT can be recorded to ``dana_performance.log``.
+
+    ``response_format`` maps to Ollama ``format`` (``\"json\"`` or a JSON Schema
+    dict) for structured small-model tool / supervisor outputs.
     """
     from dana.agentic import OLLAMA_UNREACHABLE_SPEECH
+    from dana.system_health import llm_lock
 
-    payload = {
+    # Serialize generations — concurrent Ollama calls double VRAM and crash GPUs.
+    with llm_lock:
+        return _ask_ollama_messages_unlocked(
+            messages,
+            model,
+            num_predict=num_predict,
+            response_format=response_format,
+            temperature=temperature,
+            unreachable_speech=OLLAMA_UNREACHABLE_SPEECH,
+        )
+
+
+def _ask_ollama_messages_unlocked(
+    messages: list[dict[str, str]],
+    model: str,
+    *,
+    num_predict: Optional[int],
+    response_format: Any,
+    temperature: Optional[float],
+    unreachable_speech: str,
+) -> str:
+    # Thermal guardrail: unload when USER_AWAY; keep warm 5m while USER_ACTIVE.
+    # Never pass -1 / "-1" — Ollama returns HTTP 400 on those values.
+    try:
+        from dana.middleware.idle_monitor import ollama_keep_alive
+
+        _keep_alive = ollama_keep_alive()
+    except Exception:  # noqa: BLE001
+        _keep_alive = 0
+    from dana.llm_client import merge_ollama_options
+
+    options: dict[str, Any] = {
+        "num_ctx": 8192,
+        "num_predict": 1024 if num_predict is None else int(num_predict),
+    }
+    if temperature is not None:
+        options["temperature"] = float(temperature)
+
+    payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "stream": True,
-        # Keep weights resident in VRAM (avoid cold-load TTFT spikes).
-        "keep_alive": -1,
+        "keep_alive": _keep_alive,
         # Hard caps for 8GB VRAM: shorter KV cache + bounded generation.
-        "options": {
-            "num_ctx": 8192,
-            "num_predict": 1024 if num_predict is None else int(num_predict),
-        },
+        # When DONNA_SPECULATIVE_DECODING=1, merge_ollama_options injects
+        # draft_num_predict (draft model pairing is Modelfile DRAFT / -md).
+        "options": merge_ollama_options(options),
     }
+    if response_format is not None:
+        # Ollama structured outputs — schema dict or "json".
+        payload["format"] = response_format
     t0 = time.perf_counter()
     ttft_logged = False
     parts: list[str] = []
@@ -5674,10 +6136,10 @@ def ask_ollama_messages(
                 if data.get("done"):
                     break
     except (requests.exceptions.ConnectionError, ConnectionError) as exc:
-        raise ConnectionError(OLLAMA_UNREACHABLE_SPEECH) from exc
+        raise ConnectionError(unreachable_speech) from exc
     except requests.exceptions.Timeout as exc:
         raise TimeoutError(
-            f"{OLLAMA_UNREACHABLE_SPEECH} (timed out after {OLLAMA_TIMEOUT_SEC:.0f}s)"
+            f"{unreachable_speech} (timed out after {OLLAMA_TIMEOUT_SEC:.0f}s)"
         ) from exc
     except requests.exceptions.HTTPError as exc:
         raise RuntimeError(f"Ollama HTTP error: {exc}") from exc
@@ -5793,7 +6255,7 @@ def answer_with_vlm(
     with torch.no_grad():
         generated_ids = vlm_model.generate(
             **inputs,
-            max_new_tokens=MAX_NEW_TOKENS,
+            max_new_tokens=int(MAX_NEW_TOKENS),
             do_sample=True,
             temperature=0.3,
         )
@@ -5868,7 +6330,7 @@ def conversation_worker(
     )
 
     def _warmup_llm() -> None:
-        """Background 1-token ping so llama3.2 weights land in VRAM before first turn.
+        """Background 1-token ping so qwen2.5-coder:7b weights land in VRAM before first turn.
 
         Wake-word stays disarmed until ``ollama_ready`` is set (success or fail).
         """
@@ -6011,23 +6473,99 @@ def conversation_worker(
             set_subtitle("")
             return True
 
-        use_chat = (not isolated) and get_donna_mode() == "chat"
+        # Meta-Broker keyword override — bypass LLM classifier / architect_new_tool.
+        try:
+            from dana.tools.broker import (
+                extract_meta_broker_prompt,
+                is_meta_broker_intent,
+            )
+
+            if is_meta_broker_intent(whisper_text or ""):
+                mb_prompt = extract_meta_broker_prompt(whisper_text or "")
+                log(
+                    "Conversation",
+                    "Meta-Broker override: bypassing intent classifier → meta_broker",
+                )
+                try:
+                    from dana.telemetry import log_router
+
+                    log_router(
+                        "meta_broker override",
+                        current_agent="MetaBroker",
+                        active_intent="meta_broker",
+                        payload={"chars": len(mb_prompt)},
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                log_conversation("User", whisper_text or "")
+                emit_live_transcript("User", whisper_text or "")
+                obs = execute_tool_call(
+                    ToolCall(
+                        tool_id="meta_broker",
+                        arguments={"prompt": mb_prompt},
+                        raw_text=whisper_text or "",
+                        confidence=0.99,
+                    )
+                )
+                spoken = obs
+                if spoken.startswith("OK:"):
+                    # Prefer the broker's final_response line for TTS.
+                    lines = [
+                        ln.strip()
+                        for ln in spoken.splitlines()
+                        if ln.strip() and not ln.startswith("epic_log:")
+                    ]
+                    spoken = lines[1] if len(lines) > 1 else lines[0]
+                if len(spoken) > 420:
+                    spoken = spoken[:417] + "..."
+                log_conversation("Dana", spoken)
+                emit_live_transcript("Dana", spoken)
+                enqueue_speech(spoken, interruptible=False)
+                wait_for_speech_idle(timeout=30.0)
+                set_subtitle("")
+                return True
+        except Exception as exc:  # noqa: BLE001
+            log("Conversation", f"WARNING: meta_broker override failed ({exc})")
+
+        # Proportional compute: System-1 lightweight unless a tool is required.
+        # Isolated jail tasks (BACKGROUND / queue) always take the ReAct path.
+        use_chat = not isolated
         tool_force = requires_tool_graph(whisper_text or "")
-        if use_chat and tool_force:
-            # CRITICAL: never let system/file/code intents stay on lightweight chat.
+        high_conf_tool = False
+        peek_call = None
+        try:
+            from dana.tools.broker import HIGH_CONFIDENCE_TOOL_THRESHOLD
+
+            peek_call = get_broker().parse_utterance(whisper_text or "")
+            if peek_call is not None and float(
+                getattr(peek_call, "confidence", 0.0) or 0.0
+            ) >= float(HIGH_CONFIDENCE_TOOL_THRESHOLD):
+                high_conf_tool = True
+        except Exception:  # noqa: BLE001
+            peek_call = None
+        if use_chat and (tool_force or high_conf_tool):
             use_chat = False
             log(
                 "Conversation",
-                "Tool-graph escalation: system/file/code intent → ReAct/MoA "
-                "(lightweight chat bypassed)",
+                "Tool-graph escalation: high-confidence tool / system intent → "
+                "ReAct/MoA (lightweight chat bypassed)",
+            )
+        elif use_chat and get_donna_mode() not in ("chat",):
+            # Developer/vision/research without an explicit tool stay on System-1.
+            log(
+                "Conversation",
+                f"Proportional System-1: mode={get_donna_mode()} with no "
+                "high-confidence tool — lightweight chat",
             )
         routed_tool = None
         if not use_chat:
             whisper_text, routed_tool = tool_router(whisper_text)
+            if routed_tool is None and high_conf_tool and peek_call is not None:
+                routed_tool = peek_call
         route_tag = (
             "chat"
             if use_chat
-            else ("tool" if tool_force else "developer")
+            else ("tool" if (tool_force or high_conf_tool) else "developer")
         )
         log(
             "Conversation",
@@ -6056,7 +6594,24 @@ def conversation_worker(
 
         yolo_labels: list[str] = []
         vision_log = ""
-        if use_chat:
+        try:
+            from dana.tools.broker import should_blindfold_vision
+
+            _vision_blindfold = should_blindfold_vision(
+                user_text=whisper_text or "",
+                forced_tool_id=(
+                    routed_tool.tool_id if routed_tool is not None else None
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            _vision_blindfold = False
+        if _vision_blindfold:
+            log(
+                "Conversation",
+                "Vision blindfold: ignoring analyze_visual_context / screen "
+                "context for research swarm or USER_AWAY",
+            )
+        if use_chat and not _vision_blindfold:
             # Stage 4.1 — Chat reads typed objects topic; never runs live YOLO/LLM vision.
             try:
                 from dana.memory import read_visual_state
@@ -6082,6 +6637,10 @@ def conversation_worker(
                     )
             except Exception:  # noqa: BLE001
                 pass
+        elif use_chat and _vision_blindfold:
+            vision_log = ""
+        elif _vision_blindfold:
+            vision_log = ""
         else:
             # Prefer a fresh frame from the active tool (important after a switch).
             with active_vision_lock:
@@ -6227,10 +6786,16 @@ def conversation_worker(
                     )
                 except Exception:  # noqa: BLE001
                     pass
+                try:
+                    from dana.cascade_router import lightweight_model_name
+
+                    _lw_model = lightweight_model_name()
+                except Exception:  # noqa: BLE001
+                    _lw_model = OLLAMA_MODEL
                 result = run_lightweight_chat(
                     user_text=whisper_text,
                     system_prompt=system_prompt,
-                    model=OLLAMA_MODEL,
+                    model=_lw_model,
                     ask_fn=ask_ollama_messages,
                     visual_context=vision_log or None,
                     use_chat_memory=True,
@@ -6435,6 +7000,21 @@ def conversation_worker(
         wait_for_speech_idle(timeout=30.0)
         time.sleep(0.15)
         set_subtitle("")
+
+        # Phase 5 — compress completed idle research into dense vault summaries.
+        try:
+            if isolated and str(whisper_text or "").lstrip().startswith(
+                "[BACKGROUND TASK]"
+            ):
+                from dana.middleware.idle_monitor import compress_idle_research_output
+
+                blob = f"{whisper_text}\n\n{answer or ''}".strip()
+                outcome = compress_idle_research_output(
+                    blob, topic=str(whisper_text)[:200]
+                )
+                log_debug("IdleCompress", f"background task compress: {outcome}")
+        except Exception as exc:  # noqa: BLE001
+            log_debug("IdleCompress", f"WARNING: compress skipped ({exc})")
         return True
 
     def drain_structured_task_queue() -> int:
@@ -6472,11 +7052,13 @@ def conversation_worker(
 
             def _isolated_handler(command: str) -> None:
                 preview = command if len(command) <= 160 else command[:157] + "..."
+                # System/queue lane — never emit Conversation "User said:" (that
+                # listener is reserved for live mic/text and caused recursive routing).
                 log("TaskQueue", f'Dispatching isolated ReAct: "{preview}"')
-                # Match voice-path logging so queue wakes show User said: …
-                log("Conversation", f'User said: "{command}"')
-                set_subtitle(f'User (Queue): "{command}"')
-                emit_live_transcript("User (TaskQueue)", command)
+                try:
+                    set_subtitle(f'Background: "{preview}"')
+                except Exception:  # noqa: BLE001
+                    pass
                 if is_standby_command(command):
                     emit_live_transcript("Dana", "Standing by.")
                     enqueue_speech("Standing by.", interruptible=False)
@@ -6727,6 +7309,16 @@ def conversation_worker(
                             f"Wake empty capture (reason={stop_reason}, "
                             f"rms_raw={rms_raw:.5f}) — silent disarm",
                         )
+                        try:
+                            from dana.ui.status_bus import emit_state_change
+
+                            emit_state_change(
+                                "idle",
+                                tool="vad_timeout",
+                                message="No speech detected — disarmed",
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
                         _drop_mid_task_on_vad_timeout(
                             stop_reason=stop_reason,
                             rms_raw=rms_raw,
@@ -7700,12 +8292,21 @@ def _speak_with_timeout(
 
 
 def maybe_play_boot_ready_audio() -> None:
-    """Play ``Donna is ready.`` only after Ollama + Piper + wake-word are all ready.
+    """Play ``Donna is ready.`` only once after Ollama + Piper + wake-word arm.
 
     Safe to call from multiple boot threads; fires at most once per process.
+    Never replay on quiet-mic re-arm or mid-session mic energy.
     """
     global _boot_ready_audio_played
     if _boot_ready_audio_played:
+        return
+    if (os.environ.get("DONNA_SKIP_BOOT_READY") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        _boot_ready_audio_played = True
         return
     if not (
         ollama_ready.is_set()
@@ -8258,7 +8859,22 @@ class DonnaGUI(ctk.CTk):
         self._engine_status_lbl: ctk.CTkLabel | None = None
         self._engine_warn_lbl: ctk.CTkLabel | None = None
         self._engage_btn: ctk.CTkButton | None = None
-        self._standby_btn: ctk.CTkButton | None = None
+        self._standby_btn: ctk.CTkButton | None = None  # legacy; merged into toggle
+        self._engage_toggle_btn: ctk.CTkButton | None = None
+        self._tasks_toggle_btn: ctk.CTkButton | None = None
+        self._dag_toggle_btn: ctk.CTkButton | None = None
+        self._diag_header_btn: ctk.CTkButton | None = None
+        self._header_status_lbl: ctk.CTkLabel | None = None
+        self._header_seg: Any | None = None
+        self._assistant_main: Any | None = None
+        self._assistant_side: Any | None = None
+        self.task_tracker_frame: Any | None = None
+        self._tasks_drawer_visible = True
+        self.dag_monitor_frame: Any | None = None
+        self.dag_monitor_view: Any | None = None
+        self._dag_drawer_visible = False
+        self._dag_status_lbl: Any | None = None
+        self._dag_stream_thread: Any | None = None
         self._engine_warn_job: str | None = None
         # Stage 9.3 — Settings auto-updater chrome.
         self._update_status_lbl: ctk.CTkLabel | None = None
@@ -8276,6 +8892,8 @@ class DonnaGUI(ctk.CTk):
         # Stage 8.10 — Dashboard silent text chat.
         self.chat_entry: ctk.CTkEntry | None = None
         self._chat_send_btn: ctk.CTkButton | None = None
+        self.bottom_input_frame: Any | None = None
+        self._tasks_empty_lbl: Any | None = None
         self.transcript_box = None
         self._chat_view = None
         # VAD / supervisor STATE_CHANGE indicators (above chat input).
@@ -8311,18 +8929,20 @@ class DonnaGUI(ctk.CTk):
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
         self.withdraw()
-        # Post-init icon lifecycle (iconbitmap/wm_iconbitmap; Win32 optional).
+        # Post-init icon lifecycle: uniquely named runtime PNG/ICO + PhotoImage keepalive.
+        self._icon_keepalive = None
         try:
-            from dana.ui.logo import schedule_window_icon
+            from dana.ui.logo import apply_window_icon, schedule_window_icon
 
+            apply_window_icon(self)
             schedule_window_icon(self, delay_ms=100)
         except Exception:  # noqa: BLE001
             pass
-        # Stage 8.7 — floating AssistiveTouch orb (supplements system tray).
-        try:
-            self.after(200, self._start_assistive_orb)
-        except Exception:  # noqa: BLE001
-            pass
+        # Stage 8.7 — floating AssistiveTouch orb (DISABLED for now).
+        # try:
+        #     self.after(200, self._start_assistive_orb)
+        # except Exception:  # noqa: BLE001
+        #     pass
         self.after(400, self._refresh_stats)
         self.after(100, self.process_telemetry)
         self.after(500, self._pulse_active_cells)
@@ -8392,13 +9012,17 @@ class DonnaGUI(ctk.CTk):
         color = _TRACE_MODE_COLORS.get(display_key, self._mode_accent(key))
         label = "Dictation" if self._dictation_active else key.title()
         try:
-            # Stage 8.9.8 — pill only (no plain-text Mode / Dictation label).
+            # Stage 8.9.8 — header live status (CHAT badge removed).
             if hasattr(self, "mode_badge") and self.mode_badge is not None:
                 self.mode_badge.configure(
                     text=f"  ●  {label.upper()}  ",
                     text_color=color,
                     fg_color=_UI_GHOST,
                 )
+            hdr = getattr(self, "_header_status_lbl", None)
+            if hdr is not None and not bool(getattr(self, "engine_active", False)):
+                # When engaged, _refresh_engine_ui owns the ACTIVE/STANDBY text.
+                hdr.configure(text=f"• {label.upper()}", text_color=color)
         except Exception:  # noqa: BLE001
             pass
         try:
@@ -8437,84 +9061,220 @@ class DonnaGUI(ctk.CTk):
         return body
 
     def _build_ui(self) -> None:
-        # Top navigation / status bar
+        # Single sleek HUD row — title/status | tabs | controls
         header = ctk.CTkFrame(
             self,
             fg_color=_UI_CARD,
             corner_radius=0,
             border_width=0,
-            height=56,
+            height=52,
         )
         header.pack(fill="x", padx=0, pady=0)
-        # Stage 8.9.8 / 8.9.9 — OS title owns brand text; header shows logo + status.
         self.mode_dot = None
         self.mode_label = None
         self._header_logo_img = None
-        try:
-            from dana.ui.logo import load_premium_logo
+        self._header_logo_lbl = None
+        self.mode_badge = None  # removed redundant CHAT badge
 
-            self._header_logo_img = load_premium_logo((36, 36))
-        except Exception:  # noqa: BLE001
-            self._header_logo_img = None
-        if self._header_logo_img is not None:
-            try:
+        left = ctk.CTkFrame(header, fg_color="transparent")
+        left.pack(side="left", padx=(16, 8), pady=8)
+        try:
+            from dana.ui.logo import invalidate_logo_cache, load_premium_logo
+
+            invalidate_logo_cache()
+            self._header_logo_img = load_premium_logo((28, 28))
+            if self._header_logo_img is not None:
                 self._header_logo_lbl = ctk.CTkLabel(
-                    header,
+                    left,
                     text="",
                     image=self._header_logo_img,
-                    fg_color="transparent",
+                    width=28,
+                    height=28,
                 )
-                self._header_logo_lbl.pack(side="left", padx=(16, 8), pady=10)
-            except Exception:  # noqa: BLE001 — Tk pyimage race across roots
-                self._header_logo_img = None
-                self._header_logo_lbl = None
-        else:
+                self._header_logo_lbl.pack(side="left", padx=(0, 8))
+        except Exception:  # noqa: BLE001
+            self._header_logo_img = None
             self._header_logo_lbl = None
-        self.mode_badge = ctk.CTkLabel(
-            header,
-            text="  ●  CHAT  ",
+        ctk.CTkLabel(
+            left,
+            text="Dānā",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color=_UI_TEXT,
+            anchor="w",
+        ).pack(side="left", padx=(0, 10))
+        self._header_status_lbl = ctk.CTkLabel(
+            left,
+            text="• STANDBY",
             font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=self._mode_accent("chat"),
-            fg_color=_UI_GHOST,
-            corner_radius=999,
-            padx=8,
-            pady=4,
+            text_color=_UI_MUTED,
+            anchor="w",
         )
-        self.mode_badge.pack(side="left", padx=(8, 12), pady=12)
+        self._header_status_lbl.pack(side="left")
+        # Mic / VAD pipeline indicator (Idle | Listening | Processing).
+        self._vad_mic_lbl = ctk.CTkLabel(
+            left,
+            text="● Idle",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=_UI_MUTED,
+            anchor="w",
+        )
+        self._vad_mic_lbl.pack(side="left", padx=(12, 0))
+        self._system_status_lbl = ctk.CTkLabel(
+            left,
+            text="Idle",
+            font=ctk.CTkFont(size=11),
+            text_color=_UI_MUTED,
+            anchor="w",
+        )
+        self._system_status_lbl.pack(side="left", padx=(8, 0))
+        self._vad_listening = False
+        self._vad_processing = False
         # Phase 2A — engine sidecar reconnect badge (hidden until IPC drop).
         self.daemon_badge = ctk.CTkLabel(
-            header,
+            left,
             text="",
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color="#FBBF24",
             fg_color="transparent",
         )
-        self.daemon_badge.pack(side="left", padx=(0, 8), pady=12)
+        self.daemon_badge.pack(side="left", padx=(8, 0))
         self._daemon_client = None
-        # Stage 8.9.2 — emergency kill switch (runs stop_dana.vbs / stop_dana.bat).
+
+        right = ctk.CTkFrame(header, fg_color="transparent")
+        right.pack(side="right", padx=(8, 14), pady=8)
+
         self.stop_donna_btn = ctk.CTkButton(
-            header,
+            right,
             text="STOP DANA",
-            width=128,
-            height=32,
+            width=108,
+            height=30,
             corner_radius=8,
             fg_color=_UI_ROSE,
             hover_color=_UI_ROSE_HOVER,
             text_color="#FFFFFF",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=ctk.CTkFont(size=11, weight="bold"),
             command=self._on_stop_donna_clicked,
         )
-        self.stop_donna_btn.pack(side="right", padx=(8, 16), pady=12)
-        ctk.CTkLabel(
-            header,
-            text="local · offline-first",
+        self.stop_donna_btn.pack(side="right", padx=(6, 0))
+
+        self._diag_header_btn = ctk.CTkButton(
+            right,
+            text="Diagnostics",
+            width=100,
+            height=30,
+            corner_radius=999,
+            fg_color=_UI_GHOST,
+            hover_color="#475569",
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+            text_color=_UI_TEXT,
             font=ctk.CTkFont(size=11),
-            text_color=_UI_MUTED,
-            anchor="e",
-        ).pack(side="right", padx=(8, 4), pady=14)
+            command=self._dashboard_open_trace,
+        )
+        self._diag_header_btn.pack(side="right", padx=(6, 0))
+
+        try:
+            _engage_font = ctk.CTkFont(
+                family="Segoe UI Historic", size=12, weight="bold"
+            )
+        except Exception:  # noqa: BLE001
+            _engage_font = ctk.CTkFont(size=12, weight="bold")
+        self._engage_toggle_btn = ctk.CTkButton(
+            right,
+            text="Engaged",
+            width=100,
+            height=30,
+            corner_radius=999,
+            font=_engage_font,
+            fg_color=_UI_EMERALD,
+            hover_color="#059669",
+            text_color="#ECFDF5",
+            command=self.toggle_engine_engage,
+        )
+        self._engage_toggle_btn.pack(side="right", padx=(6, 0))
+        self._engage_btn = self._engage_toggle_btn
+        self._standby_btn = None
+
+        self._tasks_toggle_btn = ctk.CTkButton(
+            right,
+            text="Tasks",
+            width=72,
+            height=30,
+            corner_radius=999,
+            fg_color=_UI_GHOST,
+            hover_color="#475569",
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+            text_color=_UI_TEXT,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=self._toggle_tasks_drawer,
+        )
+        self._tasks_toggle_btn.pack(side="right", padx=(6, 0))
+
+        self._dag_toggle_btn = ctk.CTkButton(
+            right,
+            text="DAG ▸",
+            width=72,
+            height=30,
+            corner_radius=999,
+            fg_color=_UI_GHOST,
+            hover_color="#475569",
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+            text_color=_UI_TEXT,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=self._toggle_dag_drawer,
+        )
+        self._dag_toggle_btn.pack(side="right", padx=(6, 0))
+
+        # Center tab switcher (mirrors CTkTabview; built-in segment hidden below).
+        center = ctk.CTkFrame(header, fg_color="transparent")
+        center.pack(side="left", fill="x", expand=True, padx=8, pady=8)
+        self._header_seg = ctk.CTkSegmentedButton(
+            center,
+            values=["Assistant & Tasks", "Perception", "Memory & Settings"],
+            command=self._on_header_tab,
+            height=30,
+            corner_radius=999,
+            font=ctk.CTkFont(size=11, weight="bold"),
+        )
+        self._header_seg.pack(anchor="center")
+        try:
+            self._header_seg.set("Assistant & Tasks")
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            from dana.ui.tooltips import attach_tooltip
+
+            attach_tooltip(
+                self._engage_toggle_btn,
+                "When Engaged, Dānā listens for the wake word and responds to "
+                "voice/text. Click to put in Standby.",
+            )
+            attach_tooltip(
+                self._diag_header_btn,
+                "Open system logs, audio RMS meters, and component health status.",
+            )
+            attach_tooltip(
+                self._tasks_toggle_btn,
+                "Shows real-time status of background Python sandbox scripts "
+                "and research swarms.",
+            )
+            attach_tooltip(
+                self._dag_toggle_btn,
+                "Live LangGraph DAG execution tree and tool micro-log. "
+                "Hotkey: Ctrl+Shift+D.",
+            )
+            attach_tooltip(
+                self.stop_donna_btn,
+                "Emergency kill-switch. Instantly halts all background processes "
+                "and shuts down the engine.",
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
         # Three polished surfaces: Assistant, Perception, Memory & Settings.
-        # Segmented tab accents come from dana_theme.json (CTkSegmentedButton).
         tabs = ctk.CTkTabview(
             self,
             fg_color=_UI_CANVAS,
@@ -8522,22 +9282,56 @@ class DonnaGUI(ctk.CTk):
             corner_radius=14,
             border_width=0,
         )
-        tabs.pack(fill="both", expand=True, padx=14, pady=(10, 14))
+        tabs.pack(fill="both", expand=True, padx=14, pady=(8, 14))
         self._tabs = tabs
-        try:
-            tabs._segmented_button.configure(corner_radius=999, height=34)  # type: ignore[attr-defined]
-        except Exception:  # noqa: BLE001
-            pass
 
         tab_assistant = tabs.add("Assistant & Tasks")
         tab_perception = tabs.add("Perception")
         tab_memory = tabs.add("Memory & Settings")
 
-        # Responsive grid — Conversation weight=3, Tasks weight=1 (Chat + Tracker only).
+        def _hide_builtin_tab_strip() -> None:
+            """CTkTabview re-grids ``_segmented_button`` on every ``add`` — hide it."""
+            try:
+                seg = tabs._segmented_button  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                return
+            for forget in (
+                getattr(seg, "grid_forget", None),
+                getattr(seg, "pack_forget", None),
+                getattr(seg, "place_forget", None),
+            ):
+                if forget is None:
+                    continue
+                try:
+                    forget()
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                seg.configure(height=0, width=0)
+            except Exception:  # noqa: BLE001
+                pass
+
+        _hide_builtin_tab_strip()
         try:
+            # Stop future layout passes from restoring the duplicate tab row.
+            tabs._set_grid_segmented_button = (  # type: ignore[attr-defined]
+                lambda *a, **k: None
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.after(50, _hide_builtin_tab_strip)
+            self.after(250, _hide_builtin_tab_strip)
+        except Exception:  # noqa: BLE001
+            pass
+
+        try:
+            # Conversation flexes; Task Tracker is fixed-size (shown/hidden via grid).
+            # Row 1 = full-width bottom input (columnspan=2).
             tab_assistant.grid_columnconfigure(0, weight=1)
-            tab_assistant.grid_rowconfigure(1, weight=3)
-            tab_assistant.grid_rowconfigure(2, weight=1)
+            tab_assistant.grid_columnconfigure(1, weight=0)
+            tab_assistant.grid_rowconfigure(0, weight=1)
+            tab_assistant.grid_rowconfigure(1, weight=0)
             tab_perception.grid_columnconfigure(0, weight=1)
             tab_perception.grid_rowconfigure(0, weight=1)
             tab_memory.grid_columnconfigure(0, weight=1)
@@ -8547,7 +9341,19 @@ class DonnaGUI(ctk.CTk):
 
         self._build_dashboard_tab(tab_assistant)
         self._build_task_tracker_section(tab_assistant)
+        self._build_bottom_input_row(tab_assistant)
         self._build_perception_tab(tab_perception)
+        try:
+            from dana.ui.tooltips import attach_tooltip
+
+            # Perception tab tip via header segment (best-effort).
+            attach_tooltip(
+                self._header_seg,
+                "Perception tab: view live screen captures, camera feeds, and "
+                "spatial tracking buffers. Other segments open Assistant or Settings.",
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
         # Memory & Settings: single elastic scroll (cards expand; avoid nested clip).
         mem_scroll = ctk.CTkScrollableFrame(tab_memory, fg_color=_UI_CANVAS)
@@ -8565,10 +9371,67 @@ class DonnaGUI(ctk.CTk):
             tabs.set("Assistant & Tasks")
         except Exception:  # noqa: BLE001
             pass
+        _hide_builtin_tab_strip()
 
         try:
             self.after(300, self.refresh_dictation_sessions)
             self.after(350, self._reload_behavior_sliders)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_header_tab(self, name: str) -> None:
+        self._select_tab(str(name))
+
+    def _assistant_tab(self) -> Any | None:
+        tabs = getattr(self, "_tabs", None)
+        if tabs is None:
+            return None
+        try:
+            return tabs.tab("Assistant & Tasks")
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _toggle_tasks_drawer(self) -> None:
+        """Expand / collapse the Task Tracker via grid_remove (window size fixed)."""
+        if bool(getattr(self, "_tasks_drawer_visible", True)):
+            self._collapse_tasks_drawer()
+        else:
+            self._expand_tasks_drawer()
+
+    def _collapse_tasks_drawer(self) -> None:
+        frame = getattr(self, "task_tracker_frame", None) or getattr(
+            self, "_assistant_side", None
+        )
+        if frame is None:
+            self._tasks_drawer_visible = False
+            return
+        self._tasks_drawer_visible = False
+        try:
+            frame.grid_remove()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self._tasks_toggle_btn is not None:
+                self._tasks_toggle_btn.configure(text="Tasks ▸")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _expand_tasks_drawer(self) -> None:
+        frame = getattr(self, "task_tracker_frame", None) or getattr(
+            self, "_assistant_side", None
+        )
+        if frame is None:
+            self._tasks_drawer_visible = True
+            return
+        self._tasks_drawer_visible = True
+        try:
+            # Restores the options from the original .grid(...) call.
+            frame.grid()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self._tasks_toggle_btn is not None:
+                self._tasks_toggle_btn.configure(text="Tasks")
         except Exception:  # noqa: BLE001
             pass
 
@@ -8581,177 +9444,74 @@ class DonnaGUI(ctk.CTk):
             tabs.set(str(name))
         except Exception:  # noqa: BLE001
             pass
+        seg = getattr(self, "_header_seg", None)
+        if seg is not None:
+            try:
+                seg.set(str(name))
+            except Exception:  # noqa: BLE001
+                pass
 
     def _build_dashboard_tab(self, tab) -> None:  # noqa: ANN001
-        """HUD + Conversation (grid weight=3) + footer status/input.
+        """Chat-hero main column — conversation only (input is full-width row 1).
 
-        Layout uses ``grid_rowconfigure`` weights so Conversation grows with the
-        window; Tasks / diagnostics are placed by sibling builders (rows 2–3).
+        Task Tracker lives in the side drawer (column 1). Engine controls moved
+        to the global header HUD.
         """
         try:
             tab.configure(fg_color=_UI_CANVAS)
         except Exception:  # noqa: BLE001
             pass
 
-        # --- Compact Status HUD (row 0) ---
-        hud = ctk.CTkFrame(
-            tab,
-            fg_color=_UI_CARD,
-            corner_radius=14,
-            border_width=1,
-            border_color=_UI_CARD_BORDER,
-        )
-        hud.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 6))
-        hud_inner = ctk.CTkFrame(hud, fg_color="transparent")
-        hud_inner.pack(fill="x", padx=10, pady=8)
-
-        left = ctk.CTkFrame(hud_inner, fg_color="transparent")
-        left.pack(side="left", fill="y")
-        self._dash_logo_img = None
+        main = ctk.CTkFrame(tab, fg_color="transparent")
+        main.grid(row=0, column=0, sticky="nsew", padx=(14, 6), pady=(10, 4))
+        self._assistant_main = main
         try:
-            from dana.ui.logo import load_premium_logo
-
-            self._dash_logo_img = load_premium_logo((36, 36))
-        except Exception:  # noqa: BLE001
-            self._dash_logo_img = None
-        if self._dash_logo_img is not None:
-            try:
-                ctk.CTkLabel(
-                    left,
-                    text="",
-                    image=self._dash_logo_img,
-                    fg_color="transparent",
-                ).pack(side="left", padx=(0, 10))
-            except Exception:  # noqa: BLE001
-                self._dash_logo_img = None
-        meta = ctk.CTkFrame(left, fg_color="transparent")
-        meta.pack(side="left", fill="y")
-        ctk.CTkLabel(
-            meta,
-            text="Dana is online",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            text_color=_UI_TEXT,
-            anchor="w",
-        ).pack(anchor="w")
-        status_row = ctk.CTkFrame(meta, fg_color="transparent")
-        status_row.pack(anchor="w")
-        self.status_value = ctk.CTkLabel(
-            status_row,
-            text="Idle",
-            font=ctk.CTkFont(size=11),
-            text_color=_UI_MUTED,
-        )
-        self.status_value.pack(side="left", padx=(0, 10))
-        self.wake_value = ctk.CTkLabel(
-            status_row,
-            text="Wake: Dana",
-            font=ctk.CTkFont(size=11),
-            text_color=_UI_EMERALD,
-        )
-        self.wake_value.pack(side="left")
-
-        # Button group: Engage / Standby / Diagnostics
-        toolbar = ctk.CTkFrame(hud_inner, fg_color="transparent")
-        toolbar.pack(side="right", fill="y")
-        try:
-            _engage_font = ctk.CTkFont(
-                family="Segoe UI Historic", size=12, weight="bold"
-            )
-        except Exception:  # noqa: BLE001
-            _engage_font = ctk.CTkFont(size=12, weight="bold")
-        self._engage_btn = ctk.CTkButton(
-            toolbar,
-            text="Engage",
-            width=96,
-            height=30,
-            corner_radius=999,
-            font=_engage_font,
-            command=self.engage_engine,
-        )
-        self._engage_btn.pack(side="left", padx=3)
-        self._standby_btn = ctk.CTkButton(
-            toolbar,
-            text="Standby",
-            width=96,
-            height=30,
-            corner_radius=999,
-            fg_color=_UI_GHOST,
-            hover_color="#475569",
-            text_color=_UI_TEXT,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            command=self.standby_engine,
-        )
-        self._standby_btn.pack(side="left", padx=3)
-        ctk.CTkButton(
-            toolbar,
-            text="Diagnostics",
-            width=110,
-            height=30,
-            corner_radius=999,
-            fg_color=_UI_GHOST,
-            hover_color="#475569",
-            border_width=1,
-            border_color=_UI_CARD_BORDER,
-            text_color=_UI_TEXT,
-            font=ctk.CTkFont(size=11),
-            command=self._dashboard_open_trace,
-        ).pack(side="left", padx=3)
-
-        status_bar = ctk.CTkFrame(hud, fg_color="transparent")
-        status_bar.pack(fill="x", padx=12, pady=(0, 8))
-        # Unified status pill (engine + local runtime).
-        self._engine_status_lbl = ctk.CTkLabel(
-            status_bar,
-            text="  ● STANDBY | Local Engine  ",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=_UI_MUTED,
-            fg_color=_UI_GHOST,
-            corner_radius=999,
-            padx=10,
-            pady=4,
-            anchor="w",
-        )
-        self._engine_status_lbl.pack(side="left")
-        self._engine_warn_lbl = ctk.CTkLabel(
-            status_bar,
-            text="",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=_UI_ROSE,
-            anchor="e",
-        )
-        self._engine_warn_lbl.pack(side="right")
-        try:
-            self._refresh_engine_ui()
+            main.grid_columnconfigure(0, weight=1)
+            main.grid_rowconfigure(0, weight=1)
+            main.grid_rowconfigure(1, weight=0)
         except Exception:  # noqa: BLE001
             pass
 
-        # --- Conversation (row 1, weight=3) ---
-        chat_host = ctk.CTkFrame(tab, fg_color="transparent")
-        chat_host.grid(row=1, column=0, sticky="nsew", padx=14, pady=(4, 4))
+        # Status / wake chrome live in the header HUD (mic + system labels).
+        self.status_value = None
+        self.wake_value = None
+        self._engine_status_lbl = None
+        self._engine_warn_lbl = None
+        # Keep header-created mic / system labels — do not null them here.
+
+        # Ensure monitor bus exists so background graph streams can publish.
         try:
-            chat_host.grid_columnconfigure(0, weight=1)
-            chat_host.grid_rowconfigure(0, weight=1)
+            from dana.graph.monitor_bus import get_monitor_bus
+
+            get_monitor_bus(create=True)
         except Exception:  # noqa: BLE001
             pass
+
+        # _make_card packs its shell into parent; re-grid the shell so siblings
+        # on ``main`` can use grid (Tk forbids mixing pack+grid on one parent).
         chat_card = self._make_card(
-            chat_host, title="Conversation", padx=0, pady=(0, 0), expand=True
+            main, title="Conversation", padx=0, pady=(0, 0), expand=True
         )
-        ctk.CTkLabel(
-            chat_card,
-            text="User right · Dana left · system tags as muted badges",
-            anchor="w",
-            text_color=_UI_MUTED,
-            font=ctk.CTkFont(size=11),
-        ).pack(fill="x", pady=(0, 4))
+        chat_shell = getattr(chat_card, "master", None)
+        try:
+            if chat_shell is not None:
+                chat_shell.pack_forget()
+                chat_shell.grid(row=0, column=0, sticky="nsew")
+        except Exception:  # noqa: BLE001
+            try:
+                chat_card.grid(row=0, column=0, sticky="nsew")
+            except Exception:  # noqa: BLE001
+                pass
+
         self._chat_view = None
         try:
             from dana.ui.chat_view import ChatBubbleView
 
-            self._chat_view = ChatBubbleView(chat_card, wraplength=440)
+            self._chat_view = ChatBubbleView(chat_card, wraplength=520)
             self._chat_view.pack(fill="both", expand=True)
             self.transcript_box = self._chat_view.transcript_box
             try:
-                chat_host.bind(
+                main.bind(
                     "<Configure>",
                     lambda e: self._on_chat_host_configure(e),
                     add="+",
@@ -8773,10 +9533,7 @@ class DonnaGUI(ctk.CTk):
         welcome = "Type below or say Dana, then speak."
         try:
             self.transcript_box.configure(state="normal")
-            self.transcript_box.insert(
-                "1.0",
-                f"[Dana] {welcome}\n\n",
-            )
+            self.transcript_box.insert("1.0", f"[Dana] {welcome}\n\n")
             self.transcript_box.configure(state="disabled")
         except Exception:  # noqa: BLE001
             pass
@@ -8786,32 +9543,226 @@ class DonnaGUI(ctk.CTk):
             except Exception:  # noqa: BLE001
                 pass
 
-        # --- Status bus + chat input (rows 4–5; weight 0) ---
-        status_line = ctk.CTkFrame(tab, fg_color="transparent")
-        status_line.grid(row=4, column=0, sticky="ew", padx=14, pady=(4, 6))
-        self._vad_mic_lbl = ctk.CTkLabel(
-            status_line,
-            text="●",
-            width=22,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=_UI_MUTED,
-            anchor="w",
-        )
-        self._vad_mic_lbl.pack(side="left", padx=(2, 6))
-        self._system_status_lbl = ctk.CTkLabel(
-            status_line,
-            text="",
-            anchor="w",
-            font=ctk.CTkFont(size=12),
-            text_color=_UI_AMBER,
-        )
-        self._system_status_lbl.pack(side="left", fill="x", expand=True)
+        self._build_dag_monitor_section(main)
+        try:
+            self.bind("<Control-Shift-D>", lambda _e: self._toggle_dag_drawer())
+            self.bind("<Control-Shift-d>", lambda _e: self._toggle_dag_drawer())
+        except Exception:  # noqa: BLE001
+            pass
 
-        chat_bar = ctk.CTkFrame(tab, fg_color="transparent")
-        chat_bar.grid(row=5, column=0, sticky="ew", padx=14, pady=(0, 14))
-        chat_bar.grid_columnconfigure(0, weight=1)
+        try:
+            self.engage_engine()
+        except Exception:  # noqa: BLE001
+            try:
+                self._refresh_engine_ui()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _build_dag_monitor_section(self, main) -> None:  # noqa: ANN001
+        """Collapsible live DAG drawer under Conversation (row 1 of main)."""
+        shell = ctk.CTkFrame(
+            main,
+            fg_color=_UI_CARD,
+            corner_radius=14,
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+            height=220,
+        )
+        self.dag_monitor_frame = shell
+        self._dag_drawer_visible = False
+        try:
+            shell.grid_propagate(False)
+            shell.grid_columnconfigure(0, weight=1)
+            shell.grid_rowconfigure(0, weight=0)
+            shell.grid_rowconfigure(1, weight=1)
+        except Exception:  # noqa: BLE001
+            pass
+
+        hdr = ctk.CTkFrame(shell, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 2))
+        try:
+            hdr.grid_columnconfigure(0, weight=1)
+            hdr.grid_columnconfigure(1, weight=0)
+        except Exception:  # noqa: BLE001
+            pass
+        ctk.CTkLabel(
+            hdr,
+            text="DAG Execution",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=_UI_TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        right_hdr = ctk.CTkFrame(hdr, fg_color="transparent")
+        right_hdr.grid(row=0, column=1, sticky="e")
+        try:
+            from dana.graph.cloud_planner import planner_mode_label
+
+            _planner_mode = planner_mode_label()
+        except Exception:  # noqa: BLE001
+            _planner_mode = "LOCAL"
+        self._dag_planner_mode_lbl = ctk.CTkLabel(
+            right_hdr,
+            text=f"Planner Mode: [{_planner_mode}]",
+            font=ctk.CTkFont(size=10),
+            text_color=_UI_MUTED,
+            anchor="e",
+        )
+        self._dag_planner_mode_lbl.pack(side="top", anchor="e")
+        self._dag_status_lbl = ctk.CTkLabel(
+            right_hdr,
+            text="Idle",
+            font=ctk.CTkFont(size=11),
+            text_color=_UI_MUTED,
+            anchor="e",
+        )
+        self._dag_status_lbl.pack(side="top", anchor="e")
+
+        try:
+            from dana.ui.dag_monitor_view import DagMonitorView
+            from dana.ui.tooltips import attach_tooltip
+
+            self.dag_monitor_view = DagMonitorView(
+                shell,
+                poll_ms=250,
+                show_header=False,
+                status_label=self._dag_status_lbl,
+                on_multistep=self._on_dag_multistep,
+                on_complete=self._on_dag_complete,
+            )
+            self.dag_monitor_view.grid(
+                row=1, column=0, sticky="nsew", padx=4, pady=(0, 8)
+            )
+            attach_tooltip(
+                self.dag_monitor_view,
+                "Live supervisor plan, worker status, and tool staging events.",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.dag_monitor_view = None
+            log("UI", f"WARNING: DagMonitorView unavailable ({exc})")
+            ctk.CTkLabel(
+                shell,
+                text="DAG monitor unavailable",
+                text_color=_UI_MUTED,
+            ).grid(row=1, column=0, sticky="nw", padx=12, pady=12)
+
+        # Start collapsed; multi-step plans auto-expand.
+        try:
+            shell.grid_remove()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_dag_multistep(self) -> None:
+        """Auto-expand the DAG drawer when a multi-step plan arrives."""
+        try:
+            self.after(0, self._expand_dag_drawer)
+        except Exception:  # noqa: BLE001
+            self._expand_dag_drawer()
+
+    def _on_dag_complete(self, summary: str) -> None:
+        try:
+            log("UI", f"DAG complete: {summary}")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _toggle_dag_drawer(self) -> None:
+        if bool(getattr(self, "_dag_drawer_visible", False)):
+            self._collapse_dag_drawer()
+        else:
+            self._expand_dag_drawer()
+
+    def _collapse_dag_drawer(self) -> None:
+        frame = getattr(self, "dag_monitor_frame", None)
+        if frame is None:
+            self._dag_drawer_visible = False
+            return
+        self._dag_drawer_visible = False
+        try:
+            frame.grid_remove()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self._dag_toggle_btn is not None:
+                self._dag_toggle_btn.configure(text="DAG ▸")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _expand_dag_drawer(self) -> None:
+        frame = getattr(self, "dag_monitor_frame", None)
+        if frame is None:
+            self._dag_drawer_visible = True
+            return
+        self._dag_drawer_visible = True
+        try:
+            frame.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+        except Exception:  # noqa: BLE001
+            try:
+                frame.grid()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            if self._dag_toggle_btn is not None:
+                self._dag_toggle_btn.configure(text="DAG")
+        except Exception:  # noqa: BLE001
+            pass
+        view = getattr(self, "dag_monitor_view", None)
+        if view is not None:
+            try:
+                view.refresh()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def start_dag_monitor_stream(
+        self,
+        user_prompt: str,
+        *,
+        tool_fn: Any | None = None,
+        planner: Any | None = None,
+    ) -> None:
+        """Run ``stream_dag_supervisor`` on a daemon thread (UI stays responsive)."""
+        import threading
+
+        def _run() -> None:
+            try:
+                from dana.graph.builder import stream_dag_supervisor
+                from dana.graph.monitor_bus import get_monitor_bus
+
+                get_monitor_bus(create=True)
+                for _chunk in stream_dag_supervisor(
+                    user_prompt,
+                    planner=planner,
+                    tool_fn=tool_fn,
+                    monitor=True,
+                ):
+                    pass
+            except Exception as exc:  # noqa: BLE001
+                try:
+                    log("UI", f"DAG stream error: {exc}")
+                except Exception:  # noqa: BLE001
+                    pass
+
+        t = threading.Thread(target=_run, name="dana-dag-monitor", daemon=True)
+        self._dag_stream_thread = t
+        t.start()
+
+    def _build_bottom_input_row(self, tab) -> None:  # noqa: ANN001
+        """Full-width input row under Conversation + Task Tracker (columnspan=2)."""
+        bottom = ctk.CTkFrame(tab, fg_color="transparent")
+        bottom.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=(14, 14),
+            pady=(4, 10),
+        )
+        self.bottom_input_frame = bottom
+        try:
+            bottom.grid_columnconfigure(0, weight=1)
+            bottom.grid_columnconfigure(1, weight=0)
+        except Exception:  # noqa: BLE001
+            pass
         self.chat_entry = ctk.CTkEntry(
-            chat_bar,
+            bottom,
             placeholder_text="Type below or say Dana, then speak.",
             height=36,
             corner_radius=10,
@@ -8824,9 +9775,8 @@ class DonnaGUI(ctk.CTk):
         )
         self.chat_entry.grid(row=0, column=0, sticky="ew", padx=(0, 10))
         self.chat_entry.bind("<Return>", self.submit_text_command)
-        # Primary button colors from dana_theme.json (CTkButton).
         self._chat_send_btn = ctk.CTkButton(
-            chat_bar,
+            bottom,
             text="Send",
             width=92,
             height=36,
@@ -8895,17 +9845,76 @@ class DonnaGUI(ctk.CTk):
         return "break" if event is not None else None
 
     def _build_task_tracker_section(self, tab) -> None:  # noqa: ANN001
-        """Human-readable Task Tracker timeline (grid row 2, weight=1)."""
+        """Task Tracker side drawer (column 1). Toggle only grid_remove/grid's this frame."""
+        side = ctk.CTkFrame(
+            tab,
+            fg_color=_UI_CARD,
+            corner_radius=14,
+            border_width=1,
+            border_color=_UI_CARD_BORDER,
+            width=280,
+        )
+        side.grid(row=0, column=1, sticky="nsew", padx=(6, 14), pady=(10, 4))
+        self._assistant_side = side
+        self.task_tracker_frame = side
+        try:
+            side.grid_propagate(False)
+            side.grid_columnconfigure(0, weight=1)
+            side.grid_rowconfigure(0, weight=0)
+            side.grid_rowconfigure(1, weight=1)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Permanent chrome — never pack_forget / grid_forget these inners.
+        hdr = ctk.CTkFrame(side, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 4))
+        try:
+            hdr.grid_columnconfigure(0, weight=1)
+            hdr.grid_columnconfigure(1, weight=0)
+        except Exception:  # noqa: BLE001
+            pass
+        ctk.CTkLabel(
+            hdr,
+            text="Task Tracker",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=_UI_TEXT,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        self._tasks_empty_lbl = ctk.CTkLabel(
+            hdr,
+            text="No active tasks",
+            font=ctk.CTkFont(size=11),
+            text_color=_UI_MUTED,
+            anchor="e",
+        )
+        self._tasks_empty_lbl.grid(row=0, column=1, sticky="e")
+
         try:
             from dana.ui.task_tracker_view import TaskTrackerView
+            from dana.ui.tooltips import attach_tooltip
 
-            self.task_tracker_view = TaskTrackerView(tab, poll_ms=400)
+            self.task_tracker_view = TaskTrackerView(
+                side,
+                poll_ms=400,
+                show_header=False,
+                status_label=self._tasks_empty_lbl,
+            )
             self.task_tracker_view.grid(
-                row=2, column=0, sticky="nsew", padx=14, pady=(0, 6)
+                row=1, column=0, sticky="nsew", padx=4, pady=(0, 8)
+            )
+            attach_tooltip(
+                self.task_tracker_view,
+                "Shows real-time status of background Python sandbox scripts "
+                "and research swarms.",
             )
         except Exception as exc:  # noqa: BLE001
             self.task_tracker_view = None
             log("UI", f"WARNING: TaskTrackerView unavailable ({exc})")
+            ctk.CTkLabel(
+                side,
+                text="Task Tracker unavailable",
+                text_color=_UI_MUTED,
+            ).grid(row=1, column=0, sticky="nw", padx=12, pady=12)
 
     def _build_developer_diagnostics(self, tab) -> None:  # noqa: ANN001
         """Collapsible Live Trace / LangGraph diagnostics (Settings tab)."""
@@ -9720,6 +10729,33 @@ class DonnaGUI(ctk.CTk):
             text_color=_UI_MUTED,
         )
         self._open_window_chk.pack(anchor="w", pady=(0, 8))
+        try:
+            from dana.settings import is_hybrid_planner_enabled
+
+            hybrid_on = bool(is_hybrid_planner_enabled())
+        except Exception:  # noqa: BLE001
+            hybrid_on = False
+        self._hybrid_planner_var = ctk.BooleanVar(value=hybrid_on)
+        self._hybrid_planner_chk = ctk.CTkCheckBox(
+            stats_card,
+            text="Hybrid Broker (Cloud Planner)",
+            variable=self._hybrid_planner_var,
+            command=self._on_hybrid_planner_toggle,
+            text_color=_UI_MUTED,
+        )
+        self._hybrid_planner_chk.pack(anchor="w", pady=(0, 4))
+        ctk.CTkLabel(
+            stats_card,
+            text=(
+                "Off by default (fully local). When on, Meta-Broker epic split "
+                "and Supervisor DAG JSON may use Gemini if GEMINI_API_KEY is set "
+                "in .env. Workers and the runtime harness always stay local."
+            ),
+            anchor="w",
+            justify="left",
+            wraplength=320,
+            text_color=_UI_MUTED,
+        ).pack(fill="x", pady=(0, 8))
         ctk.CTkLabel(
             stats_card,
             text=(
@@ -10182,7 +11218,7 @@ class DonnaGUI(ctk.CTk):
             return values
 
     def _refresh_engine_ui(self) -> None:
-        """Sync Engage/Standby chrome with ``engine_active``."""
+        """Sync Engage/Standby toggle chrome with ``engine_active``."""
         active = bool(self.engine_active)
         stopped = bool(getattr(self, "_engine_stopped", False)) and not active
         status = self._engine_status_lbl
@@ -10208,13 +11244,45 @@ class DonnaGUI(ctk.CTk):
                     )
             except Exception:  # noqa: BLE001
                 pass
+        header_status = getattr(self, "_header_status_lbl", None)
+        if header_status is not None:
+            try:
+                if active:
+                    header_status.configure(text="• ACTIVE", text_color=_UI_EMERALD)
+                elif stopped:
+                    header_status.configure(text="• STOPPED", text_color=_UI_ROSE)
+                else:
+                    header_status.configure(text="• STANDBY", text_color=_UI_MUTED)
+            except Exception:  # noqa: BLE001
+                pass
+        toggle = getattr(self, "_engage_toggle_btn", None) or self._engage_btn
         try:
-            if self._engage_btn is not None:
-                self._engage_btn.configure(state="disabled" if active else "normal")
-            if self._standby_btn is not None:
-                self._standby_btn.configure(state="normal" if active else "disabled")
+            if toggle is not None:
+                if active:
+                    toggle.configure(
+                        text="Engaged",
+                        state="normal",
+                        fg_color=_UI_EMERALD,
+                        hover_color="#059669",
+                        text_color="#ECFDF5",
+                    )
+                else:
+                    toggle.configure(
+                        text="Standby",
+                        state="normal",
+                        fg_color=_UI_GHOST,
+                        hover_color="#475569",
+                        text_color=_UI_TEXT,
+                    )
         except Exception:  # noqa: BLE001
             pass
+
+    def toggle_engine_engage(self) -> None:
+        """Single HUD control: Engaged ↔ Standby."""
+        if bool(self.engine_active) and is_engine_engaged():
+            self.standby_engine()
+        else:
+            self.engage_engine()
 
     def engage_engine(self) -> None:
         """Stage 8.9.7 — arm engine, apply mixer, lock Behavior sliders."""
@@ -10903,19 +11971,28 @@ class DonnaGUI(ctk.CTk):
             pass
 
     def _poll_state_changes(self) -> None:
-        """Drain STATE_CHANGE bus → VAD mic + System Status line (~5 Hz)."""
+        """Drain STATE_CHANGE bus → VAD mic + System Status line (~10 Hz)."""
         if not self.winfo_exists():
             return
         try:
             from dana.ui.status_bus import drain_state_changes
 
-            events = drain_state_changes(max_items=32)
+            # Drain until empty (capped) so bursts between ticks never stall.
+            events: list = []
+            for _ in range(8):
+                batch = drain_state_changes(max_items=64)
+                if not batch:
+                    break
+                events.extend(batch)
+                if len(events) >= 256:
+                    break
             if events:
+                # Latest wins for widgets; full drain guarantees no dropped tip.
                 self._apply_state_change(events[-1])
         except Exception:  # noqa: BLE001
             pass
         try:
-            self.after(200, self._poll_state_changes)
+            self.after(100, self._poll_state_changes)
         except Exception:  # noqa: BLE001
             pass
 
@@ -10929,9 +12006,24 @@ class DonnaGUI(ctk.CTk):
         tool = str(event.get("tool") or "")
         message = str(event.get("message") or "")
         self._vad_listening = status == "listening"
+        self._vad_processing = status in {"processing", "routing", "executing"}
         line = format_system_status_line(
             status, tool=tool, message=message
         )
+        mic_text = "● Idle"
+        mic_color = _UI_MUTED
+        if status == "listening":
+            mic_text = "● Listening"
+            mic_color = _UI_EMERALD
+        elif status == "processing":
+            mic_text = "● Processing"
+            mic_color = _UI_AMBER
+        elif status == "routing":
+            mic_text = "● Processing"
+            mic_color = _UI_AMBER
+        elif status == "executing":
+            mic_text = "● Processing"
+            mic_color = _UI_ACCENT
         lbl = getattr(self, "_system_status_lbl", None)
         if lbl is not None:
             try:
@@ -10942,13 +12034,32 @@ class DonnaGUI(ctk.CTk):
                     color = _UI_ACCENT
                 elif status == "listening":
                     color = _UI_EMERALD
-                lbl.configure(text=line, text_color=color)
+                elif status == "processing":
+                    color = _UI_AMBER
+                elif status == "idle":
+                    color = _UI_MUTED
+                if tool == "proactive_briefing":
+                    color = _UI_AMBER
+                lbl.configure(text=line or "Idle", text_color=color)
             except Exception:  # noqa: BLE001
                 pass
+        if tool == "proactive_briefing":
+            hdr = getattr(self, "_header_status_lbl", None)
+            if hdr is not None:
+                try:
+                    hdr.configure(text="• BRIEFING", text_color=_UI_AMBER)
+                except Exception:  # noqa: BLE001
+                    pass
+            badge = getattr(self, "daemon_badge", None)
+            if badge is not None and message:
+                try:
+                    badge.configure(text="● UPDATE")
+                except Exception:  # noqa: BLE001
+                    pass
         mic = getattr(self, "_vad_mic_lbl", None)
-        if mic is not None and not self._vad_listening:
+        if mic is not None:
             try:
-                mic.configure(text_color=_UI_MUTED)
+                mic.configure(text=mic_text, text_color=mic_color)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -10973,9 +12084,19 @@ class DonnaGUI(ctk.CTk):
             self._vad_pulse_on = not getattr(self, "_vad_pulse_on", False)
             try:
                 mic.configure(
+                    text="● Listening",
                     text_color=_UI_EMERALD
                     if self._vad_pulse_on
-                    else _UI_ACCENT
+                    else _UI_ACCENT,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        elif mic is not None and getattr(self, "_vad_processing", False):
+            self._vad_pulse_on = not getattr(self, "_vad_pulse_on", False)
+            try:
+                mic.configure(
+                    text="● Processing",
+                    text_color=_UI_AMBER if self._vad_pulse_on else _UI_ACCENT,
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -11058,7 +12179,8 @@ class DonnaGUI(ctk.CTk):
         raw = get_ui_state()
         label = _UI_STATE_LABELS.get(raw, raw.title())
         try:
-            self.status_value.configure(text=label)
+            if self.status_value is not None:
+                self.status_value.configure(text=label)
         except Exception:  # noqa: BLE001
             pass
         wake = ", ".join(WAKEWORD_MODELS) if WAKEWORD_MODELS else "—"
@@ -11069,7 +12191,8 @@ class DonnaGUI(ctk.CTk):
         else:
             wake_disp = wake
         try:
-            self.wake_value.configure(text=f"Wake: {wake_disp}")
+            if self.wake_value is not None:
+                self.wake_value.configure(text=f"Wake: {wake_disp}")
         except Exception:  # noqa: BLE001
             pass
         settings_wake = getattr(self, "_settings_wake_lbl", None)
@@ -11134,6 +12257,47 @@ class DonnaGUI(ctk.CTk):
             )
         except Exception as exc:  # noqa: BLE001
             log("UI", f"WARNING: could not save open_window_on_startup ({exc})")
+
+    def _on_hybrid_planner_toggle(self) -> None:
+        """Persist Settings → Hybrid Broker (Cloud Planner); refresh DAG label."""
+        try:
+            from dana.settings import set_hybrid_planner_enabled
+
+            enabled = bool(self._hybrid_planner_var.get())
+            set_hybrid_planner_enabled(enabled)
+            log(
+                "UI",
+                f"hybrid_planner_enabled={'True' if enabled else 'False'} (saved)",
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: could not save hybrid_planner_enabled ({exc})")
+        self._refresh_planner_mode_label(warn_missing_key=True)
+
+    def _refresh_planner_mode_label(self, *, warn_missing_key: bool = False) -> None:
+        """Update DAG drawer 'Planner Mode: […]' from settings + API key presence."""
+        try:
+            from dana.graph.cloud_planner import (
+                planner_mode_label,
+                publish_planner_mode,
+            )
+
+            mode = publish_planner_mode(warn_missing_key=warn_missing_key)
+            mode = mode or planner_mode_label()
+        except Exception:  # noqa: BLE001
+            mode = "LOCAL"
+        lbl = getattr(self, "_dag_planner_mode_lbl", None)
+        if lbl is None:
+            return
+        try:
+            lbl.configure(text=f"Planner Mode: [{mode}]")
+        except Exception:  # noqa: BLE001
+            pass
+        view = getattr(self, "dag_monitor_view", None)
+        if view is not None and hasattr(view, "set_planner_mode"):
+            try:
+                view.set_planner_mode(mode)
+            except Exception:  # noqa: BLE001
+                pass
 
     def kill_donna_processes(self) -> dict[str, Any]:
         """Stage 8.9.2 — launch ``stop_dana.vbs`` / ``stop_dana.bat`` (non-blocking).
@@ -11345,34 +12509,39 @@ class DonnaGUI(ctk.CTk):
             _launch()
 
     def _start_assistive_orb(self) -> None:
-        """Stage 8.7 — spawn frameless topmost orb on the Tk main thread."""
-        if self.assistive_orb is not None:
-            return
-        try:
-            from dana.ui.assistive_orb import AssistiveTouchOrb
+        """Stage 8.7 — spawn frameless topmost orb on the Tk main thread.
 
-            def _active_agent() -> str:
-                try:
-                    from dana.audio.multi_voice_tts import get_active_tts_agent
-
-                    return str(get_active_tts_agent() or "broker")
-                except Exception:  # noqa: BLE001
-                    return "broker"
-
-            self.assistive_orb = AssistiveTouchOrb(
-                self,
-                on_toggle_dictation=self._toggle_dictation_mode,
-                on_open_dashboard=self.show_window,
-                on_approve_ticket=self._orb_approve_ticket,
-                on_deny_ticket=self._orb_deny_ticket,
-                dictation_getter=lambda: bool(self._dictation_active),
-                mode_getter=lambda: str(self._header_mode or "chat"),
-                accent_getter=lambda: self._mode_accent(),
-                agent_getter=_active_agent,
-            )
-        except Exception as exc:  # noqa: BLE001
-            log("UI", f"WARNING: AssistiveTouch orb failed to start ({exc})")
-            self.assistive_orb = None
+        DISABLED: experimental orb window is not launched at engine start.
+        """
+        # Experimental AssistiveTouch orb — leave commented until re-enabled.
+        return
+        # if self.assistive_orb is not None:
+        #     return
+        # try:
+        #     from dana.ui.assistive_orb import AssistiveTouchOrb
+        #
+        #     def _active_agent() -> str:
+        #         try:
+        #             from dana.audio.multi_voice_tts import get_active_tts_agent
+        #
+        #             return str(get_active_tts_agent() or "broker")
+        #         except Exception:  # noqa: BLE001
+        #             return "broker"
+        #
+        #     self.assistive_orb = AssistiveTouchOrb(
+        #         self,
+        #         on_toggle_dictation=self._toggle_dictation_mode,
+        #         on_open_dashboard=self.show_window,
+        #         on_approve_ticket=self._orb_approve_ticket,
+        #         on_deny_ticket=self._orb_deny_ticket,
+        #         dictation_getter=lambda: bool(self._dictation_active),
+        #         mode_getter=lambda: str(self._header_mode or "chat"),
+        #         accent_getter=lambda: self._mode_accent(),
+        #         agent_getter=_active_agent,
+        #     )
+        # except Exception as exc:  # noqa: BLE001
+        #     log("UI", f"WARNING: AssistiveTouch orb failed to start ({exc})")
+        #     self.assistive_orb = None
 
     def open_github_issue(
         self,
@@ -11479,6 +12648,21 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
             "Mode: DOWNLOAD - will fetch Whisper/OWW weights if missing.",
         )
 
+    # Headless CLI has no Dashboard ENGAGE button — arm the engine so
+    # ``.trigger_ask`` injects are not left stranded in soft STANDBY.
+    if getattr(args, "no_gui", False):
+        os.environ.setdefault("DONNA_NO_GUI", "1")
+        os.environ.setdefault("DONNA_HEADLESS", "1")
+        set_engine_engaged(True)
+        log("Main", "Headless mode: engine auto-ENGAGED for trigger injects")
+        try:
+            from dana.graph.meta_broker_process import start_headless_telemetry_drainer
+
+            start_headless_telemetry_drainer()
+            log("Main", "Headless Meta-Broker telemetry drainer started")
+        except Exception as exc:  # noqa: BLE001
+            log("Main", f"WARNING: headless telemetry drainer unavailable ({exc})")
+
     # Unlock encrypted long-term memory before loading models / audio threads.
     try:
         unlock_donna_memory()
@@ -11559,9 +12743,26 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
             name="InputIngest",
             daemon=True,
         ),
-        threading.Thread(target=tts_worker, name="TTSWorker", daemon=True),
     ]
+    # Centralized TTSManager owns the Piper consumer thread (speech_queue).
+    try:
+        _tts_mgr_thread = _tts_manager.start(worker=tts_worker)
+        if _tts_mgr_thread is not None:
+            threads.append(_tts_mgr_thread)
+            log("Main", f"Started thread: {_tts_mgr_thread.name}")
+        else:
+            fallback = threading.Thread(
+                target=tts_worker, name="TTSWorker", daemon=True
+            )
+            threads.append(fallback)
+    except Exception as _tts_start_exc:  # noqa: BLE001
+        log("Main", f"WARNING: TTSManager start failed ({_tts_start_exc})")
+        threads.append(
+            threading.Thread(target=tts_worker, name="TTSWorker", daemon=True)
+        )
     for t in threads:
+        if t.is_alive():
+            continue
         t.start()
         log("Main", f"Started thread: {t.name}")
 
@@ -11575,6 +12776,17 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
             log("Main", "Kill switch listener not started")
     except Exception as exc:  # noqa: BLE001
         log("Main", f"WARNING: kill switch listener failed: {exc}")
+
+    # Phase 1/2 — adaptive compute governor (idle → research via input.txt queue).
+    try:
+        from dana.middleware.idle_monitor import start_idle_monitor
+
+        if start_idle_monitor():
+            log("Main", "IdleMonitor started (USER_ACTIVE/USER_AWAY compute governor)")
+        else:
+            log("Main", "IdleMonitor not started")
+    except Exception as exc:  # noqa: BLE001
+        log("Main", f"WARNING: IdleMonitor failed: {exc}")
 
     # Persist conversational mode so system jobs cannot steal it later.
     try:
@@ -11768,6 +12980,14 @@ def main() -> int:
             from dana.ui.trace_bus import get_trace_bus
 
             get_trace_bus().set_enabled(False)
+        except Exception:  # noqa: BLE001
+            pass
+        os.environ.setdefault("DONNA_NO_GUI", "1")
+        os.environ.setdefault("DONNA_HEADLESS", "1")
+        try:
+            from dana.graph.meta_broker_process import start_headless_telemetry_drainer
+
+            start_headless_telemetry_drainer()
         except Exception:  # noqa: BLE001
             pass
         log("Main", "Headless mode (--no-gui): Live Trace UI disabled.")

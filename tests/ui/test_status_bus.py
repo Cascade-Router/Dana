@@ -24,8 +24,9 @@ def test_emit_drain_and_format_labels() -> None:
         format_system_status_line("executing", tool="execute_powershell")
         == "Executing PowerShell..."
     )
-    assert format_system_status_line("listening") == "Listening..."
-    assert format_system_status_line("idle") == ""
+    assert format_system_status_line("listening") == "Listening"
+    assert format_system_status_line("processing") == "Processing"
+    assert format_system_status_line("idle") == "Idle"
 
     emit_state_change("listening")
     emit_state_change("routing", message="Supervisor Routing...")

@@ -1,15 +1,27 @@
-"""Dānā · Hugging Face Space — tabless dark cybernetic dashboard."""
+"""Dānā · Hugging Face Space — headless Meta-Broker Gradio dashboard.
+
+No Tkinter. Prompts run via ``run_meta_broker_isolated`` on a background thread;
+telemetry is polled into the Status Indicator and Task Tracker panels.
+"""
 
 from __future__ import annotations
 
-import copy
-import re
-import tempfile
-from pathlib import Path
-from typing import Any
+import os
+import time
+from typing import Any, Generator
+
+# Headless flags before any Dānā imports.
+os.environ.setdefault("DONNA_NO_GUI", "1")
+os.environ.setdefault("DONNA_HEADLESS", "1")
+os.environ.setdefault("DONNA_SKIP_BOOT_READY", "1")
 
 import gradio as gr
-from PIL import Image, ImageDraw
+
+from dana.web.headless_bridge import (
+    assert_no_tkinter_loaded,
+    get_bridge,
+    status_label,
+)
 
 try:
     import spaces
@@ -24,60 +36,84 @@ except ImportError:  # Local / CI without ZeroGPU runtime
 
     spaces = _SpacesFallback()  # type: ignore[assignment]
 
+
 _CSS = """
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
 :root {
-  --dana-bg: #0b0f17;
-  --dana-panel: #111827;
-  --dana-border: #1f2937;
+  --dana-bg0: #070b12;
+  --dana-bg1: #0c1220;
+  --dana-panel: rgba(17, 24, 39, 0.72);
+  --dana-border: #1e293b;
   --dana-cyan: #22d3ee;
-  --dana-approve: #10b981;
-  --dana-deny: #ef4444;
-  --dana-text: #e5e7eb;
+  --dana-emerald: #34d399;
+  --dana-amber: #fbbf24;
+  --dana-text: #e2e8f0;
   --dana-muted: #94a3b8;
 }
+
 .gradio-container {
-  background: var(--dana-bg) !important;
+  font-family: 'IBM Plex Sans', system-ui, sans-serif !important;
+  background:
+    radial-gradient(1200px 600px at 12% -10%, rgba(34, 211, 238, 0.12), transparent 55%),
+    radial-gradient(900px 500px at 90% 0%, rgba(16, 185, 129, 0.08), transparent 50%),
+    linear-gradient(180deg, var(--dana-bg0), var(--dana-bg1)) !important;
   color: var(--dana-text) !important;
-  max-width: 1280px !important;
+  max-width: 1180px !important;
   margin: 0 auto !important;
 }
 footer { display: none !important; }
+
+.dana-hero {
+  padding: 1.25rem 0.25rem 0.5rem 0.25rem !important;
+}
 .dana-hero h1 {
-  font-size: 2.1rem !important;
+  font-size: clamp(2.4rem, 5vw, 3.4rem) !important;
   font-weight: 700 !important;
-  letter-spacing: -0.02em !important;
+  letter-spacing: -0.04em !important;
   color: #f8fafc !important;
-  margin-bottom: 0.35rem !important;
+  margin: 0 0 0.35rem 0 !important;
+  line-height: 1.05 !important;
 }
-.dana-hero p, .dana-hero li {
+.dana-hero p {
   color: var(--dana-muted) !important;
+  font-size: 1.05rem !important;
+  max-width: 42rem !important;
+  margin: 0 !important;
 }
+
+.dana-status-pill {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace !important;
+  font-size: 0.95rem !important;
+  font-weight: 500 !important;
+  padding: 0.7rem 1rem !important;
+  border-radius: 999px !important;
+  border: 1px solid var(--dana-border) !important;
+  background: rgba(15, 23, 42, 0.9) !important;
+  color: #e2e8f0 !important;
+  display: inline-block !important;
+  min-width: 11rem !important;
+  text-align: center !important;
+}
+.dana-status-pill.idle { color: #94a3b8 !important; border-color: #334155 !important; }
+.dana-status-pill.listening { color: var(--dana-emerald) !important; border-color: #065f46 !important; }
+.dana-status-pill.processing { color: var(--dana-amber) !important; border-color: #92400e !important; }
+
 .dana-panel {
   background: var(--dana-panel) !important;
   border: 1px solid var(--dana-border) !important;
-  border-radius: 14px !important;
-  padding: 1rem 1.1rem !important;
+  border-radius: 16px !important;
+  padding: 0.85rem 1rem 1rem 1rem !important;
+  backdrop-filter: blur(8px);
 }
-.dana-status {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
-  font-size: 0.95rem !important;
-  padding: 0.65rem 0.9rem !important;
-  border-radius: 10px !important;
-  border: 1px solid var(--dana-border) !important;
-  background: #0f172a !important;
-  color: #e2e8f0 !important;
+.dana-panel h3, .dana-panel .label-wrap span {
+  color: #f1f5f9 !important;
+  font-weight: 600 !important;
 }
-button.dana-approve {
-  background: var(--dana-approve) !important;
-  border-color: var(--dana-approve) !important;
-  color: #04160f !important;
-  font-weight: 650 !important;
-}
-button.dana-deny {
-  background: var(--dana-deny) !important;
-  border-color: var(--dana-deny) !important;
-  color: #fff !important;
-  font-weight: 650 !important;
+.dana-mono textarea, .dana-mono input {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace !important;
+  font-size: 0.82rem !important;
+  line-height: 1.45 !important;
 }
 button.dana-primary {
   background: linear-gradient(135deg, #0891b2, #0e7490) !important;
@@ -85,289 +121,165 @@ button.dana-primary {
   color: #ecfeff !important;
   font-weight: 650 !important;
 }
-.dana-ticket-title {
-  color: var(--dana-cyan) !important;
-  font-weight: 600 !important;
-  margin: 0 0 0.5rem 0 !important;
+button.dana-ghost {
+  background: transparent !important;
+  border: 1px solid var(--dana-border) !important;
+  color: var(--dana-text) !important;
 }
 """
-
-DEFAULT_MEMORY_LEDGER: dict[str, Any] = {
-    "user_identity": "Amirhosein",
-    "active_project": "Dānā Agentic Architecture",
-    "stored_preferences": {"theme": "dark", "patch_style": "minimal_diff"},
-    "recent_context": "Validated e820f01 planner graph refactor",
-}
-
-_SAMPLE_PNG: Path | None = None
-
-
-def _sample_desktop() -> Image.Image:
-    """Synthetic desktop screenshot for one-click demos."""
-    img = Image.new("RGB", (960, 540), "#0f172a")
-    draw = ImageDraw.Draw(img)
-    draw.rectangle((0, 0, 960, 40), fill="#1e293b")
-    draw.rectangle((24, 72, 936, 500), fill="#111827", outline="#334155", width=2)
-    draw.rectangle((40, 96, 280, 132), fill="#164e63", outline="#22d3ee", width=2)
-    draw.text((52, 106), "Search Bar", fill="#ecfeff")
-    draw.rectangle((760, 96, 900, 132), fill="#065f46", outline="#10b981", width=2)
-    draw.text((792, 106), "Save", fill="#ecfdf5")
-    draw.rectangle((40, 160, 620, 420), fill="#0b1220", outline="#1f2937", width=1)
-    draw.text((56, 180), "Active Window — Notepad", fill="#94a3b8")
-    draw.text((56, 220), "ERROR: TypeError on line 42", fill="#fca5a5")
-    draw.text((56, 250), "WARNING: unused import json", fill="#fcd34d")
-    return img
-
-
-def _sample_desktop_path() -> str:
-    """Persist sample desktop PNG for ``gr.Examples`` image inputs."""
-    global _SAMPLE_PNG
-    if _SAMPLE_PNG is None or not _SAMPLE_PNG.is_file():
-        path = Path(tempfile.gettempdir()) / "dana_sample_desktop.png"
-        _sample_desktop().save(path, format="PNG")
-        _SAMPLE_PNG = path
-    return str(_SAMPLE_PNG)
-
-
-def _empty_annotated() -> None:
-    return None
-
-
-def _merge_memory_ledger(
-    ledger: dict[str, Any] | None,
-    command: str,
-    *,
-    vision_meta: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Update Active Memory Ledger for store / read / vision intents."""
-    out = copy.deepcopy(ledger if isinstance(ledger, dict) else DEFAULT_MEMORY_LEDGER)
-    prefs = dict(out.get("stored_preferences") or {})
-    low = (command or "").lower()
-    vision_meta = vision_meta or {}
-
-    store_match = re.search(
-        r"(?:store\s+preference|remember|save\s+preference)\s*:?\s*(.+)$",
-        command or "",
-        re.I,
-    )
-    if store_match:
-        pref_text = store_match.group(1).strip()
-        if "pep8" in low:
-            prefs["python_formatting"] = "PEP8"
-        prefs["last_stored"] = pref_text[:160]
-        out["stored_preferences"] = prefs
-        out["recent_context"] = f"Stored preference: {pref_text[:200]}"
-        return out
-
-    if any(k in low for k in ("read memory", "recall", "what do you know", "show memory")):
-        out["recent_context"] = (
-            f"Read ledger for {out.get('user_identity')}: "
-            f"project={out.get('active_project')}; prefs={prefs}"
-        )
-        return out
-
-    if any(k in low for k in ("summarize", "highlight", "active window", "ocr")):
-        bbox = vision_meta.get("bounding_box_xyxy")
-        out["recent_context"] = (
-            f"Vision grounding for: {(command or '')[:140]} | bbox={bbox}"
-        )
-        return out
-
-    if any(k in low for k in ("delete", "restart", "wipe", "rm -rf")):
-        out["recent_context"] = (
-            f"HITL-gated destructive intent (pending approval): {(command or '')[:160]}"
-        )
-        return out
-
-    out["recent_context"] = f"Last command: {(command or '')[:160]}"
-    return out
-
-
-@spaces.GPU
-def florence_vision_infer(
-    image: Image.Image | None, target_prompt: str
-) -> tuple[tuple[Image.Image, list] | None, dict[str, Any]]:
-    """Florence-2 UI grounding simulation — ZeroGPU-decorated inference handler."""
-    if image is None:
-        return None, {
-            "error": "No screenshot provided",
-            "model": "Florence-2 (Simulated · ZeroGPU)",
-        }
-
-    width, height = image.size
-    # Bias box toward "error" lines when the prompt asks for errors.
-    if "error" in (target_prompt or "").lower() or "error" in str(target_prompt):
-        x1, y1 = int(width * 0.04), int(height * 0.38)
-        x2, y2 = int(width * 0.62), int(height * 0.52)
-    else:
-        x1, y1 = int(width * 0.25), int(height * 0.3)
-        x2, y2 = int(width * 0.75), int(height * 0.5)
-    label = f"Target: '{target_prompt or 'UI Element'}'"
-    annotations = [((x1, y1, x2, y2), label)]
-    meta = {
-        "label": target_prompt or "Detected Element",
-        "bounding_box_xyxy": [x1, y1, x2, y2],
-        "confidence": 0.94,
-        "model": "Florence-2 (Simulated · ZeroGPU)",
-        "image_size": [width, height],
-    }
-    return (image, annotations), meta
-
-
-def route_command(
-    command: str,
-    image: Image.Image | None,
-    target_prompt: str,
-    memory_ledger: dict[str, Any] | None = None,
-) -> tuple[Any, ...]:
-    """Route a desktop command through vision → memory → HITL → LangGraph trace."""
-    cmd = (command or "").strip()
-    ledger = copy.deepcopy(
-        memory_ledger if isinstance(memory_ledger, dict) else DEFAULT_MEMORY_LEDGER
-    )
-    if not cmd:
-        return (
-            "⚪ Node: Idle — enter a desktop command",
-            _empty_annotated(),
-            {},
-            {"error": "empty_command"},
-            ledger,
-            "Awaiting command.",
-        )
-
-    low = cmd.lower()
-    needs_vision = any(
-        k in low
-        for k in ("summarize", "highlight", "window", "screen", "ocr", "vision")
-    )
-    is_memory = any(
-        k in low for k in ("store preference", "remember", "read memory", "recall")
-    )
-    is_destructive = any(
-        k in low for k in ("delete", "restart", "wipe", "daemon", "rm ")
-    )
-
-    annotated: Any = None
-    vision_meta: dict[str, Any] = {}
-    if needs_vision:
-        # Auto-load sample desktop when vision examples omit an upload.
-        frame = image if image is not None else _sample_desktop()
-        target = target_prompt or (
-            "errors" if "error" in low else "active window text"
-        )
-        annotated, vision_meta = florence_vision_infer(frame, target)
-        status = "🟢 Node: Vision Grounding"
-    elif is_memory:
-        status = "🟢 Node: Memory Ledger Read/Write"
-        annotated = None
-        vision_meta = {"skipped": True, "reason": "memory_intent"}
-    else:
-        status = "🟡 Node: Intent Inspected"
-        annotated = None
-        vision_meta = {"skipped": True}
-
-    ledger = _merge_memory_ledger(ledger, cmd, vision_meta=vision_meta)
-
-    risk = "HIGH" if is_destructive else ("LOW" if is_memory and not needs_vision else "MEDIUM")
-    ticket = {
-        "ticket_id": "TICK-8042",
-        "command": cmd,
-        "ui_target": target_prompt or "UI Element",
-        "proposed_action": (
-            "vault_memory_write"
-            if is_memory and not is_destructive
-            else "win32_system_write / patch_ledger"
-        ),
-        "risk_level": risk,
-        "requiring_approval": True,
-        "status": "PENDING_USER_APPROVAL",
-        "vision": vision_meta,
-        "memory_touch": is_memory
-        or any(k in low for k in ("store", "remember", "read memory", "recall")),
-    }
-    status_hitl = "🟡 Node: HITL Ticket Interrupted"
-
-    trace = {
-        "corridor": [
-            {"t": "0.0s", "node": "INTAKE", "detail": f"Received prompt: {cmd}"},
-            {"t": "0.1s", "node": "ROUTER", "detail": "Evaluating MoA corridor"},
-            {
-                "t": "0.2s",
-                "node": "VISION" if needs_vision else "MEMORY",
-                "detail": (
-                    "Florence-2 UI grounding (ZeroGPU)"
-                    if needs_vision
-                    else "Active Memory Ledger touch"
-                ),
-                "bbox": vision_meta.get("bounding_box_xyxy"),
-            },
-            {
-                "t": "0.3s",
-                "node": "LANGGRAPH",
-                "detail": "State → inspect_intent → ticket_validate",
-            },
-            {
-                "t": "0.4s",
-                "node": "HITL",
-                "detail": "Ticket gate interrupted — awaiting Approve / Deny",
-            },
-        ],
-        "active_intent": cmd,
-        "halt": False,
-        "ticket_validated": True,
-        "memory_keys": list((ledger.get("stored_preferences") or {}).keys()),
-    }
-
-    note = (
-        f"{status} → {status_hitl}\n"
-        f"Memory recent_context: {ledger.get('recent_context')}\n"
-        "Review the HITL ticket card, then Approve or Deny."
-    )
-    return status_hitl, annotated, ticket, trace, ledger, note
-
-
-# Back-compat alias used by older call sites / docs.
-run_pipeline = route_command
-
-
-def resolve_ticket(ticket: dict | None, decision: str) -> tuple[str, dict, str]:
-    if not ticket or "status" not in ticket:
-        return (
-            "⚪ Node: Idle — no active ticket",
-            {},
-            "No active ticket to resolve.",
-        )
-
-    updated = dict(ticket)
-    if decision == "Approve":
-        updated["status"] = "APPROVED (Executed)"
-        status = "🟢 Node: Tools Executed (Fail-Open after HITL)"
-        note = f"Ticket {updated.get('ticket_id')} APPROVED — corridor resumed."
-    else:
-        updated["status"] = "DENIED (Failed Closed)"
-        status = "🔴 Node: Denied — Fail Closed"
-        note = f"Ticket {updated.get('ticket_id')} DENIED — write aborted."
-    return status, updated, note
-
 
 _THEME = gr.themes.Soft(
     primary_hue="cyan",
     neutral_hue="slate",
+    font=[gr.themes.GoogleFont("IBM Plex Sans"), "ui-sans-serif", "system-ui"],
+    font_mono=[gr.themes.GoogleFont("IBM Plex Mono"), "ui-monospace", "monospace"],
 ).set(
-    body_background_fill="#0b0f17",
-    body_background_fill_dark="#0b0f17",
+    body_background_fill="#070b12",
+    body_background_fill_dark="#070b12",
     block_background_fill="#111827",
     block_background_fill_dark="#111827",
-    block_border_color="#1f2937",
-    block_border_color_dark="#1f2937",
-    border_color_primary="#1f2937",
-    border_color_primary_dark="#1f2937",
+    block_border_color="#1e293b",
+    block_border_color_dark="#1e293b",
+    border_color_primary="#1e293b",
+    border_color_primary_dark="#1e293b",
     button_primary_background_fill="#0e7490",
     button_primary_background_fill_dark="#0e7490",
 )
 
+
+def _status_markdown(status: str) -> str:
+    st = str(status or "idle").strip().lower()
+    if st in {"routing", "executing", "planning"}:
+        st = "processing"
+    if st not in {"idle", "listening", "processing"}:
+        st = "idle"
+    label = status_label(st)
+    return f'<div class="dana-status-pill {st}">{label}</div>'
+
+
+def _assistant_reply(bridge_snap: dict[str, Any]) -> str:
+    if bridge_snap.get("running"):
+        return "Meta-Broker is running in an isolated process. Telemetry is streaming…"
+    err = str(bridge_snap.get("error") or "").strip()
+    rs = str(bridge_snap.get("result_status") or "").strip()
+    if err:
+        return f"Meta-Broker finished with error ({rs or 'failed'}):\n{err}"
+    if rs:
+        return f"Meta-Broker finished — status=`{rs}`.\nSee Task Tracker / telemetry for epic progress."
+    return "Done."
+
+
+def submit_prompt(
+    message: str,
+    history: list[dict[str, str]] | None,
+) -> Generator[tuple[Any, ...], None, None]:
+    """Non-blocking submit: background Meta-Broker + live telemetry yields."""
+    history = list(history or [])
+    text = (message or "").strip()
+    if not text:
+        bridge = get_bridge()
+        yield (
+            history,
+            "",
+            _status_markdown(bridge.status()),
+            bridge.task_tracker_text(),
+            bridge.log_text(),
+        )
+        return
+
+    history = history + [
+        {"role": "user", "content": text},
+        {"role": "assistant", "content": "Dispatching isolated Meta-Broker…"},
+    ]
+    bridge = get_bridge()
+    ok, note = bridge.submit(text)
+    if not ok:
+        history[-1] = {"role": "assistant", "content": note}
+        yield (
+            history,
+            "",
+            _status_markdown(bridge.status()),
+            bridge.task_tracker_text(),
+            bridge.log_text(),
+        )
+        return
+
+    yield (
+        history,
+        "",
+        _status_markdown("processing"),
+        bridge.task_tracker_text(),
+        bridge.log_text() + f"\n[ui] {note}",
+    )
+
+    # Poll telemetry until the background worker completes (Gradio generator stream).
+    deadline = time.time() + float(os.environ.get("DONNA_META_BROKER_TIMEOUT_S") or "600")
+    last_log = ""
+    while bridge.is_running and time.time() < deadline:
+        _ = bridge.drain_telemetry(max_items=64)
+        snap = bridge.snapshot()
+        log = bridge.log_text()
+        tracker = bridge.task_tracker_text()
+        if log != last_log:
+            history[-1] = {
+                "role": "assistant",
+                "content": (
+                    "Meta-Broker running…\n\n"
+                    + "\n".join(snap.get("log_lines") or [])[-1200:]
+                ),
+            }
+            last_log = log
+        yield (
+            history,
+            "",
+            _status_markdown(snap.get("status") or "processing"),
+            tracker,
+            log,
+        )
+        time.sleep(0.35)
+
+    # Final drain.
+    _ = bridge.drain_telemetry(max_items=128)
+    snap = bridge.snapshot()
+    history[-1] = {"role": "assistant", "content": _assistant_reply(snap)}
+    yield (
+        history,
+        "",
+        _status_markdown(snap.get("status") or "idle"),
+        bridge.task_tracker_text(),
+        bridge.log_text(),
+    )
+
+
+def poll_panels() -> tuple[str, str, str]:
+    """Timer tick: refresh status / tracker / log without submitting."""
+    bridge = get_bridge()
+    _ = bridge.drain_telemetry(max_items=32)
+    return (
+        _status_markdown(bridge.status()),
+        bridge.task_tracker_text(),
+        bridge.log_text(),
+    )
+
+
+def clear_chat() -> tuple[list, str, str, str]:
+    bridge = get_bridge()
+    return (
+        [],
+        _status_markdown(bridge.status()),
+        bridge.task_tracker_text(),
+        bridge.log_text(),
+    )
+
+
+# Optional ZeroGPU stub kept for Space compatibility (vision demos retired).
+@spaces.GPU
+def _gpu_warmup() -> str:
+    return "ok"
+
+
 with gr.Blocks(
-    title="Dānā · Cybernetic Dashboard",
+    title="Dānā · Headless Control Plane",
     theme=_THEME,
     css=_CSS,
 ) as demo:
@@ -375,137 +287,112 @@ with gr.Blocks(
         gr.Markdown(
             """
 # Dānā
-Cybernetic control-plane simulator — LangGraph corridor · Florence-2 grounding · HITL fail-closed tickets.
-
-Local by design. This Space is a ZeroGPU-backed preview; download the native Windows app for Distil-Whisper, Win32 ROI, and offline CUDA inference.
+Headless cybernetic control plane — isolated Meta-Broker, live telemetry, stdlib-first epics.
 """
         )
-        gr.Button(
-            "⬇ Download Dānā for Windows",
-            link="https://github.com/Cascade-Router/Donna/releases",
-            elem_classes=["dana-primary"],
-        )
 
-    status_badge = gr.Markdown(
-        "⚪ Node: Idle — awaiting desktop command",
-        elem_classes=["dana-status"],
+    status_html = gr.HTML(
+        _status_markdown("idle"),
+        elem_classes=["dana-status-wrap"],
     )
 
     with gr.Row(equal_height=True):
-        # ── LEFT: command + vision canvas ──────────────────────────────
-        with gr.Column(scale=1, elem_classes=["dana-panel"]):
-            gr.Markdown("### Perception · Command & Florence-2 Canvas")
-            command_input = gr.Textbox(
-                label="Desktop command",
-                placeholder="e.g., Summarize active window and create a desktop log ticket",
-                value="Summarize active window and create a desktop log ticket",
-                lines=2,
-            )
-            target_input = gr.Textbox(
-                label="UI target (OCR / grounding)",
-                value="Search Bar",
-                placeholder="e.g., Save Button, Search Bar, Close Icon",
+        with gr.Column(scale=3, elem_classes=["dana-panel"]):
+            gr.Markdown("### Chat")
+            chatbot = gr.Chatbot(
+                label="Session",
+                height=440,
+                type="messages",
+                show_copy_button=True,
             )
             with gr.Row():
-                sample_btn = gr.Button("Load sample desktop", size="sm")
-                img_input = gr.Image(
-                    type="pil",
-                    label="Screenshot upload",
-                    height=220,
+                prompt_box = gr.Textbox(
+                    label="Prompt",
+                    placeholder=(
+                        "/broker Epic 1: …  — or describe a multi-epic goal"
+                    ),
+                    lines=3,
+                    scale=5,
+                    autofocus=True,
                 )
-            annotated_out = gr.AnnotatedImage(
-                label="Florence-2 bounding boxes",
-                height=360,
-            )
-            submit_btn = gr.Button(
-                "Execute corridor",
-                variant="primary",
-                elem_classes=["dana-primary"],
-            )
+            with gr.Row():
+                send_btn = gr.Button(
+                    "Run Meta-Broker",
+                    variant="primary",
+                    elem_classes=["dana-primary"],
+                )
+                clear_btn = gr.Button("Clear", elem_classes=["dana-ghost"])
 
-        # ── RIGHT: status · HITL · memory · LangGraph JSON ─────────────
-        with gr.Column(scale=1, elem_classes=["dana-panel"]):
-            gr.Markdown(
-                "### Pipeline · HITL Ticket · Live Trace",
-                elem_classes=["dana-ticket-title"],
-            )
-            resolution_note = gr.Textbox(
-                label="Visual pipeline status",
-                value="Ready.",
-                lines=3,
+        with gr.Column(scale=2, elem_classes=["dana-panel"]):
+            gr.Markdown("### Task Tracker")
+            tracker_box = gr.Textbox(
+                label="Activities",
+                value="(no active tasks)",
+                lines=12,
+                max_lines=20,
                 interactive=False,
+                elem_classes=["dana-mono"],
             )
-            memory_ledger = gr.JSON(
-                label="🧠 Active Memory Ledger",
-                value=copy.deepcopy(DEFAULT_MEMORY_LEDGER),
+            gr.Markdown("### Telemetry")
+            telemetry_box = gr.Textbox(
+                label="IPC / Meta-Broker log",
+                value="(no telemetry yet)",
+                lines=12,
+                max_lines=24,
+                interactive=False,
+                elem_classes=["dana-mono"],
             )
-            gr.Markdown("#### Interactive HITL ticket")
-            ticket_card = gr.JSON(label="Ticket payload (Jason review)")
-            with gr.Row():
-                approve_btn = gr.Button(
-                    "Approve",
-                    elem_classes=["dana-approve"],
-                )
-                deny_btn = gr.Button(
-                    "Deny",
-                    elem_classes=["dana-deny"],
-                )
-            gr.Markdown("#### Live LangGraph state")
-            trace_json = gr.JSON(label="State corridor JSON")
 
-    _pipeline_outputs = [
-        status_badge,
-        annotated_out,
-        ticket_card,
-        trace_json,
-        memory_ledger,
-        resolution_note,
-    ]
-    # 1-click presets under the command row — fill inputs + run corridor.
-    # Providing ``fn`` + ``outputs`` runs the corridor when a preset is clicked
-    # (Gradio 5 fills inputs, then invokes ``fn``).
     gr.Examples(
         examples=[
             [
-                "Summarize active window text and highlight errors",
-                _sample_desktop_path(),
-                "errors",
+                "/broker Epic 1: Write hello_util.py with a greet(name) function. "
+                "Epic 2: Write tests/test_hello_util.py that asserts greet returns a string."
             ],
             [
-                "Store preference: Always use PEP8 formatting for python patches",
-                None,
-                "",
-            ],
-            [
-                "Delete temporary build cache and restart daemon",
-                None,
-                "",
+                "Plan and implement a small JSON key-value store with pytest coverage"
             ],
         ],
-        inputs=[command_input, img_input, target_input],
-        outputs=_pipeline_outputs,
-        fn=lambda c, i, t: route_command(c, i, t, None),
-        cache_examples=False,
-        examples_per_page=3,
-        label="1-click corridor presets",
+        inputs=[prompt_box],
+        label="Example Meta-Broker prompts",
     )
 
-    sample_btn.click(fn=_sample_desktop, outputs=[img_input])
-    submit_btn.click(
-        fn=route_command,
-        inputs=[command_input, img_input, target_input, memory_ledger],
-        outputs=_pipeline_outputs,
+    gr.Markdown(
+        "<p style='color:#64748b;font-size:0.9rem;margin-top:0.75rem'>"
+        "Runs <code>run_meta_broker_isolated</code> (multiprocessing) — no Tkinter. "
+        "Local Ollama (<code>qwen2.5-coder:7b</code>) required for real codegen; "
+        "otherwise telemetry will show the failure path."
+        "</p>"
     )
-    approve_btn.click(
-        fn=lambda t: resolve_ticket(t, "Approve"),
-        inputs=[ticket_card],
-        outputs=[status_badge, ticket_card, resolution_note],
+
+    outputs = [chatbot, prompt_box, status_html, tracker_box, telemetry_box]
+    send_btn.click(
+        fn=submit_prompt,
+        inputs=[prompt_box, chatbot],
+        outputs=outputs,
     )
-    deny_btn.click(
-        fn=lambda t: resolve_ticket(t, "Deny"),
-        inputs=[ticket_card],
-        outputs=[status_badge, ticket_card, resolution_note],
+    prompt_box.submit(
+        fn=submit_prompt,
+        inputs=[prompt_box, chatbot],
+        outputs=outputs,
     )
+    clear_btn.click(
+        fn=clear_chat,
+        outputs=[chatbot, status_html, tracker_box, telemetry_box],
+    )
+
+    # Background refresh while a job runs (and idle keepalive).
+    try:
+        timer = gr.Timer(1.0)
+        timer.tick(
+            fn=poll_panels,
+            outputs=[status_html, tracker_box, telemetry_box],
+        )
+    except Exception:  # noqa: BLE001 — older Gradio without Timer
+        pass
+
 
 if __name__ == "__main__":
+    assert_no_tkinter_loaded()
+    demo.queue(default_concurrency_limit=2)
     demo.launch()

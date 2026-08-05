@@ -61,6 +61,7 @@ class ChatBubbleView(ctk.CTkFrame):
             corner_radius=0,
         )
         self._scroll.pack(fill="both", expand=True, padx=4, pady=2)
+        self._pin_scrollbar(self._scroll)
 
         # Hidden mirror — keeps get/insert/tag API for tests & legacy callers.
         # Placed off-screen so raw [Speaker] lines never duplicate bubble UI
@@ -79,6 +80,16 @@ class ChatBubbleView(ctk.CTkFrame):
         self.transcript_box.place(x=-10_000, y=-10_000)
         try:
             self.bind("<Configure>", self._on_resize, add="+")
+        except Exception:  # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _pin_scrollbar(scrollable: Any) -> None:
+        """Lock the CTk scrollbar flush to the right edge (``sticky=nse``)."""
+        try:
+            sb = getattr(scrollable, "_scrollbar", None)
+            if sb is not None:
+                sb.grid_configure(sticky="nse")
         except Exception:  # noqa: BLE001
             pass
 
@@ -138,7 +149,7 @@ class ChatBubbleView(ctk.CTkFrame):
             pass
 
         row = ctk.CTkFrame(self._scroll, fg_color="transparent")
-        row.pack(fill="x", padx=6, pady=(1, 1))
+        row.pack(fill="x", padx=6, pady=(2, 2), anchor="n")
         self._bubbles.append(row)
 
         if role_key == "user":
@@ -153,8 +164,8 @@ class ChatBubbleView(ctk.CTkFrame):
     def _pack_user_bubble(
         self, row: ctk.CTkFrame, text: str, *, speaker: str
     ) -> None:
-        # Right-aligned sky bubble.
-        spacer = ctk.CTkFrame(row, fg_color="transparent", width=80)
+        # Right-aligned sky bubble — size to content (no vertical fill stretch).
+        spacer = ctk.CTkFrame(row, fg_color="transparent", width=80, height=1)
         spacer.pack(side="left", fill="x", expand=True)
         bubble = ctk.CTkFrame(
             row,
@@ -162,7 +173,7 @@ class ChatBubbleView(ctk.CTkFrame):
             corner_radius=14,
             border_width=0,
         )
-        bubble.pack(side="right", padx=(8, 4), pady=1)
+        bubble.pack(side="right", padx=(8, 4), pady=0, anchor="n")
         label = speaker if speaker.lower().startswith("user") else "You"
         ctk.CTkLabel(
             bubble,
@@ -170,7 +181,7 @@ class ChatBubbleView(ctk.CTkFrame):
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color="#E0F2FE",
             anchor="e",
-        ).pack(fill="x", padx=10, pady=(5, 0))
+        ).pack(anchor="e", padx=10, pady=(5, 0))
         ctk.CTkLabel(
             bubble,
             text=_strip_simple_markdown(text),
@@ -179,7 +190,7 @@ class ChatBubbleView(ctk.CTkFrame):
             wraplength=self._wraplength,
             justify="left",
             anchor="w",
-        ).pack(fill="x", padx=10, pady=(1, 6))
+        ).pack(anchor="w", padx=10, pady=(1, 6))
 
     def _pack_dana_bubble(
         self, row: ctk.CTkFrame, text: str, *, speaker: str
@@ -191,7 +202,7 @@ class ChatBubbleView(ctk.CTkFrame):
             border_width=1,
             border_color=T.BUBBLE_DANA_BORDER,
         )
-        bubble.pack(side="left", padx=(4, 8), pady=1)
+        bubble.pack(side="left", padx=(4, 8), pady=0, anchor="n")
         title = speaker.strip() or "Dana"
         ctk.CTkLabel(
             bubble,
@@ -199,7 +210,7 @@ class ChatBubbleView(ctk.CTkFrame):
             font=ctk.CTkFont(size=10, weight="bold"),
             text_color=T.ACCENT,
             anchor="w",
-        ).pack(fill="x", padx=10, pady=(5, 0))
+        ).pack(anchor="w", padx=10, pady=(5, 0))
         ctk.CTkLabel(
             bubble,
             text=_strip_simple_markdown(text),
@@ -208,8 +219,8 @@ class ChatBubbleView(ctk.CTkFrame):
             wraplength=self._wraplength,
             justify="left",
             anchor="w",
-        ).pack(fill="x", padx=10, pady=(1, 6))
-        spacer = ctk.CTkFrame(row, fg_color="transparent", width=80)
+        ).pack(anchor="w", padx=10, pady=(1, 6))
+        spacer = ctk.CTkFrame(row, fg_color="transparent", width=80, height=1)
         spacer.pack(side="right", fill="x", expand=True)
 
     def _scroll_to_latest(self) -> None:

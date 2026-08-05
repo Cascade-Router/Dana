@@ -46,19 +46,21 @@ def tray_icon_image(size: tuple[int, int] = (32, 32)) -> Any | None:
 
 
 def _load_tray_asset_pil(size: tuple[int, int]) -> Any | None:
-    """Fallback: load .ico/.png through ``get_resource_path`` + alpha mask."""
+    """Fallback: load .ico/.png through ``get_resource_path`` + full-bleed alpha."""
     path = resolve_tray_asset_path()
     if path is None:
         return None
     try:
         from PIL import Image
 
-        from dana.ui.logo import make_transparent_logo
+        from dana.ui.logo import full_bleed_rgba, make_transparent_logo
 
-        img = Image.open(path).convert("RGBA")
+        img = make_transparent_logo(Image.open(path).convert("RGBA"))
         w, h = int(size[0]), int(size[1])
-        if w > 0 and h > 0 and img.size != (w, h):
-            img = img.resize((w, h), Image.Resampling.LANCZOS)
+        if w > 0 and h > 0:
+            img = full_bleed_rgba(img, (w, h), fill_ratio=0.78) or img.resize(
+                (w, h), Image.Resampling.LANCZOS
+            )
         return make_transparent_logo(img)
     except Exception:  # noqa: BLE001
         return None

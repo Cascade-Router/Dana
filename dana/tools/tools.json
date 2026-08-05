@@ -518,13 +518,13 @@
     },
     {
       "id": "read_local_file",
-      "description_en": "Reads the contents of a local text/code file. USE THIS when the user asks to read a file, document, project file, or code — NEVER use vision/spatial tools for text files. For repo files, paths are relative to the CAMGRASPER project root (e.g. dana/core_agent.py). NEVER invent a dana/core/ subdirectory — package modules live directly under dana/.",
+      "description_en": "Reads the contents of a local text/code file (truncated for token safety). USE THIS when the user asks to read a file, document, project file, graph, or code — NEVER use vision/spatial tools for text files. For the Donna watchdog monitoring graph, read dana/swarm/watchdog_graph.py and list imports/nodes from the dependency digest — do not guess. For repo files, paths are relative to PROJECT_ROOT (e.g. dana/core_agent.py). NEVER invent a dana/core/ subdirectory.",
       "parameters": [
         {
           "name": "filepath",
           "type": "string",
           "required": true,
-          "description_en": "Absolute path, or path relative to CAMGRASPER PROJECT_ROOT (e.g. dana/cascade_router.py). Do not use dana/core/ — that folder does not exist.",
+          "description_en": "Absolute path, or path relative to PROJECT_ROOT (e.g. dana/swarm/watchdog_graph.py). Do not use dana/core/ — that folder does not exist.",
           "description_fa": "        ( dana/cascade_router.py)."
         }
       ],
@@ -535,7 +535,10 @@
           "read my code",
           "open this document",
           "what's in this file",
-          "show me the contents of"
+          "show me the contents of",
+          "watchdog monitoring graph",
+          "watchdog_graph",
+          "list its active dependencies"
         ]
       },
       "aliases_fa": {
@@ -548,13 +551,20 @@
     },
     {
       "id": "shell_execute",
-      "description_en": "Hardened project-root shell actuator (15s timeout, 2000-char truncated output). Prefer for autonomous terminal work inside CAMGRASPER. Output is truncated — use grep/head/tail or python_repl to parse large results.",
+      "description_en": "Hardened shell actuator (15s timeout, 2000-char truncated output). Default cwd is the project root; pass cwd to target another directory (e.g. a named git repo). Output is truncated — use grep/head/tail or python_repl to parse large results.",
       "parameters": [
         {
           "name": "command",
           "type": "string",
           "required": true,
-          "description_en": "Non-interactive shell command to run with cwd=project root.",
+          "description_en": "Non-interactive shell command to run.",
+          "description_fa": ""
+        },
+        {
+          "name": "cwd",
+          "type": "string",
+          "required": false,
+          "description_en": "Optional working directory for the command (absolute path). Use for named repos like cascade-router.",
           "description_fa": ""
         }
       ],
@@ -642,13 +652,20 @@
     },
     {
       "id": "execute_powershell",
-      "description_en": "Run a PowerShell CLI command on the Windows host (powershell -NoProfile -NonInteractive -Command). Prefer for PowerShell-native scripting (registry, WMI/CIM, Get-Process, pipelines). Pass script text only — do not wrap with powershell.exe again. Returns returncode/stdout/stderr for agent self-correction.",
+      "description_en": "Run a PowerShell CLI command on the Windows host (powershell -NoProfile -NonInteractive -Command). Prefer for PowerShell-native scripting (registry, WMI/CIM, Get-Process, pipelines). Pass script text only — do not wrap with powershell.exe again. Optional cwd sets the working directory (use for git in named repos like cascade-router: git log -1 --format=%cd). Returns returncode/cwd/stdout/stderr for agent self-correction.",
       "parameters": [
         {
           "name": "command",
           "type": "string",
           "required": true,
           "description_en": "PowerShell script text to run (not wrapped in powershell -Command).",
+          "description_fa": ""
+        },
+        {
+          "name": "cwd",
+          "type": "string",
+          "required": false,
+          "description_en": "Optional working directory (absolute path). For cascade-router git queries, set cwd to the repo path and run git log -1 --format=%cd.",
           "description_fa": ""
         }
       ],
@@ -657,7 +674,9 @@
           "execute_powershell",
           "run powershell",
           "powershell command",
-          "run this in powershell"
+          "run this in powershell",
+          "cascade-router",
+          "last git commit"
         ]
       },
       "aliases_fa": {
@@ -730,6 +749,81 @@
       "aliases_fa": {
         "_intent": [
           "execute_command"
+        ]
+      }
+    },
+    {
+      "id": "execute_python_script",
+      "description_en": "Run a Python script strictly jailed inside execution_jail. Returns structured exit_code/duration/stdout/stderr. Set background=true to start asynchronously and stream logs to execution_jail/jobs/<job_id>.log.",
+      "parameters": [
+        {
+          "name": "script_path",
+          "type": "string",
+          "required": true,
+          "description_en": "Path to a .py file under execution_jail (absolute or relative to the jail).",
+          "description_fa": ""
+        },
+        {
+          "name": "args",
+          "type": "array",
+          "required": false,
+          "description_en": "Optional argv strings passed after the script path.",
+          "description_fa": ""
+        },
+        {
+          "name": "timeout",
+          "type": "integer",
+          "required": false,
+          "description_en": "Timeout in seconds (default 300).",
+          "description_fa": ""
+        },
+        {
+          "name": "background",
+          "type": "boolean",
+          "required": false,
+          "description_en": "If true, run asynchronously and return a job_id immediately.",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "execute_python_script",
+          "run python script in the sandbox",
+          "run sandbox python",
+          "background python script",
+          "run this python script in the sandbox"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": [
+          "execute_python_script"
+        ]
+      }
+    },
+    {
+      "id": "get_sandbox_job_status",
+      "description_en": "Check status of background sandbox Python jobs (exit code, duration, log tail). Omit job_id to list all known jobs.",
+      "parameters": [
+        {
+          "name": "job_id",
+          "type": "string",
+          "required": false,
+          "description_en": "Optional sandbox job id returned by execute_python_script(background=true).",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "get_sandbox_job_status",
+          "sandbox job status",
+          "status of my sandbox job",
+          "check background python job",
+          "python job status"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": [
+          "get_sandbox_job_status"
         ]
       }
     },
@@ -1170,6 +1264,34 @@
       }
     },
     {
+      "id": "meta_broker",
+      "description_en": "Use this for massive multi-file refactors, complex feature generation across multiple components, or tasks explicitly requiring Test-Driven Development (TDD) and Epics. Spawns the Meta-Broker closed-loop DAG (epics → supervisor → workers → runtime harness).",
+      "parameters": [
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "description_en": "Macro intent / multi-epic goal for the Meta-Broker.",
+          "description_fa": "Meta-Broker  ."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "Use the Meta-Broker",
+          "/broker",
+          "meta broker",
+          "multi-epic refactor",
+          "TDD epic plan",
+          "closed-loop runtime harness"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": [
+          "meta_broker"
+        ]
+      }
+    },
+    {
       "id": "capture_and_analyze_screen",
       "description_en": "Capture the primary monitor screenshot and analyze UI elements via a vision model (OS computer use).",
       "parameters": [
@@ -1500,6 +1622,81 @@
           " ",
           " "
         ]
+      }
+    },
+    {
+      "id": "list_activity_for_day",
+      "description_en": "Day-scoped activity index: union episodic_facts, blackboard messages, and dated lines under logs/ for a local calendar day (YYYY-MM-DD or relative: yesterday / last night / this morning / previous session). Call this BEFORE answering temporal memory questions. Never invent events when has_evidence is false.",
+      "parameters": [
+        {
+          "name": "date_str",
+          "type": "string",
+          "required": false,
+          "description_en": "Target day as YYYY-MM-DD or a relative phrase (yesterday, last night, this morning, previous session, today). Defaults to yesterday.",
+          "description_fa": "YYYY-MM-DD  ."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "what did you do yesterday",
+          "what happened yesterday",
+          "list activity for day",
+          "list activity for yesterday",
+          "activity for yesterday",
+          "what did you do last night",
+          "what happened this morning",
+          "previous session activity",
+          "list_activity_for_day"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": [
+          "  "
+        ]
+      }
+    },
+    {
+      "id": "get_system_telemetry",
+      "description_en": "Live system telemetry: current CPU utilization, RAM usage, and VRAM/GPU usage (psutil + nvidia-smi when available). Call this BEFORE answering CPU / RAM / VRAM / system utilization questions. Never invent percentages.",
+      "parameters": [],
+      "aliases_en": {
+        "_intent": [
+          "cpu utilization",
+          "vram utilization",
+          "ram utilization",
+          "system utilization",
+          "current cpu",
+          "gpu memory",
+          "get_system_telemetry"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
+      "id": "parse_idle_log_duration",
+      "description_en": "Parse logs/idle_state.log for the most recent USER_AWAY→USER_ACTIVE interval and return the exact duration (seconds + human-readable). Call this for USER_AWAY / idle duration / away time questions.",
+      "parameters": [
+        {
+          "name": "log_path",
+          "type": "string",
+          "required": false,
+          "description_en": "Optional override path to idle_state.log. Defaults to workspace logs/idle_state.log."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "USER_AWAY duration",
+          "idle duration",
+          "away time",
+          "last USER_AWAY",
+          "how long was I away",
+          "parse_idle_log_duration"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
       }
     }
   ]

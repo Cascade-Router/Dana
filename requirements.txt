@@ -73,5 +73,10 @@ chromadb
 sentence-transformers
 langchain-huggingface
 langchain-text-splitters
+# Realtime Chroma sync on workspace file create/modify/delete
+watchdog>=4.0.0
+# DAG / LangGraph TUI monitor
+textual>=0.80.0
+rich>=13.0.0
 # Windows onedir packaging (see build_dana.py)
 pyinstaller>=6.0.0

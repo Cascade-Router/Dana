@@ -1,17 +1,18 @@
 """Cascade Router — local Mixture of Agents (MoA), not GPT-4o.
 
-Low-complexity turns stay on a fast local chat model (``llama3.2``).
+Low-complexity turns stay on a fast local chat model (``qwen2.5-coder:7b``).
 High-complexity / visual turns escalate to a **local MoA**:
 
   1. Vision agent  — Qwen-VL / Llama 3.2 Vision / LLaVA (Ollama) extracts image context
   2. Reasoner agent — DeepSeek (or local fallback) evaluates rules / returns final text
 
 Env overrides:
-  DONNA_LOCAL_MODEL       — fast chat model (default llama3.2)
+  DONNA_LOCAL_MODEL       — fast chat model (default qwen2.5-coder:7b)
   DONNA_VISION_MODEL      — preferred vision model (default auto-detect)
   DONNA_REASONER_MODEL    — preferred reasoner (default auto-detect DeepSeek)
   DONNA_CASCADE_EXTERNAL  — set 1 to optionally allow ChatOpenAI (off by default)
   DONNA_CASCADE_MODEL     — external model id if EXTERNAL=1 (legacy)
+  DONNA_FORCE_LOCAL       — set 1 to hard-bypass all cloud / Gemini fallbacks
   OLLAMA_URL              — Ollama base URL (default http://127.0.0.1:11434)
 """
 
@@ -29,6 +30,33 @@ from typing import Any, Literal
 
 Complexity = Literal["low", "high"]
 Backend = Literal["local", "moa", "cascade"]
+ComputeMode = Literal["lightweight", "react", "deep_research"]
+
+
+def force_local_mode() -> bool:
+    """True when ``DONNA_FORCE_LOCAL=1`` — skip all cloud / Gemini routing."""
+    return (os.environ.get("DONNA_FORCE_LOCAL") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _ollama_keep_alive_value() -> int | str:
+    try:
+        from dana.middleware.idle_monitor import ollama_keep_alive
+
+        return ollama_keep_alive()
+    except Exception:  # noqa: BLE001
+        return 0
+
+# Ultra-fast System-1 chat (TTFT); graceful fallback when not pulled locally.
+_LIGHTWEIGHT_MODEL_CANDIDATES = (
+    "llama3.2:1b",
+    "llama3.2:1b-instruct-q4_K_M",
+    "llama3.2:1b-instruct",
+)
 
 _HIGH_COMPLEXITY_RE = re.compile(
     r"\b("
@@ -354,6 +382,8 @@ def is_cascade_enabled() -> bool:
 
 def allow_external_cascade() -> bool:
     """Legacy GPT/OpenAI path — off unless explicitly opted in."""
+    if force_local_mode():
+        return False
     return os.environ.get("DONNA_CASCADE_EXTERNAL", "").strip().lower() in (
         "1",
         "true",
@@ -370,8 +400,90 @@ def local_model_name() -> str:
     return (
         os.environ.get("DONNA_LOCAL_MODEL", "").strip()
         or os.environ.get("OLLAMA_MODEL", "").strip()
-        or "llama3.2"
+        or "qwen2.5-coder:7b"
     )
+
+
+def _ollama_tag_available(candidate: str, tags: list[str]) -> bool:
+    """True when ``candidate`` matches an installed Ollama tag (prefix-tolerant)."""
+    want = (candidate or "").strip().lower()
+    if not want:
+        return False
+    want_bare = want.split(":")[0]
+    for tag in tags:
+        t = (tag or "").strip().lower()
+        if not t:
+            continue
+        if t == want or t.startswith(want + "-") or t.startswith(want + ":"):
+            return True
+        # Allow installed ``llama3.2:1b-instruct-q4_K_M`` for candidate ``llama3.2:1b``.
+        if want.count(":") == 1:
+            name, ver = want.split(":", 1)
+            if t.startswith(f"{name}:{ver}"):
+                return True
+        if ":" not in want and t.split(":")[0] == want_bare:
+            return True
+    return False
+
+
+def lightweight_model_name() -> str:
+    """Prefer ``llama3.2:1b`` for System-1 TTFT; fall back to ``qwen2.5-coder:7b``.
+
+    Override with ``DONNA_LIGHTWEIGHT_MODEL``. When the 1b tag is not installed,
+    returns the standard local chat model so inference never hard-fails.
+    """
+    override = (os.environ.get("DONNA_LIGHTWEIGHT_MODEL") or "").strip()
+    if override:
+        return override
+    tags = _list_ollama_tags()
+    if tags:
+        for cand in _LIGHTWEIGHT_MODEL_CANDIDATES:
+            if _ollama_tag_available(cand, tags):
+                # Prefer the exact installed tag when a longer variant matched.
+                want = cand.lower()
+                for tag in tags:
+                    t = (tag or "").strip()
+                    if t.lower() == want or t.lower().startswith(want):
+                        return t
+                return cand
+        _log_cascade(
+            "lightweight model llama3.2:1b not in Ollama library — "
+            f"falling back to {local_model_name()}"
+        )
+    else:
+        # Tags unreachable: do not risk a missing 1b hard-fail — use standard local.
+        _log_cascade(
+            "Ollama tags unavailable — lightweight falling back to "
+            f"{local_model_name()}"
+        )
+    return local_model_name()
+
+
+def deep_research_model_name() -> str:
+    """Heaviest local reasoner for swarm / deep-research MoA stage-1."""
+    return reasoner_model_name()
+
+
+def resolve_compute_mode(
+    query: str = "",
+    *,
+    forced_tool: str | None = None,
+    use_lightweight: bool = False,
+) -> ComputeMode:
+    """Map turn intent to proportional compute tier."""
+    if use_lightweight:
+        return "lightweight"
+    tool = (forced_tool or "").strip()
+    text = (query or "").strip()
+    if tool == "dispatch_research_swarm" or text.lstrip().startswith(
+        "[BACKGROUND TASK]"
+    ):
+        return "deep_research"
+    if tool:
+        return "react"
+    if classify_complexity(text, forced_tool=tool or None) == "high":
+        return "deep_research"
+    return "react"
 
 
 def cascade_model_name() -> str:
@@ -706,16 +818,20 @@ def decide_route(
     except Exception:  # noqa: BLE001
         tool_intent = False
 
-    if _donna_mode_is_chat() and not tool_intent:
+    # Deep research / idle BACKGROUND TASKS must never stay on chat-local bypass.
+    _deep_force = (forced_tool or "").strip() == "dispatch_research_swarm" or (
+        query or ""
+    ).lstrip().startswith("[BACKGROUND TASK]")
+    if _donna_mode_is_chat() and not tool_intent and not _deep_force:
         return CascadeDecision(
             complexity="low",
             backend="local",
             model=local,
             reason="chat mode → local llama, tools/MoA bypassed",
         )
-    if _donna_mode_is_chat() and tool_intent:
+    if _donna_mode_is_chat() and (tool_intent or _deep_force):
         _log_cascade(
-            "CRITICAL: system/file/code intent in chat mode → tool-graph "
+            "CRITICAL: system/file/code/research intent in chat mode → tool-graph "
             "(MoA/ReAct); lightweight chat bypassed"
         )
     # Scaffolded modes: log intent; keep current MoA/local heuristics for now.
@@ -847,6 +963,7 @@ def _ollama_generate(
         "model": model,
         "prompt": prompt,
         "stream": False,
+        "keep_alive": _ollama_keep_alive_value(),
         "options": {"num_predict": 512, "num_ctx": 4096},
     }
     if images_b64:
@@ -875,6 +992,7 @@ def _ollama_chat(
     payload = {
         "model": model,
         "stream": False,
+        "keep_alive": _ollama_keep_alive_value(),
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -903,6 +1021,7 @@ def _ollama_chat_vision(
     payload = {
         "model": model,
         "stream": False,
+        "keep_alive": _ollama_keep_alive_value(),
         "messages": [
             {
                 "role": "user",
@@ -1221,78 +1340,130 @@ def resolve_chat_model(
     forced_tool: str | None = None,
     default_model: str | None = None,
     temperature: float = 0.2,
+    mode: ComputeMode | None = None,
 ) -> Any:
     """Return a LangChain chat model for the chosen Cascade / MoA route.
 
     Visual MoA (image bytes) should call ``run_visual_moa`` directly.
     This helper binds the **reasoner** (or local fast model) for text ReAct turns.
-    Chat mode always resolves to the local fast model (no MoA escalate).
+
+    ``mode`` proportional tiers:
+      - ``lightweight`` — ``llama3.2:1b`` (fallback ``qwen2.5-coder:7b``) System-1 chat
+      - ``react`` — standard local model for ``bind_tools``
+      - ``deep_research`` — MoA reasoner plans; formatter stays local for tools
     """
-    decision = decide_route(
-        query, forced_tool=forced_tool, default_model=default_model
-    )
-    _log_cascade(
-        f"route={decision.backend} complexity={decision.complexity} "
-        f"model={decision.model} ({decision.reason})"
+    compute_mode: ComputeMode = mode or resolve_compute_mode(
+        query,
+        forced_tool=forced_tool,
+        use_lightweight=False,
     )
 
-    # Optional legacy external path (explicit opt-in only).
-    if (
-        decision.backend in ("cascade", "moa")
-        and allow_external_cascade()
-        and decision.backend == "cascade"
-    ):
-        try:
-            from langchain_openai import ChatOpenAI
+    # System-1: skip MoA / complexity escalate entirely.
+    if compute_mode == "lightweight":
+        model_id = default_model or lightweight_model_name()
+        # If 1b was chosen optimistically but tags were empty, keep fallback ready.
+        if not default_model and model_id.startswith("llama3.2:1b"):
+            tags = _list_ollama_tags()
+            if tags and not _ollama_tag_available(model_id, tags):
+                model_id = local_model_name()
+        _log_cascade(
+            f"route=local complexity=low mode=lightweight model={model_id} "
+            "(System-1 proportional compute)"
+        )
+        reasoner_id = ""
+        decision = None
+    else:
+        decision = decide_route(
+            query, forced_tool=forced_tool, default_model=default_model
+        )
+        if compute_mode == "deep_research" and decision.complexity != "high":
+            # Force heavy reasoner foresight for swarm / background research.
+            decision = decide_route(
+                query,
+                forced_tool=forced_tool or "dispatch_research_swarm",
+                default_model=default_model,
+            )
+        _log_cascade(
+            f"route={decision.backend} complexity={decision.complexity} "
+            f"mode={compute_mode} model={decision.model} ({decision.reason})"
+        )
 
-            return ChatOpenAI(model=cascade_model_name(), temperature=temperature)
-        except Exception as exc:  # noqa: BLE001
+        # Optional legacy external path (explicit opt-in only).
+        if (
+            decision.backend in ("cascade", "moa")
+            and allow_external_cascade()
+            and decision.backend == "cascade"
+        ):
+            try:
+                from langchain_openai import ChatOpenAI
+
+                return ChatOpenAI(model=cascade_model_name(), temperature=temperature)
+            except Exception as exc:  # noqa: BLE001
+                _log_cascade(
+                    f"WARNING: external Cascade unavailable ({exc}); "
+                    "using local MoA reasoner",
+                    level="warning",
+                )
+
+        # ReAct / tool-calling MUST stay on the fast local chat model.
+        # DeepSeek-R1 does not emit reliable Ollama native tool_calls under bind_tools.
+        # High-complexity MoA turns use the two-stage shim in agentic_react_graph:
+        #   stage1 reasoner (no tools) → stage2 local formatter (bind_tools).
+        reasoner_id = decision.reasoner_model or reasoner_model_name()
+        if compute_mode == "deep_research":
+            reasoner_id = deep_research_model_name()
+        if decision.backend == "local" and compute_mode == "react":
+            model_id = decision.model or local_model_name()
+        else:
+            # moa / deep_research text ReAct path → local tool-caller (formatter)
+            model_id = local_model_name()
+            if (
+                decision.complexity == "high"
+                or decision.backend == "moa"
+                or compute_mode == "deep_research"
+            ):
+                _log_cascade(
+                    f"ReAct tool-loop local={model_id} "
+                    f"(MoA shim: reasoner={reasoner_id} plans, "
+                    f"formatter={model_id} bind_tools; mode={compute_mode})"
+                )
+
+        # Opt-in escape hatch for experiments only (expect broken native tool_calls).
+        if (os.environ.get("DONNA_REACT_USE_REASONER") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            model_id = reasoner_id or deep_research_model_name()
             _log_cascade(
-                f"WARNING: external Cascade unavailable ({exc}); using local MoA reasoner",
+                f"WARNING: DONNA_REACT_USE_REASONER → ChatOllama={model_id}",
                 level="warning",
             )
 
-    # ReAct / tool-calling MUST stay on the fast local chat model.
-    # DeepSeek-R1 does not emit reliable Ollama native tool_calls under bind_tools.
-    # High-complexity MoA turns use the two-stage shim in agentic_react_graph:
-    #   stage1 reasoner (no tools) → stage2 local formatter (bind_tools).
-    reasoner_id = decision.reasoner_model or reasoner_model_name()
-    if decision.backend == "local":
-        model_id = decision.model or local_model_name()
-    else:
-        # moa / cascade text ReAct path → local tool-caller (formatter stage)
-        model_id = local_model_name()
-        if decision.complexity == "high" or decision.backend == "moa":
-            _log_cascade(
-                f"ReAct tool-loop local={model_id} "
-                f"(MoA shim: reasoner={reasoner_id} plans, "
-                f"formatter={model_id} bind_tools; "
-                f"R1 native tool_calls non-functional on Ollama)"
+    # Lightweight System-1 (llama3.2:1b) stays capped at 4096 to avoid RAM bloat.
+    # ReAct / deep_research keep the larger env-tunable window (default 8192).
+    if compute_mode == "lightweight":
+        num_ctx = 4096
+        try:
+            num_ctx = max(
+                2048,
+                min(
+                    4096,
+                    int(os.environ.get("DONNA_LIGHTWEIGHT_NUM_CTX", "4096") or "4096"),
+                ),
             )
-
-    # Opt-in escape hatch for experiments only (expect broken native tool_calls).
-    if (os.environ.get("DONNA_REACT_USE_REASONER") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        model_id = reasoner_id
-        _log_cascade(
-            f"WARNING: DONNA_REACT_USE_REASONER → ChatOllama={model_id}",
-            level="warning",
-        )
-
-    num_ctx = 8192
-    try:
-        num_ctx = max(
-            4096,
-            int(os.environ.get("DONNA_REACT_NUM_CTX", "8192") or "8192"),
-        )
-    except ValueError:
+        except ValueError:
+            num_ctx = 4096
+    else:
         num_ctx = 8192
-
-    from langchain_ollama import ChatOllama
+        try:
+            num_ctx = max(
+                4096,
+                int(os.environ.get("DONNA_REACT_NUM_CTX", "8192") or "8192"),
+            )
+        except ValueError:
+            num_ctx = 8192
 
     # Tool-call JSON (large args / multi-arg schemas) must finish before the
     # generation ceiling — 512 truncates mid-JSON and crashes llama-server.
@@ -1305,15 +1476,30 @@ def resolve_chat_model(
     except ValueError:
         num_predict = 4096
 
+    # Thermal guardrail / zero-latency unload: keep_alive from idle monitor
+    # (default 0). Never pass -1 / "-1" — Ollama returns HTTP 400 on those values.
+    try:
+        from dana.middleware.idle_monitor import ollama_keep_alive
+
+        keep_alive = ollama_keep_alive()
+    except Exception:  # noqa: BLE001
+        keep_alive = 0
+
+    from dana.llm_client import build_chat_ollama, draft_num_predict
+
+    _draft_n = draft_num_predict()
     _log_cascade(
-        f"ChatOllama model={model_id} num_ctx={num_ctx} num_predict={num_predict}"
+        f"ChatOllama model={model_id} num_ctx={num_ctx} "
+        f"num_predict={num_predict} keep_alive={keep_alive!r}"
+        + (f" draft_num_predict={_draft_n}" if _draft_n is not None else "")
     )
     # Leave format unset: native tool grammar comes from bind_tools(tools),
     # not format="json" (which would constrain spoken FINAL answers to JSON).
-    return ChatOllama(
+    # Speculative drafting: Modelfile DRAFT / llama.cpp -md; see dana.llm_client.
+    return build_chat_ollama(
         model=model_id,
         temperature=temperature,
         num_ctx=num_ctx,
         num_predict=num_predict,
-        keep_alive="-1",
+        keep_alive=keep_alive,
     )

@@ -31,6 +31,9 @@ DEFAULT_FLAGS: dict[str, Any] = {
     "open_window_on_startup": True,
     # Default Piper voice id (hfc_female — CC BY-NC-SA). Override via DONNA_PIPER_VOICE.
     "piper_voice": "en_US-hfc_female-medium",
+    # Hybrid Broker: optional cloud-assisted DAG / epic planning (workers stay local).
+    # Default False — Dānā remains 100% offline unless the user explicitly enables this.
+    "hybrid_planner_enabled": False,
 }
 
 
@@ -219,6 +222,25 @@ def set_open_window_on_startup(enabled: bool) -> None:
     global _CACHE
     cfg = load_donna_settings(force_reload=True)
     cfg["open_window_on_startup"] = bool(enabled)
+    try:
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+    except OSError:
+        return
+    _CACHE = dict(cfg)
+
+
+def is_hybrid_planner_enabled() -> bool:
+    """True when Settings → Hybrid Broker (Cloud Planner) is checked."""
+    return bool(load_donna_settings().get("hybrid_planner_enabled", False))
+
+
+def set_hybrid_planner_enabled(enabled: bool) -> None:
+    """Persist ``hybrid_planner_enabled`` and refresh the settings cache."""
+    global _CACHE
+    cfg = load_donna_settings(force_reload=True)
+    cfg["hybrid_planner_enabled"] = bool(enabled)
     try:
         with open(SETTINGS_PATH, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh, indent=2, ensure_ascii=False)

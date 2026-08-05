@@ -1,4 +1,4 @@
-"""ReAct / plan-execute loop for llama3.2 — LangChain ChatOllama + native tools."""
+"""ReAct / plan-execute loop for qwen2.5-coder:7b — LangChain ChatOllama + native tools."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 from dana.schema import AgenticResult
@@ -87,17 +88,172 @@ _LIGHTWEIGHT_CHAT_SYSTEM = (
     "desktop control when tools exist on the ReAct path."
 )
 
-_CHAT_CAPABILITY_CARD = (
+_CHAT_CAPABILITY_CARD_STATIC = (
     "Capability card (informational only — tools are NOT bound in chat mode):\n"
-    "- Modes: chat (current default for casual talk), developer (tools/code), "
-    "vision (camera/screen), research (research swarm). "
-    "Users may say 'switch to vision' / 'switch to developer' without the word 'mode'.\n"
-    "- Local Ollama brain: this chat path only runs when Ollama is reachable.\n"
-    "- Research store / filesystem / code edits / Ollama diagnostics escalate to "
-    "the tool-graph — do not invent those capabilities here.\n"
+    "- Agentic stack: local Ollama brain + LangGraph/ReAct tool graph when tools "
+    "are required; lightweight chat for casual talk only.\n"
+    "- Modes: chat, developer (tools/code), vision (camera/screen), research "
+    "(research swarm). Users may say 'switch to vision' / 'switch to developer'.\n"
     "- Short-term memory: prior user/assistant turns in this session are provided "
-    "as separate messages below the system prompt."
+    "as separate messages below the system prompt.\n"
+    "- When asked 'what are your capabilities?', enumerate the digest categories "
+    "below accurately — do not invent APIs that are not listed."
 )
+
+# Temporal / self-improvement intents must never stay on lightweight chat.
+_TEMPORAL_INTENT_RE = re.compile(
+    r"(?i)\b(?:"
+    r"yesterday|last\s+night|this\s+morning|previous\s+session|"
+    r"last\s+session|earlier\s+today|day\s+before|"
+    r"what\s+did\s+you\s+do\s+yesterday|what\s+happened\s+yesterday|"
+    r"list_activity_for_day"
+    r")\b",
+)
+_SELF_IMPROVEMENT_INTENT_RE = re.compile(
+    r"(?i)\b(?:"
+    r"how\s+can\s+we\s+improve\s+you|how\s+can\s+i\s+improve\s+you|"
+    r"how\s+(?:should|could)\s+we\s+improve\s+you|"
+    r"self[- ]?improv(?:e|ement)|improve\s+(?:yourself|your\s+architecture)|"
+    r"what\s+(?:are\s+your\s+)?(?:weak(?:ness(?:es)?)?|gaps?|blind\s*spots?)|"
+    r"how\s+do\s+we\s+make\s+you\s+better"
+    r")\b",
+)
+
+
+def is_temporal_intent(text: str) -> bool:
+    return bool(_TEMPORAL_INTENT_RE.search(text or ""))
+
+
+def is_self_improvement_intent(text: str) -> bool:
+    return bool(_SELF_IMPROVEMENT_INTENT_RE.search(text or ""))
+
+
+_CAPABILITIES_INTENT_RE = re.compile(
+    r"(?i)\b(?:"
+    r"what\s+are\s+your\s+capabilities|what\s+can\s+you\s+do|"
+    r"list\s+your\s+(?:capabilities|tools)|your\s+capabilities|"
+    r"what\s+tools\s+do\s+you\s+have"
+    r")\b",
+)
+
+
+def is_capabilities_intent(text: str) -> bool:
+    return bool(_CAPABILITIES_INTENT_RE.search(text or ""))
+
+
+def grounded_capabilities_answer() -> str:
+    """Deterministic capability inventory grounded in the live registry digest."""
+    digest = build_capability_digest()
+    # Flatten digest lines into a spoken paragraph the heuristic can score.
+    return (
+        "I am Dānā, a local Windows control plane. "
+        "My agentic stack is Ollama plus a LangGraph/ReAct tool graph with an encrypted vault. "
+        "Capability categories from my live tool registry: "
+        "Desktop Control (keystrokes, PowerShell, open apps), "
+        "Code Execution (python_repl, execute_python_script, architect_new_tool), "
+        "File Management (file_editor, read_local_file, ingest_local_directory), "
+        "Research Swarms (dispatch_research_swarm, web_search, fetch_webpage), "
+        "System Perception (screen capture, vision OCR, spatial scene), "
+        "and Memory Storage (list_activity_for_day, read_vault_memory, search_vault, "
+        "read_system_architecture). "
+        "Ask me to switch to developer or vision mode when you need the full tool loop."
+        f"\n\n{digest}"
+    )
+
+
+def build_capability_digest() -> str:
+    """Compact registry-backed capability summary for lightweight chat grounding."""
+    categories: dict[str, list[str]] = {
+        "Desktop Control": [],
+        "Code Execution": [],
+        "File Management": [],
+        "Research Swarms": [],
+        "System Perception": [],
+        "Memory Storage": [],
+    }
+    rules: list[tuple[str, tuple[str, ...]]] = [
+        (
+            "Desktop Control",
+            (
+                "open_application",
+                "execute_os_keystrokes",
+                "inject_keystrokes",
+                "type_stealth_text",
+                "execute_powershell",
+                "shell_execute",
+                "run_terminal_command",
+            ),
+        ),
+        (
+            "Code Execution",
+            (
+                "execute_python_script",
+                "python_repl",
+                "execute_command",
+                "architect_new_tool",
+            ),
+        ),
+        (
+            "File Management",
+            (
+                "file_editor",
+                "read_local_file",
+                "write_to_file",
+                "file_jail_enforcer",
+                "ingest_local_directory",
+            ),
+        ),
+        (
+            "Research Swarms",
+            (
+                "dispatch_research_swarm",
+                "dispatch_watchdog",
+                "web_search",
+                "fetch_webpage",
+            ),
+        ),
+        (
+            "System Perception",
+            (
+                "capture_and_analyze_screen",
+                "analyze_visual_context",
+                "describe_spatial_scene",
+                "ocr_with_region",
+                "switch_vision_source",
+            ),
+        ),
+        (
+            "Memory Storage",
+            (
+                "list_activity_for_day",
+                "read_vault_memory",
+                "write_vault_memory",
+                "search_vault",
+                "flush_memory",
+                "read_system_architecture",
+            ),
+        ),
+    ]
+    known: set[str] = set()
+    try:
+        from dana.tools.registry import get_tool_registry
+
+        known = {str(k) for k in (get_tool_registry().as_spec_dict() or {}).keys()}
+    except Exception:  # noqa: BLE001
+        known = set()
+    for cat, ids in rules:
+        hits = [tid for tid in ids if not known or tid in known]
+        categories[cat] = hits[:6]
+    lines = [
+        "Live capability digest (from tool registry — report these categories):",
+        "- Agentic stack: Ollama (local LLM) + LangGraph/ReAct tool loop + encrypted vault.",
+    ]
+    for cat, tools in categories.items():
+        if tools:
+            lines.append(f"- {cat}: {', '.join(tools)}")
+        else:
+            lines.append(f"- {cat}: (available on tool-graph route)")
+    return "\n".join(lines)
 
 # Isolated Memory Buffer (strictly for lightweight chat). Never shared with ReAct.
 # Holds the last 5 conversational turns to prevent context window overflow.
@@ -180,7 +336,22 @@ _TOOL_GRAPH_INTENT_RE = re.compile(
     r"ingest\s+(?:the\s+)?(?:vault|chroma|memory|codebase)|"
     r"index\s+(?:this\s+)?(?:directory|folder|codebase)|"
     r"codebase\s+vault|ingest_local_directory|search_vault|"
-    r"(?:vault|chroma)\s+(?:search|ingest|query|embeddings))\b"
+    r"(?:vault|chroma)\s+(?:search|ingest|query|embeddings))\b|"
+    # Temporal / day-index memory (PSOL: never lightweight-chat these).
+    r"\b(?:yesterday|last\s+night|this\s+morning|previous\s+session|"
+    r"list_activity_for_day)\b|"
+    # Live telemetry + idle duration (Suite 2 perception).
+    r"\b(?:cpu|vram|ram|system\s+utilization|get_system_telemetry)\b|"
+    r"\b(?:user_away|idle\s+duration|away\s+time|parse_idle_log_duration)\b|"
+    # Suite 3 orchestration (git repo cwd / watchdog graph / LaTeX).
+    r"\b(?:cascade[-_]?router|last\s+git\s+commit|watchdog_graph|"
+    r"watchdog\s+(?:monitoring\s+)?graph|latex|\\cite)\b|"
+    # Suite 5 combinatorial personal facts (episodic SQLite first).
+    r"\b(?:names?\s+of\s+my\s+cats?|my\s+cats?|my\s+car|"
+    r"chipotle|shake\s+shack|diet\s+coke)\b|"
+    # Self-improvement / architecture critique.
+    r"\b(?:how\s+can\s+we\s+improve\s+you|self[- ]?improv(?:e|ement)|"
+    r"improve\s+(?:yourself|your\s+architecture))\b"
     r")",
     re.IGNORECASE,
 )
@@ -190,7 +361,8 @@ def requires_tool_graph(text: str) -> bool:
     """True when the utterance must use the tool-enabled MoA / ReAct graph.
 
     Lightweight chat remains for greetings and generic Q&A; any local execution,
-    file, coding, or desktop/window/ticket intent forces the tool loop.
+    file, coding, desktop/window/ticket, temporal-memory, or self-improvement
+    intent forces the tool loop.
     """
     blob = (text or "").strip()
     t0 = time.perf_counter()
@@ -202,6 +374,22 @@ def requires_tool_graph(text: str) -> bool:
         if _SMALL_TALK_RE.search(blob):
             decision = "lightweight_smalltalk"
             return False
+        try:
+            from dana.tools.broker import is_meta_broker_intent
+
+            if is_meta_broker_intent(blob):
+                decision = "tool_graph_meta_broker"
+                return True
+        except Exception:  # noqa: BLE001
+            if blob.lower().startswith("/broker") or "use the meta-broker" in blob.lower():
+                decision = "tool_graph_meta_broker"
+                return True
+        if is_temporal_intent(blob):
+            decision = "tool_graph_temporal"
+            return True
+        if is_self_improvement_intent(blob):
+            decision = "tool_graph_self_improvement"
+            return True
         if bool(_TOOL_GRAPH_INTENT_RE.search(blob)):
             decision = "tool_graph"
             return True
@@ -448,6 +636,14 @@ _TOOL_EXECUTION_RULE = (
     "the user how to do it. You must physically execute the function yourself. "
     "Once the tool returns a success message, output your ONE sentence summary and "
     "terminate."
+)
+
+_PYTHON_DOMAIN_CLAMP = (
+    "CRITICAL: You are a Python expert. Unless explicitly instructed otherwise, "
+    "ALL code must be written in Python. NEVER output HTML, CSS, or JavaScript. "
+    "You MUST use tools to modify the workspace. Do NOT just output code blocks. "
+    "When creating or editing files, invoke `file_editor` or `write_to_file` with "
+    "the full Python source — never paste markdown fences as the final answer."
 )
 
 _STRICT_TOOL_ENFORCEMENT_RULE = (
@@ -746,6 +942,7 @@ _TOOL_TTS_FRIENDLY: dict[str, str] = {
     "dispatch_watchdog": "Setting up a watchdog...",
     "kill_watchdog": "Stopping that watchdog...",
     "architect_new_tool": "Building a new tool...",
+    "meta_broker": "Starting the Meta-Broker epic swarm...",
     "read_local_file": "Reading that file...",
     "read_vault_memory": "Checking memory...",
     "write_vault_memory": "Saving that to memory...",
@@ -2305,6 +2502,99 @@ def clip_spoken_answer(user_text: str, answer: str, *, max_words: int = 22) -> s
     return chosen.strip()
 
 
+def _recent_failure_log_snippets(*, limit: int = 8) -> list[str]:
+    """Pull recent ERROR/WARNING lines from runtime / fatal logs."""
+    snippets: list[str] = []
+    try:
+        from dana.paths import LOGS_DIR
+
+        for name in ("dana_runtime.log", "fatal_crash.log", "dana_performance.log"):
+            path = Path(LOGS_DIR) / name
+            if not path.is_file():
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception:  # noqa: BLE001
+                continue
+            for ln in reversed(lines):
+                low = ln.lower()
+                if any(tok in low for tok in ("error", "fail", "panic", "traceback", "warning")):
+                    snippets.append(f"{name}: {ln.strip()[:220]}")
+                    if len(snippets) >= limit:
+                        return snippets
+    except Exception:  # noqa: BLE001
+        pass
+    return snippets
+
+
+def build_self_improvement_reflection(
+    *,
+    user_text: str,
+    tool_trace: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Structured reflection for self-improvement asks (architecture + failures)."""
+    arch_note = ""
+    try:
+        from dana.architecture import read_system_architecture
+
+        payload = read_system_architecture()
+        arch_note = str(payload.get("note") or "")[:240]
+        tool_count = (payload.get("tools_schema_summary") or {}).get("tool_count")
+    except Exception as exc:  # noqa: BLE001
+        arch_note = f"architecture_unavailable:{exc}"
+        tool_count = None
+    failures = _recent_failure_log_snippets()
+    tools_used = [
+        str(row.get("tool") or "")
+        for row in (tool_trace or [])
+        if row.get("tool")
+    ]
+    gaps = [
+        "Episodic day-index retrieval must stay on the tool graph (list_activity_for_day).",
+        "Lightweight chat needs a live capability digest so capability answers cite real tools.",
+        "LangGraph memory hydration + vault/Chroma recall still miss calendar-day queries.",
+        "Failure logs should feed Andon / self-critique instead of generic 'be better' advice.",
+    ]
+    return {
+        "triggered": True,
+        "intent": "self_improvement",
+        "rule": (
+            "Critique real stack gaps (LangGraph/ReAct, episodic SQLite, vault/Chroma, "
+            "tool-registry grounding) using architecture + recent failure logs."
+        ),
+        "tool_id": "read_system_architecture",
+        "architecture_note": arch_note,
+        "tool_count": tool_count,
+        "recent_failures": failures,
+        "tools_used": tools_used,
+        "gaps": gaps,
+        "user_text": (user_text or "")[:240],
+        "persisted": False,
+        "error": None,
+    }
+
+
+def format_self_improvement_briefing(reflection: dict[str, Any] | None = None) -> str:
+    """System-prompt addendum so the model cites real gaps."""
+    ref = reflection or build_self_improvement_reflection(user_text="")
+    fails = ref.get("recent_failures") or []
+    fail_block = "\n".join(f"  - {x}" for x in fails[:6]) or "  - (no recent ERROR lines)"
+    gaps = ref.get("gaps") or []
+    gap_block = "\n".join(f"  - {g}" for g in gaps)
+    return (
+        "SELF-IMPROVEMENT BRIEFING (HARD):\n"
+        "- You MUST call read_system_architecture (and cite LangGraph/ReAct + Ollama).\n"
+        "- Address memory retention gaps (episodic SQLite, list_activity_for_day, vault).\n"
+        "- Include explicit self-critique of current failure modes / blind spots.\n"
+        f"- Architecture note: {ref.get('architecture_note')}\n"
+        f"- Registry tool_count: {ref.get('tool_count')}\n"
+        "- Recent failure log snippets:\n"
+        f"{fail_block}\n"
+        "- Known gaps:\n"
+        f"{gap_block}"
+    )
+
+
 def _maybe_reflect(
     *,
     user_text: str,
@@ -2313,6 +2603,26 @@ def _maybe_reflect(
     vault_client: Any | None,
     enable_reflection: bool,
 ) -> tuple[dict[str, Any] | None, float, bool]:
+    t0 = time.perf_counter()
+    # Self-improvement asks always attach a structured reflection payload.
+    if is_self_improvement_intent(user_text):
+        payload = build_self_improvement_reflection(
+            user_text=user_text,
+            tool_trace=tool_trace,
+        )
+        try:
+            from dana.memory.blackboard import append_reasoning_trace
+
+            append_reasoning_trace(
+                "self_improvement",
+                json.dumps(payload, ensure_ascii=False, default=str)[:4000],
+                source="self_improvement_reflection",
+            )
+            payload["persisted"] = True
+        except Exception:  # noqa: BLE001
+            pass
+        return payload, (time.perf_counter() - t0) * 1000.0, True
+
     if not enable_reflection:
         return None, 0.0, False
     from dana.reflector import persist_lesson, run_reflection, trace_has_failure
@@ -2375,7 +2685,11 @@ def build_lightweight_chat_system_prompt(
     visual_context: str | None = None,
 ) -> str:
     """Persona + capability card for chat mode (no tool / TPM rules)."""
-    parts = [_LIGHTWEIGHT_CHAT_SYSTEM, _CHAT_CAPABILITY_CARD]
+    parts = [_LIGHTWEIGHT_CHAT_SYSTEM, _CHAT_CAPABILITY_CARD_STATIC]
+    try:
+        parts.append(build_capability_digest())
+    except Exception:  # noqa: BLE001
+        pass
     parts.append(_chat_situational_context())
     try:
         parts.append(f"Active Donna mode: {get_donna_mode()}.")
@@ -2402,7 +2716,7 @@ def run_lightweight_chat(
     user_text: str,
     system_prompt: str = "",
     prior_messages: list[dict[str, str]] | None = None,
-    model: str = "llama3.2",
+    model: str = "qwen2.5-coder:7b",
     ask_fn: Callable[..., str] | None = None,
     visual_context: str | None = None,
     use_chat_memory: bool = True,
@@ -2509,7 +2823,31 @@ def run_lightweight_chat(
         raise
 
     spoken = strip_r1_think_blocks(str(raw or ""))
-    spoken = clip_spoken_answer(user_text, spoken, max_words=40)
+    # Capability inventories must not be TTS-clipped to a vague one-liner.
+    if is_capabilities_intent(user_clean):
+        low = spoken.lower()
+        stack_ok = bool(
+            re.search(r"\b(?:langgraph|ollama)\b", low)
+            or re.search(r"\breact\b", low)
+        )
+        cats_ok = sum(
+            1
+            for k in (
+                "desktop control",
+                "code execution",
+                "file management",
+                "research",
+                "perception",
+                "memory storage",
+                "vault",
+            )
+            if k in low
+        ) >= 3
+        if not (stack_ok and cats_ok and len(spoken.split()) >= 40):
+            spoken = grounded_capabilities_answer()
+        # Do not clip capability inventories — keep the full grounded list.
+    else:
+        spoken = clip_spoken_answer(user_text, spoken, max_words=40)
     spoken = sanitize_spoken_reply(
         spoken,
         reply_lang=reply_lang,
@@ -2557,7 +2895,7 @@ def run_react_loop(
     prior_messages: list[dict[str, str]] | None = None,
     on_tool_start: Callable[[ToolCall, str], None] | None = None,
     visual_context: str | None = None,
-    model: str = "llama3.2",
+    model: str = "qwen2.5-coder:7b",
     forced_tool: ToolCall | None = None,
     tts_callback: Callable[[str], None] | None = None,
 ) -> AgenticResult:
@@ -2681,9 +3019,10 @@ def sanitize_react_observation(
     *,
     max_chars: int = _OBS_MAX_CHARS,
 ) -> str:
-    """Strip raw image/base64 payloads and truncate tool observations for ReAct.
+    """Strip raw image/base64 payloads and Scratchpad-compress tool observations.
 
     Downstream reasoners must never see base64 image bytes — only extracted text.
+    Oversized strings are head/tail compressed via ``compress_tool_output``.
     """
     s = text or ""
     if not s:
@@ -2691,9 +3030,22 @@ def sanitize_react_observation(
     s = _DATA_URI_RE.sub("[IMAGE_STRIPPED]", s)
     s = _IMAGES_JSON_RE.sub('"images":["[IMAGE_STRIPPED]"]', s)
     s = _LONG_B64_RE.sub("[BASE64_STRIPPED]", s)
-    if len(s) > max_chars:
-        s = s[:max_chars].rstrip() + "...[TRUNCATED for context window]"
-    return s
+    try:
+        from dana.middleware.scratchpad import (
+            DEFAULT_MAX_LENGTH,
+            compress_tool_output,
+        )
+
+        # Cap at Scratchpad default (1200) even when callers pass a larger budget.
+        try:
+            cap = min(int(max_chars), DEFAULT_MAX_LENGTH)
+        except (TypeError, ValueError):
+            cap = DEFAULT_MAX_LENGTH
+        return compress_tool_output(s, max_length=max(1, cap))
+    except Exception:  # noqa: BLE001
+        if len(s) > max_chars:
+            s = s[:max_chars].rstrip() + "...[TRUNCATED for context window]"
+        return s
 
 
 def sanitize_react_message_history(messages: list[Any]) -> list[Any]:

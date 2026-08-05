@@ -67,6 +67,10 @@ def ingest_text_to_queue(*, empty_sleep: float = 0.0) -> int:
                 time.sleep(empty_sleep)
             return 0
 
+        # Atomic truncate BEFORE enqueue/dispatch so a concurrent watcher cannot
+        # re-ingest the same payload (ingestion echo chamber).
+        INPUT_FILE.write_text("", encoding="utf-8")
+
         # 2. Split tasks by blank lines (tolerate Windows \r\n)
         raw_tasks = [
             task.strip()
@@ -126,8 +130,6 @@ def ingest_text_to_queue(*, empty_sleep: float = 0.0) -> int:
             existing_keys.add(key)
             added += 1
 
-        # 5. Always clear input.txt so the same batch cannot be re-read.
-        INPUT_FILE.write_text("", encoding="utf-8")
         if added <= 0:
             return 0
 
@@ -142,7 +144,7 @@ def ingest_text_to_queue(*, empty_sleep: float = 0.0) -> int:
             encoding="utf-8",
         )
         print(f"[Ingest] Successfully added {added} task(s) to the queue.", flush=True)
-        print("[Ingest] Cleared input.txt", flush=True)
+        print("[Ingest] Cleared input.txt (atomic pre-enqueue)", flush=True)
         return added
     except Exception as exc:  # noqa: BLE001
         print(f"[Ingest] CRASH: {exc}", flush=True)
