@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal, TypedDict
+
+try:
+    from typing import NotRequired
+except ImportError:  # Python < 3.11
+    from typing_extensions import NotRequired
 
 
 TaskStatus = Literal["pending", "ready", "running", "completed", "failed", "blocked"]

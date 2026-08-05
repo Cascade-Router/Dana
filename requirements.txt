@@ -21,6 +21,8 @@ Pillow>=10.2.0
 # gradio is installed by the Hugging Face Space SDK (see README.md sdk_version).
 # Do not pin it here — duplicate pins collide with the Space container build.
 numpy>=1.26.0
+# Python 3.10 CI: typing.NotRequired needs typing_extensions
+typing_extensions>=4.8.0
 sounddevice==0.5.5
 soundfile==0.14.0
 piper-tts==1.4.2
