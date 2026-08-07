@@ -102,6 +102,108 @@
       }
     },
     {
+      "id": "click_ui_element",
+      "description_en": "Locate a UI element on screen by description (native UI Automation first, then Florence-2 vision grounding) and physically click its center. Use when the user wants you to press a button, click a link, check a box, or otherwise interact with something on screen — not just read or find it (use ocr_with_region for that). Rate-limited, fails closed if the target can't be found or the click would land off-screen.",
+      "parameters": [
+        {
+          "name": "target_description",
+          "type": "string",
+          "required": true,
+          "description_en": "What to click, in plain language (e.g. 'Submit button', 'the Cancel link', 'checkbox next to Terms').",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "target_description": [
+          "click the submit button",
+          "press ok",
+          "click on",
+          "click the button",
+          "check the box",
+          "click that link"
+        ]
+      },
+      "aliases_fa": {
+        "target_description": []
+      }
+    },
+    {
+      "id": "scroll_screen",
+      "description_en": "Scroll the screen up, down, left, or right to reveal off-screen content or UI elements. Use before click_ui_element/type_text_in_element when the target isn't visible yet. Amount is semantic (small/medium/large), not a raw tick count.",
+      "parameters": [
+        {
+          "name": "direction",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "up",
+            "down",
+            "left",
+            "right"
+          ],
+          "description_en": "Which way to scroll.",
+          "description_fa": ""
+        },
+        {
+          "name": "amount",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "small",
+            "medium",
+            "large"
+          ],
+          "description_en": "How far to scroll. Defaults to 'medium'.",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "direction": [
+          "scroll down",
+          "scroll up",
+          "page down",
+          "scroll to the bottom",
+          "scroll left",
+          "scroll right"
+        ]
+      },
+      "aliases_fa": {
+        "direction": []
+      }
+    },
+    {
+      "id": "type_text_in_element",
+      "description_en": "Locate a UI element on screen by description, click it to focus, then type text into it (search bars, form fields, text boxes). Combines click_ui_element with stealth keyboard input in one step. Fails closed if the target can't be found, the click is blocked, or typing fails — never types into the wrong place.",
+      "parameters": [
+        {
+          "name": "target_description",
+          "type": "string",
+          "required": true,
+          "description_en": "What to click before typing, in plain language (e.g. 'search bar', 'Email field', 'the comment box').",
+          "description_fa": ""
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "required": true,
+          "description_en": "The text to type into the focused element.",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "target_description": [
+          "type in the search bar",
+          "fill in the email field",
+          "enter text in",
+          "type into",
+          "search for"
+        ]
+      },
+      "aliases_fa": {
+        "target_description": []
+      }
+    },
+    {
       "id": "ocr_with_region",
       "description_en": "Florence-2 OCR with region grounding: read on-screen text (terminals, buttons, UI labels) from the Tracker rolling frame buffer, return text + boxes, and highlight the match on the live ROI overlay. Use when the user asks to read text, find a button, locate a label, or ground UI elements.",
       "parameters": [

@@ -67,8 +67,13 @@ MAPVK_VK_TO_VSC = 0
 MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_WHEEL = 0x0800
+MOUSEEVENTF_HWHEEL = 0x1000
 MOUSEEVENTF_ABSOLUTE = 0x8000
 MOUSEEVENTF_VIRTUALDESK = 0x4000
+
+# One "notch" of physical mouse-wheel rotation (Win32 WHEEL_DELTA).
+WHEEL_DELTA = 120
 
 # Virtual-key codes needed for MapVirtualKey → scan code.
 VK_SHIFT = 0x10
@@ -198,6 +203,44 @@ def click_left_sendinput() -> None:
         if sent != 1:
             raise OSError(f"SendInput mouse click failed (sent={sent})")
         time.sleep(random.uniform(0.02, 0.06))
+
+
+def scroll_wheel_sendinput(*, dx: int = 0, dy: int = 0) -> None:
+    """Send one mouse-wheel event via SendInput.
+
+    ``dy`` is vertical wheel delta (positive scrolls up/away from the user,
+    negative scrolls down); ``dx`` is horizontal wheel delta (positive
+    scrolls right, negative scrolls left) — matches Win32
+    ``MOUSEEVENTF_WHEEL``/``MOUSEEVENTF_HWHEEL`` semantics. Deltas are
+    typically multiples of ``WHEEL_DELTA`` (120), one notch per call.
+    Exactly one of ``dx``/``dy`` should be non-zero; ``dy`` wins if both are
+    given, since vertical and horizontal wheel are distinct hardware events.
+    """
+    if os.name != "nt":
+        raise OSError("SendInput mouse wheel is Windows-only")
+    if dy != 0:
+        flags = MOUSEEVENTF_WHEEL
+        raw_delta = int(dy)
+    elif dx != 0:
+        flags = MOUSEEVENTF_HWHEEL
+        raw_delta = int(dx)
+    else:
+        return
+    inp = INPUT()
+    inp.type = INPUT_MOUSE
+    inp.union.mi = MOUSEINPUT(
+        dx=0,
+        dy=0,
+        # mouseData is a DWORD field but Windows reads it as signed; mask the
+        # negative delta to its unsigned 32-bit two's-complement bit pattern.
+        mouseData=raw_delta & 0xFFFFFFFF,
+        dwFlags=flags,
+        time=0,
+        dwExtraInfo=None,
+    )
+    sent = _user32().SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+    if sent != 1:
+        raise OSError(f"SendInput mouse wheel failed (sent={sent})")
 
 
 def _human_sleep() -> None:

@@ -208,6 +208,209 @@ def _recent_screen_history_blurb(*, limit: int = 3) -> str:
         return ""
 
 
+def click_ui_element(target_description: str) -> str:
+    """Locate ``target_description`` on screen and safely click its centroid.
+
+    Pipeline: capture a screen frame -> hybrid UIA/Florence grounding
+    (``dana.graph.nodes.vision.locate_ui_element``) -> convert the returned
+    ``[0,1000]``-normalized box to real screen pixels and click its inset
+    centroid via ``dana.tools.mouse_actuator.MouseActuator`` (rate-limited,
+    failsafe-bounded, kill-switch aware, ``DONNA_OS_DRY_RUN``-safe).
+
+    Returns a single observation string for the LLM: ``"SUCCESS: ..."`` on a
+    completed click, ``"ERROR: ..."`` when the element can't be located or
+    the click is blocked, or ``"HALTED: ..."`` if the global kill switch
+    fired mid-click.
+    """
+    try:
+        from dana.ui.status_bus import emit_state_change
+
+        emit_state_change("executing", tool="click_ui_element")
+    except Exception:  # noqa: BLE001
+        pass
+
+    label = str(target_description or "").strip()
+    if not label:
+        return "ERROR: click_ui_element requires a non-empty target_description"
+
+    try:
+        from dana.vision_tools import capture_screen_frame
+
+        image = capture_screen_frame()
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: click_ui_element failed to capture screen: {exc}"
+    if image is None:
+        return "ERROR: click_ui_element could not capture a screen frame"
+
+    try:
+        from dana.graph.nodes.vision import locate_ui_element
+
+        bbox_1000 = locate_ui_element(image, label)
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: click_ui_element vision lookup failed: {exc}"
+    if bbox_1000 is None:
+        return f"ERROR: Could not locate {label!r} on screen"
+
+    try:
+        from dana.tools.os_control import get_screen_size
+
+        screen_w, screen_h = get_screen_size()
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: click_ui_element could not read screen size: {exc}"
+
+    from dana.tools.mouse_actuator import MouseActuator
+
+    result = MouseActuator().click_bbox(
+        bbox_1000,
+        source_resolution=(1000.0, 1000.0),
+        target_resolution=(float(screen_w), float(screen_h)),
+    )
+    if result.get("halted"):
+        return f"HALTED: click_ui_element — {result.get('error')}"
+    if not result.get("ok"):
+        return (
+            f"ERROR: click_ui_element failed to click {label!r}: "
+            f"{result.get('error')}"
+        )
+    x, y = result["point"]
+    dry_note = " (dry_run)" if result.get("dry_run") else ""
+    return f"SUCCESS: Clicked {label!r} at ({x}, {y}){dry_note}"
+
+
+def type_text_in_element(target_description: str, text: str) -> str:
+    """Locate ``target_description``, click to focus it, then type ``text``.
+
+    Pipeline: the same screen-capture + hybrid grounding lookup as
+    ``click_ui_element`` -> ``MouseActuator.click_bbox`` to focus the
+    element -> ``KeyboardActuator.type_text`` to type into it. Fails closed
+    at any stage: locating, focusing, and typing are each validated, and a
+    failure at any step aborts before the next (a click that misses never
+    proceeds to type into the wrong place).
+
+    Returns a single observation string for the LLM: ``"SUCCESS: ..."`` on
+    a completed click+type, ``"ERROR: ..."`` when locating/focusing/typing
+    fails, or ``"HALTED: ..."`` if the global kill switch fired mid-action.
+    """
+    try:
+        from dana.ui.status_bus import emit_state_change
+
+        emit_state_change("executing", tool="type_text_in_element")
+    except Exception:  # noqa: BLE001
+        pass
+
+    label = str(target_description or "").strip()
+    if not label:
+        return "ERROR: type_text_in_element requires a non-empty target_description"
+    body = text if isinstance(text, str) else str(text or "")
+    if not body.strip():
+        return "ERROR: type_text_in_element requires non-empty text"
+
+    try:
+        from dana.vision_tools import capture_screen_frame
+
+        image = capture_screen_frame()
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: type_text_in_element failed to capture screen: {exc}"
+    if image is None:
+        return "ERROR: type_text_in_element could not capture a screen frame"
+
+    try:
+        from dana.graph.nodes.vision import locate_ui_element
+
+        bbox_1000 = locate_ui_element(image, label)
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: type_text_in_element vision lookup failed: {exc}"
+    if bbox_1000 is None:
+        return f"ERROR: Could not locate {label!r} on screen"
+
+    try:
+        from dana.tools.os_control import get_screen_size
+
+        screen_w, screen_h = get_screen_size()
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: type_text_in_element could not read screen size: {exc}"
+
+    from dana.tools.mouse_actuator import MouseActuator
+
+    click_result = MouseActuator().click_bbox(
+        bbox_1000,
+        source_resolution=(1000.0, 1000.0),
+        target_resolution=(float(screen_w), float(screen_h)),
+    )
+    if click_result.get("halted"):
+        return f"HALTED: type_text_in_element — {click_result.get('error')}"
+    if not click_result.get("ok"):
+        return (
+            f"ERROR: type_text_in_element failed to focus {label!r}: "
+            f"{click_result.get('error')}"
+        )
+
+    # Real click: let the OS register focus before the first keystroke.
+    if not click_result.get("dry_run"):
+        time.sleep(0.15)
+
+    from dana.tools.keyboard_actuator import KeyboardActuator
+
+    type_result = KeyboardActuator().type_text(body)
+    if type_result.get("halted"):
+        return f"HALTED: type_text_in_element — {type_result.get('error')}"
+    if not type_result.get("ok"):
+        return (
+            f"ERROR: type_text_in_element clicked {label!r} but failed to type: "
+            f"{type_result.get('error')}"
+        )
+
+    dry_note = (
+        " (dry_run)"
+        if (click_result.get("dry_run") or type_result.get("dry_run"))
+        else ""
+    )
+    return f"SUCCESS: Clicked {label!r} and typed text.{dry_note}"
+
+
+_SCROLL_AMOUNT_TICKS: dict[str, int] = {"small": 2, "medium": 5, "large": 12}
+
+
+def scroll_screen(direction: str, amount: str = "medium") -> str:
+    """Scroll the screen to reveal off-screen UI elements.
+
+    LLMs are unreliable at picking a raw wheel-tick count, so this accepts a
+    semantic ``amount`` ("small"/"medium"/"large") and maps it to a sensible
+    tick count for ``dana.tools.scroll_actuator.ScrollActuator``. Pure
+    actuation — no vision lookup involved, so it works even when a specific
+    target hasn't been located yet (e.g. "scroll down to see more").
+
+    Returns ``"SUCCESS: ..."`` on a completed scroll, ``"ERROR: ..."`` for
+    an unknown direction/amount or a blocked scroll (rate limit), or
+    ``"HALTED: ..."`` if the global kill switch fired mid-scroll.
+    """
+    try:
+        from dana.ui.status_bus import emit_state_change
+
+        emit_state_change("executing", tool="scroll_screen")
+    except Exception:  # noqa: BLE001
+        pass
+
+    key = str(amount or "medium").strip().lower()
+    ticks = _SCROLL_AMOUNT_TICKS.get(key)
+    if ticks is None:
+        return (
+            f"ERROR: scroll_screen unknown amount {amount!r}; expected one "
+            f"of {sorted(_SCROLL_AMOUNT_TICKS)}"
+        )
+
+    from dana.tools.scroll_actuator import ScrollActuator
+
+    result = ScrollActuator().scroll(direction, ticks)
+    if result.get("halted"):
+        return f"HALTED: scroll_screen — {result.get('error')}"
+    if not result.get("ok"):
+        return f"ERROR: scroll_screen failed: {result.get('error')}"
+
+    dry_note = " (dry_run)" if result.get("dry_run") else ""
+    return f"SUCCESS: Scrolled {result.get('direction')} by a {key} amount.{dry_note}"
+
+
 def analyze_visual_context() -> str:
     """Return a natural-language screen summary (not raw ``<screen_text>`` XML).
 

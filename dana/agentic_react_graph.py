@@ -152,6 +152,16 @@ def _default_args_for_forced_tool(tool_id: str, user_text: str) -> dict[str, Any
         return {"source": "screen"}
     if tid == "ocr_with_region":
         return {"query": (user_text or "").strip()[:200]}
+    if tid == "click_ui_element":
+        return {"target_description": raw[:200]}
+    if tid == "scroll_screen":
+        low = raw.lower()
+        direction = "down"
+        for candidate in ("up", "down", "left", "right"):
+            if candidate in low:
+                direction = candidate
+                break
+        return {"direction": direction, "amount": "medium"}
     if tid == "draft_cursor_prompt":
         try:
             from dana.tools.broker import parse_draft_cursor_prompt_args
@@ -1386,7 +1396,12 @@ async def run_react_langgraph(
     # When the broker merge is non-empty, bind_tools must match it exactly —
     # do not dilute/overwrite with MoA/Vision semantic top-K defaults.
     semantic_specs = semantic.as_spec_dict()
-    _vision_block = {"analyze_visual_context", "ocr_with_region"}
+    _vision_block = {
+        "analyze_visual_context",
+        "ocr_with_region",
+        "click_ui_element",
+        "type_text_in_element",
+    }
     _episodic_block = {
         "analyze_visual_context",
         "ocr_with_region",
@@ -2882,6 +2897,79 @@ async def run_react_langgraph(
 
                         ok, observation, terr = run_with_tool_timeout(
                             _run_ocr, timeout_s=_tool_timeout_s
+                        )
+                        if not ok:
+                            observation = terr or TOOL_TIMEOUT_MESSAGE
+                            _on_timeout()
+                    elif tool_call.tool_id == "click_ui_element":
+                        from dana.tools.vision import (
+                            click_ui_element as _click_ui_element,
+                        )
+
+                        def _run_click_ui_element() -> str:
+                            return str(
+                                _click_ui_element(
+                                    str(
+                                        (tool_call.arguments or {}).get(
+                                            "target_description"
+                                        )
+                                        or ""
+                                    ).strip()
+                                )
+                            )
+
+                        ok, observation, terr = run_with_tool_timeout(
+                            _run_click_ui_element, timeout_s=_tool_timeout_s
+                        )
+                        if not ok:
+                            observation = terr or TOOL_TIMEOUT_MESSAGE
+                            _on_timeout()
+                    elif tool_call.tool_id == "type_text_in_element":
+                        from dana.tools.vision import (
+                            type_text_in_element as _type_text_in_element,
+                        )
+
+                        def _run_type_text_in_element() -> str:
+                            return str(
+                                _type_text_in_element(
+                                    str(
+                                        (tool_call.arguments or {}).get(
+                                            "target_description"
+                                        )
+                                        or ""
+                                    ).strip(),
+                                    str(
+                                        (tool_call.arguments or {}).get("text")
+                                        or ""
+                                    ),
+                                )
+                            )
+
+                        ok, observation, terr = run_with_tool_timeout(
+                            _run_type_text_in_element, timeout_s=_tool_timeout_s
+                        )
+                        if not ok:
+                            observation = terr or TOOL_TIMEOUT_MESSAGE
+                            _on_timeout()
+                    elif tool_call.tool_id == "scroll_screen":
+                        from dana.tools.vision import scroll_screen as _scroll_screen
+
+                        def _run_scroll_screen() -> str:
+                            return str(
+                                _scroll_screen(
+                                    str(
+                                        (tool_call.arguments or {}).get("direction")
+                                        or ""
+                                    ).strip(),
+                                    str(
+                                        (tool_call.arguments or {}).get("amount")
+                                        or "medium"
+                                    ).strip(),
+                                )
+                            )
+
+                        ok, observation, terr = run_with_tool_timeout(
+                            _run_scroll_screen, timeout_s=_tool_timeout_s
                         )
                         if not ok:
                             observation = terr or TOOL_TIMEOUT_MESSAGE

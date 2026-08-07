@@ -2,7 +2,14 @@
 
 Every test injects ``move_fn``/``click_fn``/``screen_size_fn`` stubs so the
 geometry + safety pipeline runs with no real SendInput calls, and resets the
-module-wide rate limiter between tests so cases don't interfere with each other.
+module-wide rate limiter between tests so cases don't interfere with each
+other. Also clears ``DONNA_OS_DRY_RUN`` from the ambient environment before
+each test: at least one other test module in this suite
+(``tests/test_e2e_lifecycle.py``) sets it at import time via a raw
+``os.environ[...] = ...`` (not ``monkeypatch``), which leaks into every test
+that runs afterward in the same pytest process. Without this, tests here
+that expect non-dry-run behavior by default silently get dry-run instead
+when the full suite runs in an order where that file is collected first.
 """
 from __future__ import annotations
 
@@ -13,7 +20,8 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _reset_rate_limiter():
+def _reset_rate_limiter(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("DONNA_OS_DRY_RUN", raising=False)
     mouse_actuator._last_actuation_ts = 0.0
     yield
     mouse_actuator._last_actuation_ts = 0.0
