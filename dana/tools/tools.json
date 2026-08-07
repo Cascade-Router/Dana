@@ -204,6 +204,38 @@
       }
     },
     {
+      "id": "drag_ui_element",
+      "description_en": "Locate two UI elements on screen by description (native UI Automation first, then Florence-2 vision grounding) and drag from the first to the second — press down on the source, move to the destination, release. Use for drag-and-drop interactions (moving a file into a folder, dragging a slider, reordering a list item, dismissing a card). Fails closed if either element can't be found or either point would land off-screen.",
+      "parameters": [
+        {
+          "name": "source_description",
+          "type": "string",
+          "required": true,
+          "description_en": "What to drag, in plain language (e.g. 'the invoice.pdf file icon', 'the volume slider handle').",
+          "description_fa": ""
+        },
+        {
+          "name": "destination_description",
+          "type": "string",
+          "required": true,
+          "description_en": "Where to drop it, in plain language (e.g. 'the Archive folder', 'the right edge of the slider track').",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "source_description": [
+          "drag the file to",
+          "drag and drop",
+          "move the icon into",
+          "drag the slider to",
+          "drag this to that"
+        ]
+      },
+      "aliases_fa": {
+        "source_description": []
+      }
+    },
+    {
       "id": "ocr_with_region",
       "description_en": "Florence-2 OCR with region grounding: read on-screen text (terminals, buttons, UI labels) from the Tracker rolling frame buffer, return text + boxes, and highlight the match on the live ROI overlay. Use when the user asks to read text, find a button, locate a label, or ground UI elements.",
       "parameters": [

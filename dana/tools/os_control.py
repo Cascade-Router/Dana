@@ -205,6 +205,44 @@ def click_left_sendinput() -> None:
         time.sleep(random.uniform(0.02, 0.06))
 
 
+def mouse_down_sendinput() -> None:
+    """Press and hold the left mouse button at the current cursor via SendInput."""
+    if os.name != "nt":
+        raise OSError("SendInput mouse down is Windows-only")
+    inp = INPUT()
+    inp.type = INPUT_MOUSE
+    inp.union.mi = MOUSEINPUT(
+        dx=0,
+        dy=0,
+        mouseData=0,
+        dwFlags=MOUSEEVENTF_LEFTDOWN,
+        time=0,
+        dwExtraInfo=None,
+    )
+    sent = _user32().SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+    if sent != 1:
+        raise OSError(f"SendInput mouse down failed (sent={sent})")
+
+
+def mouse_up_sendinput() -> None:
+    """Release the left mouse button at the current cursor via SendInput."""
+    if os.name != "nt":
+        raise OSError("SendInput mouse up is Windows-only")
+    inp = INPUT()
+    inp.type = INPUT_MOUSE
+    inp.union.mi = MOUSEINPUT(
+        dx=0,
+        dy=0,
+        mouseData=0,
+        dwFlags=MOUSEEVENTF_LEFTUP,
+        time=0,
+        dwExtraInfo=None,
+    )
+    sent = _user32().SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
+    if sent != 1:
+        raise OSError(f"SendInput mouse up failed (sent={sent})")
+
+
 def scroll_wheel_sendinput(*, dx: int = 0, dy: int = 0) -> None:
     """Send one mouse-wheel event via SendInput.
 

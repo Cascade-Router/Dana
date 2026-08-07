@@ -411,6 +411,96 @@ def scroll_screen(direction: str, amount: str = "medium") -> str:
     return f"SUCCESS: Scrolled {result.get('direction')} by a {key} amount.{dry_note}"
 
 
+def drag_ui_element(source_description: str, destination_description: str) -> str:
+    """Locate two UI elements by description and drag from the first to the second.
+
+    Pipeline: capture a screen frame -> hybrid UIA/Florence grounding
+    (``dana.graph.nodes.vision.locate_ui_element``) run once for the drag
+    source and once for the destination -> convert both returned
+    ``[0,1000]``-normalized boxes to real screen pixels and drag from the
+    source's inset centroid to the destination's via
+    ``dana.tools.drag_actuator.DragActuator`` (rate-limited, failsafe-bounded,
+    kill-switch aware, ``DONNA_OS_DRY_RUN``-safe).
+
+    Fails closed: if either element can't be located, the drag never starts.
+
+    Returns a single observation string for the LLM: ``"SUCCESS: ..."`` on a
+    completed drag, ``"ERROR: ..."`` when a lookup or the drag itself fails,
+    or ``"HALTED: ..."`` if the global kill switch fired mid-drag.
+    """
+    try:
+        from dana.ui.status_bus import emit_state_change
+
+        emit_state_change("executing", tool="drag_ui_element")
+    except Exception:  # noqa: BLE001
+        pass
+
+    source_label = str(source_description or "").strip()
+    dest_label = str(destination_description or "").strip()
+    if not source_label:
+        return "ERROR: drag_ui_element requires a non-empty source_description"
+    if not dest_label:
+        return "ERROR: drag_ui_element requires a non-empty destination_description"
+
+    try:
+        from dana.vision_tools import capture_screen_frame
+
+        image = capture_screen_frame()
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: drag_ui_element failed to capture screen: {exc}"
+    if image is None:
+        return "ERROR: drag_ui_element could not capture a screen frame"
+
+    from dana.graph.nodes.vision import locate_ui_element
+
+    try:
+        source_bbox_1000 = locate_ui_element(image, source_label)
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: drag_ui_element vision lookup failed for source {source_label!r}: {exc}"
+    if source_bbox_1000 is None:
+        return f"ERROR: Could not locate {source_label!r} on screen"
+
+    try:
+        dest_bbox_1000 = locate_ui_element(image, dest_label)
+    except Exception as exc:  # noqa: BLE001
+        return (
+            f"ERROR: drag_ui_element vision lookup failed for destination "
+            f"{dest_label!r}: {exc}"
+        )
+    if dest_bbox_1000 is None:
+        return f"ERROR: Could not locate {dest_label!r} on screen"
+
+    try:
+        from dana.tools.os_control import get_screen_size
+
+        screen_w, screen_h = get_screen_size()
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR: drag_ui_element could not read screen size: {exc}"
+
+    from dana.tools.drag_actuator import DragActuator
+
+    result = DragActuator().drag_bbox(
+        source_bbox_1000,
+        dest_bbox_1000,
+        source_resolution=(1000.0, 1000.0),
+        target_resolution=(float(screen_w), float(screen_h)),
+    )
+    if result.get("halted"):
+        return f"HALTED: drag_ui_element — {result.get('error')}"
+    if not result.get("ok"):
+        return (
+            f"ERROR: drag_ui_element failed to drag {source_label!r} to "
+            f"{dest_label!r}: {result.get('error')}"
+        )
+    sx, sy = result["source_point"]
+    dxp, dyp = result["dest_point"]
+    dry_note = " (dry_run)" if result.get("dry_run") else ""
+    return (
+        f"SUCCESS: Dragged {source_label!r} from ({sx}, {sy}) to "
+        f"{dest_label!r} at ({dxp}, {dyp}){dry_note}"
+    )
+
+
 def analyze_visual_context() -> str:
     """Return a natural-language screen summary (not raw ``<screen_text>`` XML).
 

@@ -154,6 +154,20 @@ def _default_args_for_forced_tool(tool_id: str, user_text: str) -> dict[str, Any
         return {"query": (user_text or "").strip()[:200]}
     if tid == "click_ui_element":
         return {"target_description": raw[:200]}
+    if tid == "drag_ui_element":
+        low = raw.lower()
+        idx = low.find(" to ")
+        if idx != -1:
+            source = raw[:idx].strip()
+            dest = raw[idx + len(" to ") :].strip()
+        else:
+            source = raw.strip()
+            dest = ""
+        source = re.sub(r"^(please\s+)?drag\s+", "", source, flags=re.I).strip()
+        return {
+            "source_description": (source or raw)[:200],
+            "destination_description": dest[:200],
+        }
     if tid == "scroll_screen":
         low = raw.lower()
         direction = "down"
@@ -1401,6 +1415,7 @@ async def run_react_langgraph(
         "ocr_with_region",
         "click_ui_element",
         "type_text_in_element",
+        "drag_ui_element",
     }
     _episodic_block = {
         "analyze_visual_context",
@@ -2970,6 +2985,35 @@ async def run_react_langgraph(
 
                         ok, observation, terr = run_with_tool_timeout(
                             _run_scroll_screen, timeout_s=_tool_timeout_s
+                        )
+                        if not ok:
+                            observation = terr or TOOL_TIMEOUT_MESSAGE
+                            _on_timeout()
+                    elif tool_call.tool_id == "drag_ui_element":
+                        from dana.tools.vision import (
+                            drag_ui_element as _drag_ui_element,
+                        )
+
+                        def _run_drag_ui_element() -> str:
+                            return str(
+                                _drag_ui_element(
+                                    str(
+                                        (tool_call.arguments or {}).get(
+                                            "source_description"
+                                        )
+                                        or ""
+                                    ).strip(),
+                                    str(
+                                        (tool_call.arguments or {}).get(
+                                            "destination_description"
+                                        )
+                                        or ""
+                                    ).strip(),
+                                )
+                            )
+
+                        ok, observation, terr = run_with_tool_timeout(
+                            _run_drag_ui_element, timeout_s=_tool_timeout_s
                         )
                         if not ok:
                             observation = terr or TOOL_TIMEOUT_MESSAGE
