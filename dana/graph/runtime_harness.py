@@ -14,7 +14,7 @@ from dana.system_health import check_system_health, kill_process_tree
 
 # Prefer fast, targeted checks — never a repo-wide pytest by default.
 DEFAULT_VALIDATION_COMMAND = "python -m compileall .dana_scratch"
-DEFAULT_HARNESS_TIMEOUT_S = 30.0
+DEFAULT_HARNESS_TIMEOUT_S = 15.0
 
 _FILE_TOKEN_RE = re.compile(
     r"([\w./\\-]+\.(?:py|pyi|md|txt|json))\b",
@@ -22,6 +22,164 @@ _FILE_TOKEN_RE = re.compile(
 )
 _TRIAGE_TEST_RE = re.compile(r"\bTEST\b", re.I)
 _TRIAGE_CODE_RE = re.compile(r"\bCODE\b", re.I)
+
+# Paths that must never be deleted by fail-fast rollback.
+_ROLLBACK_PROTECTED_PREFIXES = (
+    "dana/",
+    "donna_security/",
+    "dana_security/",
+    "website/",
+    "legacy/",
+    ".git/",
+    ".venv/",
+    "venv/",
+    "node_modules/",
+)
+
+# run_key → {path: {"existed": bool, "backup": str|None}}
+_EPIC_FILE_TRACKER: dict[str, dict[str, dict[str, Any]]] = {}
+
+
+def _norm_rel(path: str) -> str:
+    return str(path or "").replace("\\", "/").lstrip("./")
+
+
+def _is_protected_rel(rel: str) -> bool:
+    low = _norm_rel(rel).lower()
+    if not low or low.startswith(".."):
+        return True
+    return any(low.startswith(p) for p in _ROLLBACK_PROTECTED_PREFIXES)
+
+
+def begin_epic_artifact_tracking(
+    workspace_path: str,
+    file_paths: list[str] | None,
+    *,
+    run_key: str = "default",
+) -> list[str]:
+    """Snapshot existence (and content backup) for epic target files."""
+    root = Path(str(workspace_path or ".")).expanduser()
+    try:
+        root = root.resolve()
+    except OSError:
+        pass
+    key = str(run_key or "default")
+    bucket = _EPIC_FILE_TRACKER.setdefault(key, {})
+    tracked: list[str] = []
+    for raw in file_paths or []:
+        rel = _norm_rel(raw)
+        if not rel or _is_protected_rel(rel):
+            continue
+        path = root / rel
+        existed = path.is_file()
+        backup: str | None = None
+        if existed:
+            try:
+                backup = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                backup = None
+        bucket[rel] = {"existed": existed, "backup": backup}
+        tracked.append(rel)
+    return tracked
+
+
+def register_generated_paths(
+    file_paths: list[str] | None,
+    *,
+    run_key: str = "default",
+    workspace_path: str | None = None,
+) -> None:
+    """Record additional paths produced during the epic (e.g. after staging)."""
+    if workspace_path:
+        begin_epic_artifact_tracking(
+            workspace_path, list(file_paths or []), run_key=run_key
+        )
+        return
+    key = str(run_key or "default")
+    bucket = _EPIC_FILE_TRACKER.setdefault(key, {})
+    for raw in file_paths or []:
+        rel = _norm_rel(raw)
+        if not rel or _is_protected_rel(rel):
+            continue
+        bucket.setdefault(rel, {"existed": False, "backup": None})
+
+
+def commit_epic_artifact_tracking(run_key: str = "default") -> None:
+    """Accept the current on-disk state for ``run_key`` — discard its rollback
+    snapshot without touching any files. Mirrors what the runtime harness node
+    does inline on validation success; exposed here so other sandboxed
+    callers (e.g. MCP tool execution) can commit the same way.
+    """
+    _EPIC_FILE_TRACKER.pop(str(run_key or "default"), None)
+
+
+def rollback_scratch_workspace(
+    workspace_path: str,
+    file_paths: list[str] | None = None,
+    *,
+    run_key: str = "default",
+    clear_tracker: bool = True,
+) -> dict[str, Any]:
+    """Delete or restore unvalidated artifacts after an aborted epic.
+
+    - Files that did not exist at tracking start are deleted.
+    - Files that existed are restored from the text backup when available.
+    - Protected package trees (``dana/``, ``website/``, …) are never touched.
+    """
+    root = Path(str(workspace_path or ".")).expanduser()
+    try:
+        root = root.resolve()
+    except OSError:
+        pass
+    key = str(run_key or "default")
+    bucket = dict(_EPIC_FILE_TRACKER.get(key) or {})
+    for raw in file_paths or []:
+        rel = _norm_rel(raw)
+        if rel and not _is_protected_rel(rel):
+            bucket.setdefault(rel, {"existed": False, "backup": None})
+
+    deleted: list[str] = []
+    restored: list[str] = []
+    skipped: list[str] = []
+    for rel, meta in bucket.items():
+        if _is_protected_rel(rel):
+            skipped.append(rel)
+            continue
+        path = root / rel
+        try:
+            if meta.get("existed") and meta.get("backup") is not None:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(str(meta.get("backup") or ""), encoding="utf-8")
+                restored.append(rel)
+            elif path.is_file():
+                path.unlink()
+                deleted.append(rel)
+            # Also drop scratch mirrors when present.
+            scratch = root / ".dana_scratch" / rel
+            if scratch.is_file() and not meta.get("existed"):
+                try:
+                    scratch.unlink()
+                except OSError:
+                    pass
+        except OSError as exc:
+            skipped.append(f"{rel}({exc})")
+
+    if clear_tracker:
+        _EPIC_FILE_TRACKER.pop(key, None)
+
+    summary = {
+        "deleted": deleted,
+        "restored": restored,
+        "skipped": skipped,
+        "workspace_path": str(root),
+    }
+    print(
+        f"[RuntimeHarness] rollback_scratch_workspace "
+        f"deleted={deleted} restored={restored} skipped={skipped[:5]}",
+        flush=True,
+    )
+    return summary
+
 
 
 def _scratch_pythonpath_entries(project_root: Path) -> list[str]:
@@ -174,7 +332,7 @@ def run_validation_harness(
     command:
         Shell-like command string, e.g. ``python -m pytest tests/test_x.py -q``.
     timeout_s:
-        Soft wall-clock limit for the child process (default 30s).
+        Soft wall-clock limit for the child process (default 15s).
     """
     cwd = Path(str(workspace_path or ".")).expanduser()
     try:
@@ -261,8 +419,25 @@ def run_validation_harness(
         )
         try:
             stdout, stderr = proc.communicate(timeout=wall)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as timed_out:
             # Nuke the whole tree — pytest/compile children must not linger.
+            partial_out = ""
+            partial_err = ""
+            try:
+                if timed_out.stdout:
+                    partial_out = (
+                        timed_out.stdout
+                        if isinstance(timed_out.stdout, str)
+                        else timed_out.stdout.decode("utf-8", errors="replace")
+                    )
+                if timed_out.stderr:
+                    partial_err = (
+                        timed_out.stderr
+                        if isinstance(timed_out.stderr, str)
+                        else timed_out.stderr.decode("utf-8", errors="replace")
+                    )
+            except Exception:  # noqa: BLE001
+                pass
             if proc.pid:
                 print(
                     f"[RuntimeHarness] TIMEOUT after {wall}s — "
@@ -274,14 +449,23 @@ def run_validation_harness(
                 stdout, stderr = proc.communicate(timeout=3)
             except Exception:  # noqa: BLE001
                 stdout, stderr = "", ""
+            stdout = (stdout or "") or partial_out
+            stderr = (stderr or "") or partial_err
+            timeout_note = (
+                f"ERROR: validation timed out after {timeout_s}s "
+                "(process tree killed). Self-remediate: avoid infinite loops "
+                "(e.g. BFS must track a visited set); keep tests fast."
+            )
+            if stderr:
+                combined_err = f"{timeout_note}\n--- partial stderr ---\n{stderr}"
+            else:
+                combined_err = timeout_note
             return {
                 "success": False,
                 "exit_code": 124,
                 "stdout": stdout or "",
-                "stderr": (
-                    f"ERROR: validation timed out after {timeout_s}s "
-                    "(process tree killed)"
-                ),
+                "stderr": combined_err,
+                "timed_out": True,
             }
         code = int(proc.returncode if proc.returncode is not None else 1)
         return {
@@ -365,9 +549,23 @@ def make_runtime_harness_node(
             )
             command = DEFAULT_VALIDATION_COMMAND
 
+        # Track epic target files so fail-fast abort can roll them back.
+        # Prefer the pre-dispatch snapshot; only seed if missing.
+        epic_id = (epic or {}).get("epic_id")
+        run_key = f"epic-{epic_id}"
+        epic_files = [
+            m.group(1).replace("\\", "/")
+            for m in _FILE_TOKEN_RE.finditer(
+                f"{(epic or {}).get('goal') or ''}\n"
+                f"{(epic or {}).get('validation_command') or ''}\n{command}"
+            )
+        ]
+        if run_key not in _EPIC_FILE_TRACKER:
+            begin_epic_artifact_tracking(workspace, epic_files, run_key=run_key)
+
         print(
             f"[RuntimeHarness] BEGIN cwd={workspace!r} cmd={command!r} "
-            f"timeout_s={timeout_s} epic_id={(epic or {}).get('epic_id')!r} "
+            f"timeout_s={timeout_s} epic_id={epic_id!r} "
             f"PYTHONPATH+=.dana_scratch",
             flush=True,
         )
@@ -410,7 +608,12 @@ def make_runtime_harness_node(
             "command": command,
             "workspace_path": workspace,
             "epic_id": (epic or {}).get("epic_id"),
+            "tracked_files": list(epic_files),
+            "run_key": run_key,
         }
+        if feedback["success"]:
+            # Validated — drop rollback snapshot for this epic.
+            _EPIC_FILE_TRACKER.pop(run_key, None)
 
         epics_out = list(epics)
         # On validation failure: bump epic.repair_attempts (Worker Escalation counter).
@@ -427,7 +630,9 @@ def make_runtime_harness_node(
             )
 
         # Failure routing: Exit-2 collection errors bypass triage LLM.
-        if not feedback["success"]:
+        # Single-pass (max_repair_attempts=0) also skips triage — broker will ABORT.
+        max_repairs = int(state.get("max_repair_attempts") or 0)
+        if not feedback["success"] and max_repairs > 0:
             exit_code = int(feedback.get("exit_code") or 0)
             ws = Path(workspace)
             test_rel, impl_rel = _guess_test_and_impl_paths(
@@ -436,11 +641,13 @@ def make_runtime_harness_node(
                 workspace=ws,
             )
             # Prefer a file named in the current epic goal (modified this epic).
-            epic_files = [
+            epic_files_goal = [
                 m.group(1).replace("\\", "/")
                 for m in _FILE_TOKEN_RE.finditer(str((epic or {}).get("goal") or ""))
             ]
-            epic_target = epic_files[0] if epic_files else (test_rel or impl_rel or "")
+            epic_target = (
+                epic_files_goal[0] if epic_files_goal else (test_rel or impl_rel or "")
+            )
 
             if exit_code == 2:
                 err_blob = (
@@ -490,6 +697,11 @@ def make_runtime_harness_node(
                     )
                     feedback["repair_triage"] = "CODE"
                     feedback["repair_triage_raw"] = f"triage_error:{triage_exc}"
+        elif not feedback["success"]:
+            print(
+                "[RuntimeHarness] single-pass fail-fast — triage LLM skipped",
+                flush=True,
+            )
 
         return {
             "runtime_feedback": feedback,
@@ -504,7 +716,11 @@ def make_runtime_harness_node(
 __all__ = (
     "DEFAULT_HARNESS_TIMEOUT_S",
     "DEFAULT_VALIDATION_COMMAND",
+    "begin_epic_artifact_tracking",
+    "commit_epic_artifact_tracking",
     "make_runtime_harness_node",
+    "register_generated_paths",
+    "rollback_scratch_workspace",
     "run_validation_harness",
     "triage_bidirectional_repair",
 )

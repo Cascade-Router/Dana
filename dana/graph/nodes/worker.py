@@ -458,13 +458,23 @@ def generate_worker_code(
         )
     sibling = _sibling_context_for_path(path)
     sibling_block = f"\n\n{sibling}" if sibling else ""
+    mcp_hint = ""
+    if re.search(r"\bmcp\b", instructions, re.I):
+        # Only pay the discovery cost (spawns MCP server subprocesses) when
+        # the task actually mentions MCP — most epics never touch it.
+        try:
+            from dana.mcp.client import format_mcp_tools_block
+
+            mcp_hint = f"\n\n{format_mcp_tools_block()}"
+        except Exception:  # noqa: BLE001
+            mcp_hint = ""
     user = (
         f"TARGET FILEPATH: {path}\n"
         f"TASK:\n{instructions}\n\n"
         "Output ONLY one ```python``` code block with the full file contents. "
         "Use real newlines and indentation — never emit the whole file as one line. "
         f"The file path is exactly {path}; do not invent a different filename."
-        f"{import_hint}{api_lock}{sibling_block}"
+        f"{import_hint}{api_lock}{sibling_block}{mcp_hint}"
     )
     messages = [
         {"role": "system", "content": WORKER_CODE_SYSTEM_PROMPT},
