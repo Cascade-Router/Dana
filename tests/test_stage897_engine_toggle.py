@@ -13,12 +13,20 @@ def test_engine_engage_standby_locks_behavior() -> None:
     set_engine_engaged(False)
     app = DonnaGUI()
     try:
+        # DonnaGUI now auto-engages the engine during construction
+        # (engage_engine() runs unconditionally from _build_unified_canvas),
+        # so a fresh instance is never left in STANDBY — establish that
+        # starting state explicitly before testing the toggle transitions.
+        app.standby_engine()
         assert app.engine_active is False
         assert is_engine_engaged() is False
+        # app._engage_btn / _standby_btn: standby was merged into the single
+        # engage/standby toggle button (see core_agent.py: "legacy; merged
+        # into toggle"); _engine_status_lbl is likewise now None — its
+        # ACTIVE/STANDBY/STOPPED text moved to the compact header HUD label
+        # (_header_status_lbl), which drops the "Local Engine" suffix.
         assert app._engage_btn is not None
-        assert app._standby_btn is not None
-        assert "STANDBY" in str(app._engine_status_lbl.cget("text"))
-        assert "Local Engine" in str(app._engine_status_lbl.cget("text"))
+        assert "STANDBY" in str(app._header_status_lbl.cget("text"))
 
         # Sliders editable in STANDBY.
         app._set_behavior_controls_locked(False)
@@ -28,15 +36,13 @@ def test_engine_engage_standby_locks_behavior() -> None:
         assert app.engine_active is True
         assert is_engine_engaged() is True
         assert app._behavior_locked is True
-        assert "ACTIVE" in str(app._engine_status_lbl.cget("text"))
-        assert "Local Engine" in str(app._engine_status_lbl.cget("text"))
+        assert "ACTIVE" in str(app._header_status_lbl.cget("text"))
 
         app.standby_engine()
         assert app.engine_active is False
         assert is_engine_engaged() is False
         assert app._behavior_locked is False
-        assert "STANDBY" in str(app._engine_status_lbl.cget("text"))
-        assert "Local Engine" in str(app._engine_status_lbl.cget("text"))
+        assert "STANDBY" in str(app._header_status_lbl.cget("text"))
     finally:
         set_engine_engaged(False)
         try:
@@ -51,9 +57,15 @@ def test_standby_blocks_chat_and_dictation() -> None:
     set_engine_engaged(False)
     app = DonnaGUI()
     try:
+        # DonnaGUI auto-engages on construction — force STANDBY first so
+        # _require_engine() below has something to actually refuse.
+        app.standby_engine()
+        # _engine_warn_lbl is intentionally None now (see core_agent.py) and
+        # _flash_engine_warning() no-ops without it — no toast widget
+        # replaced it. The real, current guarantee is that a STANDBY task
+        # attempt is refused and routed back to the Assistant tab.
         assert app._require_engine() is False
-        warn = str(app._engine_warn_lbl.cget("text"))
-        assert "Engage Engine" in warn
+        assert app._tabs.get() == "Assistant & Tasks"
 
         # Dictation ON blocked in STANDBY.
         app._dictation_active = False
@@ -124,9 +136,8 @@ def test_stop_callback_halts_engine(monkeypatch) -> None:
         assert app.engine_active is False
         assert is_engine_engaged() is False
         assert bool(getattr(app, "_engine_stopped", False)) is True
-        pill = str(app._engine_status_lbl.cget("text"))
+        pill = str(app._header_status_lbl.cget("text"))
         assert "STOPPED" in pill
-        assert "Local Engine" in pill
         assert stop_event.is_set()
     finally:
         set_engine_engaged(False)

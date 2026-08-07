@@ -33,7 +33,9 @@ def test_tab_order_and_dashboard_widgets() -> None:
 
         assert tabs.get() == "Assistant & Tasks"
         assert app.transcript_box is not None
-        assert app.status_value is not None
+        # Status chrome moved into the header HUD (mic + system labels);
+        # app.status_value itself is intentionally None (see core_agent.py).
+        assert app._system_status_lbl is not None
         # Autonomous audio — Mic/Speaker menus removed.
         assert app.mic_menu is None
         assert app.speaker_menu is None

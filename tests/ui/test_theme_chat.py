@@ -125,7 +125,9 @@ def test_gui_uses_theme_and_chat_view() -> None:
         assert "[Dana]" in raw
         assert "Type below or say Dana" in raw
         assert app._engage_btn is not None
-        assert app._standby_btn is not None
+        # _standby_btn was merged into the single engage/standby toggle button
+        # (see core_agent.py: "legacy; merged into toggle") — app._engage_btn
+        # above is its replacement, so there's nothing further to assert here.
         # Theme-owned primary accents (no per-widget cyan/mint hardcodes).
         send_fg = str(app._chat_send_btn.cget("fg_color")).lower()
         assert "#10b981" in send_fg

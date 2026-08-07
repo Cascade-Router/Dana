@@ -61,13 +61,18 @@ def test_gui_header_and_dashboard_use_ctkimage() -> None:
         try:
             # Construction may soft-fail logo labels under Tk isolation; attributes
             # must still be assignable CTkImage instances when load succeeds.
-            if app._header_logo_img is None and app._dash_logo_img is None:
+            # _dash_logo_img was part of an older separate-dashboard-tab
+            # design and no longer exists as an attribute at all (the
+            # Unified Canvas has a single header logo) — getattr() rather
+            # than direct access so that's "None", not an AttributeError.
+            dash_logo_img = getattr(app, "_dash_logo_img", None)
+            if app._header_logo_img is None and dash_logo_img is None:
                 pytest.skip("Tk PhotoImage isolation prevented GUI logo bind")
             if app._header_logo_img is not None:
                 assert app._header_logo_lbl is not None
                 assert str(app._header_logo_lbl.cget("text")) == ""
-            if app._dash_logo_img is not None:
-                assert tuple(app._dash_logo_img._size) == (72, 72)  # noqa: SLF001
+            if dash_logo_img is not None:
+                assert tuple(dash_logo_img._size) == (72, 72)  # noqa: SLF001
         finally:
             try:
                 app.destroy()

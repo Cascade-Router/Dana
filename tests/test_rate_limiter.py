@@ -23,5 +23,5 @@ def test_rate_limiter_get_token():
 
 def test_rate_limiter_burst():
     bucket = TokenBucket(10)
-    bucket.burst(2)
+    bucket.add_burst(2)
     assert bucket.tokens >= 12
