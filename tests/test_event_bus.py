@@ -1,7 +1,15 @@
 # tests/test_event_bus.py
 
+import importlib.util
+import pathlib
+
 import pytest
-from event_bus import EventBus
+
+module_path = pathlib.Path(__file__).resolve().parents[1] / 'event_bus.py'
+spec = importlib.util.spec_from_file_location('workspace_event_bus', module_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+EventBus = module.EventBus
 
 def test_event_bus_created():
     event_bus = EventBus()
