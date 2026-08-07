@@ -1,4 +1,4 @@
-# Decentralized Swarm Architecture: ROS2/Nav2 × LangGraph × MCP
+# Decentralized Swarm Architecture: ROS2/Nav2 x LangGraph x MCP
 
 ## Abstract
 

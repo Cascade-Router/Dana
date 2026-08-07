@@ -1,5 +1,13 @@
-import os
 import json
+import os
+
+
+class ConfigValidator:
+    def is_valid(self, config):
+        if not isinstance(config, dict):
+            return False
+        return "key" in config and config["key"] == "value"
+
 
 def validate_config(config_file_path):
     """

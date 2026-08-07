@@ -1,6 +1,13 @@
+import importlib.util
+import pathlib
 import unittest
-from unittest.mock import MagicMock, patch
-from event_bus import EventBus
+
+module_path = pathlib.Path(__file__).resolve().parents[1] / 'event_bus.py'
+spec = importlib.util.spec_from_file_location('workspace_event_bus', module_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+EventBus = module.EventBus
+
 
 class TestEventBus(unittest.TestCase):
 
@@ -8,26 +15,32 @@ class TestEventBus(unittest.TestCase):
         bus = EventBus()
         self.assertIsNotNone(bus)
 
-    @patch('event_bus.Event')
-    def test_event_bus_publish(self, mock_Event):
+    def test_event_bus_publish(self):
         bus = EventBus()
-        event = mock_Event.return_value
-        bus.publish(event)
-        event.assert_called_once()
+        received = []
 
-    @patch('event_bus.Event')
-    def test_event_bus_subscribe(self, mock_Event):
+        def callback(event):
+            received.append(event)
+
+        bus.subscribe(callback)
+        bus.publish('event')
+        self.assertEqual(received, ['event'])
+
+    def test_event_bus_subscribe(self):
         bus = EventBus()
+
         def callback(event):
             pass
+
         bus.subscribe(callback)
         self.assertEqual(bus.subscribers, [callback])
 
-    @patch('event_bus.Event')
-    def test_event_bus_unsubscribe(self, mock_Event):
+    def test_event_bus_unsubscribe(self):
         bus = EventBus()
+
         def callback(event):
             pass
+
         bus.subscribe(callback)
         bus.unsubscribe(callback)
         self.assertNotIn(callback, bus.subscribers)

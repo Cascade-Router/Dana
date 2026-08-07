@@ -20,6 +20,13 @@ for _sub in ("scripts", "scripts/diagnostics"):
         sys.path.insert(0, _p)
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "asyncio: async test body (executed via asyncio.wait_for)",
+    )
+
+
 @pytest.fixture(autouse=True)
 def _stub_premium_logo_unless_stage899(
     monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest

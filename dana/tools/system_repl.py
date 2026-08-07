@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -231,6 +232,24 @@ def file_editor(action: str, filepath: str, content: str | None = None) -> str:
     return _transactional_file_editor(action, filepath, content)
 
 
+def _format_execution_error(exc: BaseException | str) -> str:
+    raw = str(exc or "")
+    if isinstance(exc, Exception) and exc.__traceback__ is not None:
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        raw = tb
+
+    match = re.search(r'File "([^"]+)", line (\d+)', raw)
+    file_path = match.group(1) if match else "?"
+    line_no = match.group(2) if match else "?"
+    body = raw.strip() or "unknown execution error"
+    return (
+        "--- EXECUTION ERROR ---\n"
+        f"File: {file_path}, Line: {line_no}\n"
+        "Traceback:\n"
+        f"{body}"
+    )
+
+
 def python_repl(code: str) -> str:
     """Execute agent Python in a separate interpreter subprocess (never in-process exec)."""
     src = code if isinstance(code, str) else str(code or "")
@@ -318,6 +337,10 @@ def python_repl(code: str) -> str:
     from dana.exec.shadow_workspace import apply_repl_shadow_outcome, get_active_shadow
 
     apply_repl_shadow_outcome(get_active_shadow(), exit_code=code)
+    if code != 0:
+        if err:
+            return _format_execution_error(err)
+        return _format_execution_error(out or "unknown execution error")
     parts = [
         f"exit_code={code}",
         f"stdout:\n{out or '(empty)'}",
