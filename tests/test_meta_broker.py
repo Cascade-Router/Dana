@@ -69,7 +69,7 @@ Epic 2: Edit execution_jail/meta_broker_b.py to set B = 2
 
 
 def test_failing_harness_triggers_repair_iteration(tmp_path: Path) -> None:
-    """Closed-loop: harness failure feeds stderr back as a bug-fix epic retry."""
+    """Opt-in repair path still works when max_repair_attempts > 0."""
     workspace = Path(PROJECT_ROOT) / "execution_jail" / "meta_broker_harness"
     workspace.mkdir(parents=True, exist_ok=True)
     target = workspace / "widget.py"
@@ -139,6 +139,59 @@ Epic 1: Edit {rel} so VALUE equals 1 and tests pass.
     log = " ".join(str(x) for x in (final.get("epic_log") or []))
     assert "repair" in log.lower()
 
+
+def test_single_pass_fail_fast_aborts_and_rolls_back(tmp_path: Path) -> None:
+    """Default max_repair_attempts=0 → ABORTED + delete unvalidated artifacts."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    target = workspace / "broken_module.py"
+
+    harness_calls: list[dict] = []
+
+    def harness(workspace_path: str, command: str, timeout_s: float = 15.0) -> dict:
+        harness_calls.append({"command": command})
+        return {
+            "success": False,
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "AssertionError: boom",
+            "tracked_files": ["broken_module.py"],
+            "run_key": "epic-1",
+        }
+
+    def planner(prompt: str):
+        return [
+            {
+                "task_id": 1,
+                "action": "Edit broken_module.py",
+                "dependencies": [],
+            }
+        ]
+
+    def tool_fn(action: str, filepath: str, content: str | None = None) -> str:
+        if action == "read":
+            body = target.read_text(encoding="utf-8") if target.is_file() else ""
+            return f"OK: read\n{body}"
+        target.write_text(str(content or "x=1\n"), encoding="utf-8")
+        return "OK: write broken_module.py (shadow staged)"
+
+    macro = """
+Epic 1: Write broken_module.py with a trivial function.
+"""
+    final = run_meta_broker(
+        macro,
+        planner=planner,
+        tool_fn=tool_fn,
+        harness_fn=harness,
+        workspace_path=str(workspace),
+        validation_command="python -c \"raise SystemExit(1)\"",
+        max_repair_attempts=0,
+    )
+    assert len(harness_calls) == 1
+    assert str(final.get("status")) == "ABORTED"
+    log = " ".join(str(x) for x in (final.get("epic_log") or []))
+    assert "ABORTED" in log or "rollback" in log.lower()
+    assert not target.exists(), "unvalidated artifact should be rolled back"
 
 def test_meta_broker_runs_epics_sequentially(tmp_path: Path) -> None:
     workspace = Path(PROJECT_ROOT) / "execution_jail" / "meta_broker_seq"

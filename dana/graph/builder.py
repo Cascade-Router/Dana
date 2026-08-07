@@ -80,23 +80,27 @@ def compile_meta_broker_graph(
     worker_factory: WorkerFactory | None = None,
     harness_fn: Any | None = None,
     default_validation_command: str = "python -m compileall .dana_scratch",
-    harness_timeout_s: float = 30.0,
+    harness_timeout_s: float = 15.0,
     checkpointer: Any | None = None,
 ) -> Any:
     """Wire Meta-Broker closed-loop topology.
 
     Topology::
 
-        START → broker → supervisor ─┬─ workers → supervisor
-                                     └─ staging_commit → runtime_harness → broker
+        START → spec_compiler → broker → supervisor ─┬─ workers → supervisor
+                                     └─ staging_commit → ast_sanitizer → runtime_harness → broker
         broker ─(done)→ END
 
     On harness ``success`` the broker advances to the next epic (or completes).
-    On failure the broker injects stderr as a bug-fix supervisor prompt
-    (up to ``max_repair_attempts``, default 3).
+    On failure the broker fail-fast ABORTs (``max_repair_attempts`` default 0)
+    and rolls back unvalidated artifacts — no multi-minute repair loops.
     """
     from langgraph.graph import END, START, StateGraph
 
+    from dana.graph.nodes.ast_sanitizer import (
+        AST_SANITIZER_NODE,
+        make_ast_sanitizer_node,
+    )
     from dana.graph.nodes.broker import (
         BROKER_NODE,
         HARNESS_NODE,
@@ -106,9 +110,15 @@ def compile_meta_broker_graph(
         route_after_supervisor_to_harness,
         staging_commit_node,
     )
+    from dana.graph.nodes.spec_compiler import (
+        SPEC_COMPILER_NODE,
+        make_spec_compiler_node,
+        route_after_spec_compiler,
+    )
     from dana.graph.runtime_harness import make_runtime_harness_node
 
     workflow: StateGraph = StateGraph(BrokerState)
+    workflow.add_node(SPEC_COMPILER_NODE, make_spec_compiler_node())
     workflow.add_node(BROKER_NODE, make_broker_node())
     workflow.add_node(SUPERVISOR_NODE, make_supervisor_node(planner=planner))
     workflow.add_node(
@@ -116,6 +126,7 @@ def compile_meta_broker_graph(
         make_workers_node(tool_fn=tool_fn, worker_factory=worker_factory),
     )
     workflow.add_node(STAGING_NODE, staging_commit_node)
+    workflow.add_node(AST_SANITIZER_NODE, make_ast_sanitizer_node())
     workflow.add_node(
         HARNESS_NODE,
         make_runtime_harness_node(
@@ -125,7 +136,15 @@ def compile_meta_broker_graph(
         ),
     )
 
-    workflow.add_edge(START, BROKER_NODE)
+    workflow.add_edge(START, SPEC_COMPILER_NODE)
+    workflow.add_conditional_edges(
+        SPEC_COMPILER_NODE,
+        route_after_spec_compiler,
+        {
+            BROKER_NODE: BROKER_NODE,
+            END_ROUTE: END,
+        },
+    )
     workflow.add_conditional_edges(
         BROKER_NODE,
         route_after_broker,
@@ -143,7 +162,8 @@ def compile_meta_broker_graph(
         },
     )
     workflow.add_edge(WORKER_NODE, _ROUTE_BACK_TO_SUPERVISOR)
-    workflow.add_edge(STAGING_NODE, HARNESS_NODE)
+    workflow.add_edge(STAGING_NODE, AST_SANITIZER_NODE)
+    workflow.add_edge(AST_SANITIZER_NODE, HARNESS_NODE)
     workflow.add_edge(HARNESS_NODE, BROKER_NODE)
 
     if checkpointer is not None:
@@ -160,7 +180,7 @@ def run_meta_broker(
     harness_fn: Any | None = None,
     workspace_path: str | None = None,
     validation_command: str | None = None,
-    max_repair_attempts: int = 3,
+    max_repair_attempts: int = 0,
     max_supervisor_cycles: int = 12,
     max_task_attempts: int = 2,
 ) -> BrokerState:
@@ -238,7 +258,7 @@ def run_meta_broker(
             default_validation_command=(
                 validation_command or "python -m compileall .dana_scratch"
             ),
-            harness_timeout_s=30.0,
+            harness_timeout_s=15.0,
         )
         initial = empty_broker_state(
             macro_intent,

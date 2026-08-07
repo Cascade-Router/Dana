@@ -60,6 +60,7 @@ class SupervisorState(TypedDict):
         "evaluating",
         "completed",
         "failed",
+        "ABORTED",
     ]
     supervisor_cycles: int
     max_supervisor_cycles: int
@@ -120,7 +121,7 @@ class Epic(TypedDict):
     epic_id: int
     title: str
     goal: str
-    status: Literal["pending", "active", "repairing", "completed", "failed"]
+    status: Literal["pending", "active", "repairing", "completed", "failed", "ABORTED"]
     repair_attempts: NotRequired[int]
     validation_command: NotRequired[str]
     workspace_path: NotRequired[str]
@@ -172,7 +173,7 @@ def empty_broker_state(
     *,
     max_supervisor_cycles: int = 12,
     max_task_attempts: int = 2,
-    max_repair_attempts: int = 3,
+    max_repair_attempts: int = 0,
     workspace_path: str | None = None,
     validation_command: str | None = None,
 ) -> BrokerState:

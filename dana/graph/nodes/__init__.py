@@ -17,6 +17,15 @@ from dana.graph.nodes.broker import (
     route_after_broker,
     staging_commit_node,
 )
+from dana.graph.nodes.ast_sanitizer import (
+    make_ast_sanitizer_node,
+    sanitize_python_source,
+)
+from dana.graph.nodes.spec_compiler import (
+    compile_user_spec,
+    is_reject_spec,
+    make_spec_compiler_node,
+)
 from dana.graph.nodes.supervisor import (
     heuristic_plan_dag,
     make_supervisor_node,
@@ -46,16 +55,20 @@ __all__ = (
     "MAX_VERIFICATION_ATTEMPTS",
     "broker_node",
     "build_isolated_worker",
+    "compile_user_spec",
     "consolidate_memory_node",
     "default_physical_evidence_check",
     "execute_macro_node",
     "heuristic_plan_dag",
     "heuristic_split_epics",
     "hydrate_memory_node",
+    "is_reject_spec",
     "locate_ui_element",
+    "make_ast_sanitizer_node",
     "make_broker_node",
     "make_consolidate_memory_node",
     "make_hydrate_memory_node",
+    "make_spec_compiler_node",
     "make_supervisor_node",
     "make_verifier_node",
     "make_workers_node",
@@ -65,6 +78,7 @@ __all__ = (
     "route_after_supervisor",
     "route_after_verifier",
     "run_worker",
+    "sanitize_python_source",
     "staging_commit_node",
     "supervisor_node",
     "verifier_node",

@@ -319,11 +319,15 @@ def run_meta_broker_isolated(
     timeout_s: float | None = DEFAULT_ISOLATED_TIMEOUT_S,
     on_event: Callable[[dict[str, Any]], None] | None = None,
     env_extra: dict[str, str] | None = None,
+    stop_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Spawn Meta-Broker in a child process; forward Queue events to the parent.
 
     ``timeout_s`` defaults to 300s. On expiry the child is terminated and a
     clean failure dict is returned (no parent deadlock).
+
+    When ``stop_event`` is set, the parent terminates the child and returns a
+    cancelled failure dict (Gradio / HF Space Stop button).
     """
     if timeout_s is None:
         timeout_s = DEFAULT_ISOLATED_TIMEOUT_S
@@ -386,6 +390,39 @@ def run_meta_broker_isolated(
                 pass
 
     while True:
+        if stop_event is not None and stop_event.is_set():
+            timed_out = True
+            try:
+                proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                proc.join(timeout=5.0)
+            except Exception:  # noqa: BLE001
+                pass
+            if proc.is_alive():
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+            result = {
+                "status": "failed",
+                "error": "meta_broker cancelled by user",
+                "final_response": "Meta-Broker stopped by user.",
+                "epics": [],
+                "epic_log": ["process_cancelled"],
+            }
+            enqueue_headless_event(
+                {
+                    "type": "telemetry",
+                    "message": "STOPPED: Meta-Broker child terminated by user",
+                    "phase": "cancelled",
+                    "status": "failed",
+                    "terminal": True,
+                }
+            )
+            break
+
         if time.time() >= deadline:
             timed_out = True
             try:

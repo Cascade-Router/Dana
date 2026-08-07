@@ -102,6 +102,10 @@ class MonitorBus:
                 break
         return out
 
+    def pending(self) -> int:
+        """Non-destructive queue-depth peek (thread-safe; does not drain)."""
+        return self._q.qsize()
+
     @property
     def latest_dag(self) -> dict[str, Any]:
         with self._lock:

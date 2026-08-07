@@ -15,7 +15,7 @@ STAGING_NODE = "staging_commit"
 HARNESS_NODE = "runtime_harness"
 END_ROUTE = "__end__"
 
-DEFAULT_MAX_REPAIR_ATTEMPTS = 3
+DEFAULT_MAX_REPAIR_ATTEMPTS = 0  # Strict single-pass: harness fail → ABORTED
 
 _EPIC_HEADER_RE = re.compile(
     r"(?:^|\n)\s*(?:epic|phase|milestone)\s*(\d+)\s*[:.)\-]\s*(.+?)(?="
@@ -224,11 +224,22 @@ def split_epics_with_llm(macro_intent: str) -> list[Epic]:
     if len(heuristic) >= 2:
         return heuristic
     try:
+        from dana.core.model_provider import (
+            cloud_fallback_enabled,
+            local_model_name,
+        )
         from dana.graph.cloud_planner import planner_mode_label, publish_planner_mode
         from dana.llm_client import ask_planner_structured
         from dana.llm_schemas import EpicPlan
+        from dana.mcp.client import format_mcp_tools_block
 
         mode = publish_planner_mode(warn_missing_key=True)
+        print(
+            f"[MetaBroker] ModelProvider local={local_model_name()} "
+            f"cloud_fallback={cloud_fallback_enabled()} planner={mode or planner_mode_label()}",
+            flush=True,
+        )
+        mcp_block = format_mcp_tools_block()
         messages = [
             {
                 "role": "system",
@@ -248,7 +259,8 @@ def split_epics_with_llm(macro_intent: str) -> list[Epic]:
                     "When generating Python code for Epics, rely strictly on "
                     "Python Standard Library modules (e.g., json, math, os, sys, "
                     "deque) unless third-party packages are explicitly requested "
-                    "in the prompt. No markdown, no prose."
+                    "in the prompt. No markdown, no prose.\n\n"
+                    f"{mcp_block}"
                 ),
             },
             {"role": "user", "content": f"MACRO INTENT:\n{text}"},
@@ -664,34 +676,70 @@ def _broker_node_impl(state: BrokerState) -> dict[str, Any]:
             # Log immediately so hangs in prompt assembly are visible.
             _log(f"repair iteration {attempts} for epic {epic.get('epic_id')}")
             # Allow attempts == max_repairs as the final repair (escalation window).
+            # With max_repairs=0 (single-pass), the first harness failure aborts.
             if attempts > max_repairs:
                 epic["status"] = "failed"
                 epics[idx] = epic
                 epic_log.append(
-                    f"epic {epic.get('epic_id')} failed after {attempts} repair(s)"
+                    f"epic {epic.get('epic_id')} ABORTED after {attempts} "
+                    f"failed validation(s) (max_repair_attempts={max_repairs})"
                 )
-                _log(f"epic {epic.get('epic_id')} exhausted repairs")
+                _log(
+                    f"epic {epic.get('epic_id')} ABORTED "
+                    f"(attempts={attempts} max={max_repairs})"
+                )
                 _track(
-                    f"Epic {epic.get('epic_id')} failed after {attempts} repair(s)",
+                    f"Epic {epic.get('epic_id')} ABORTED after {attempts} "
+                    f"failed validation(s)",
                     epic_title=str(epic.get("title") or ""),
-                    status="failed",
+                    status="ABORTED",
                     terminal=True,
                 )
-                _gc_between_epics(f"fail-{epic.get('epic_id')}")
+                # Automatic workspace rollback of unvalidated artifacts.
+                try:
+                    from dana.graph.runtime_harness import rollback_scratch_workspace
+
+                    ws = str(
+                        state.get("workspace_path")
+                        or feedback.get("workspace_path")
+                        or ""
+                    )
+                    paths = list(feedback.get("tracked_files") or [])
+                    if not paths:
+                        paths = _collect_files_from_text(
+                            str(epic.get("goal") or ""),
+                            str(feedback.get("command") or ""),
+                        )
+                    rb = rollback_scratch_workspace(
+                        ws or ".",
+                        paths,
+                        run_key=str(
+                            feedback.get("run_key")
+                            or f"epic-{epic.get('epic_id')}"
+                        ),
+                    )
+                    epic_log.append(
+                        "rollback_scratch_workspace "
+                        f"deleted={rb.get('deleted')} restored={rb.get('restored')}"
+                    )
+                except Exception as rb_exc:  # noqa: BLE001
+                    epic_log.append(f"rollback skipped: {rb_exc}")
+                _gc_between_epics(f"abort-{epic.get('epic_id')}")
                 return {
                     "epics": epics,
                     "active_epic_index": idx,
                     "broker_phase": "done",
-                    "status": "failed",
+                    "status": "ABORTED",
                     "error": (
-                        f"epic {epic.get('epic_id')} failed validation after "
-                        f"{attempts} repair attempt(s)"
+                        f"epic {epic.get('epic_id')} ABORTED after "
+                        f"{attempts} failed validation(s) "
+                        f"(single-pass fail-fast; max_repair_attempts={max_repairs})"
                     ),
                     "runtime_feedback": feedback,
                     "epic_log": epic_log,
                     "completed_epic_artifacts": completed_artifacts,
                     "final_response": (
-                        f"Epic {epic.get('epic_id')} failed:\n"
+                        f"ABORTED epic {epic.get('epic_id')}:\n"
                         f"{str(feedback.get('stderr') or '')[:500]}"
                     ),
                 }
@@ -753,6 +801,23 @@ def _broker_node_impl(state: BrokerState) -> dict[str, Any]:
             epic["status"] = "active"
             epics[idx] = epic
         goal = str(epic.get("goal") or "").strip()
+        # Snapshot targets BEFORE workers write so abort can delete new files.
+        try:
+            from dana.graph.runtime_harness import begin_epic_artifact_tracking
+
+            ws = str(state.get("workspace_path") or "") or None
+            from dana.paths import PROJECT_ROOT
+
+            begin_epic_artifact_tracking(
+                ws or str(PROJECT_ROOT),
+                _collect_files_from_text(
+                    goal,
+                    str(epic.get("validation_command") or ""),
+                ),
+                run_key=f"epic-{epic.get('epic_id')}",
+            )
+        except Exception:  # noqa: BLE001
+            pass
         # Deep Artifact Context: Epic N sees ALL prior completed epic files.
         prompt = _prompt_with_completed_artifacts(goal, completed_artifacts)
         patch = _fresh_supervisor_fields(prompt, state)
@@ -797,9 +862,9 @@ def route_after_broker(state: BrokerState) -> str:
     """Broker → Supervisor while work remains; else END."""
     phase = str(state.get("broker_phase") or "")
     status = str(state.get("status") or "")
-    if phase == "done" or status in {"completed", "failed"}:
+    if phase == "done" or status in {"completed", "failed", "ABORTED"}:
         # Only end when broker explicitly finished (not mid-supervisor planning).
-        if phase == "done":
+        if phase == "done" or status == "ABORTED":
             return END_ROUTE
     if phase in {"await_supervisor", "repair"}:
         return SUPERVISOR_NODE
