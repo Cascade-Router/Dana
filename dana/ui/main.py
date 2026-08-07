@@ -13,6 +13,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tkinter as tk
+
+from dana.core.telemetry import AsyncRingBuffer, NeuralStreamEmitter
+from dana.utils.adaptive_poller import AdaptivePoller
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -63,6 +67,46 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         app = DonnaGUI()
+        try:
+            app.withdraw()
+        except Exception:
+            pass
+
+        buffer = AsyncRingBuffer(capacity=500)
+        emitter = NeuralStreamEmitter(buffer)
+        telemetry_text = tk.Text(app, height=12, width=80)
+        telemetry_text.pack(fill=tk.BOTH, expand=True)
+
+        def _refresh_canvas() -> bool:
+            events = buffer.snapshot()
+            telemetry_text.delete("1.0", tk.END)
+            if events:
+                telemetry_text.insert(tk.END, "\n".join(repr(item) for item in events[-12:]))
+            else:
+                telemetry_text.insert(tk.END, "(no telemetry yet)")
+            return bool(events)
+
+        # AdaptivePoller.start() runs callbacks on a background thread, which
+        # is unsafe here since the callback touches Tk widgets — drive it
+        # from the widget's own self.after() chain instead (same pattern as
+        # DonnaGUI._master_telemetry_tick).
+        poller = AdaptivePoller(_refresh_canvas)
+
+        def _telemetry_tick() -> None:
+            if not app.winfo_exists():
+                return
+            try:
+                had_activity = _refresh_canvas()
+            except Exception:
+                had_activity = None
+            delay_s = poller.note_activity(had_activity)
+            try:
+                app.after(max(1, int(delay_s * 1000)), _telemetry_tick)
+            except Exception:
+                pass
+
+        app.after(50, _telemetry_tick)
+        emitter.emit("ui_ready", {"mode": "Unified Canvas"})
     except Exception as exc:  # noqa: BLE001
         print(f"Tk unavailable: {exc}", file=sys.stderr)
         return 1

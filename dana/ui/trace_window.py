@@ -119,16 +119,20 @@ _STATUS_PILLS = {
 class LiveTracePanel(ctk.CTkFrame):
     """Dark Live Trace dashboard: status pill, timeline, payload viewer."""
 
-    def __init__(self, master: Any, *, poll_ms: int = 50) -> None:
+    def __init__(
+        self, master: Any, *, poll_ms: int = 50, external_tick: bool = False
+    ) -> None:
         super().__init__(master, fg_color=_CANVAS_BG)
         self._poll_ms = max(30, int(poll_ms))
+        self._external_tick = bool(external_tick)
         self._phase = "idle"
         self._mode = "chat"
         self._node_t0: dict[str, float] = {}
         self._timeline_rows: list[ctk.CTkFrame] = []
         self._max_rows = 80
         self._build()
-        self.after(self._poll_ms, self._drain_trace_queue)
+        if not self._external_tick:
+            self.after(self._poll_ms, self._drain_trace_queue)
 
     def _build(self) -> None:
         header = ctk.CTkFrame(
@@ -635,15 +639,28 @@ class LiveTracePanel(ctk.CTkFrame):
             if event.payload:
                 self._set_payload(event.payload)
 
-    def _drain_trace_queue(self) -> None:
-        """Poll TraceEventBus on the Tk main thread (never from worker threads)."""
-        if not self.winfo_exists():
+    def tick(self) -> None:
+        """One polling step — safe to call from an external scheduler.
+
+        Drains TraceEventBus on the Tk main thread (never from worker
+        threads). Does not reschedule itself; that's the caller's job.
+        """
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:  # noqa: BLE001
             return
         try:
             for event in get_trace_bus().drain(max_items=48):
                 self._handle_event(event)
         except Exception:  # noqa: BLE001
             pass
+
+    def _drain_trace_queue(self) -> None:
+        """Self-scheduling wrapper around ``tick()`` (internal-poll mode only)."""
+        if not self.winfo_exists():
+            return
+        self.tick()
         try:
             self.after(self._poll_ms, self._drain_trace_queue)
         except Exception:  # noqa: BLE001
@@ -651,13 +668,113 @@ class LiveTracePanel(ctk.CTkFrame):
 
 
 class LiveTraceWindow(ctk.CTkToplevel):
-    """Optional standalone Live Trace window."""
+    """Diagnostics overlay: Live Trace + System Log + Recent Sessions."""
 
     def __init__(self, master: Any | None = None) -> None:
         super().__init__(master)
-        self.title("Dānā — Live Trace")
-        self.geometry("820x520")
-        self.minsize(640, 400)
+        self.title("Dānā — Diagnostics / Live Trace")
+        self.geometry("900x640")
+        self.minsize(720, 520)
         ctk.set_appearance_mode("dark")
+
         self.panel = LiveTracePanel(self)
-        self.panel.pack(fill="both", expand=True)
+        self.panel.pack(fill="both", expand=True, padx=6, pady=(6, 2))
+
+        extras = ctk.CTkFrame(self, fg_color="transparent")
+        extras.pack(fill="both", expand=False, padx=6, pady=(2, 8))
+        try:
+            extras.grid_columnconfigure(0, weight=1)
+            extras.grid_columnconfigure(1, weight=1)
+        except Exception:  # noqa: BLE001
+            pass
+
+        log_card = ctk.CTkFrame(extras, fg_color=("#1e1e2e", "#1e1e2e"), corner_radius=10)
+        log_card.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        ctk.CTkLabel(
+            log_card,
+            text="System Log",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(8, 2))
+        self.system_log_box = ctk.CTkTextbox(
+            log_card,
+            wrap="word",
+            height=140,
+            font=ctk.CTkFont(family="Consolas", size=11),
+        )
+        self.system_log_box.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+        self.system_log_box.insert("1.0", "(log empty — click Refresh)\n")
+        self.system_log_box.configure(state="disabled")
+        ctk.CTkButton(
+            log_card,
+            text="Refresh log",
+            width=100,
+            height=26,
+            command=self._refresh_log_via_master,
+        ).pack(anchor="e", padx=8, pady=(0, 8))
+
+        sess_card = ctk.CTkFrame(extras, fg_color=("#1e1e2e", "#1e1e2e"), corner_radius=10)
+        sess_card.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        ctk.CTkLabel(
+            sess_card,
+            text="Recent Sessions",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(8, 2))
+        self.sessions_box = ctk.CTkTextbox(
+            sess_card,
+            wrap="word",
+            height=140,
+            font=ctk.CTkFont(family="Consolas", size=11),
+        )
+        self.sessions_box.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+        self.sessions_box.insert("1.0", "(no dictation sessions yet)\n")
+        self.sessions_box.configure(state="disabled")
+        ctk.CTkButton(
+            sess_card,
+            text="Refresh sessions",
+            width=120,
+            height=26,
+            command=self._refresh_sessions_via_master,
+        ).pack(anchor="e", padx=8, pady=(0, 8))
+
+    def _refresh_log_via_master(self) -> None:
+        master = self.master
+        fn = getattr(master, "_refresh_system_log", None)
+        if callable(fn):
+            try:
+                fn()
+                return
+            except Exception:  # noqa: BLE001
+                pass
+        self._local_refresh_log()
+
+    def _refresh_sessions_via_master(self) -> None:
+        master = self.master
+        fn = getattr(master, "refresh_dictation_sessions", None)
+        if callable(fn):
+            try:
+                fn()
+                return
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _local_refresh_log(self) -> None:
+        text = "(log unavailable)\n"
+        try:
+            from dana.logging import RUNTIME_LOG_PATH
+
+            path = RUNTIME_LOG_PATH
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                    lines = fh.readlines()
+                text = "".join(lines[-40:]) or "(log empty)\n"
+        except Exception as exc:  # noqa: BLE001
+            text = f"Could not read log: {exc}\n"
+        try:
+            self.system_log_box.configure(state="normal")
+            self.system_log_box.delete("1.0", "end")
+            self.system_log_box.insert("1.0", text)
+            self.system_log_box.configure(state="disabled")
+        except Exception:  # noqa: BLE001
+            pass

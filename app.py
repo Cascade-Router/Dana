@@ -1,7 +1,7 @@
-"""Dānā · Hugging Face Space — headless Meta-Broker Gradio dashboard.
+"""Dānā Control Plane — Hugging Face Gradio Space (headless Meta-Broker).
 
-No Tkinter. Prompts run via ``run_meta_broker_isolated`` on a background thread;
-telemetry is polled into the Status Indicator and Task Tracker panels.
+No desktop GUI. Prompts route through ``dana.web.headless_bridge`` into an
+isolated ``run_meta_broker_isolated`` process with live telemetry streaming.
 """
 
 from __future__ import annotations
@@ -20,375 +20,822 @@ import gradio as gr
 from dana.web.headless_bridge import (
     assert_no_tkinter_loaded,
     get_bridge,
+    load_manifest_dict,
     status_label,
 )
 
-try:
-    import spaces
-except ImportError:  # Local / CI without ZeroGPU runtime
-
-    class _SpacesFallback:
-        @staticmethod
-        def GPU(fn=None, **_kwargs):  # noqa: N802 — match HF API
-            if fn is None:
-                return lambda f: f
-            return fn
-
-    spaces = _SpacesFallback()  # type: ignore[assignment]
-
+_RELEASE_URL = "https://github.com/Cascade-Router/Dana/releases"
 
 _CSS = """
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
-  --dana-bg0: #070b12;
-  --dana-bg1: #0c1220;
-  --dana-panel: rgba(17, 24, 39, 0.72);
-  --dana-border: #1e293b;
-  --dana-cyan: #22d3ee;
-  --dana-emerald: #34d399;
-  --dana-amber: #fbbf24;
-  --dana-text: #e2e8f0;
-  --dana-muted: #94a3b8;
+  --dana-bg0: #0d1117;
+  --dana-bg1: #010409;
+  --dana-panel: #161b22;
+  --dana-border: #30363d;
+  --dana-cyan: #00f0ff;
+  --dana-amber: #ffb000;
+  --dana-rose: #ff7b72;
+  --dana-text: #e6edf3;
+  --dana-muted: #8b949e;
+  --dana-radius: 2px;
 }
 
 .gradio-container {
-  font-family: 'IBM Plex Sans', system-ui, sans-serif !important;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif !important;
   background:
-    radial-gradient(1200px 600px at 12% -10%, rgba(34, 211, 238, 0.12), transparent 55%),
-    radial-gradient(900px 500px at 90% 0%, rgba(16, 185, 129, 0.08), transparent 50%),
-    linear-gradient(180deg, var(--dana-bg0), var(--dana-bg1)) !important;
+    linear-gradient(180deg, var(--dana-bg0) 0%, var(--dana-bg1) 100%) !important;
   color: var(--dana-text) !important;
-  max-width: 1180px !important;
+  max-width: 1240px !important;
   margin: 0 auto !important;
+  padding-bottom: 2rem !important;
+}
+.gradio-container, .gradio-container * {
+  box-shadow: none !important;
 }
 footer { display: none !important; }
 
 .dana-hero {
-  padding: 1.25rem 0.25rem 0.5rem 0.25rem !important;
+  padding: 1.35rem 0.25rem 0.85rem 0.25rem !important;
+  border-bottom: 1px solid var(--dana-border);
+  margin-bottom: 1rem !important;
 }
 .dana-hero h1 {
-  font-size: clamp(2.4rem, 5vw, 3.4rem) !important;
+  font-size: clamp(2rem, 4.5vw, 2.85rem) !important;
   font-weight: 700 !important;
-  letter-spacing: -0.04em !important;
-  color: #f8fafc !important;
+  letter-spacing: -0.03em !important;
+  color: #f0f6fc !important;
   margin: 0 0 0.35rem 0 !important;
-  line-height: 1.05 !important;
+  line-height: 1.1 !important;
 }
-.dana-hero p {
+.dana-hero .dana-sub {
   color: var(--dana-muted) !important;
-  font-size: 1.05rem !important;
-  max-width: 42rem !important;
-  margin: 0 !important;
+  font-size: 0.95rem !important;
+  letter-spacing: 0.02em !important;
+  margin: 0 0 0.75rem 0 !important;
+}
+.dana-hero .dana-tag {
+  font-family: 'JetBrains Mono', ui-monospace, monospace !important;
+  color: var(--dana-cyan) !important;
+  font-size: 0.78rem !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+  margin: 0 0 0.55rem 0 !important;
+}
+.dana-hero-row {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 0.65rem 0.85rem !important;
+  align-items: center !important;
 }
 
 .dana-status-pill {
-  font-family: 'IBM Plex Mono', ui-monospace, monospace !important;
-  font-size: 0.95rem !important;
+  font-family: 'JetBrains Mono', ui-monospace, monospace !important;
+  font-size: 0.82rem !important;
   font-weight: 500 !important;
-  padding: 0.7rem 1rem !important;
-  border-radius: 999px !important;
+  padding: 0.45rem 0.85rem !important;
+  border-radius: var(--dana-radius) !important;
   border: 1px solid var(--dana-border) !important;
-  background: rgba(15, 23, 42, 0.9) !important;
-  color: #e2e8f0 !important;
-  display: inline-block !important;
-  min-width: 11rem !important;
-  text-align: center !important;
+  background: var(--dana-panel) !important;
+  color: var(--dana-text) !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 0.45rem !important;
+  min-width: 11.5rem !important;
+  justify-content: center !important;
 }
-.dana-status-pill.idle { color: #94a3b8 !important; border-color: #334155 !important; }
-.dana-status-pill.listening { color: var(--dana-emerald) !important; border-color: #065f46 !important; }
-.dana-status-pill.processing { color: var(--dana-amber) !important; border-color: #92400e !important; }
+.dana-status-pill .dot {
+  width: 0.5rem; height: 0.5rem; border-radius: 0;
+  background: #6e7681; display: inline-block;
+}
+.dana-status-pill.idle .dot { background: #6e7681; }
+.dana-status-pill.listening .dot { background: var(--dana-cyan); }
+.dana-status-pill.processing .dot {
+  background: var(--dana-amber);
+  animation: dana-pulse 1.1s ease-in-out infinite;
+}
+.dana-status-pill.epic_executing .dot {
+  background: var(--dana-cyan);
+  animation: dana-pulse 0.85s ease-in-out infinite;
+}
+.dana-status-pill.idle { color: var(--dana-muted) !important; }
+.dana-status-pill.listening { color: var(--dana-cyan) !important; border-color: #1f6f78 !important; }
+.dana-status-pill.processing { color: var(--dana-amber) !important; border-color: #9a6700 !important; }
+.dana-status-pill.epic_executing { color: var(--dana-cyan) !important; border-color: #1f6f78 !important; }
+.dana-status-pill.pending_approval { color: var(--dana-amber) !important; border-color: #9a6700 !important; }
+.dana-status-pill.pending_approval .dot {
+  background: var(--dana-amber);
+  box-shadow: 0 0 8px rgba(255, 176, 0, 0.55);
+}
+
+@keyframes dana-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
 
 .dana-panel {
   background: var(--dana-panel) !important;
   border: 1px solid var(--dana-border) !important;
-  border-radius: 16px !important;
-  padding: 0.85rem 1rem 1rem 1rem !important;
-  backdrop-filter: blur(8px);
+  border-radius: var(--dana-radius) !important;
+  padding: 0.85rem 0.95rem 1rem 0.95rem !important;
 }
-.dana-panel h3, .dana-panel .label-wrap span {
-  color: #f1f5f9 !important;
+.dana-panel h3 {
+  font-family: 'JetBrains Mono', ui-monospace, monospace !important;
+  color: var(--dana-cyan) !important;
   font-weight: 600 !important;
+  font-size: 0.78rem !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+  margin: 0 0 0.65rem 0 !important;
 }
-.dana-mono textarea, .dana-mono input {
-  font-family: 'IBM Plex Mono', ui-monospace, monospace !important;
-  font-size: 0.82rem !important;
-  line-height: 1.45 !important;
+
+/* Terminal surfaces: broker, tracker, telemetry, manifest */
+.dana-mono textarea,
+.dana-mono input,
+.dana-mono .prose,
+.dana-broker textarea,
+.dana-broker input,
+.dana-panel textarea,
+.dana-panel [data-testid="json"] {
+  font-family: 'JetBrains Mono', ui-monospace, monospace !important;
+  font-size: 0.78rem !important;
+  line-height: 1.55 !important;
+  background: #0d1117 !important;
+  border: 1px solid var(--dana-border) !important;
+  border-radius: var(--dana-radius) !important;
+  color: #c9d1d9 !important;
+}
+
+button.primary, button.secondary, button.dana-primary, button.dana-stop,
+button.dana-ghost, button.dana-download, .gr-button {
+  border-radius: var(--dana-radius) !important;
+  box-shadow: none !important;
 }
 button.dana-primary {
-  background: linear-gradient(135deg, #0891b2, #0e7490) !important;
-  border: none !important;
-  color: #ecfeff !important;
-  font-weight: 650 !important;
+  background: transparent !important;
+  border: 1px solid var(--dana-cyan) !important;
+  color: var(--dana-cyan) !important;
+  font-weight: 600 !important;
+}
+button.dana-primary:hover {
+  background: rgba(0, 240, 255, 0.08) !important;
+}
+button.dana-stop {
+  background: transparent !important;
+  border: 1px solid var(--dana-rose) !important;
+  color: var(--dana-rose) !important;
+  font-weight: 600 !important;
 }
 button.dana-ghost {
   background: transparent !important;
   border: 1px solid var(--dana-border) !important;
   color: var(--dana-text) !important;
 }
+button.dana-download {
+  background: transparent !important;
+  border: 1px solid var(--dana-amber) !important;
+  color: var(--dana-amber) !important;
+  font-weight: 600 !important;
+}
+
+.gradio-container .accordion,
+.gradio-container details {
+  border: 1px solid var(--dana-border) !important;
+  border-radius: var(--dana-radius) !important;
+  background: #0d1117 !important;
+}
+
+@media (max-width: 768px) {
+  .gradio-container { max-width: 100% !important; }
+  .dana-hero h1 { font-size: 1.85rem !important; }
+}
 """
 
-_THEME = gr.themes.Soft(
+_THEME = gr.themes.Base(
     primary_hue="cyan",
     neutral_hue="slate",
-    font=[gr.themes.GoogleFont("IBM Plex Sans"), "ui-sans-serif", "system-ui"],
-    font_mono=[gr.themes.GoogleFont("IBM Plex Mono"), "ui-monospace", "monospace"],
+    font=[gr.themes.GoogleFont("Inter"), "ui-sans-serif", "system-ui"],
+    font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "ui-monospace", "monospace"],
+    radius_size=gr.themes.sizes.radius_none,
 ).set(
-    body_background_fill="#070b12",
-    body_background_fill_dark="#070b12",
-    block_background_fill="#111827",
-    block_background_fill_dark="#111827",
-    block_border_color="#1e293b",
-    block_border_color_dark="#1e293b",
-    border_color_primary="#1e293b",
-    border_color_primary_dark="#1e293b",
-    button_primary_background_fill="#0e7490",
-    button_primary_background_fill_dark="#0e7490",
+    body_background_fill="#0d1117",
+    body_background_fill_dark="#0d1117",
+    block_background_fill="#161b22",
+    block_background_fill_dark="#161b22",
+    block_border_color="#30363d",
+    block_border_color_dark="#30363d",
+    border_color_primary="#30363d",
+    border_color_primary_dark="#30363d",
+    button_primary_background_fill="#161b22",
+    button_primary_background_fill_dark="#161b22",
+    button_primary_text_color="#00f0ff",
+    button_primary_text_color_dark="#00f0ff",
+    button_primary_border_color="#00f0ff",
+    button_primary_border_color_dark="#00f0ff",
+    shadow_drop="none",
+    shadow_drop_lg="none",
+    shadow_spread="0px",
 )
 
 
-def _status_markdown(status: str) -> str:
+def _status_html(status: str) -> str:
     st = str(status or "idle").strip().lower()
-    if st in {"routing", "executing", "planning"}:
+    if st in {"pending_approval", "pending_user_approval", "awaiting_approval"}:
+        st = "pending_approval"
+    elif st in {"dispatch_epic", "feedback"} or (
+        "epic" in st and "pending" not in st
+    ):
+        st = "epic_executing"
+    elif st in {"routing", "executing", "planning"}:
         st = "processing"
-    if st not in {"idle", "listening", "processing"}:
+    if st not in {
+        "idle",
+        "listening",
+        "processing",
+        "epic_executing",
+        "pending_approval",
+    }:
         st = "idle"
     label = status_label(st)
-    return f'<div class="dana-status-pill {st}">{label}</div>'
-
-
-def _assistant_reply(bridge_snap: dict[str, Any]) -> str:
-    if bridge_snap.get("running"):
-        return "Meta-Broker is running in an isolated process. Telemetry is streaming…"
-    err = str(bridge_snap.get("error") or "").strip()
-    rs = str(bridge_snap.get("result_status") or "").strip()
-    if err:
-        return f"Meta-Broker finished with error ({rs or 'failed'}):\n{err}"
-    if rs:
-        return f"Meta-Broker finished — status=`{rs}`.\nSee Task Tracker / telemetry for epic progress."
-    return "Done."
-
-
-def submit_prompt(
-    message: str,
-    history: list[dict[str, str]] | None,
-) -> Generator[tuple[Any, ...], None, None]:
-    """Non-blocking submit: background Meta-Broker + live telemetry yields."""
-    history = list(history or [])
-    text = (message or "").strip()
-    if not text:
-        bridge = get_bridge()
-        yield (
-            history,
-            "",
-            _status_markdown(bridge.status()),
-            bridge.task_tracker_text(),
-            bridge.log_text(),
-        )
-        return
-
-    history = history + [
-        {"role": "user", "content": text},
-        {"role": "assistant", "content": "Dispatching isolated Meta-Broker…"},
-    ]
-    bridge = get_bridge()
-    ok, note = bridge.submit(text)
-    if not ok:
-        history[-1] = {"role": "assistant", "content": note}
-        yield (
-            history,
-            "",
-            _status_markdown(bridge.status()),
-            bridge.task_tracker_text(),
-            bridge.log_text(),
-        )
-        return
-
-    yield (
-        history,
-        "",
-        _status_markdown("processing"),
-        bridge.task_tracker_text(),
-        bridge.log_text() + f"\n[ui] {note}",
+    return (
+        f'<div class="dana-status-pill {st}">'
+        f'<span class="dot"></span><span>{label}</span></div>'
     )
 
-    # Poll telemetry until the background worker completes (Gradio generator stream).
-    deadline = time.time() + float(os.environ.get("DONNA_META_BROKER_TIMEOUT_S") or "600")
-    last_log = ""
-    while bridge.is_running and time.time() < deadline:
-        _ = bridge.drain_telemetry(max_items=64)
-        snap = bridge.snapshot()
-        log = bridge.log_text()
-        tracker = bridge.task_tracker_text()
-        if log != last_log:
-            history[-1] = {
-                "role": "assistant",
-                "content": (
-                    "Meta-Broker running…\n\n"
-                    + "\n".join(snap.get("log_lines") or [])[-1200:]
-                ),
-            }
-            last_log = log
-        yield (
-            history,
-            "",
-            _status_markdown(snap.get("status") or "processing"),
-            tracker,
-            log,
-        )
-        time.sleep(0.35)
 
-    # Final drain.
-    _ = bridge.drain_telemetry(max_items=128)
+def _approval_markdown() -> str:
+    pending = get_bridge().pending_approval()
+    if not pending:
+        return (
+            "_No compiled spec awaiting approval. "
+            "Submit a plain-English goal or `/broker` macro to draft one._"
+        )
+    spec = str(pending.get("compiled_spec") or "").strip()
+    epics = list(pending.get("epics") or [])
+    return (
+        "### Spec Approval — `PENDING_USER_APPROVAL`\n\n"
+        f"**Epics:** {len(epics)}\n\n"
+        f"```\n{spec or '(empty)'}\n```\n\n"
+        "Click **Approve & Run** to dispatch Meta-Broker, "
+        "**Edit Macro** to copy into the prompt box, or **Cancel**."
+    )
+
+
+def _chat_append_user(history: list | None, text: str) -> list:
+    hist = list(history or [])
+    if hist and isinstance(hist[0], dict):
+        return hist + [{"role": "user", "content": text}]
+    return hist + [[text, None]]
+
+
+def _chat_append_assistant(history: list | None, text: str) -> list:
+    hist = list(history or [])
+    if not hist:
+        if text:
+            return [{"role": "assistant", "content": text}]
+        return hist
+    if isinstance(hist[0], dict):
+        return hist + [{"role": "assistant", "content": text}]
+    # Tuple/list pairs: fill empty assistant slot or append.
+    last = hist[-1]
+    if isinstance(last, (list, tuple)) and len(last) >= 2 and last[1] in (None, ""):
+        hist = hist[:-1] + [[last[0], text]]
+        return hist
+    return hist + [[None, text]]
+
+
+def _panels(selected: str | None = None) -> tuple[Any, ...]:
+    bridge = get_bridge()
+    _ = bridge.drain_telemetry(max_items=48)
     snap = bridge.snapshot()
-    history[-1] = {"role": "assistant", "content": _assistant_reply(snap)}
+    choices = bridge.epic_choices()
+    value = selected if selected in choices else (choices[0] if choices else None)
+    label, code = bridge.workspace_viewer()
+    pending = bool(bridge.pending_approval())
+    return (
+        _status_html(str(snap.get("status") or "idle")),
+        gr.update(choices=choices, value=value),
+        bridge.epic_detail_markdown(value),
+        bridge.log_text(),
+        label,
+        code,
+        load_manifest_dict(),
+        _approval_markdown(),
+        gr.update(interactive=pending),
+        gr.update(interactive=pending),
+        gr.update(interactive=pending),
+    )
+
+
+def submit_command(
+    message: str,
+    force_local: bool,
+    verbose: bool,
+    history: list | None,
+) -> Generator[tuple[Any, ...], None, None]:
+    """Submit → background Meta-Broker; yield live panels. Prompt logged once."""
+    bridge = get_bridge()
+    bridge.configure(force_local=bool(force_local), verbose=bool(verbose))
+    text = (message or "").strip()
+    hist = list(history or [])
+
+    def _pack(
+        *,
+        clear_prompt: bool = False,
+        hist_out: list | None = None,
+        selected: str | None = None,
+        prompt_value: str | None = None,
+    ) -> tuple[Any, ...]:
+        (
+            st,
+            epic_dd,
+            epic_md,
+            log,
+            wlabel,
+            wcode,
+            man,
+            approval_md,
+            appr_btn,
+            edit_btn,
+            cancel_btn,
+        ) = _panels(selected)
+        out_prompt = "" if clear_prompt else (
+            text if prompt_value is None else prompt_value
+        )
+        return (
+            st,
+            epic_dd,
+            epic_md,
+            log,
+            wlabel,
+            wcode,
+            man,
+            approval_md,
+            appr_btn,
+            edit_btn,
+            cancel_btn,
+            out_prompt,
+            hist_out if hist_out is not None else hist,
+        )
+
+    if not text:
+        yield _pack()
+        return
+
+    # Append the user prompt EXACTLY ONCE to chat history.
+    hist = _chat_append_user(hist, text)
+
+    ok, note = bridge.submit_prompt(text)
+    if not ok:
+        hist = _chat_append_assistant(hist, note)
+        yield _pack(hist_out=hist)
+        return
+
+    hist = _chat_append_assistant(hist, note)
+    yield _pack(clear_prompt=True, hist_out=hist)
+
+    deadline = time.time() + float(os.environ.get("DONNA_META_BROKER_TIMEOUT_S") or "600")
+    while bridge.is_running and time.time() < deadline:
+        yield _pack(clear_prompt=True, hist_out=hist)
+        time.sleep(0.4)
+
+    (
+        st,
+        epic_dd,
+        epic_md,
+        log,
+        wlabel,
+        wcode,
+        man,
+        approval_md,
+        appr_btn,
+        edit_btn,
+        cancel_btn,
+    ) = _panels()
+    snap = bridge.snapshot()
+    if snap.get("error"):
+        log = log + f"\n[ui] finished error={snap.get('error')}"
+        hist = _chat_append_assistant(hist, f"Finished with error: {snap.get('error')}")
+    elif snap.get("result_status"):
+        log = log + f"\n[ui] finished status={snap.get('result_status')}"
+        hist = _chat_append_assistant(hist, f"Finished: {snap.get('result_status')}")
     yield (
-        history,
+        st,
+        epic_dd,
+        epic_md,
+        log,
+        wlabel,
+        wcode,
+        man,
+        approval_md,
+        appr_btn,
+        edit_btn,
+        cancel_btn,
         "",
-        _status_markdown(snap.get("status") or "idle"),
-        bridge.task_tracker_text(),
-        bridge.log_text(),
+        hist,
     )
 
 
-def poll_panels() -> tuple[str, str, str]:
-    """Timer tick: refresh status / tracker / log without submitting."""
+def stop_execution(
+    history: list | None = None,
+    selected: str | None = None,
+) -> tuple[Any, ...]:
     bridge = get_bridge()
-    _ = bridge.drain_telemetry(max_items=32)
+    ok, note = bridge.stop()
+    (
+        st,
+        epic_dd,
+        epic_md,
+        log,
+        wlabel,
+        wcode,
+        man,
+        approval_md,
+        appr_btn,
+        edit_btn,
+        cancel_btn,
+    ) = _panels(selected)
+    if ok:
+        log = log + f"\n[ui] {note}"
+    hist = _chat_append_assistant(history, note) if note else list(history or [])
     return (
-        _status_markdown(bridge.status()),
-        bridge.task_tracker_text(),
-        bridge.log_text(),
+        st,
+        epic_dd,
+        epic_md,
+        log,
+        wlabel,
+        wcode,
+        man,
+        approval_md,
+        appr_btn,
+        edit_btn,
+        cancel_btn,
+        hist,
     )
 
 
-def clear_chat() -> tuple[list, str, str, str]:
+def poll_live(selected: str | None = None) -> tuple[Any, ...]:
+    return _panels(selected)
+
+
+def on_epic_select(choice: str) -> str:
+    return get_bridge().epic_detail_markdown(choice)
+
+
+def approve_spec_action(
+    history: list | None = None,
+    selected: str | None = None,
+) -> tuple[Any, ...]:
     bridge = get_bridge()
+    ok, note = bridge.approve_spec()
+    (
+        st,
+        epic_dd,
+        epic_md,
+        log,
+        wlabel,
+        wcode,
+        man,
+        approval_md,
+        appr_btn,
+        edit_btn,
+        cancel_btn,
+    ) = _panels(selected)
+    if ok:
+        log = log + f"\n[ui] {note}"
+    hist = _chat_append_assistant(history, note) if note else list(history or [])
     return (
-        [],
-        _status_markdown(bridge.status()),
-        bridge.task_tracker_text(),
-        bridge.log_text(),
+        st,
+        epic_dd,
+        epic_md,
+        log,
+        wlabel,
+        wcode,
+        man,
+        approval_md,
+        appr_btn,
+        edit_btn,
+        cancel_btn,
+        hist,
     )
 
 
-# Optional ZeroGPU stub kept for Space compatibility (vision demos retired).
-@spaces.GPU
-def _gpu_warmup() -> str:
-    return "ok"
+def edit_spec_action(
+    history: list | None = None,
+    selected: str | None = None,
+) -> tuple[Any, ...]:
+    bridge = get_bridge()
+    pending = bridge.pending_approval() or {}
+    macro = str(pending.get("compiled_spec") or "").strip()
+    ok, note = bridge.cancel_spec()
+    (
+        st,
+        epic_dd,
+        epic_md,
+        log,
+        wlabel,
+        wcode,
+        man,
+        approval_md,
+        appr_btn,
+        edit_btn,
+        cancel_btn,
+    ) = _panels(selected)
+    msg = "Macro copied to prompt — edit, then Submit."
+    if ok:
+        log = log + f"\n[ui] {note}; {msg}"
+    hist = _chat_append_assistant(history, msg)
+    return (
+        st,
+        epic_dd,
+        epic_md,
+        log,
+        wlabel,
+        wcode,
+        man,
+        approval_md,
+        appr_btn,
+        edit_btn,
+        cancel_btn,
+        macro,
+        hist,
+    )
+
+
+def cancel_spec_action(
+    history: list | None = None,
+    selected: str | None = None,
+) -> tuple[Any, ...]:
+    bridge = get_bridge()
+    ok, note = bridge.cancel_spec()
+    (
+        st,
+        epic_dd,
+        epic_md,
+        log,
+        wlabel,
+        wcode,
+        man,
+        approval_md,
+        appr_btn,
+        edit_btn,
+        cancel_btn,
+    ) = _panels(selected)
+    if ok:
+        log = log + f"\n[ui] {note}"
+    hist = _chat_append_assistant(history, note) if note else list(history or [])
+    return (
+        st,
+        epic_dd,
+        epic_md,
+        log,
+        wlabel,
+        wcode,
+        man,
+        approval_md,
+        appr_btn,
+        edit_btn,
+        cancel_btn,
+        hist,
+    )
 
 
 with gr.Blocks(
-    title="Dānā · Headless Control Plane",
+    title="Dānā Control Plane",
     theme=_THEME,
     css=_CSS,
 ) as demo:
     with gr.Column(elem_classes=["dana-hero"]):
         gr.Markdown(
             """
-# Dānā
-Headless cybernetic control plane — isolated Meta-Broker, live telemetry, stdlib-first epics.
+<p class="dana-tag">Cybernetic Control-Plane Simulator</p>
+# Dānā Control Plane
+<p class="dana-sub">Multi-Agent Orchestration · Meta-Broker Corridor · Cascade Router</p>
 """
         )
+        with gr.Row(elem_classes=["dana-hero-row"]):
+            status_html = gr.HTML(_status_html("idle"))
+            gr.Button(
+                "⬇ Download Dānā for Windows",
+                link=_RELEASE_URL,
+                elem_classes=["dana-download"],
+            )
 
-    status_html = gr.HTML(
-        _status_markdown("idle"),
-        elem_classes=["dana-status-wrap"],
-    )
-
-    with gr.Row(equal_height=True):
-        with gr.Column(scale=3, elem_classes=["dana-panel"]):
-            gr.Markdown("### Chat")
-            chatbot = gr.Chatbot(
+    with gr.Row(equal_height=False):
+        # ── Left: command / chat (prompt appears once) ─────────────────
+        with gr.Column(scale=5, elem_classes=["dana-panel"]):
+            gr.Markdown("### Command & Broker")
+            chat_hist = gr.Chatbot(
                 label="Session",
-                height=440,
+                value=[],
+                height=220,
                 type="messages",
-                show_copy_button=True,
+                elem_classes=["dana-mono"],
+            )
+            prompt_box = gr.Textbox(
+                label="Prompt",
+                placeholder=(
+                    "/broker Epic 1: … Epic 2: … — or describe a multi-epic goal"
+                ),
+                lines=5,
+                max_lines=12,
+                autofocus=True,
+                elem_classes=["dana-broker", "dana-mono"],
             )
             with gr.Row():
-                prompt_box = gr.Textbox(
-                    label="Prompt",
-                    placeholder=(
-                        "/broker Epic 1: …  — or describe a multi-epic goal"
-                    ),
-                    lines=3,
-                    scale=5,
-                    autofocus=True,
+                force_local = gr.Checkbox(
+                    label="DONNA_FORCE_LOCAL",
+                    value=True,
+                    info="Skip cloud / Gemini hops (local Ollama only)",
+                )
+                verbose = gr.Checkbox(
+                    label="Verbose telemetry",
+                    value=False,
+                    info="Set DONNA_DEBUG=1 for richer logs",
                 )
             with gr.Row():
-                send_btn = gr.Button(
-                    "Run Meta-Broker",
+                submit_btn = gr.Button(
+                    "Submit Command",
                     variant="primary",
                     elem_classes=["dana-primary"],
                 )
-                clear_btn = gr.Button("Clear", elem_classes=["dana-ghost"])
+                stop_btn = gr.Button(
+                    "Stop Execution",
+                    elem_classes=["dana-stop"],
+                )
+            gr.Markdown("### Spec Approval Card")
+            approval_md = gr.Markdown(
+                value=(
+                    "_No compiled spec awaiting approval. "
+                    "Submit a plain-English goal or `/broker` macro to draft one._"
+                )
+            )
+            with gr.Row():
+                approve_btn = gr.Button(
+                    "Approve & Run",
+                    variant="primary",
+                    interactive=False,
+                    elem_classes=["dana-primary"],
+                )
+                edit_macro_btn = gr.Button("Edit Macro", interactive=False)
+                cancel_spec_btn = gr.Button(
+                    "Cancel",
+                    interactive=False,
+                    elem_classes=["dana-stop"],
+                )
+            gr.Examples(
+                examples=[
+                    [
+                        "/broker Epic 1: Write hello_util.py with greet(name). "
+                        "Epic 2: Write tests/test_hello_util.py asserting greet returns a string."
+                    ],
+                    [
+                        "/broker Epic 1: Write rate_limiter.py with a TokenBucket class. "
+                        "Epic 2: Write tests/test_rate_limiter.py for refill and deny paths."
+                    ],
+                ],
+                inputs=[prompt_box],
+                label="Example /broker prompts",
+            )
 
-        with gr.Column(scale=2, elem_classes=["dana-panel"]):
-            gr.Markdown("### Task Tracker")
-            tracker_box = gr.Textbox(
-                label="Activities",
-                value="(no active tasks)",
-                lines=12,
-                max_lines=20,
-                interactive=False,
+        # ── Right: interactive tracker ─────────────────────────────────
+        with gr.Column(scale=6, elem_classes=["dana-panel"]):
+            gr.Markdown("### Epic Task Tracker")
+            epic_radio = gr.Radio(
+                choices=["(no epics yet)"],
+                value="(no epics yet)",
+                label="Select an epic for details",
                 elem_classes=["dana-mono"],
             )
-            gr.Markdown("### Telemetry")
+            epic_detail = gr.Markdown(
+                value="_Submit a `/broker` command to populate epics._"
+            )
+            with gr.Accordion("Artifact Manifest (.dana_scratch/manifest.json)", open=False):
+                manifest_json = gr.JSON(
+                    label="Exports",
+                    value=load_manifest_dict(),
+                )
+
+    # ── DAG / Workspace split-view ─────────────────────────────────────
+    with gr.Row(equal_height=True):
+        with gr.Column(scale=1, elem_classes=["dana-panel"]):
+            gr.Markdown("### DAG · Broker Telemetry")
             telemetry_box = gr.Textbox(
-                label="IPC / Meta-Broker log",
+                label="IPC / stdout stream",
                 value="(no telemetry yet)",
-                lines=12,
-                max_lines=24,
+                lines=16,
+                max_lines=28,
+                interactive=False,
+                elem_classes=["dana-mono"],
+                autoscroll=True,
+            )
+        with gr.Column(scale=1, elem_classes=["dana-panel"]):
+            gr.Markdown("### Live Workspace Viewer")
+            workspace_label = gr.Textbox(
+                label="Active file",
+                value="(waiting for artifacts…)",
                 interactive=False,
                 elem_classes=["dana-mono"],
             )
-
-    gr.Examples(
-        examples=[
-            [
-                "/broker Epic 1: Write hello_util.py with a greet(name) function. "
-                "Epic 2: Write tests/test_hello_util.py that asserts greet returns a string."
-            ],
-            [
-                "Plan and implement a small JSON key-value store with pytest coverage"
-            ],
-        ],
-        inputs=[prompt_box],
-        label="Example Meta-Broker prompts",
-    )
+            try:
+                workspace_code = gr.Code(
+                    label="Source",
+                    value="# Generated files stream here during Meta-Broker runs.\n",
+                    language="python",
+                    lines=16,
+                    interactive=False,
+                )
+            except TypeError:
+                workspace_code = gr.Textbox(
+                    label="Source",
+                    value="# Generated files stream here during Meta-Broker runs.\n",
+                    lines=16,
+                    max_lines=28,
+                    interactive=False,
+                    elem_classes=["dana-mono"],
+                )
 
     gr.Markdown(
-        "<p style='color:#64748b;font-size:0.9rem;margin-top:0.75rem'>"
-        "Runs <code>run_meta_broker_isolated</code> (multiprocessing) — no Tkinter. "
-        "Local Ollama (<code>qwen2.5-coder:7b</code>) required for real codegen; "
-        "otherwise telemetry will show the failure path."
+        "<p style='color:#8b949e;font-size:0.85rem;margin-top:0.85rem'>"
+        "Headless corridor: <code>headless_bridge</code> → "
+        "<code>run_meta_broker_isolated</code>. "
+        "Prompts appear once in Session. Click an epic to inspect status / harness."
         "</p>"
     )
 
-    outputs = [chatbot, prompt_box, status_html, tracker_box, telemetry_box]
-    send_btn.click(
-        fn=submit_prompt,
-        inputs=[prompt_box, chatbot],
-        outputs=outputs,
+    stream_outs = [
+        status_html,
+        epic_radio,
+        epic_detail,
+        telemetry_box,
+        workspace_label,
+        workspace_code,
+        manifest_json,
+        approval_md,
+        approve_btn,
+        edit_macro_btn,
+        cancel_spec_btn,
+        prompt_box,
+        chat_hist,
+    ]
+    panel_outs = [
+        status_html,
+        epic_radio,
+        epic_detail,
+        telemetry_box,
+        workspace_label,
+        workspace_code,
+        manifest_json,
+        approval_md,
+        approve_btn,
+        edit_macro_btn,
+        cancel_spec_btn,
+    ]
+    submit_btn.click(
+        fn=submit_command,
+        inputs=[prompt_box, force_local, verbose, chat_hist],
+        outputs=stream_outs,
     )
     prompt_box.submit(
-        fn=submit_prompt,
-        inputs=[prompt_box, chatbot],
-        outputs=outputs,
+        fn=submit_command,
+        inputs=[prompt_box, force_local, verbose, chat_hist],
+        outputs=stream_outs,
     )
-    clear_btn.click(
-        fn=clear_chat,
-        outputs=[chatbot, status_html, tracker_box, telemetry_box],
+    stop_btn.click(
+        fn=stop_execution,
+        inputs=[chat_hist, epic_radio],
+        outputs=panel_outs + [chat_hist],
+    )
+    approve_btn.click(
+        fn=approve_spec_action,
+        inputs=[chat_hist, epic_radio],
+        outputs=panel_outs + [chat_hist],
+    )
+    edit_macro_btn.click(
+        fn=edit_spec_action,
+        inputs=[chat_hist, epic_radio],
+        outputs=panel_outs + [prompt_box, chat_hist],
+    )
+    cancel_spec_btn.click(
+        fn=cancel_spec_action,
+        inputs=[chat_hist, epic_radio],
+        outputs=panel_outs + [chat_hist],
+    )
+    epic_radio.change(
+        fn=on_epic_select,
+        inputs=[epic_radio],
+        outputs=[epic_detail],
     )
 
-    # Background refresh while a job runs (and idle keepalive).
     try:
         timer = gr.Timer(1.0)
         timer.tick(
-            fn=poll_panels,
-            outputs=[status_html, tracker_box, telemetry_box],
+            fn=poll_live,
+            inputs=[epic_radio],
+            outputs=panel_outs,
         )
-    except Exception:  # noqa: BLE001 — older Gradio without Timer
+    except Exception:  # noqa: BLE001
         pass
 
 

@@ -20,11 +20,27 @@ _STATUS_PILLS: dict[str, tuple[str, str]] = {
     TaskStatus.COMPLETED.value: ("COMPLETED", T.EMERALD),
     TaskStatus.FAILED.value: ("FAILED", T.ROSE),
     TaskStatus.DROPPED.value: ("FAILED", T.ROSE),
+    "ABORTED": ("ABORTED", T.ROSE),
 }
 
 
+def _detail_mono_font() -> ctk.CTkFont:
+    """Prefer JetBrains Mono / Fira Code; fall back to Consolas."""
+    for family in ("JetBrains Mono", "Fira Code", "Cascadia Mono", "Consolas"):
+        try:
+            return ctk.CTkFont(family=family, size=11)
+        except Exception:  # noqa: BLE001
+            continue
+    return ctk.CTkFont(size=11)
+
+
+def _pill_width(label: str) -> int:
+    """Enough horizontal room so status text never clips inside the badge."""
+    return max(96, len(label) * 8 + 24)
+
+
 class TaskTrackerView(ctk.CTkFrame):
-    """Scrollable activity timeline backed by an injectable ``TaskTracker``."""
+    """Scrollable activity timeline with a full-width Task Detail panel below."""
 
     def __init__(
         self,
@@ -36,18 +52,22 @@ class TaskTrackerView(ctk.CTkFrame):
         max_rows: int = 48,
         show_header: bool = True,
         status_label: Any | None = None,
+        external_tick: bool = False,
     ) -> None:
         super().__init__(master, fg_color=T.BG, corner_radius=12)
         self._tracker = tracker
         self._tracker_factory = tracker_factory or get_shared_task_tracker
         self._poll_ms = max(100, int(poll_ms))
+        self._external_tick = bool(external_tick)
         self._max_rows = max(8, int(max_rows))
         self._show_header = bool(show_header)
         self._rows: list[ctk.CTkFrame] = []
         self._last_sig = ""
         self._empty_lbl = status_label
+        self._selected_id: str | None = None
         self._build()
-        self.after(self._poll_ms, self._poll)
+        if not self._external_tick:
+            self.after(self._poll_ms, self._poll)
 
     def _resolve_tracker(self) -> TaskTracker:
         if self._tracker is not None:
@@ -81,18 +101,90 @@ class TaskTrackerView(ctk.CTkFrame):
                 )
                 self._empty_lbl.pack(side="right", padx=12, pady=8)
 
+        # Full-width stack: task cards on top, Task Detail below (uses sidebar width).
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=6, pady=(0, 8))
+        try:
+            body.grid_columnconfigure(0, weight=1)
+            body.grid_rowconfigure(0, weight=1)
+            body.grid_rowconfigure(1, weight=1)
+        except Exception:  # noqa: BLE001
+            pass
+
+        left = ctk.CTkFrame(body, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
         self._scroll = ctk.CTkScrollableFrame(
-            self,
+            left,
             fg_color="transparent",
             corner_radius=0,
         )
-        self._scroll.pack(fill="both", expand=True, padx=6, pady=(0, 8))
+        self._scroll.pack(fill="both", expand=True)
+
+        right = ctk.CTkFrame(body, fg_color=T.CARD, corner_radius=8)
+        right.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
+        ctk.CTkLabel(
+            right,
+            text="Task detail",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=T.MUTED,
+            anchor="w",
+        ).pack(fill="x", padx=12, pady=(8, 4))
+        self._detail = ctk.CTkTextbox(
+            right,
+            fg_color=T.BG,
+            text_color=T.TEXT,
+            font=_detail_mono_font(),
+            wrap="word",
+            activate_scrollbars=True,
+        )
+        self._detail.pack(fill="both", expand=True, padx=12, pady=(0, 10))
         try:
-            sb = getattr(self._scroll, "_scrollbar", None)
-            if sb is not None:
-                sb.grid_configure(sticky="nse")
+            self._detail.configure(state="disabled")
         except Exception:  # noqa: BLE001
             pass
+        self._set_detail(
+            "Click a task card to inspect prompt, status, and activity payload."
+        )
+
+    def _set_detail(self, text: str) -> None:
+        try:
+            self._detail.configure(state="normal")
+            self._detail.delete("1.0", "end")
+            self._detail.insert("1.0", text)
+            self._detail.configure(state="disabled")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _select_task(self, rec: Any) -> None:
+        tid = str(getattr(rec, "task_id", "") or "")
+        self._selected_id = tid
+        status_val = getattr(rec.status, "value", str(rec.status))
+        prompt = str(getattr(rec, "prompt", "") or "").strip()
+        # Avoid dumping enormous /broker macros twice in the UI — truncate.
+        if len(prompt) > 600:
+            prompt = prompt[:600] + "\n…[truncated]"
+        activities = list(getattr(rec, "activities", None) or [])
+        lines = [
+            f"task_id: {tid}",
+            f"status:  {status_val}",
+            f"updated: {getattr(rec, 'updated_at', '')}",
+            "",
+            "── prompt ──",
+            prompt or "(none)",
+            "",
+            "── activity ──",
+        ]
+        if not activities:
+            lines.append("(no activity yet)")
+        else:
+            for act in activities[-12:]:
+                msg = str(act.get("message") or "").strip()
+                ts = str(act.get("timestamp") or "").strip()
+                lines.append(f"[{ts}] {msg}" if ts else msg)
+        meta = getattr(rec, "metadata", None) or {}
+        if meta:
+            lines.extend(["", "── metadata ──", str(meta)])
+        self._set_detail("\n".join(lines))
 
     def refresh(self) -> None:
         """Rebuild timeline rows from the current tracker snapshot."""
@@ -130,10 +222,16 @@ class TaskTrackerView(ctk.CTkFrame):
         except Exception:  # noqa: BLE001
             pass
 
-        # Prefer task cards when present; fall back to flat activity log.
         if tasks:
+            selected = None
             for rec in tasks:
                 self._rows.append(self._make_task_row(rec))
+                if self._selected_id and str(rec.task_id) == self._selected_id:
+                    selected = rec
+            if selected is not None:
+                self._select_task(selected)
+            elif tasks and self._selected_id is None:
+                self._select_task(tasks[0])
         else:
             for event in activities:
                 self._rows.append(
@@ -149,78 +247,110 @@ class TaskTrackerView(ctk.CTkFrame):
         key = str(status or "").strip().upper()
         return _STATUS_PILLS.get(key, (key or "UNKNOWN", T.MUTED))
 
+    def _make_status_pill(self, parent: Any, label: str, color: str) -> ctk.CTkLabel:
+        pill = ctk.CTkLabel(
+            parent,
+            text=label,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=T.TEXT_ON_ACCENT,
+            fg_color=color,
+            corner_radius=8,
+            width=_pill_width(label),
+            height=22,
+            anchor="center",
+        )
+        return pill
+
     def _make_task_row(self, rec: Any) -> ctk.CTkFrame:
         status_val = getattr(rec.status, "value", str(rec.status))
         label, color = self._pill_style(status_val)
+        selected = self._selected_id == str(getattr(rec, "task_id", ""))
         card = ctk.CTkFrame(
             self._scroll,
             fg_color=T.CARD,
             corner_radius=10,
-            border_width=1,
-            border_color=T.BORDER,
+            border_width=2 if selected else 1,
+            border_color=T.ACCENT if selected else T.BORDER,
         )
         card.pack(fill="x", padx=4, pady=4)
 
+        def _on_click(_event: Any = None, record: Any = rec) -> None:
+            self._select_task(record)
+            self._last_sig = ""
+            self.refresh()
+
+        # Header row: status badge | title | timestamp (grid so badge never squeezes).
         top = ctk.CTkFrame(card, fg_color="transparent")
         top.pack(fill="x", padx=10, pady=(8, 2))
-        ctk.CTkLabel(
+        try:
+            top.grid_columnconfigure(0, weight=0)
+            top.grid_columnconfigure(1, weight=1)
+            top.grid_columnconfigure(2, weight=0)
+        except Exception:  # noqa: BLE001
+            pass
+
+        pill = self._make_status_pill(top, label, color)
+        pill.grid(row=0, column=0, sticky="w", padx=(0, 8), pady=2)
+
+        tid = str(getattr(rec, "task_id", "") or "task")
+        title_lbl = ctk.CTkLabel(
             top,
-            text=f"  {label}  ",
-            font=ctk.CTkFont(size=10, weight="bold"),
-            text_color=T.TEXT_ON_ACCENT,
-            fg_color=color,
-            corner_radius=999,
-        ).pack(side="left")
-        ctk.CTkLabel(
+            text=tid,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=T.TEXT,
+            anchor="w",
+        )
+        title_lbl.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=2)
+
+        ts_lbl = ctk.CTkLabel(
             top,
             text=str(getattr(rec, "updated_at", "") or ""),
             font=ctk.CTkFont(size=10),
             text_color=T.MUTED,
             anchor="e",
-        ).pack(side="right")
-
-        prompt = str(getattr(rec, "prompt", "") or "").strip()
-        if prompt:
-            short = prompt if len(prompt) <= 96 else prompt[:93] + "..."
-            ctk.CTkLabel(
-                card,
-                text=short,
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color=T.TEXT,
-                anchor="w",
-                wraplength=520,
-                justify="left",
-            ).pack(fill="x", padx=12, pady=(2, 2))
+        )
+        ts_lbl.grid(row=0, column=2, sticky="e", pady=2)
 
         activities = list(getattr(rec, "activities", None) or [])
-        if not activities:
-            msg = "Waiting…"
-            if status_val == TaskStatus.COMPLETED.value:
-                msg = "Completed"
-            elif status_val == TaskStatus.FAILED.value:
-                msg = "Failed"
-            ctk.CTkLabel(
-                card,
-                text=f"• {msg}",
-                font=ctk.CTkFont(size=11),
-                text_color=T.MUTED,
-                anchor="w",
-            ).pack(fill="x", padx=14, pady=(0, 8))
+        preview = ""
+        if activities:
+            preview = str(activities[-1].get("message") or "")[:120]
+        elif status_val == TaskStatus.COMPLETED.value:
+            preview = "Completed"
+        elif status_val == TaskStatus.FAILED.value:
+            preview = "Failed"
         else:
-            for act in activities[-4:]:
-                line = str(act.get("message") or "").strip() or "Activity"
-                ts = str(act.get("timestamp") or "").strip()
-                step = f"• {line}" + (f"  ·  {ts}" if ts else "")
-                ctk.CTkLabel(
-                    card,
-                    text=step,
-                    font=ctk.CTkFont(size=11),
-                    text_color=T.MUTED,
-                    anchor="w",
-                    wraplength=500,
-                    justify="left",
-                ).pack(fill="x", padx=14, pady=0)
-            ctk.CTkFrame(card, fg_color="transparent", height=6).pack()
+            preview = "Waiting… — click for details"
+        preview_lbl = ctk.CTkLabel(
+            card,
+            text=f"• {preview}",
+            font=ctk.CTkFont(size=11),
+            text_color=T.MUTED,
+            anchor="w",
+            wraplength=360,
+            justify="left",
+        )
+        preview_lbl.pack(fill="x", padx=14, pady=(0, 8))
+
+        for widget in (card, top, pill, title_lbl, ts_lbl, preview_lbl):
+            try:
+                widget.bind("<Button-1>", _on_click)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            ctk.CTkButton(
+                card,
+                text="Inspect",
+                width=72,
+                height=24,
+                fg_color="transparent",
+                border_width=1,
+                border_color=T.BORDER,
+                text_color=T.ACCENT,
+                command=_on_click,
+            ).pack(anchor="e", padx=10, pady=(0, 8))
+        except Exception:  # noqa: BLE001
+            pass
         return card
 
     def _make_activity_row(
@@ -240,22 +370,23 @@ class TaskTrackerView(ctk.CTkFrame):
             border_color=T.BORDER,
         )
         row.pack(fill="x", padx=4, pady=3)
-        ctk.CTkLabel(
-            row,
-            text=f"  {label}  ",
-            font=ctk.CTkFont(size=10, weight="bold"),
-            text_color=T.TEXT_ON_ACCENT,
-            fg_color=color,
-            corner_radius=999,
-        ).pack(side="left", padx=(8, 6), pady=8)
+        try:
+            row.grid_columnconfigure(0, weight=0)
+            row.grid_columnconfigure(1, weight=1)
+        except Exception:  # noqa: BLE001
+            pass
+        pill = self._make_status_pill(row, label, color)
+        pill.grid(row=0, column=0, sticky="nw", padx=(8, 8), pady=8)
         body = ctk.CTkFrame(row, fg_color="transparent")
-        body.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=4)
+        body.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=4)
         ctk.CTkLabel(
             body,
             text=message,
             font=ctk.CTkFont(size=12),
             text_color=T.TEXT,
             anchor="w",
+            wraplength=320,
+            justify="left",
         ).pack(fill="x")
         ctk.CTkLabel(
             body,
@@ -266,12 +397,19 @@ class TaskTrackerView(ctk.CTkFrame):
         ).pack(fill="x")
         return row
 
-    def _poll(self) -> None:
-        if not self.winfo_exists():
+    def tick(self) -> None:
+        """One polling step — safe to call from an external scheduler.
+
+        Drains tracker notifications then refreshes rows. Does not
+        reschedule itself; that's the caller's job.
+        """
+        try:
+            if not self.winfo_exists():
+                return
+        except Exception:  # noqa: BLE001
             return
         try:
             tracker = self._resolve_tracker()
-            # Drain background notify queue so Meta-Broker updates wake the UI.
             if hasattr(tracker, "drain_notifications"):
                 notes: list = []
                 for _ in range(4):
@@ -281,15 +419,18 @@ class TaskTrackerView(ctk.CTkFrame):
                     notes.extend(batch)
                 if notes:
                     self._last_sig = ""
-            # Revision bump without a queued notify still forces a redraw.
-            elif hasattr(tracker, "revision"):
-                pass
         except Exception:  # noqa: BLE001
             pass
         try:
             self.refresh()
         except Exception:  # noqa: BLE001
             pass
+
+    def _poll(self) -> None:
+        """Self-scheduling wrapper around ``tick()`` (internal-poll mode only)."""
+        if not self.winfo_exists():
+            return
+        self.tick()
         try:
             self.after(self._poll_ms, self._poll)
         except Exception:  # noqa: BLE001

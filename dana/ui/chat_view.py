@@ -54,6 +54,7 @@ class ChatBubbleView(ctk.CTkFrame):
         super().__init__(master, fg_color=T.BG, corner_radius=12)
         self._wraplength = max(200, int(wraplength))
         self._bubbles: list[ctk.CTkFrame] = []
+        self._body_labels: list[ctk.CTkLabel] = []
 
         self._scroll = ctk.CTkScrollableFrame(
             self,
@@ -95,7 +96,37 @@ class ChatBubbleView(ctk.CTkFrame):
 
     def set_wraplength(self, wraplength: int) -> None:
         """Update bubble text wrap for responsive Conversation width."""
-        self._wraplength = max(200, int(wraplength))
+        new_wrap = max(200, int(wraplength))
+        if abs(new_wrap - self._wraplength) < 8:
+            return
+        self._wraplength = new_wrap
+        self._apply_wraplength()
+
+    def _apply_wraplength(self) -> None:
+        """Reconfigure existing bubble body labels to the current wraplength."""
+        wrap = self._wraplength
+        alive: list[ctk.CTkLabel] = []
+        for lbl in self._body_labels:
+            try:
+                if not lbl.winfo_exists():
+                    continue
+                # System lines get a slightly wider wrap allowance.
+                extra = int(getattr(lbl, "_dana_wrap_extra", 0) or 0)
+                lbl.configure(wraplength=wrap + extra)
+                alive.append(lbl)
+            except Exception:  # noqa: BLE001
+                pass
+        self._body_labels = alive
+
+    def _track_body_label(
+        self, label: ctk.CTkLabel, *, wrap_extra: int = 0
+    ) -> ctk.CTkLabel:
+        try:
+            label._dana_wrap_extra = int(wrap_extra)  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+        self._body_labels.append(label)
+        return label
 
     def _on_resize(self, event: Any) -> None:
         try:
@@ -106,9 +137,10 @@ class ChatBubbleView(ctk.CTkFrame):
             return
         if width < 240:
             return
-        new_wrap = max(200, min(720, width - 48))
-        if abs(new_wrap - self._wraplength) >= 16:
+        new_wrap = max(200, min(560, width - 72))
+        if abs(new_wrap - self._wraplength) >= 12:
             self._wraplength = new_wrap
+            self._apply_wraplength()
 
     def clear_bubbles(self) -> None:
         for row in self._bubbles:
@@ -117,6 +149,7 @@ class ChatBubbleView(ctk.CTkFrame):
             except Exception:  # noqa: BLE001
                 pass
         self._bubbles.clear()
+        self._body_labels.clear()
 
     def append_bubble(
         self,
@@ -182,7 +215,7 @@ class ChatBubbleView(ctk.CTkFrame):
             text_color="#E0F2FE",
             anchor="e",
         ).pack(anchor="e", padx=10, pady=(5, 0))
-        ctk.CTkLabel(
+        body = ctk.CTkLabel(
             bubble,
             text=_strip_simple_markdown(text),
             font=ctk.CTkFont(size=13),
@@ -190,7 +223,9 @@ class ChatBubbleView(ctk.CTkFrame):
             wraplength=self._wraplength,
             justify="left",
             anchor="w",
-        ).pack(anchor="w", padx=10, pady=(1, 6))
+        )
+        body.pack(anchor="w", padx=10, pady=(1, 6))
+        self._track_body_label(body)
 
     def _pack_dana_bubble(
         self, row: ctk.CTkFrame, text: str, *, speaker: str
@@ -211,7 +246,7 @@ class ChatBubbleView(ctk.CTkFrame):
             text_color=T.ACCENT,
             anchor="w",
         ).pack(anchor="w", padx=10, pady=(5, 0))
-        ctk.CTkLabel(
+        body = ctk.CTkLabel(
             bubble,
             text=_strip_simple_markdown(text),
             font=ctk.CTkFont(size=13),
@@ -219,7 +254,9 @@ class ChatBubbleView(ctk.CTkFrame):
             wraplength=self._wraplength,
             justify="left",
             anchor="w",
-        ).pack(anchor="w", padx=10, pady=(1, 6))
+        )
+        body.pack(anchor="w", padx=10, pady=(1, 6))
+        self._track_body_label(body)
         spacer = ctk.CTkFrame(row, fg_color="transparent", width=80, height=1)
         spacer.pack(side="right", fill="x", expand=True)
 
@@ -262,7 +299,7 @@ class ChatBubbleView(ctk.CTkFrame):
             corner_radius=999,
         ).pack(side="left", padx=(0, 8))
         if text:
-            ctk.CTkLabel(
+            body = ctk.CTkLabel(
                 wrap,
                 text=_strip_simple_markdown(text),
                 font=ctk.CTkFont(size=11),
@@ -270,7 +307,9 @@ class ChatBubbleView(ctk.CTkFrame):
                 wraplength=self._wraplength + 40,
                 justify="left",
                 anchor="w",
-            ).pack(side="left", fill="x", expand=True)
+            )
+            body.pack(side="left", fill="x", expand=True)
+            self._track_body_label(body, wrap_extra=40)
 
 
 __all__ = ("ChatBubbleView", "_classify_role", "_strip_simple_markdown")

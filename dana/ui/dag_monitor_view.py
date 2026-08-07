@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from typing import Any, Callable
 
 import customtkinter as ctk
@@ -21,8 +23,61 @@ _STATUS_COLORS: dict[str, str] = {
 }
 
 
+def _pick_workspace_file() -> tuple[str, str]:
+    """Prefer newest scratch artifact, then ``.dana_scratch/manifest.json``."""
+    candidates: list[str] = []
+    try:
+        from dana.web.headless_bridge import load_manifest_dict
+
+        man = load_manifest_dict()
+        for art in man.get("artifacts") or []:
+            if isinstance(art, dict) and art.get("file_path"):
+                candidates.append(str(art["file_path"]))
+    except Exception:  # noqa: BLE001
+        man = None
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for rel in candidates:
+        key = rel.replace("\\", "/").lstrip("./")
+        if not key or key in seen:
+            continue
+        if key.startswith(("dana/", "donna_security/", "website/")):
+            continue
+        seen.add(key)
+        ordered.append(key)
+
+    for rel in reversed(ordered):
+        path = rel
+        if not os.path.isfile(path):
+            alt = os.path.join(".dana_scratch", rel)
+            if os.path.isfile(alt):
+                path = alt
+            else:
+                continue
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        if len(text) > 12000:
+            text = text[:12000] + "\n...[truncated]...\n"
+        return rel, text
+
+    if man is not None:
+        try:
+            body = json.dumps(man, indent=2, ensure_ascii=False)
+            return ".dana_scratch/manifest.json", body
+        except Exception:  # noqa: BLE001
+            pass
+    return (
+        "(waiting for artifacts…)",
+        "# Live workspace will appear here as files are generated.\n",
+    )
+
+
 class DagMonitorView(ctk.CTkFrame):
-    """Tree of active DAG nodes + scrolling micro-log of tool events.
+    """DAG step telemetry + broker log (left) and Live Workspace Viewer (right).
 
     Polls ``dana.graph.monitor_bus`` on the Tk main thread so graph workers
     can publish from background threads without blocking the UI.
@@ -40,11 +95,13 @@ class DagMonitorView(ctk.CTkFrame):
         on_complete: Callable[[str], None] | None = None,
         show_header: bool = True,
         status_label: Any | None = None,
+        external_tick: bool = False,
     ) -> None:
         super().__init__(master, fg_color=T.BG, corner_radius=12)
         self._bus = bus
         self._bus_factory = bus_factory
         self._poll_ms = max(80, int(poll_ms))
+        self._external_tick = bool(external_tick)
         self._max_log_lines = max(20, int(max_log_lines))
         self._on_multistep = on_multistep
         self._on_complete = on_complete
@@ -55,12 +112,14 @@ class DagMonitorView(ctk.CTkFrame):
         self._log_lines: list[tuple[str, str | None]] = []
         self._last_tree_sig = ""
         self._last_log_sig = ""
+        self._last_workspace_sig = ""
         self._completion_announced = False
         self._multistep_announced = False
         self._summary_text = ""
         self._planner_mode = "LOCAL"
         self._build()
-        self.after(self._poll_ms, self._poll)
+        if not self._external_tick:
+            self.after(self._poll_ms, self._poll)
 
     def _resolve_bus(self) -> Any | None:
         if self._bus is not None:
@@ -131,42 +190,82 @@ class DagMonitorView(ctk.CTkFrame):
         except Exception:  # noqa: BLE001
             pass
 
+        # Left: DAG step telemetry + broker / tool micro-log
         left = ctk.CTkFrame(body, fg_color=T.CARD, corner_radius=8)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 3))
+        try:
+            left.grid_rowconfigure(1, weight=1)
+            left.grid_rowconfigure(3, weight=2)
+            left.grid_columnconfigure(0, weight=1)
+        except Exception:  # noqa: BLE001
+            pass
         ctk.CTkLabel(
             left,
-            text="Task nodes",
+            text="DAG steps",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=T.MUTED,
             anchor="w",
-        ).pack(fill="x", padx=8, pady=(6, 2))
+        ).grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 2))
         self._tree_scroll = ctk.CTkScrollableFrame(
-            left, fg_color="transparent", corner_radius=0
+            left, fg_color="transparent", corner_radius=0, height=120
         )
-        self._tree_scroll.pack(fill="both", expand=True, padx=4, pady=(0, 6))
-
-        right = ctk.CTkFrame(body, fg_color=T.CARD, corner_radius=8)
-        right.grid(row=0, column=1, sticky="nsew", padx=(3, 0))
+        self._tree_scroll.grid(row=1, column=0, sticky="nsew", padx=4, pady=(0, 4))
         ctk.CTkLabel(
-            right,
-            text="Tool micro-log",
+            left,
+            text="Broker / tool stream",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=T.MUTED,
             anchor="w",
-        ).pack(fill="x", padx=8, pady=(6, 2))
+        ).grid(row=2, column=0, sticky="ew", padx=8, pady=(4, 2))
         self._log_box = ctk.CTkTextbox(
-            right,
+            left,
             fg_color=T.BG,
             text_color=T.TEXT,
             font=ctk.CTkFont(family="Consolas", size=11),
             wrap="word",
             activate_scrollbars=True,
         )
-        self._log_box.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        self._log_box.grid(row=3, column=0, sticky="nsew", padx=6, pady=(0, 6))
         try:
             self._log_box.configure(state="disabled")
         except Exception:  # noqa: BLE001
             pass
+
+        # Right: Live Workspace Viewer (fills previously empty half)
+        right = ctk.CTkFrame(body, fg_color=T.CARD, corner_radius=8)
+        right.grid(row=0, column=1, sticky="nsew", padx=(3, 0))
+        ctk.CTkLabel(
+            right,
+            text="Live Workspace Viewer",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=T.MUTED,
+            anchor="w",
+        ).pack(fill="x", padx=8, pady=(6, 2))
+        self._workspace_label = ctk.CTkLabel(
+            right,
+            text="(waiting for artifacts…)",
+            font=ctk.CTkFont(size=10),
+            text_color=T.ACCENT,
+            anchor="w",
+        )
+        self._workspace_label.pack(fill="x", padx=10, pady=(0, 2))
+        self._workspace_box = ctk.CTkTextbox(
+            right,
+            fg_color=T.BG,
+            text_color=T.TEXT,
+            font=ctk.CTkFont(family="Consolas", size=11),
+            wrap="none",
+            activate_scrollbars=True,
+        )
+        self._workspace_box.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+        try:
+            self._workspace_box.configure(state="disabled")
+        except Exception:  # noqa: BLE001
+            pass
+        self._set_workspace(
+            "(waiting for artifacts…)",
+            "# Live workspace will appear here as files are generated.\n",
+        )
 
         self._summary_lbl = ctk.CTkLabel(
             self,
@@ -183,6 +282,30 @@ class DagMonitorView(ctk.CTkFrame):
             return
         try:
             lbl.configure(text=text)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _set_workspace(self, label: str, body: str) -> None:
+        sig = f"{label}|{len(body)}|{hash(body)}"
+        if sig == self._last_workspace_sig:
+            return
+        self._last_workspace_sig = sig
+        try:
+            self._workspace_label.configure(text=label)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self._workspace_box.configure(state="normal")
+            self._workspace_box.delete("1.0", "end")
+            self._workspace_box.insert("1.0", body)
+            self._workspace_box.configure(state="disabled")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _refresh_workspace(self) -> None:
+        try:
+            label, body = _pick_workspace_file()
+            self._set_workspace(label, body)
         except Exception:  # noqa: BLE001
             pass
 
@@ -339,6 +462,7 @@ class DagMonitorView(ctk.CTkFrame):
         tasks = list(snap.get("tasks") or [])
         self._render_tree(tasks)
         self._render_log()
+        self._refresh_workspace()
 
         if len(tasks) >= 2 and not self._multistep_announced:
             self._multistep_announced = True
