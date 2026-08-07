@@ -6,23 +6,29 @@ export default {
     extend: {
       colors: {
         ink: {
-          950: "#070b12",
-          900: "#0b1220",
-          800: "#121a2b",
-          700: "#1a2438",
-          600: "#243044",
+          950: "#010409",
+          900: "#0d1117",
+          800: "#161b22",
+          700: "#21262d",
+          600: "#30363d",
         },
         teal: {
-          DEFAULT: "#00ADB5",
-          soft: "#33BDC4",
-          dim: "#007A80",
-          glow: "rgba(0, 173, 181, 0.35)",
+          DEFAULT: "#00f0ff",
+          soft: "#5ce1ff",
+          dim: "#0891b2",
+          glow: "rgba(0, 240, 255, 0.28)",
         },
+        amber: {
+          DEFAULT: "#ffb000",
+          soft: "#ffc94d",
+          dim: "#9a6700",
+        },
+        // Keep violet token aliases mapped to amber so existing classes stay on-brand.
         violet: {
-          DEFAULT: "#7B2CBF",
-          soft: "#9B4DE0",
-          dim: "#3D1560",
-          muted: "#6B5B95",
+          DEFAULT: "#ffb000",
+          soft: "#ffc94d",
+          dim: "#9a6700",
+          muted: "#8b949e",
         },
       },
       fontFamily: {
@@ -34,10 +40,23 @@ export default {
           "Segoe UI",
           "sans-serif",
         ],
+        mono: [
+          "JetBrains Mono",
+          "Fira Code",
+          "ui-monospace",
+          "SFMono-Regular",
+          "Menlo",
+          "Consolas",
+          "monospace",
+        ],
       },
       boxShadow: {
-        "teal-glow": "0 0 0 1px rgba(0, 173, 181, 0.45), 0 0 28px rgba(0, 173, 181, 0.22)",
-        "logo-glow": "0 0 40px rgba(0, 173, 181, 0.28), 0 0 80px rgba(123, 44, 191, 0.12)",
+        "teal-glow": "0 0 0 1px rgba(0, 240, 255, 0.35)",
+        "logo-glow": "0 0 0 1px rgba(0, 240, 255, 0.25)",
+      },
+      borderRadius: {
+        xl: "2px",
+        "2xl": "2px",
       },
       keyframes: {
         floaty: {

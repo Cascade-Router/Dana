@@ -4,9 +4,11 @@
 
 :root {
   color-scheme: dark;
-  --dana-teal: #00adb5;
-  --dana-violet: #7b2cbf;
-  --dana-ink: #070b12;
+  --dana-cyan: #00f0ff;
+  --dana-amber: #ffb000;
+  --dana-ink: #0d1117;
+  --dana-border: #30363d;
+  --dana-panel: #161b22;
 }
 
 html {
@@ -14,11 +16,11 @@ html {
 }
 
 body {
-  @apply bg-ink-950 text-slate-200 antialiased;
+  @apply bg-ink-900 text-slate-200 antialiased;
   background-image:
-    radial-gradient(ellipse 90% 60% at 12% 8%, rgba(0, 173, 181, 0.14), transparent 55%),
-    radial-gradient(ellipse 70% 50% at 88% 0%, rgba(123, 44, 191, 0.12), transparent 50%),
-    linear-gradient(165deg, #070b12 0%, #0b1220 48%, #101827 100%);
+    radial-gradient(ellipse 80% 50% at 10% 0%, rgba(0, 240, 255, 0.07), transparent 55%),
+    radial-gradient(ellipse 60% 40% at 95% 5%, rgba(255, 176, 0, 0.05), transparent 50%),
+    linear-gradient(180deg, #0d1117 0%, #010409 100%);
   background-attachment: fixed;
   min-height: 100%;
   /* Stage 9.1 — clear fixed command bar */
@@ -28,21 +30,19 @@ body {
 /* Trace lattice — decorative, no layout cost */
 .trace-grid {
   background-image:
-    linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+    linear-gradient(rgba(48, 54, 61, 0.55) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(48, 54, 61, 0.55) 1px, transparent 1px);
   background-size: 48px 48px;
   contain: paint;
 }
 
 .bento-card {
-  @apply relative overflow-hidden rounded-2xl border border-slate-700/50 bg-ink-900/70 p-6 transition-[border-color,box-shadow,transform] duration-300 ease-out;
-  will-change: transform;
+  @apply relative overflow-hidden rounded-none border border-ink-600 bg-ink-800/90 p-6 transition-[border-color] duration-200 ease-out;
 }
 
 .bento-card:hover,
 .bento-card:focus-within {
-  @apply border-teal/60 shadow-teal-glow;
-  transform: translateY(-2px);
+  @apply border-teal/70;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -51,10 +51,6 @@ body {
   .animate-fade-up,
   .animate-caret {
     animation: none !important;
-  }
-
-  .bento-card:hover {
-    transform: none;
   }
 }
 
@@ -97,6 +93,8 @@ body {
   margin-bottom: 0.65rem;
   white-space: pre-wrap;
   word-break: break-word;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.85rem;
 }
 
 .dana-chat__speaker {
@@ -104,47 +102,57 @@ body {
 }
 
 .dana-chat__line--user {
-  color: #00adb5;
-  font-style: italic;
+  color: #00f0ff;
 }
 
 .dana-chat__line--dana {
-  color: #e5e7eb;
+  color: #e6edf3;
 }
 
 .dana-chat__line--system {
-  color: #94a3b8;
+  color: #8b949e;
   font-size: 0.9em;
 }
 
 .dana-chat.is-loading .dana-chat__bar {
-  border-color: rgba(0, 173, 181, 0.75);
-  box-shadow:
-    0 0 0 1px rgba(0, 173, 181, 0.35),
-    0 0 22px rgba(0, 173, 181, 0.28);
-  animation: dana-pulse-border 1.4s ease-in-out infinite;
+  border-color: rgba(0, 240, 255, 0.65);
 }
 
 .dana-chat.is-loading .dana-chat__input {
-  border-color: rgba(0, 173, 181, 0.55);
+  border-color: rgba(0, 240, 255, 0.45);
 }
 
-@keyframes dana-pulse-border {
-  0%,
-  100% {
-    box-shadow:
-      0 0 0 1px rgba(0, 173, 181, 0.3),
-      0 0 14px rgba(0, 173, 181, 0.18);
-  }
-  50% {
-    box-shadow:
-      0 0 0 1px rgba(0, 173, 181, 0.7),
-      0 0 28px rgba(0, 173, 181, 0.4);
-  }
+/* One Dark / high-contrast code surfaces */
+.dana-code,
+pre.dana-code,
+.dana-terminal-surface {
+  background: #282c34;
+  color: #abb2bf;
+  border: 1px solid #30363d;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .dana-chat.is-loading .dana-chat__bar {
-    animation: none;
-  }
+.dana-code .tok-comment,
+.dana-terminal-surface .tok-comment {
+  color: #5c6370;
+}
+.dana-code .tok-keyword,
+.dana-terminal-surface .tok-keyword {
+  color: #c678dd;
+}
+.dana-code .tok-string,
+.dana-terminal-surface .tok-string {
+  color: #98c379;
+}
+.dana-code .tok-fn,
+.dana-terminal-surface .tok-fn {
+  color: #61afef;
+}
+.dana-code .tok-accent,
+.dana-terminal-surface .tok-accent {
+  color: #00f0ff;
+}
+.dana-code .tok-warn,
+.dana-terminal-surface .tok-warn {
+  color: #ffb000;
 }

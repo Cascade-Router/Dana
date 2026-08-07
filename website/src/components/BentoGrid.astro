@@ -1,33 +1,33 @@
 ---
 const features = [
   {
-    title: "Zero-cloud cognition",
-    body: "MoA routing, Distil-Whisper STT, and Florence-2 OCR stay on your RTX — no API keys, no egress.",
+    title: "Meta-Broker corridor",
+    body: "Isolated multi-epic orchestration with live task tracking — submit /broker goals and stream telemetry.",
     span: "md:col-span-2",
     accent: "teal",
   },
   {
-    title: "HITL ticket gate",
-    body: "Jason review + Approve/Deny before patch_ledger writes. Fail closed, never silent.",
+    title: "Offline-first routing",
+    body: "Local Ollama hops by default. Fail closed, audit every stage, keep the control plane on your machine.",
     span: "",
-    accent: "violet",
+    accent: "amber",
   },
   {
-    title: "Silent text lane",
-    body: "Dashboard chat injects into LangGraph without waking Whisper — Engage-gated standby.",
+    title: "Artifact manifest",
+    body: "Exports land in .dana_scratch with structured manifests — terminal-readable, not form chrome.",
     span: "",
     accent: "teal",
   },
   {
     title: "Hardware control plane",
-    body: "Win32 ROI overlays, half-duplex audio, kill switch, and actuator jail for heavy tools.",
+    body: "Windows-native stack with CUDA acceleration paths, kill switch, and actuator jail for heavy tools.",
     span: "md:col-span-2",
-    accent: "violet",
+    accent: "amber",
   },
 ];
 ---
 
-<section id="features" class="border-t border-slate-800/80 bg-ink-900/40">
+<section id="features" class="border-t border-ink-600 bg-ink-800/40">
   <div class="mx-auto max-w-6xl px-6 py-20">
     <div data-reveal class="max-w-2xl">
       <h2 class="text-2xl font-semibold text-white sm:text-3xl">
@@ -45,8 +45,8 @@ const features = [
           <article data-reveal class:list={["bento-card", f.span]}>
             <div
               class:list={[
-                "mb-4 h-1 w-12 rounded-full",
-                f.accent === "teal" ? "bg-teal" : "bg-violet",
+                "mb-4 h-1 w-12",
+                f.accent === "teal" ? "bg-teal" : "bg-amber",
               ]}
             />
             <h3 class="text-lg font-semibold text-white">{f.title}</h3>

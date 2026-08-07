@@ -3,9 +3,9 @@ import FloatingLogo from "./FloatingLogo.astro";
 import { withBase } from "../utils/withBase";
 
 const downloadHref =
-  "https://github.com/Cascade-Router/Donna/releases/latest/download/Donna-windows-x64.zip";
+  "https://github.com/Cascade-Router/Dana/releases";
+const hfSpaceHref = "https://huggingface.co/spaces/AMIXXM/Donna";
 ---
-
 
 <section class="relative overflow-hidden">
   <div class="trace-grid absolute inset-0 opacity-40" aria-hidden="true"></div>
@@ -19,32 +19,40 @@ const downloadHref =
         Dānā
       </p>
       <h1
-        class="mt-5 max-w-xl text-xl font-medium leading-snug text-slate-100 sm:text-2xl"
-        style="animation-delay: 80ms"
+        class="mt-4 max-w-xl font-mono text-sm font-medium uppercase tracking-[0.14em] text-teal sm:text-base"
+        style="animation-delay: 60ms"
       >
-        Cybernetic copilot. Local by design.
+        Cybernetic Control-Plane Simulator
       </h1>
       <p class="mt-4 max-w-lg text-base leading-relaxed text-slate-300 sm:text-lg">
-        Windows-native LangGraph agent with Distil-Whisper, Florence-2, and CUDA
-        float16 — zero cloud round-trips, half-duplex voice, HITL-safe tickets.
+        Multi-agent orchestration for autonomous engineering — Meta-Broker corridor,
+        epic task tracking, and offline-first routing on your machine.
       </p>
-      <div class="mt-8 flex flex-wrap items-center gap-4">
+      <div class="mt-8 flex flex-wrap items-center gap-3">
         <a
           id="download-btn"
           href={downloadHref}
-          class="inline-flex min-h-[3.25rem] items-center justify-center rounded-xl bg-teal px-8 text-base font-semibold text-ink-950 transition hover:bg-teal-soft focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-soft focus-visible:ring-offset-2 focus-visible:ring-offset-ink-900"
+          class="inline-flex min-h-[3rem] items-center justify-center rounded-none border border-amber bg-transparent px-7 text-sm font-semibold text-amber transition hover:bg-amber/10 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber"
         >
           Download for Windows
         </a>
         <a
-          href={withBase("#demo")}
-          class="text-sm font-medium text-slate-400 underline-offset-4 transition hover:text-violet-soft hover:underline"
+          href={hfSpaceHref}
+          class="inline-flex min-h-[3rem] items-center justify-center rounded-none border border-teal bg-transparent px-7 text-sm font-semibold text-teal transition hover:bg-teal/10 focus:outline-none focus-visible:ring-1 focus-visible:ring-teal"
+          rel="noopener noreferrer"
+          target="_blank"
         >
-          Open live demo
+          Open Hugging Face Space
+        </a>
+        <a
+          href={withBase("#demo")}
+          class="text-sm font-medium text-slate-400 underline-offset-4 transition hover:text-teal hover:underline"
+        >
+          Embed below
         </a>
       </div>
-      <p id="os-hint" class="mt-3 text-xs text-slate-500" aria-live="polite">
-        Windows 10/11 · NVIDIA RTX recommended (8GB+ VRAM) · local · offline-first
+      <p id="os-hint" class="mt-3 font-mono text-xs text-slate-500" aria-live="polite">
+        Windows 10/11 · local Meta-Broker · headless control plane
       </p>
     </div>
 
