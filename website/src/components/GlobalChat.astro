@@ -15,18 +15,18 @@
     <div
       data-chat-panel
       id="dana-chat-panel"
-      class="dana-chat__panel overflow-hidden rounded-2xl border border-slate-700/70 bg-ink-950/95 shadow-teal-glow backdrop-blur-md"
+      class="dana-chat__panel overflow-hidden rounded-none border border-ink-600 bg-ink-900/95 backdrop-blur-md"
       hidden
     >
       <div
-        class="flex items-center justify-between border-b border-slate-800 px-4 py-2.5"
+        class="flex items-center justify-between border-b border-ink-600 px-4 py-2.5"
       >
-        <p class="text-xs font-semibold uppercase tracking-[0.18em] text-teal-soft">
+        <p class="font-mono text-xs font-semibold uppercase tracking-[0.18em] text-teal">
           Dānā · live REST
         </p>
         <p
           data-chat-status
-          class="min-h-[1rem] text-xs text-slate-500"
+          class="min-h-[1rem] font-mono text-xs text-slate-500"
           aria-live="polite"
         >
         </p>
@@ -41,12 +41,12 @@
 
     <form
       data-chat-form
-      class="dana-chat__bar flex items-center gap-2 rounded-2xl border border-slate-700/80 bg-ink-900/95 p-2 shadow-lg backdrop-blur-md"
+      class="dana-chat__bar flex items-center gap-2 rounded-none border border-ink-600 bg-ink-800/95 p-2 backdrop-blur-md"
     >
       <button
         type="button"
         data-chat-toggle
-        class="hidden shrink-0 rounded-xl px-2.5 py-2 text-xs font-medium text-slate-400 transition hover:text-teal-soft sm:inline-flex"
+        class="hidden shrink-0 rounded-none px-2.5 py-2 font-mono text-xs font-medium text-slate-400 transition hover:text-teal sm:inline-flex"
         aria-expanded="false"
         aria-controls="dana-chat-panel"
         title="Toggle history (Esc)"
@@ -61,12 +61,12 @@
         autocomplete="off"
         maxlength="4000"
         placeholder="Type a command to Dānā…"
-        class="dana-chat__input min-w-0 flex-1 rounded-xl border border-transparent bg-ink-950/60 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-teal/50 focus:outline-none focus:ring-0"
+        class="dana-chat__input min-w-0 flex-1 rounded-none border border-transparent bg-ink-900/60 px-3 py-2.5 font-mono text-sm text-slate-100 placeholder:text-slate-500 focus:border-teal/50 focus:outline-none focus:ring-0"
       />
       <button
         type="submit"
         data-chat-send
-        class="shrink-0 rounded-xl bg-teal px-4 py-2.5 text-sm font-semibold text-ink-950 transition hover:bg-teal-soft disabled:cursor-wait disabled:opacity-70"
+        class="shrink-0 rounded-none border border-teal bg-transparent px-4 py-2.5 text-sm font-semibold text-teal transition hover:bg-teal/10 disabled:cursor-wait disabled:opacity-70"
       >
         Send
       </button>

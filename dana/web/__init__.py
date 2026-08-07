@@ -4,6 +4,7 @@ from dana.web.headless_bridge import (
     HeadlessBrokerBridge,
     assert_no_tkinter_loaded,
     get_bridge,
+    load_manifest_dict,
     status_label,
 )
 
@@ -11,5 +12,6 @@ __all__ = (
     "HeadlessBrokerBridge",
     "assert_no_tkinter_loaded",
     "get_bridge",
+    "load_manifest_dict",
     "status_label",
 )

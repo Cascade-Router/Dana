@@ -30,25 +30,25 @@ const lines = [
 
     <div
       data-reveal
-      class="mt-10 overflow-hidden rounded-2xl border border-slate-700/60 bg-ink-950 shadow-teal-glow"
+      class="dana-terminal-surface mt-10 overflow-hidden rounded-none"
       style="min-height: 22rem"
     >
       <div
-        class="flex items-center gap-2 border-b border-slate-800 bg-ink-900/90 px-4 py-3"
+        class="flex items-center gap-2 border-b border-ink-600 bg-ink-800 px-4 py-3"
       >
-        <span class="h-2.5 w-2.5 rounded-full bg-rose-500/80"></span>
-        <span class="h-2.5 w-2.5 rounded-full bg-amber-400/80"></span>
-        <span class="h-2.5 w-2.5 rounded-full bg-teal/80"></span>
-        <span class="ms-3 text-xs font-medium uppercase tracking-[0.18em] text-slate-500"
+        <span class="h-2 w-2 bg-rose-500/80"></span>
+        <span class="h-2 w-2 bg-amber"></span>
+        <span class="h-2 w-2 bg-teal"></span>
+        <span class="ms-3 font-mono text-xs font-medium uppercase tracking-[0.18em] text-slate-500"
           >dana · offline router</span
         >
       </div>
       <pre
         id="dana-terminal"
-        class="h-[18rem] overflow-hidden p-5 font-mono text-[13px] leading-relaxed text-slate-300 sm:text-sm"
+        class="h-[18rem] overflow-hidden p-5 font-mono text-[13px] leading-relaxed text-[#abb2bf] sm:text-sm"
         data-lines={JSON.stringify(lines)}
         aria-live="polite"
-      ><span class="text-slate-600">// scroll into view to replay</span></pre>
+      ><span class="tok-comment">// scroll into view to replay</span></pre>
     </div>
   </div>
 </section>
@@ -69,18 +69,48 @@ const lines = [
       window.matchMedia &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+    const colorize = (line) => {
+      const esc = line
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      if (esc.startsWith("$")) {
+        return `<span class="tok-accent">${esc}</span>`;
+      }
+      if (esc.startsWith("→")) {
+        return `<span class="tok-fn">${esc}</span>`;
+      }
+      if (esc.startsWith("OK:") || esc.includes("OK")) {
+        return `<span class="tok-string">${esc}</span>`;
+      }
+      if (esc.includes("HITL") || esc.includes("interrupt")) {
+        return `<span class="tok-warn">${esc}</span>`;
+      }
+      if (esc.startsWith("Status:")) {
+        return `<span class="tok-keyword">${esc}</span>`;
+      }
+      return esc;
+    };
+
     const renderAll = () => {
-      el.textContent = lines.join("\n");
+      el.innerHTML = lines.map(colorize).join("\n");
     };
 
     const typeLines = async () => {
-      el.textContent = "";
+      /** @type {string[]} */
+      const done = [];
       for (const line of lines) {
+        let partial = "";
         for (let i = 0; i < line.length; i += 1) {
-          el.textContent += line[i];
+          partial += line[i];
+          el.innerHTML =
+            done.map(colorize).join("\n") +
+            (done.length ? "\n" : "") +
+            colorize(partial);
           await new Promise((r) => setTimeout(r, 12 + (i % 3)));
         }
-        el.textContent += "\n";
+        done.push(line);
+        el.innerHTML = done.map(colorize).join("\n") + "\n";
         await new Promise((r) => setTimeout(r, 180));
       }
     };
