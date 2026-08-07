@@ -25,7 +25,10 @@ def test_analyze_visual_context_returns_screen_text() -> None:
     ):
         out = analyze_visual_context()
 
-    assert out == "<screen_text>Hello Screen</screen_text>"
+    # Current contract is a natural-language wrapper (not the old <screen_text>
+    # XML tag); anchor on the deterministic prefix since a "Recent visual
+    # history: ..." trailer may follow depending on episodic-store state.
+    assert out.startswith("Current screen: On-screen text/HUD: Hello Screen.")
     emit.assert_called_with("executing", tool="analyze_visual_context")
 
 
