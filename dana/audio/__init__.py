@@ -21,9 +21,12 @@ from dana.audio.vad_consumer import (
     is_speech_frame,
     trigger_tts_barge_in,
 )
+from dana.audio.audio_pipeline import AudioRouter
+from dana.audio.wake_poller import WakePoller
 
 __all__ = [
     "ABSOLUTE_MIN_SPEECH_FLOOR",
+    "AudioRouter",
     "NOISE_FLOOR_MULTIPLIER",
     "SILERO_SPEECH_THRESHOLD",
     "SILERO_WINDOW_SAMPLES",
@@ -41,4 +44,5 @@ __all__ = [
     "resolve_live_input_device",
     "stream_device_kwargs",
     "trigger_tts_barge_in",
+    "WakePoller",
 ]
