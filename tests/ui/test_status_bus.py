@@ -46,14 +46,14 @@ def test_emit_drain_and_format_labels() -> None:
     assert drain_state_changes()[-1]["status"] == "idle"
 
 
-def test_donna_gui_has_status_indicators() -> None:
+def test_dana_gui_has_status_indicators() -> None:
     try:
-        from dana.core_agent import DonnaGUI
+        from dana.core_agent import DanaGUI
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"DonnaGUI unavailable: {exc}")
+        pytest.skip(f"DanaGUI unavailable: {exc}")
 
     try:
-        app = DonnaGUI()
+        app = DanaGUI()
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"Tk unavailable: {exc}")
     try:

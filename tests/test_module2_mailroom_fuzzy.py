@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from dana.agentic import parse_mode_switch, set_donna_mode
+from dana.agentic import parse_mode_switch, set_dana_mode
 from dana.cascade_router import (
     COMMAND_DICTIONARY,
     FUZZY_MATCH_THRESHOLD,
@@ -35,7 +35,7 @@ def test_asr_garble_vision_mounts_routes_to_vision() -> None:
 
 
 def test_decide_route_short_circuits_vision_garble() -> None:
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     d = decide_route("vision mounts")
     assert "mailroom" in (d.reason or "").lower()
     assert d.backend == "moa"
@@ -58,9 +58,9 @@ def test_status_check_and_mute_commands() -> None:
 def test_fallthrough_below_threshold_emits_voice_asr(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
-    out = tmp_path / "donna_telemetry.jsonl"
+    out = tmp_path / "dana_telemetry.jsonl"
     monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     # Clearly not a command — must fall through mailroom.
     d = decide_route("what is the weather in seattle today")
     assert "mailroom" not in (d.reason or "").lower() or "fall" in (d.reason or "").lower()
@@ -75,7 +75,7 @@ def test_fallthrough_below_threshold_emits_voice_asr(
 def test_mailroom_hit_emits_router_telemetry(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
-    out = tmp_path / "donna_telemetry.jsonl"
+    out = tmp_path / "dana_telemetry.jsonl"
     monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
     decide_route("switch to vision")
     lines = [json.loads(x) for x in out.read_text(encoding="utf-8").strip().splitlines()]
@@ -92,13 +92,13 @@ def test_length_guard_skips_fuzzy_on_long_utterances() -> None:
     from dana.cascade_router import MAILROOM_MAX_WORDS
 
     long_prompt = (
-        "Donna, use the draft_cursor_prompt tool to log a self-improvement ticket "
+        "Dana, use the draft_cursor_prompt tool to log a self-improvement ticket "
         "to implement a sliding-window garbage collector for our SQLite blackboard "
         "so it doesn't grow infinitely."
     )
     assert len(long_prompt.split()) > MAILROOM_MAX_WORDS
     assert fuzzy_match_command(long_prompt) is None
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     d = decide_route(long_prompt)
     assert "mailroom" not in (d.reason or "").lower()
 
@@ -122,7 +122,7 @@ def test_residual_after_compound_mode_switch() -> None:
 
 def test_long_prompt_does_not_false_positive_vision() -> None:
     long = (
-        "Donna, use the draft_cursor_prompt tool to log a self-improvement ticket "
+        "Dana, use the draft_cursor_prompt tool to log a self-improvement ticket "
         "to improve cursor rendering performance for deepseek applications."
     )
     hit = fuzzy_match_command(long)

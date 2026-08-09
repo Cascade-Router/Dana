@@ -120,9 +120,9 @@ def test_apply_update_pip_failure_does_not_restart(tmp_path: Path) -> None:
 
 
 def test_settings_tab_has_update_widgets() -> None:
-    from dana.core_agent import DonnaGUI
+    from dana.core_agent import DanaGUI
 
-    app = DonnaGUI()
+    app = DanaGUI()
     try:
         assert app._update_check_btn is not None
         assert "Check for Updates" in str(app._update_check_btn.cget("text"))
@@ -136,7 +136,7 @@ def test_settings_tab_has_update_widgets() -> None:
         app._set_update_available(True)
         app.update_idletasks()
         info = app._update_apply_btn.pack_info()
-        assert info.get("side") == "left"
+        assert info.get("side") == "right"
     finally:
         try:
             app.destroy()

@@ -11,10 +11,6 @@ import threading
 from typing import Any
 
 from dana.schema import (
-    NodeEnterEvent,
-    NodeExitEvent,
-    StateUpdateEvent,
-    ToolExecutionEvent,
     TraceEvent,
     TraceEventType,
 )

@@ -1,4 +1,4 @@
-"""Root entry point for Donna.
+"""Root entry point for Dana.
 
 Always resolves the repo root onto ``sys.path`` and as the process cwd so
 ``python run.py`` works from any working directory.
@@ -58,17 +58,17 @@ except Exception as _fatal_hook_exc:  # noqa: BLE001
 
 # Ensure workspace dirs exist + migrate legacy artifacts before agent boot.
 try:
-    from dana.workspace import ensure_donna_workspace
+    from dana.workspace import ensure_dana_workspace
 
-    ensure_donna_workspace(migrate=True)
+    ensure_dana_workspace(migrate=True)
 except Exception as exc:  # noqa: BLE001
-    print(f"[Workspace] WARNING: ensure_donna_workspace failed: {exc}", file=sys.stderr)
+    print(f"[Workspace] WARNING: ensure_dana_workspace failed: {exc}", file=sys.stderr)
 
 # Held for process lifetime so the OS releases the bind only on exit.
-_DONNA_INSTANCE_LOCK_SOCK = None
+_DANA_INSTANCE_LOCK_SOCK = None
 # Dedicated loopback port — not the telemetry dashboard (47474).
-_DONNA_INSTANCE_LOCK_PORT = 47473
-_HEADLESS_LOG_NAME = "donna_headless.log"
+_DANA_INSTANCE_LOCK_PORT = 47473
+_HEADLESS_LOG_NAME = "dana_headless.log"
 
 
 def _wants_no_gui(argv: list[str] | None = None) -> bool:
@@ -79,19 +79,19 @@ def _wants_no_gui(argv: list[str] | None = None) -> bool:
 def _configure_headless_logging() -> str | None:
     """File logging fallback when OS-level stdout redirect is missing/broken."""
     # Mark headless early so Meta-Broker IPC starts its queue drainer.
-    os.environ.setdefault("DONNA_NO_GUI", "1")
-    os.environ.setdefault("DONNA_HEADLESS", "1")
-    if not (os.environ.get("DONNA_META_BROKER_LOG") or "").strip():
+    os.environ.setdefault("DANA_NO_GUI", "1")
+    os.environ.setdefault("DANA_HEADLESS", "1")
+    if not (os.environ.get("DANA_META_BROKER_LOG") or "").strip():
         suite = os.path.join(_ROOT, "logs", "lru_cache_suite.log")
         default = os.path.join(_ROOT, "logs", "meta_broker_headless.log")
-        os.environ["DONNA_META_BROKER_LOG"] = (
+        os.environ["DANA_META_BROKER_LOG"] = (
             suite if os.path.isfile(suite) else default
         )
     try:
         from dana.graph.meta_broker_process import start_headless_telemetry_drainer
 
         start_headless_telemetry_drainer(
-            log_path=os.environ.get("DONNA_META_BROKER_LOG")
+            log_path=os.environ.get("DANA_META_BROKER_LOG")
         )
     except Exception as exc:  # noqa: BLE001
         print(
@@ -104,7 +104,7 @@ def _configure_headless_logging() -> str | None:
         root = logging.getLogger()
         # Avoid duplicate handlers on reload.
         for h in list(root.handlers):
-            if getattr(h, "_donna_headless", False):
+            if getattr(h, "_dana_headless", False):
                 return log_path
         handler = logging.FileHandler(log_path, encoding="utf-8")
         handler.setLevel(logging.DEBUG)
@@ -114,7 +114,7 @@ def _configure_headless_logging() -> str | None:
                 datefmt="%Y-%m-%d %H:%M:%S",
             )
         )
-        handler._donna_headless = True  # type: ignore[attr-defined]
+        handler._dana_headless = True  # type: ignore[attr-defined]
         root.addHandler(handler)
         root.setLevel(logging.DEBUG)
         logging.captureWarnings(True)
@@ -130,14 +130,14 @@ def _configure_headless_logging() -> str | None:
 
 
 def _acquire_single_instance_lock() -> bool:
-    """Bind a loopback TCP socket; False if another Donna already holds it."""
-    global _DONNA_INSTANCE_LOCK_SOCK
+    """Bind a loopback TCP socket; False if another Dana already holds it."""
+    global _DANA_INSTANCE_LOCK_SOCK
     import socket
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         # Exclusive bind (no SO_REUSEADDR) — second instance must fail.
-        sock.bind(("127.0.0.1", _DONNA_INSTANCE_LOCK_PORT))
+        sock.bind(("127.0.0.1", _DANA_INSTANCE_LOCK_PORT))
         sock.listen(1)
     except OSError:
         try:
@@ -145,7 +145,7 @@ def _acquire_single_instance_lock() -> bool:
         except OSError:
             pass
         return False
-    _DONNA_INSTANCE_LOCK_SOCK = sock
+    _DANA_INSTANCE_LOCK_SOCK = sock
     return True
 
 
@@ -265,7 +265,7 @@ def _run_desktop_main() -> int:
 
     if not _acquire_single_instance_lock():
         msg = (
-            "[Main] ERROR: Another instance of Donna is already running. "
+            "[Main] ERROR: Another instance of Dana is already running. "
             "Aborting to protect execution jail."
         )
         print(msg, flush=True)

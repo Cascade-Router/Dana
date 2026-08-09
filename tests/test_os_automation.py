@@ -1,4 +1,4 @@
-"""Tests for Donna OS automation: run_terminal_command success / error / timeout."""
+"""Tests for Dana OS automation: run_terminal_command success / error / timeout."""
 
 from __future__ import annotations
 

@@ -22,9 +22,9 @@ is backend-dependent:
       # or: --model-draft <path_to_draft_model>
 
 Env knobs:
-  DONNA_SPECULATIVE_DECODING  — ``1``/``true`` enables draft_num_predict injection
-  DONNA_DRAFT_MODEL           — draft tag/path (default ``llama3.2:1b``)
-  DONNA_DRAFT_NUM_PREDICT     — draft tokens per step (default ``4``; ``0`` disables)
+  DANA_SPECULATIVE_DECODING  — ``1``/``true`` enables draft_num_predict injection
+  DANA_DRAFT_MODEL           — draft tag/path (default ``llama3.2:1b``)
+  DANA_DRAFT_NUM_PREDICT     — draft tokens per step (default ``4``; ``0`` disables)
 """
 
 from __future__ import annotations
@@ -38,13 +38,13 @@ T = TypeVar("T", bound=BaseModel)
 
 
 def speculative_decoding_enabled() -> bool:
-    raw = (os.environ.get("DONNA_SPECULATIVE_DECODING") or "").strip().lower()
+    raw = (os.environ.get("DANA_SPECULATIVE_DECODING") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
 def draft_model_name() -> str:
     return (
-        (os.environ.get("DONNA_DRAFT_MODEL") or "").strip()
+        (os.environ.get("DANA_DRAFT_MODEL") or "").strip()
         or "llama3.2:1b"
     )
 
@@ -52,12 +52,12 @@ def draft_model_name() -> str:
 def draft_num_predict() -> int | None:
     """Return draft depth when speculative decoding is on; else None.
 
-    ``DONNA_DRAFT_NUM_PREDICT=0`` explicitly disables drafting even when the
+    ``DANA_DRAFT_NUM_PREDICT=0`` explicitly disables drafting even when the
     feature flag is set (useful for A/B TPS benchmarks).
     """
     if not speculative_decoding_enabled():
         return None
-    raw = (os.environ.get("DONNA_DRAFT_NUM_PREDICT") or "4").strip()
+    raw = (os.environ.get("DANA_DRAFT_NUM_PREDICT") or "4").strip()
     try:
         n = int(raw)
     except ValueError:
@@ -105,6 +105,66 @@ def merge_ollama_options(base: dict[str, Any] | None = None) -> dict[str, Any]:
     return out
 
 
+class _SpeculativeChatOllama:
+    """Composition wrapper that merges ``draft_num_predict`` into Ollama options.
+
+    Wraps rather than subclasses ``ChatOllama``: tests monkeypatch
+    ``langchain_ollama.ChatOllama`` to a plain factory function (see
+    ``tests/test_support_react.py::patch_scripted_llm``), and ``class Foo(ChatOllama):``
+    raises ``TypeError`` when ``ChatOllama`` is a function rather than a class.
+    Composition works regardless of whether ``inner`` is a real ``ChatOllama``
+    instance or a test double.
+
+    The draft-token option can't be injected via delegated ``invoke``/``stream``
+    calls alone: ``bind_tools()`` returns a LangChain ``Runnable`` bound directly
+    to ``inner``, bypassing this wrapper entirely on the eventual generate call.
+    So the option merge is patched onto ``inner._chat_params`` itself (the hook
+    every ChatOllama generate/stream path already calls through) — that patch
+    stays live no matter which object callers end up invoking.
+    """
+
+    def __init__(self, inner: Any, draft_n: int) -> None:
+        self._inner = inner
+        self._draft_n = draft_n
+        original_chat_params = getattr(inner, "_chat_params", None)
+        if callable(original_chat_params):
+
+            def _chat_params_with_draft(
+                messages: Any, stop: list[str] | None = None, **kw: Any
+            ) -> dict[str, Any]:
+                params = original_chat_params(messages, stop=stop, **kw)
+                opts = dict(params.get("options") or {})
+                opts["draft_num_predict"] = draft_n
+                params["options"] = opts
+                return params
+
+            inner._chat_params = _chat_params_with_draft
+
+    def invoke(self, *args: Any, **kwargs: Any) -> Any:
+        return self._inner.invoke(*args, **kwargs)
+
+    async def ainvoke(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._inner.ainvoke(*args, **kwargs)
+
+    def stream(self, *args: Any, **kwargs: Any) -> Any:
+        return self._inner.stream(*args, **kwargs)
+
+    async def astream(self, *args: Any, **kwargs: Any) -> Any:
+        async for chunk in self._inner.astream(*args, **kwargs):
+            yield chunk
+
+    def bind_tools(self, *args: Any, **kwargs: Any) -> Any:
+        return self._inner.bind_tools(*args, **kwargs)
+
+    def with_structured_output(self, *args: Any, **kwargs: Any) -> Any:
+        return self._inner.with_structured_output(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        # Full Runnable/BaseChatModel duck-typing fallback (batch, abatch,
+        # with_config, ...) for anything not explicitly delegated above.
+        return getattr(self._inner, name)
+
+
 def build_chat_ollama(
     *,
     model: str,
@@ -118,29 +178,12 @@ def build_chat_ollama(
 
     LangChain's ``ChatOllama`` has no first-class ``draft_model`` field; the
     draft pairing is done via Modelfile ``DRAFT`` / llama.cpp ``-md``. When
-    ``DONNA_SPECULATIVE_DECODING=1``, we inject ``draft_num_predict`` into
+    ``DANA_SPECULATIVE_DECODING=1``, we inject ``draft_num_predict`` into
     request options on every chat call.
     """
     from langchain_ollama import ChatOllama
 
     draft_n = draft_num_predict()
-
-    class _SpeculativeChatOllama(ChatOllama):
-        """ChatOllama that merges ``draft_num_predict`` into Ollama options."""
-
-        def _chat_params(  # type: ignore[override]
-            self,
-            messages: Any,
-            stop: list[str] | None = None,
-            **kw: Any,
-        ) -> dict[str, Any]:
-            params = super()._chat_params(messages, stop=stop, **kw)
-            if draft_n is None:
-                return params
-            opts = dict(params.get("options") or {})
-            opts["draft_num_predict"] = draft_n
-            params["options"] = opts
-            return params
 
     init: dict[str, Any] = {
         "model": model,
@@ -156,7 +199,11 @@ def build_chat_ollama(
     else:
         # Zero-latency default — unload after each ChatOllama call.
         init["keep_alive"] = 0
-    return _SpeculativeChatOllama(**init)
+
+    inner = ChatOllama(**init)
+    if draft_n is None:
+        return inner
+    return _SpeculativeChatOllama(inner, draft_n)
 
 
 def ollama_format_for_model(model: type[BaseModel] | dict[str, Any] | str) -> Any:
@@ -221,7 +268,7 @@ def ask_planner_structured(
 
     Workers must continue calling ``ask_ollama_structured`` / local tools only.
     """
-    force_local = (os.environ.get("DONNA_FORCE_LOCAL") or "").strip().lower() in {
+    force_local = (os.environ.get("DANA_FORCE_LOCAL") or "").strip().lower() in {
         "1",
         "true",
         "yes",

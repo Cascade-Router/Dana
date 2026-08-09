@@ -1,9 +1,9 @@
 """
-CAMGRASPER - Offline Voice-to-Voice Donna assistant.
+CAMGRASPER - Offline Voice-to-Voice Dana assistant.
 
 Pipeline (4 threads + agent keep-alive loop + GUI main thread):
   1. Tracker   - YOLOv8n rolling buffer (~2s) from active_vision_tool + live ROI overlay
-  2. WakeWord  - OpenWakeWord custom "donna.onnx" on mic @ 16 kHz
+  2. WakeWord  - OpenWakeWord custom "dana.onnx" on mic @ 16 kHz
   3. Conversation - VAD -> Whisper STT -> tool_router -> YOLO + Ollama LLM -> TTS
   4. Audio     - offline TTS via piper-tts (en_US-hfc_female-medium)
 
@@ -16,10 +16,10 @@ Dual-engine cascade:
   - Brain: local Ollama chat API (qwen2.5-coder:7b)
 
 Audio devices are configured via settings.json (interactive first-run setup or GUI).
-Long-term user profile is stored in an AES-256 encrypted vault (donna_memory.enc).
+Long-term user profile is stored in an AES-256 encrypted vault (dana_memory.enc).
 
 Triggers:
-  - Say 'Donna' to wake (then multi-turn follow-up without wake word)
+  - Say 'Dana' to wake (then multi-turn follow-up without wake word)
   - Create .trigger_ask (empty = listen; non-empty = inject transcript)
   - Enqueue tasks in CAMGRASPER/execution_jail/task_queue.json then wake — bypasses Whisper
   - Tray Quit / Ctrl+C to quit
@@ -182,14 +182,14 @@ from dana.agentic import (
     build_lightweight_chat_system_prompt,
     chat_memory_size,
     clear_chat_memory,
-    get_donna_mode,
+    get_dana_mode,
     mode_switch_spoken_ack,
     parse_clear_chat_memory,
     parse_mode_switch,
     requires_tool_graph,
     run_lightweight_chat,
     run_react_loop,
-    set_donna_mode,
+    set_dana_mode,
 )
 from dana.logging import (
     CONVERSATION_LOG_PATH,
@@ -217,7 +217,7 @@ load_dotenv()
 _SINGLETON_PORT = 47474
 _singleton_socket: Optional[socket.socket] = None
 _tray_icon: Optional[pystray.Icon] = None
-_gui_instance: Optional["DonnaGUI"] = None
+_gui_instance: Optional["DanaGUI"] = None
 _agent_loop_thread: Optional[threading.Thread] = None
 # Last mic ambient probe — drives adaptive VAD / barge-in floors for quiet headsets.
 _mic_ambient_rms: float = 0.0
@@ -323,7 +323,7 @@ def emit_trace(
 
 
 def enforce_singleton() -> None:
-    """Bind a local TCP port so only one Donna process can run."""
+    """Bind a local TCP port so only one Dana process can run."""
     global _singleton_socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -331,7 +331,7 @@ def enforce_singleton() -> None:
         sock.bind(("127.0.0.1", _SINGLETON_PORT))
         sock.listen(1)
     except OSError:
-        print("[System] Donna is already running.", flush=True)
+        print("[System] Dana is already running.", flush=True)
         try:
             sock.close()
         except OSError:
@@ -355,7 +355,7 @@ _CANNED_UX_WAV_FILES: dict[str, str] = {
     "Yes?": "yes.wav",
     "Standing by.": "standing_by.wav",
     "I didn't catch that.": "i_didnt_catch_that.wav",
-    "Donna is ready.": "donna_is_ready.wav",
+    "Dana is ready.": "dana_is_ready.wav",
     "Developer mode active.": "developer_mode_active.wav",
     "Chat mode active.": "chat_mode_active.wav",
     "Vision mode active.": "vision_mode_active.wav",
@@ -364,9 +364,9 @@ _CANNED_UX_WAV_FILES: dict[str, str] = {
 }
 # Runtime / conversation log paths live in dana.logging (re-exported above).
 # Default voice: en_US-hfc_female-medium (CC BY-NC-SA 4.0 — see docs/LEGAL_AND_IP.md).
-# Override via DONNA_PIPER_VOICE (e.g. en_US-ljspeech-high for public-domain weights).
+# Override via DANA_PIPER_VOICE (e.g. en_US-ljspeech-high for public-domain weights).
 PIPER_VOICE_ID = (
-    os.environ.get("DONNA_PIPER_VOICE", "en_US-hfc_female-medium").strip()
+    os.environ.get("DANA_PIPER_VOICE", "en_US-hfc_female-medium").strip()
     or "en_US-hfc_female-medium"
 )
 PIPER_EN_ONNX = os.path.join(TTS_MODELS_DIR, f"{PIPER_VOICE_ID}.onnx")
@@ -378,7 +378,7 @@ _PIPER_LEGACY_ONNX = os.path.join(TTS_MODELS_DIR, f"{_PIPER_LEGACY_VOICE_ID}.onn
 _PIPER_LEGACY_JSON = os.path.join(TTS_MODELS_DIR, f"{_PIPER_LEGACY_VOICE_ID}.onnx.json")
 # length_scale < 1.0 speeds speech (VITS). Default 0.75 for snappier replies.
 try:
-    PIPER_LENGTH_SCALE = float(os.environ.get("DONNA_PIPER_LENGTH_SCALE", "0.75"))
+    PIPER_LENGTH_SCALE = float(os.environ.get("DANA_PIPER_LENGTH_SCALE", "0.75"))
 except ValueError:
     PIPER_LENGTH_SCALE = 0.75
 PIPER_LENGTH_SCALE = max(0.5, min(2.0, PIPER_LENGTH_SCALE))
@@ -407,7 +407,7 @@ def _piper_hf_urls(voice_id: str) -> tuple[tuple[str, str], tuple[str, str]]:
 
 PIPER_MODEL_URLS: tuple[tuple[str, str], ...] = _piper_hf_urls(PIPER_VOICE_ID)
 _piper_voice_cache: dict[str, Any] = {}
-DONNA_WAKEWORD_ONNX = str(WAKEWORD_ONNX)
+DANA_WAKEWORD_ONNX = str(WAKEWORD_ONNX)
 
 
 def _download_file(url: str, dest: str) -> None:
@@ -493,9 +493,9 @@ TRACKER_BUFFER_INTERVAL_S = 1.0
 
 # Local Ollama conversational brain
 OLLAMA_URL = "http://localhost:11434/api/chat"
-# Prefer DONNA_OLLAMA_MODEL / OLLAMA_MODEL so Suite 11 can pin Qwen2.5-Coder.
+# Prefer DANA_OLLAMA_MODEL / OLLAMA_MODEL so Suite 11 can pin Qwen2.5-Coder.
 OLLAMA_MODEL = (
-    (os.environ.get("DONNA_OLLAMA_MODEL") or os.environ.get("OLLAMA_MODEL") or "")
+    (os.environ.get("DANA_OLLAMA_MODEL") or os.environ.get("OLLAMA_MODEL") or "")
     .strip()
     or "qwen2.5-coder:7b"
 )
@@ -508,7 +508,7 @@ CAMERA_KEYWORDS = ["camera", "room", "me", "face", "physical", "look at me"]
 # Audio / wake-word constants
 SAMPLE_RATE = 16000
 WAKE_CHUNK = 1280  # 80 ms @ 16 kHz
-# Local donna.onnx is sticky on this mic (can sit at ~0.99 on hush).
+# Local dana.onnx is sticky on this mic (can sit at ~0.99 on hush).
 # Require a real onset: score must rise from low -> high, not stay pegged.
 WAKE_THRESHOLD = 0.65
 WAKE_MIN_CONSECUTIVE = 3  # ~240 ms of consecutive high scores
@@ -517,20 +517,20 @@ WAKE_ONSET_LOOKBACK = 12  # ~1 s of score history
 WAKE_PHRASE_WINDOW_CHUNKS = 18  # ~1.44 s rolling buffer for phrase verify
 WAKE_PHRASE_VERIFY = False  # skip Whisper second gate; openWakeWord score onset starts session
 WAKE_COOLDOWN_SEC = 6.0
-WAKE_PHRASE_TOKENS = ("donna", "hey donna", "hey, donna")
-# Whisper often mishears "Donna" as these; treat as wake confirmations.
+WAKE_PHRASE_TOKENS = ("dana", "hey dana", "hey, dana")
+# Whisper often mishears "Dana" as these; treat as wake confirmations.
 # Include "don't know" / donald / donut to cut false negatives on quiet mics;
 # OpenWakeWord score+onset still gate hush false-positives.
 WAKE_PHRASE_ALIASES = (
-    "donna",
-    "hey donna",
+    "dana",
+    "hey dana",
     "donald",
     "hey donald",
     "donut",
     "don t know",
     "dont know",
     "don know",
-    "donna donna",
+    "dana dana",
     "dawn",
     "hey dawn",
 )
@@ -546,7 +546,7 @@ WAKE_PHRASE_REJECT = (
 # Legacy bias string — kept for echo detection only. Live STT must NOT pass
 # initial_prompt / prompt_ids (ticket-log regurgitation / context loops).
 WHISPER_INITIAL_PROMPT = (
-    "Donna, Titan initiative, Titan Protocol, Titan supervisor, "
+    "Dana, Titan initiative, Titan Protocol, Titan supervisor, "
     "activate Titan, Vanguard Protocol, "
     "bye, quit, exit, lockdown, lock yourself."
 )
@@ -596,7 +596,7 @@ FOLLOWUP_FLUSH_SEC = 0.05
 # First-order DC blocker pole (closer to 1.0 = lower cutoff). ~0.995 @ 16 kHz
 # removes mic DC offset / rumble that otherwise keeps VAD from silence_cutoff.
 DC_BLOCKER_R = 0.995
-# Barge-in while Donna speaks: Silero probability (not raw RMS) gates interrupt.
+# Barge-in while Dana speaks: Silero probability (not raw RMS) gates interrupt.
 BARGE_IN_RMS = 0.12  # retained for adaptive helpers / logging only
 BARGE_IN_MIN_SPEECH_MS = 350.0
 # Suppress barge-in for the first 400ms after TtsWorker begins a play turn
@@ -620,7 +620,7 @@ TTS_UTTERANCE_MAX_SECONDS = 90.0
 # Soft-split long replies into independent spool items (~15–20s Piper each).
 TTS_CHUNK_MAX_CHARS = 280
 MIN_SPEECH_RMS = 0.01  # after peak-normalize; reject near-silence hallucinations
-WAKEWORD_MODELS = ["donna"]
+WAKEWORD_MODELS = ["dana"]
 AUDIO_INPUT_DEVICE: Optional[int] = None  # resolved at startup
 AUDIO_INPUT_RATE: int = SAMPLE_RATE  # device native rate; resampled to 16 kHz
 AUDIO_OUTPUT_DEVICE: Optional[int] = None  # TTS playback via sounddevice
@@ -648,8 +648,8 @@ conversation_history_lock = threading.Lock()
 HISTORY_MAX_MESSAGES = 6
 
 # Decrypted long-term profile (AES vault); injected into Ollama system prompt.
-donna_profile: dict[str, Any] = {}
-donna_vault: Optional["SecureMemory"] = None
+dana_profile: dict[str, Any] = {}
+dana_vault: Optional["SecureMemory"] = None
 # High-frequency identity keys prefetched post-unlock (skip ReAct vault tools).
 VAULT_HOT_CACHE: dict[str, str] = {}
 
@@ -747,13 +747,13 @@ _active_mid_task_lock = threading.Lock()
 piper_voices_ready = threading.Event()
 wakeword_armed = threading.Event()
 # Stage 8.9.7 — soft engine ignition (clear = STANDBY; set = ACTIVE).
-# Distinct from stop_event / STOP DONNA (hard exit).
+# Distinct from stop_event / STOP DANA (hard exit).
 engine_engaged = threading.Event()
 _boot_ready_audio_lock = threading.Lock()
 _boot_ready_audio_played = False
 # Shared OpenWakeWord model for stream-barge during TTS (set by wakeword_worker).
 _shared_wakeword_model: Any = None
-_shared_wakeword_token: str = "donna"
+_shared_wakeword_token: str = "dana"
 _dual_wake_router: Optional[AudioRouter] = None
 _dual_wake_poller: Optional[WakePoller] = None
 # Set when the TTS spooler is drained and nothing is playing.
@@ -770,7 +770,7 @@ _audio_hardware_fault_detail: str = ""
 TRIGGER_FILE = str(TRIGGER_ASK_PATH)
 SETTINGS_FILE = str(_SETTINGS_PATH)
 MEMORY_FILE = default_vault_path()
-MEMORY_SALT = b"donna_secure_salt"
+MEMORY_SALT = b"dana_secure_salt"
 PBKDF2_ITERATIONS = 390_000
 vault_client = VaultClient()
 
@@ -1416,7 +1416,7 @@ def is_clear_context_command(text: str) -> bool:
     for phrase in sorted(_CLEAR_CONTEXT_PHRASES, key=len, reverse=True):
         if ascii_norm == phrase or ascii_norm.endswith(" " + phrase):
             return True
-        # Allow wake-prefixed forms: "Donna, clear context"
+        # Allow wake-prefixed forms: "Dana, clear context"
         if ascii_norm.startswith(phrase + " ") or f" {phrase}" in f" {ascii_norm}":
             # Avoid matching unrelated sentences that merely contain a substring
             # of a multi-word phrase mid-word; require phrase as contiguous tokens.
@@ -1531,7 +1531,7 @@ def populate_vault_hot_cache(client: Optional["VaultClient"] = None) -> None:
 
 def execute_lockdown_shutdown() -> None:
     """Speak lockdown ack, purge vault RAM key, hard-kill the process."""
-    global donna_vault, donna_profile, vault_client, VAULT_HOT_CACHE
+    global dana_vault, dana_profile, vault_client, VAULT_HOT_CACHE
 
     log("Security", "Lockdown fast-path triggered — purging vault and exiting.")
     try:
@@ -1562,12 +1562,12 @@ def execute_lockdown_shutdown() -> None:
         log("Security", f"ERROR: lockdown purge failed ({exc})")
 
     try:
-        if donna_vault is not None:
-            donna_vault.lock()
+        if dana_vault is not None:
+            dana_vault.lock()
     except Exception:  # noqa: BLE001
         pass
-    donna_vault = None
-    donna_profile = {}
+    dana_vault = None
+    dana_profile = {}
     VAULT_HOT_CACHE = {}
 
     # Force immediate termination of all threads and GUI.
@@ -2291,8 +2291,8 @@ def email_recovery_key(recovery_key: str) -> None:
             {
                 "type": "text/plain",
                 "value": (
-                    "Your Donna Backup Recovery Key is below.\n"
-                    "Store it offline. Anyone with this key can unlock Donna's memory vault.\n\n"
+                    "Your Dana Backup Recovery Key is below.\n"
+                    "Store it offline. Anyone with this key can unlock Dana's memory vault.\n\n"
                     f"{recovery_key}\n"
                 ),
             }
@@ -2335,12 +2335,12 @@ def email_recovery_key(recovery_key: str) -> None:
         log("Memory", f"WARNING: recovery email failed ({exc})")
 
 
-def unlock_donna_memory() -> SecureMemory:
+def unlock_dana_memory() -> SecureMemory:
     """Unlock via in-RAM vault daemon (Option B). Password only if resume fails.
 
     Daemon handshake (try_resume_session) ALWAYS runs before any password prompt.
     """
-    global donna_profile, donna_vault, vault_client
+    global dana_profile, dana_vault, vault_client
     vault_client = VaultClient()
     try:
         vault_client.ensure_ready()
@@ -2358,7 +2358,7 @@ def unlock_donna_memory() -> SecureMemory:
         resumed = False
 
     if resumed:
-        donna_profile = dict(vault_client.profile)
+        dana_profile = dict(vault_client.profile)
         vault = SecureMemory(path=MEMORY_FILE)
         try:
             from dana.vault_service import _rpc
@@ -2374,15 +2374,15 @@ def unlock_donna_memory() -> SecureMemory:
             if resp.get("ok"):
                 key = _b64.urlsafe_b64decode(resp["data_key_b64"].encode("ascii"))
                 vault.unlock_with_data_key(key)
-                vault.profile = dict(donna_profile)
+                vault.profile = dict(dana_profile)
         except Exception as exc:  # noqa: BLE001
             log("Memory", f"WARNING: local vault hydrate skipped ({exc})")
-        donna_vault = vault
+        dana_vault = vault
         populate_vault_hot_cache(vault_client)
         log(
             "Memory",
             f"Vault unlocked via daemon session "
-            f"(keys={len(donna_profile)}; token cached in RAM daemon).",
+            f"(keys={len(dana_profile)}; token cached in RAM daemon).",
         )
         print(
             "[Memory] Vault unlocked via daemon session (keys cached in RAM).",
@@ -2406,7 +2406,7 @@ def unlock_donna_memory() -> SecureMemory:
     if not vault_exists:
         recovery_key = secrets.token_urlsafe(32)
         try:
-            donna_profile = vault_client.unlock(
+            dana_profile = vault_client.unlock(
                 password, create=True, recovery_key=recovery_key
             )
         except Exception as exc:  # noqa: BLE001
@@ -2416,7 +2416,7 @@ def unlock_donna_memory() -> SecureMemory:
         email_recovery_key(recovery_key)
     else:
         try:
-            donna_profile = vault_client.unlock(password, create=False)
+            dana_profile = vault_client.unlock(password, create=False)
         except Exception as exc:  # noqa: BLE001
             print(f"[Memory Error] {exc}", flush=True)
             log("Memory", f"ERROR: {exc}")
@@ -2437,21 +2437,21 @@ def unlock_donna_memory() -> SecureMemory:
         if resp.get("ok"):
             key = _b64.urlsafe_b64decode(resp["data_key_b64"].encode("ascii"))
             vault.unlock_with_data_key(key)
-            vault.profile = dict(donna_profile)
+            vault.profile = dict(dana_profile)
     except Exception as exc:  # noqa: BLE001
         log("Memory", f"WARNING: local vault hydrate failed ({exc})")
 
-    donna_vault = vault
+    dana_vault = vault
     populate_vault_hot_cache(vault_client)
     log(
         "Memory",
         f"Vault unlocked via daemon session "
-        f"(keys={len(donna_profile)}; token cached in RAM daemon).",
+        f"(keys={len(dana_profile)}; token cached in RAM daemon).",
     )
     return vault
 
 
-def reset_donna_vault() -> None:
+def reset_dana_vault() -> None:
     """Authorize with master/recovery credential, then wipe the encrypted vault."""
     if not os.path.isfile(MEMORY_FILE):
         print("No vault found.", flush=True)
@@ -2580,7 +2580,7 @@ def interactive_audio_setup() -> tuple[Optional[int], Optional[int]]:
 
     Press Enter with no ID to keep Windows System Default (Auto).
     """
-    print("\n=== Donna first-run audio setup ===", flush=True)
+    print("\n=== Dana first-run audio setup ===", flush=True)
     print(
         "No settings.json found. Let's configure your microphone and speakers.\n"
         "Press Enter with no ID to use System Default (Auto).\n",
@@ -2696,14 +2696,14 @@ def load_audio_settings() -> tuple[Optional[int], Optional[int], int]:
     return None, None, rate
 
 
-def build_donna_system_prompt(
+def build_dana_system_prompt(
     yolo_labels: list[str],
     profile: Optional[dict[str, Any]] = None,
     user_text: str = "",
 ) -> str:
     """System prompt: SpatialIR synthesis guide + ReAct protocol + language lock."""
     if profile is None:
-        profile = donna_profile
+        profile = dana_profile
     if profile:
         try:
             from dana.vault_service import profile_for_prompt
@@ -2835,7 +2835,7 @@ def tracker_worker(device) -> None:
             latest_frame = frame
 
         try:
-            mode = get_donna_mode()
+            mode = get_dana_mode()
         except Exception:  # noqa: BLE001
             mode = "chat"
 
@@ -2932,17 +2932,17 @@ def tracker_worker(device) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Thread 3 - Wake word (OpenWakeWord — Donna only)
+# Thread 3 - Wake word (OpenWakeWord — Dana only)
 # ---------------------------------------------------------------------------
 
 def wake_score_hit(
     prediction: dict[str, Any],
     *,
-    require_token: str = "donna",
+    require_token: str = "dana",
     threshold: float = WAKE_THRESHOLD,
 ) -> Optional[str]:
     """Return matched wake-word key if score crosses threshold for require_token."""
-    token = (require_token or "donna").lower()
+    token = (require_token or "dana").lower()
     for key, score in prediction.items():
         try:
             value = float(score)
@@ -2959,8 +2959,8 @@ def _normalize_wake_text(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
-def _wake_text_matches_donna(normalized: str) -> bool:
-    """True if Whisper text is Donna or a known Donna mishearing."""
+def _wake_text_matches_dana(normalized: str) -> bool:
+    """True if Whisper text is Dana or a known Dana mishearing."""
     if not normalized:
         return False
     if any(token in normalized for token in WAKE_PHRASE_TOKENS):
@@ -2978,7 +2978,7 @@ def _wake_text_matches_donna(normalized: str) -> bool:
 
 
 def wake_phrase_confirmed(audio_16k: np.ndarray) -> bool:
-    """Second gate: Whisper must hear Donna / Hey Donna in the wake buffer.
+    """Second gate: Whisper must hear Dana / Hey Dana in the wake buffer.
 
     When WAKE_PHRASE_VERIFY is False, openWakeWord score+onset alone starts the session.
     """
@@ -3038,7 +3038,7 @@ def wake_phrase_confirmed(audio_16k: np.ndarray) -> bool:
         log("WakeWord", f"Phrase verify REJECT (noise alias) -> \"{text.strip()}\"")
         print(f"[Debug] Wake phrase verify: \"{text.strip()}\" -> REJECT", flush=True)
         return False
-    if _wake_text_matches_donna(normalized):
+    if _wake_text_matches_dana(normalized):
         log("WakeWord", f"Phrase verify PASS -> \"{text.strip()}\"")
         print(f"[Debug] Wake phrase verify: \"{text.strip()}\" -> PASS", flush=True)
         return True
@@ -3087,8 +3087,8 @@ def wakeword_worker() -> None:
     _nt_hide_console_if_mp_child()
     global AUDIO_INPUT_DEVICE, AUDIO_INPUT_RATE
 
-    # Prefer custom Dana wake model (dana.onnx), with legacy donna.onnx fallback.
-    wake_token = "donna"
+    # Prefer custom Dana wake model (dana.onnx), with legacy dana.onnx fallback.
+    wake_token = "dana"
     model_paths: list[str]
     onnx_path = str(resolve_wakeword_onnx())
     if os.path.isfile(onnx_path):
@@ -3103,9 +3103,9 @@ def wakeword_worker() -> None:
             log("WakeWord", f"WARNING: could not refresh OWW feature models ({exc})")
     else:
         print(
-            "[Warning] dana.onnx / donna.onnx not found! Temporary Alexa wake-word "
+            "[Warning] dana.onnx / dana.onnx not found! Temporary Alexa wake-word "
             "enabled for mic debugging. Say 'Alexa' (not Dana). Place dana.onnx "
-            "(or legacy donna.onnx) in assets/models/ to switch back.",
+            "(or legacy dana.onnx) in assets/models/ to switch back.",
             flush=True,
         )
         log(
@@ -3165,7 +3165,7 @@ def wakeword_worker() -> None:
     global _shared_wakeword_model, _shared_wakeword_token
     _shared_wakeword_model = oww
     _shared_wakeword_token = wake_token
-    if wake_token == "donna":
+    if wake_token == "dana":
         print("Say 'Dana' to wake.", flush=True)
         listen_msg = "Dana"
     else:
@@ -3319,7 +3319,7 @@ def wakeword_worker() -> None:
                 "re-arming wake-word polling",
             )
             # Do NOT replay boot-ready TTS here — that caused random
-            # "Donna is ready" mid-session when quiet-mic mode cleared.
+            # "Dana is ready" mid-session when quiet-mic mode cleared.
 
         pcm = np.clip(audio * 32767.0, -32768, 32767).astype(np.int16)
         try:
@@ -3354,7 +3354,7 @@ def wakeword_worker() -> None:
 
         score_history.append(best_score)
         hit = wake_score_hit(pred, require_token=wake_token)
-        # Sticky high scores on hush never dip; real "Donna" rises from a low baseline.
+        # Sticky high scores on hush never dip; real "Dana" rises from a low baseline.
         recently_low = any(s < WAKE_ONSET_BELOW for s in score_history)
         if hit and recently_low:
             consecutive_hits += 1
@@ -3377,13 +3377,13 @@ def wakeword_worker() -> None:
 
         wake_audio = np.concatenate(list(audio_ring)) if audio_ring else audio
         # Diagnostic only — do not hard-reject on RMS (SteelSeries Sonar chat
-        # mics often sit ~0.002–0.003 even on a real "Donna").
+        # mics often sit ~0.002–0.003 even on a real "Dana").
         wake_rms = (
             float(np.sqrt(np.mean(np.square(wake_audio)))) if wake_audio.size else 0.0
         )
         log_debug("WakeWord", f"Wake candidate buffer_rms={wake_rms:.5f} hit={hit}")
 
-        if wake_token == "donna" and not wake_phrase_confirmed(wake_audio):
+        if wake_token == "dana" and not wake_phrase_confirmed(wake_audio):
             consecutive_hits = 0
             cooldown_until = time.monotonic() + 1.5
             try:
@@ -3593,7 +3593,7 @@ def start_whisper_background_load(local_files_only: bool, device) -> None:
                     whisper_dtype,
                 )
             if WAKE_PHRASE_VERIFY:
-                log("WakeWord", "Whisper phrase-verify gate armed (must hear 'Donna').")
+                log("WakeWord", "Whisper phrase-verify gate armed (must hear 'Dana').")
             else:
                 log(
                     "WakeWord",
@@ -3689,7 +3689,7 @@ def list_input_devices() -> None:
     devices = sd.query_devices()
     hostapis = sd.query_hostapis()
     n_in = sum(1 for d in devices if int(d.get("max_input_channels", 0)) >= 1)
-    log("Audio", f"INPUT devices: {n_in} available (DONNA_DEBUG=1 for full table)")
+    log("Audio", f"INPUT devices: {n_in} available (DANA_DEBUG=1 for full table)")
     log_debug("Audio", "Available INPUT devices:")
     log_debug("Audio", f"{'Index':<7} {'Rate':<8} {'Ch':<4} {'HostAPI':<18} Name")
     log_debug("Audio", "-" * 72)
@@ -3711,7 +3711,7 @@ def list_output_devices() -> None:
     devices = sd.query_devices()
     hostapis = sd.query_hostapis()
     n_out = sum(1 for d in devices if int(d.get("max_output_channels", 0)) >= 1)
-    log("Audio", f"OUTPUT devices: {n_out} available (DONNA_DEBUG=1 for full table)")
+    log("Audio", f"OUTPUT devices: {n_out} available (DANA_DEBUG=1 for full table)")
     log_debug("Audio", "Available OUTPUT devices (Windows speaker / monitor routing):")
     log_debug("Audio", f"{'Index':<7} {'Rate':<8} {'Ch':<4} {'HostAPI':<18} Name")
     log_debug("Audio", "-" * 72)
@@ -4289,8 +4289,8 @@ def input_txt_ingest_worker() -> None:
                 # Ensure the conversation loop can drain: escalate process mode
                 # without stealing the user's durable voice_session_mode.
                 try:
-                    if get_donna_mode() == "chat":
-                        set_donna_mode("developer", as_voice=False)
+                    if get_dana_mode() == "chat":
+                        set_dana_mode("developer", as_voice=False)
                         print(
                             "[Ingest] Escalated chat -> developer for queued tasks "
                             "(voice mode preserved)",
@@ -4633,7 +4633,7 @@ def record_utterance(
                 pre_roll.pop(0)
 
             # Half-duplex: never barge-in from VAD while TTS is playing — speaker
-            # echo must not cut Donna. Mic onset is ignored until playback ends.
+            # echo must not cut Dana. Mic onset is ignored until playback ends.
             if tts_busy.is_set() or frame_idx < ignore_onset_frames:
                 return False
             if is_speech:
@@ -4858,7 +4858,7 @@ def transcribe_audio(
 
 def execute_tool_call(tc: ToolCall) -> str:
     """Dispatch a validated ToolCall IR; returns an Observation string for ReAct."""
-    global active_vision_tool, latest_frame, donna_profile
+    global active_vision_tool, latest_frame, dana_profile
 
     broker = get_broker()
     # architect_new_tool: recover empty args from the live utterance before validate.
@@ -4965,7 +4965,7 @@ def execute_tool_call(tc: ToolCall) -> str:
         return f"{payload} | SpatialIR={block} | {hint}"
 
     def _handle_read_vault(call: ToolCall) -> str:
-        global donna_profile
+        global dana_profile
         key = str(call.arguments.get("key") or "").strip()
         if not key:
             return "Error: Memory key not found in vault."
@@ -4976,7 +4976,7 @@ def execute_tool_call(tc: ToolCall) -> str:
             if not vault_client.session_token:
                 return "ERROR: vault session unavailable"
             value = vault_client.read_memory(key)
-            donna_profile = dict(vault_client.profile)
+            dana_profile = dict(vault_client.profile)
             return f"OK: {key}={value!r}"
         except KeyError:
             # Graceful degradation — never raise into the agentic loop.
@@ -4989,7 +4989,7 @@ def execute_tool_call(tc: ToolCall) -> str:
             return f"ERROR: read_vault_memory failed: {exc}"
 
     def _handle_write_vault(call: ToolCall) -> str:
-        global donna_profile
+        global dana_profile
         key = str(call.arguments.get("key") or "").strip()
         value = call.arguments.get("value")
         if not key:
@@ -5000,7 +5000,7 @@ def execute_tool_call(tc: ToolCall) -> str:
             if not vault_client.session_token:
                 return "ERROR: vault session unavailable"
             vault_client.write_memory(key, value)
-            donna_profile = dict(vault_client.profile)
+            dana_profile = dict(vault_client.profile)
             # Keep settings.json in sync for place/timezone so local clock stays correct.
             nk = key.strip().lower().replace("-", "_").replace(" ", "_")
             if nk in (
@@ -5683,7 +5683,7 @@ def execute_tool_call(tc: ToolCall) -> str:
                 prompt,
                 on_event=_on_broker_event,
                 timeout_s=float(
-                    os.environ.get("DONNA_META_BROKER_TIMEOUT_S") or "300"
+                    os.environ.get("DANA_META_BROKER_TIMEOUT_S") or "300"
                 ),
             )
         except Exception as exc:  # noqa: BLE001
@@ -6184,7 +6184,7 @@ def _ask_ollama_messages_unlocked(
         "stream": True,
         "keep_alive": _keep_alive,
         # Hard caps for 8GB VRAM: shorter KV cache + bounded generation.
-        # When DONNA_SPECULATIVE_DECODING=1, merge_ollama_options injects
+        # When DANA_SPECULATIVE_DECODING=1, merge_ollama_options injects
         # draft_num_predict (draft model pairing is Modelfile DRAFT / -md).
         "options": merge_ollama_options(options),
     }
@@ -6522,7 +6522,7 @@ def conversation_worker(
                         "Dictation",
                         "completed",
                         f"Dictation logged ({sid[:8]})",
-                        mode=get_donna_mode(),
+                        mode=get_dana_mode(),
                     )
                 except Exception:  # noqa: BLE001
                     pass
@@ -6546,7 +6546,7 @@ def conversation_worker(
         # Mode switch fast-path — no LLM, no YOLO, no tools.
         switched = parse_mode_switch(whisper_text or "")
         if switched is not None:
-            active = set_donna_mode(switched)
+            active = set_dana_mode(switched)
             ack = mode_switch_spoken_ack(active)
             log("Conversation", f"Mode switch -> {active} (ack={ack!r})")
             try:
@@ -6655,11 +6655,11 @@ def conversation_worker(
                 "Tool-graph escalation: high-confidence tool / system intent → "
                 "ReAct/MoA (lightweight chat bypassed)",
             )
-        elif use_chat and get_donna_mode() not in ("chat",):
+        elif use_chat and get_dana_mode() not in ("chat",):
             # Developer/vision/research without an explicit tool stay on System-1.
             log(
                 "Conversation",
-                f"Proportional System-1: mode={get_donna_mode()} with no "
+                f"Proportional System-1: mode={get_dana_mode()} with no "
                 "high-confidence tool — lightweight chat",
             )
         routed_tool = None
@@ -6803,7 +6803,7 @@ def conversation_worker(
                 visual_context=vision_log or None,
             )
         else:
-            system_prompt = build_donna_system_prompt(
+            system_prompt = build_dana_system_prompt(
                 yolo_labels, user_text=whisper_text
             )
         log_debug(
@@ -7047,7 +7047,7 @@ def conversation_worker(
                 if (answer or "").strip() != OLLAMA_UNREACHABLE_SPEECH:
                     commit_agentic_turn(system_prompt, whisper_text, answer)
             if result.tool_trace:
-                # Compact INFO tool ids; full sanitized observations only under DONNA_DEBUG.
+                # Compact INFO tool ids; full sanitized observations only under DANA_DEBUG.
                 tool_ids = [
                     str(t.get("tool") or "?")
                     for t in result.tool_trace
@@ -7192,10 +7192,10 @@ def conversation_worker(
             # System job lane: escalate for ReAct jail without mutating voice mode.
             from dana.agentic import restore_voice_mode
 
-            prior = get_donna_mode()
+            prior = get_dana_mode()
             escalated = False
             if prior == "chat":
-                set_donna_mode("developer", as_voice=False)
+                set_dana_mode("developer", as_voice=False)
                 escalated = True
             try:
                 results = dispatch_pending_tasks(_isolated_handler)
@@ -7586,7 +7586,7 @@ def conversation_worker(
                     break
 
                 # Chat mode: never feed the task-queue / ReAct jail — lightweight chat only.
-                if get_donna_mode() == "chat":
+                if get_dana_mode() == "chat":
                     if not run_brain_turn(whisper_text, t0):
                         end_session_to_idle("I didn't catch that.")
                         break
@@ -8248,7 +8248,7 @@ def _synthesize_and_play(
         finally:
             if tmp_path:
                 try:
-                    if os.path.isfile(tmp_path) and "donna_" in os.path.basename(tmp_path):
+                    if os.path.isfile(tmp_path) and "dana_" in os.path.basename(tmp_path):
                         os.remove(tmp_path)
                 except OSError:
                     pass
@@ -8397,7 +8397,7 @@ def _speak_with_timeout(
 
 
 def maybe_play_boot_ready_audio() -> None:
-    """Play ``Donna is ready.`` only once after Ollama + Piper + wake-word arm.
+    """Play ``Dana is ready.`` only once after Ollama + Piper + wake-word arm.
 
     Safe to call from multiple boot threads; fires at most once per process.
     Never replay on quiet-mic re-arm or mid-session mic energy.
@@ -8405,7 +8405,7 @@ def maybe_play_boot_ready_audio() -> None:
     global _boot_ready_audio_played
     if _boot_ready_audio_played:
         return
-    if (os.environ.get("DONNA_SKIP_BOOT_READY") or "").strip().lower() in {
+    if (os.environ.get("DANA_SKIP_BOOT_READY") or "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -8428,7 +8428,7 @@ def maybe_play_boot_ready_audio() -> None:
         "Boot complete (ollama_ready + Piper + wake armed) — playing ready signal",
     )
     try:
-        enqueue_speech("Donna is ready.")
+        enqueue_speech("Dana is ready.")
     except Exception as exc:  # noqa: BLE001
         log("TTS", f"WARNING: boot ready enqueue failed ({exc})")
 
@@ -8690,7 +8690,7 @@ def _parse_device_menu_label(label: str) -> Optional[int]:
         return None
 
 
-def request_donna_quit(icon: Optional[pystray.Icon] = None, _item: Any = None) -> None:
+def request_dana_quit(icon: Optional[pystray.Icon] = None, _item: Any = None) -> None:
     """Tray Quit / cleanup — stop agent threads and close the GUI."""
     log("Main", "Quit requested (system tray).")
     try:
@@ -8767,7 +8767,7 @@ def _shutdown_agent_threads(*, join_timeout: float = 8.0) -> None:
             log("Main", "WARNING: AgentLoop did not exit within join timeout.")
 
 
-def _install_signal_handlers(gui: "DonnaGUI") -> None:
+def _install_signal_handlers(gui: "DanaGUI") -> None:
     """Ctrl+C / SIGTERM → destroy GUI on the Tk thread (avoids hanging workers)."""
 
     def _handler(signum: int, _frame: Any) -> None:
@@ -8818,7 +8818,7 @@ def _install_signal_handlers(gui: "DonnaGUI") -> None:
         except Exception:
             pass
 
-def run_system_tray(gui: "DonnaGUI") -> None:
+def run_system_tray(gui: "DanaGUI") -> None:
     """Blocking pystray loop — must only run in a daemon thread (never on CTk)."""
     global _tray_icon
 
@@ -8854,7 +8854,7 @@ def run_system_tray(gui: "DonnaGUI") -> None:
                 toggle_shell_watchdog,
                 checked=lambda item: check_shell_watchdog_status(item),
             ),
-            pystray.MenuItem("Quit", request_donna_quit),
+            pystray.MenuItem("Quit", request_dana_quit),
         )
         icon = pystray.Icon(
             "Dana",
@@ -8931,7 +8931,7 @@ class TraceCell(ctk.CTkFrame):
             pass
 
 
-class DonnaGUI(ctk.CTk):
+class DanaGUI(ctk.CTk):
     """Live Trace window with settings tabs; retreats to the tray on close."""
 
     def __init__(self) -> None:
@@ -9302,7 +9302,7 @@ class DonnaGUI(ctk.CTk):
         right = ctk.CTkFrame(header, fg_color="transparent")
         right.grid(row=0, column=2, sticky="e", padx=(4, 10), pady=6)
 
-        self.stop_donna_btn = ctk.CTkButton(
+        self.stop_dana_btn = ctk.CTkButton(
             right,
             text="STOP DANA",
             width=96,
@@ -9312,9 +9312,9 @@ class DonnaGUI(ctk.CTk):
             hover_color=_UI_ROSE_HOVER,
             text_color="#FFFFFF",
             font=ctk.CTkFont(size=10, weight="bold"),
-            command=self._on_stop_donna_clicked,
+            command=self._on_stop_dana_clicked,
         )
-        self.stop_donna_btn.pack(side="right", padx=(4, 0))
+        self.stop_dana_btn.pack(side="right", padx=(4, 0))
 
         self._diag_header_btn = ctk.CTkButton(
             right,
@@ -9409,7 +9409,7 @@ class DonnaGUI(ctk.CTk):
                 "Hotkey: Ctrl+Shift+D.",
             )
             attach_tooltip(
-                self.stop_donna_btn,
+                self.stop_dana_btn,
                 "Emergency kill-switch. Instantly halts all background processes "
                 "and shuts down the engine.",
             )
@@ -9760,6 +9760,17 @@ class DonnaGUI(ctk.CTk):
             command=self.submit_text_command,
         )
         self._chat_send_btn.grid(row=0, column=1, sticky="e")
+        # Brief STANDBY toast ("Please Engage Engine First.") — see
+        # _flash_engine_warning; empty text reserves the row so it doesn't
+        # reflow the input row when a warning flashes/clears.
+        self._engine_warn_lbl = ctk.CTkLabel(
+            input_row,
+            text="",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#F59E0B",
+            anchor="w",
+        )
+        self._engine_warn_lbl.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         # DAG monitor — collapsible overlay drawer above the input row.
         self._build_dag_monitor_section(left)
@@ -11148,6 +11159,59 @@ class DonnaGUI(ctk.CTk):
         self.speaker_menu = None
         self.save_btn = None
 
+        remote_card = self._make_card(
+            tab, title="Remote Access", padx=8, pady=(0, 4), expand=False
+        )
+        ctk.CTkLabel(
+            remote_card,
+            text=(
+                "Pushover push notifications and a personal Telegram bot let "
+                "Dana reach you (or take commands from you) while running "
+                "unattended in the background."
+            ),
+            anchor="w",
+            justify="left",
+            wraplength=640,
+            text_color=_UI_MUTED,
+        ).pack(fill="x", pady=(0, 8))
+        self._integrations_setup_btn = ctk.CTkButton(
+            remote_card,
+            text="Integrations Setup (Pushover & Telegram)",
+            height=32,
+            corner_radius=8,
+            command=self._show_integrations_setup_guide,
+        )
+        self._integrations_setup_btn.pack(anchor="w")
+
+    def _show_integrations_setup_guide(self) -> None:  # noqa: ANN001
+        """Popup with the Pushover/Telegram setup guide (Settings tab)."""
+        try:
+            from dana.ui.settings import get_integrations_setup_text
+
+            guide_text = get_integrations_setup_text()
+        except Exception:  # noqa: BLE001
+            guide_text = "Integrations setup guide is unavailable right now."
+
+        try:
+            win = ctk.CTkToplevel(self)
+            win.title("Integrations Setup")
+            win.geometry("640x520")
+            box = ctk.CTkTextbox(
+                win,
+                wrap="word",
+                font=ctk.CTkFont(family="Segoe UI", size=13),
+                fg_color=_UI_CANVAS,
+                corner_radius=8,
+                border_width=0,
+            )
+            box.pack(fill="both", expand=True, padx=12, pady=12)
+            box.insert("1.0", guide_text)
+            box.configure(state="disabled")
+            win.lift()
+            win.focus_force()
+        except Exception:  # noqa: BLE001
+            pass
+
     def _build_appearance_card(self, tab) -> None:  # noqa: ANN001
         """Appearance / theme picker (Memory & Settings row 3)."""
         appear_card = self._make_card(
@@ -11725,7 +11789,7 @@ class DonnaGUI(ctk.CTk):
                 pass
         self.engine_active = False
         set_engine_engaged(False)
-        # Soft-pause: clear pending mic latch; do NOT touch stop_event / STOP DONNA.
+        # Soft-pause: clear pending mic latch; do NOT touch stop_event / STOP DANA.
         try:
             is_recording.clear()
         except Exception:  # noqa: BLE001
@@ -11891,7 +11955,7 @@ class DonnaGUI(ctk.CTk):
             "chat_node": "llama",
             "receptionist": "llama",
             "dana": "llama",
-            "donna": "llama",
+            "dana": "llama",
             "deepseek": "deepseek",
             "moa": "deepseek",
             "moa_reasoner": "deepseek",
@@ -11919,7 +11983,7 @@ class DonnaGUI(ctk.CTk):
             return "vision"
         if any(x in sp for x in ("typist", "ghost", "keystroke", "nav")):
             return "typist"
-        if sp.startswith(("dana", "donna")) or "ollama" in sp or "llama" in sp:
+        if sp.startswith(("dana", "dana")) or "ollama" in sp or "llama" in sp:
             return "llama"
         if sp.startswith("user") and "text" in sp:
             return "user_text"
@@ -12323,7 +12387,7 @@ class DonnaGUI(ctk.CTk):
                     lines = fh.readlines()
                 text = "".join(lines[-40:]) or "(log empty)\n"
             else:
-                legacy = os.path.join(os.path.dirname(path), "donna_runtime.log")
+                legacy = os.path.join(os.path.dirname(path), "dana_runtime.log")
                 if os.path.isfile(legacy):
                     with open(legacy, "r", encoding="utf-8", errors="replace") as fh:
                         lines = fh.readlines()
@@ -12415,7 +12479,7 @@ class DonnaGUI(ctk.CTk):
         in main loop`` — or simply stalls the poller thread — the instant a
         non-main thread calls ``widget.after()``, ``self.after(0, ...)``
         included. See ``AdaptivePoller``'s docstring. Everything telemetry
-        related in ``DonnaGUI`` therefore stays on the Tk main thread; only
+        related in ``DanaGUI`` therefore stays on the Tk main thread; only
         the backoff *interval math* is delegated to ``AdaptivePoller``.
         """
         had_activity = False
@@ -12839,7 +12903,7 @@ class DonnaGUI(ctk.CTk):
         except Exception:  # noqa: BLE001
             pass
         wake = ", ".join(WAKEWORD_MODELS) if WAKEWORD_MODELS else "—"
-        _wake_display = {"donna": "Dana", "alexa": "Alexa"}
+        _wake_display = {"dana": "Dana", "alexa": "Alexa"}
         if wake != "—":
             parts = [w.strip() for w in wake.split(",") if w.strip()]
             wake_disp = ", ".join(_wake_display.get(p.lower(), p.title()) for p in parts)
@@ -12857,7 +12921,7 @@ class DonnaGUI(ctk.CTk):
             except Exception:  # noqa: BLE001
                 pass
         try:
-            self._set_mode_indicator(get_donna_mode())
+            self._set_mode_indicator(get_dana_mode())
         except Exception:  # noqa: BLE001
             pass
         self.after(500, self._refresh_stats)
@@ -12954,7 +13018,7 @@ class DonnaGUI(ctk.CTk):
             except Exception:  # noqa: BLE001
                 pass
 
-    def kill_donna_processes(self) -> dict[str, Any]:
+    def kill_dana_processes(self) -> dict[str, Any]:
         """Stage 8.9.2 — launch ``stop_dana.vbs`` / ``stop_dana.bat`` (non-blocking).
 
         Prefers the VBS silent runner (no console flash). Uses a detached
@@ -13013,7 +13077,7 @@ class DonnaGUI(ctk.CTk):
                 stderr=subprocess.DEVNULL,
                 close_fds=True,
             )
-            log("UI", f"STOP DONNA — launched {runner.name} pid={proc.pid}")
+            log("UI", f"STOP DANA — launched {runner.name} pid={proc.pid}")
             return {"ok": True, "pid": int(proc.pid), "path": str(runner)}
         except FileNotFoundError as exc:
             msg = f"Failed to launch {runner.name}: {exc}"
@@ -13028,7 +13092,7 @@ class DonnaGUI(ctk.CTk):
         """In-process full halt: terminate workers, cancel audio/LLM, STOPPED pill.
 
         Kill-switch ``stop_dana.*`` launch remains separate (see
-        ``_on_stop_donna_clicked``); this path must run even if the batch is
+        ``_on_stop_dana_clicked``); this path must run even if the batch is
         missing so the Local Engine goes inactive immediately.
         """
         # Drop dictation latch if hot.
@@ -13116,9 +13180,9 @@ class DonnaGUI(ctk.CTk):
         except Exception:  # noqa: BLE001
             pass
 
-    def _on_stop_donna_clicked(self) -> None:
+    def _on_stop_dana_clicked(self) -> None:
         """Halt engine in-process, show TERMINATING…, then fire kill switch."""
-        btn = getattr(self, "stop_donna_btn", None)
+        btn = getattr(self, "stop_dana_btn", None)
         try:
             self._halt_engine_full()
         except Exception as exc:  # noqa: BLE001
@@ -13138,7 +13202,7 @@ class DonnaGUI(ctk.CTk):
             pass
 
         def _launch() -> None:
-            result = self.kill_donna_processes()
+            result = self.kill_dana_processes()
             if not result.get("ok"):
                 try:
                     if btn is not None:
@@ -13152,7 +13216,7 @@ class DonnaGUI(ctk.CTk):
                 try:
                     log(
                         "UI",
-                        f"STOP DONNA aborted: {result.get('message') or 'unknown'}",
+                        f"STOP DANA aborted: {result.get('message') or 'unknown'}",
                     )
                 except Exception:  # noqa: BLE001
                     pass
@@ -13251,7 +13315,7 @@ class DonnaGUI(ctk.CTk):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Offline Donna voice agent (YOLO eyes + Ollama brain + Whisper + OpenWakeWord).",
+        description="Offline Dana voice agent (YOLO eyes + Ollama brain + Whisper + OpenWakeWord).",
     )
     parser.add_argument(
         "--download",
@@ -13270,7 +13334,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reset-vault",
         action="store_true",
-        help="Delete donna_memory.enc and exit so the next run creates a fresh vault.",
+        help="Delete dana_memory.enc and exit so the next run creates a fresh vault.",
     )
     parser.add_argument(
         "--no-gui",
@@ -13287,7 +13351,7 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
         args = parse_args()
     local_files_only = not args.download
 
-    log("Main", "=== CAMGRASPER Donna voice agent ===")
+    log("Main", "=== CAMGRASPER Dana voice agent ===")
     import torch
 
     try:
@@ -13306,8 +13370,8 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
     # Headless CLI has no Dashboard ENGAGE button — arm the engine so
     # ``.trigger_ask`` injects are not left stranded in soft STANDBY.
     if getattr(args, "no_gui", False):
-        os.environ.setdefault("DONNA_NO_GUI", "1")
-        os.environ.setdefault("DONNA_HEADLESS", "1")
+        os.environ.setdefault("DANA_NO_GUI", "1")
+        os.environ.setdefault("DANA_HEADLESS", "1")
         set_engine_engaged(True)
         log("Main", "Headless mode: engine auto-ENGAGED for trigger injects")
         try:
@@ -13320,7 +13384,7 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
 
     # Unlock encrypted long-term memory before loading models / audio threads.
     try:
-        unlock_donna_memory()
+        unlock_dana_memory()
     except SystemExit:
         stop_event.set()
         return 1
@@ -13447,7 +13511,7 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
         t.start()
         log("Main", f"Started thread: {t.name}")
 
-    # Stage 7.2 — hardware panic button (F12 / DONNA_KILL_HOTKEY).
+    # Stage 7.2 — hardware panic button (F12 / DANA_KILL_HOTKEY).
     try:
         from dana.middleware.kill_switch import start_kill_switch_listener
 
@@ -13471,8 +13535,8 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
 
     # Persist conversational mode so system jobs cannot steal it later.
     try:
-        set_donna_mode(get_donna_mode(), as_voice=True)
-        log("Main", f"Voice session mode seeded: {get_donna_mode()}")
+        set_dana_mode(get_dana_mode(), as_voice=True)
+        log("Main", f"Voice session mode seeded: {get_dana_mode()}")
     except Exception as exc:  # noqa: BLE001
         log("Main", f"WARNING: voice session mode seed failed: {exc}")
 
@@ -13503,10 +13567,10 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
             get_assistant_language,
             get_whisper_language,
             is_dynamic_tool_synthesis_enabled,
-            load_donna_settings,
+            load_dana_settings,
         )
 
-        load_donna_settings(force_reload=True)
+        load_dana_settings(force_reload=True)
         log(
             "Main",
             f"Language lock: assistant={get_assistant_language()} "
@@ -13592,11 +13656,11 @@ def main() -> int:
 
     # Workspace dirs: logs/tracker/execution_jail/custom_tools + legacy migrate.
     try:
-        from dana.workspace import ensure_donna_workspace
+        from dana.workspace import ensure_dana_workspace
 
-        ensure_donna_workspace(migrate=True)
+        ensure_dana_workspace(migrate=True)
     except Exception as exc:  # noqa: BLE001
-        print(f"[Workspace] WARNING: ensure_donna_workspace failed: {exc}")
+        print(f"[Workspace] WARNING: ensure_dana_workspace failed: {exc}")
 
     # Startup: sweep RESOLVED/FAILED tickets into patch_ledger_archive.md.
     try:
@@ -13620,9 +13684,9 @@ def main() -> int:
     log_path = enable_runtime_file_logging()
     log("Main", f"PROJECT_ROOT={PROJECT_ROOT}")
     try:
-        from dana.paths import DONNA_WORKSPACE
+        from dana.paths import DANA_WORKSPACE
 
-        log("Main", f"DONNA_WORKSPACE={DONNA_WORKSPACE}")
+        log("Main", f"DANA_WORKSPACE={DANA_WORKSPACE}")
     except Exception:
         pass
 
@@ -13649,7 +13713,7 @@ def main() -> int:
     args = parse_args()
 
     if args.reset_vault:
-        reset_donna_vault()
+        reset_dana_vault()
         return 0
 
     log("Main", f"Runtime log -> {log_path}")
@@ -13663,8 +13727,8 @@ def main() -> int:
             get_trace_bus().set_enabled(False)
         except Exception:  # noqa: BLE001
             pass
-        os.environ.setdefault("DONNA_NO_GUI", "1")
-        os.environ.setdefault("DONNA_HEADLESS", "1")
+        os.environ.setdefault("DANA_NO_GUI", "1")
+        os.environ.setdefault("DANA_HEADLESS", "1")
         try:
             from dana.graph.meta_broker_process import start_headless_telemetry_drainer
 
@@ -13675,7 +13739,7 @@ def main() -> int:
         return agent_loop(args)
 
     # Stage 8.9.7 — GUI paints in STANDBY first; heavy agent loop deferred.
-    gui = DonnaGUI()
+    gui = DanaGUI()
     _gui_instance = gui
     # Boot visible by default; honor open_window_on_startup (tray-only when False).
     try:
@@ -13702,7 +13766,7 @@ def main() -> int:
             "Boot",
             "completed",
             "Live Trace UI online (STANDBY — engine unlocked)",
-            mode=get_donna_mode(),
+            mode=get_dana_mode(),
         )
         emit_trace("STT", "idle", "STT: deferred until AgentLoop warm")
         emit_trace("Router", "idle", "Router: waiting for ENGAGE")

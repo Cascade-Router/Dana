@@ -189,7 +189,7 @@ def evaluate_proposals(
     model: str = "qwen2.5-coder:7b",
     temperature: float = 0.1,
 ) -> dict[str, Any]:
-    """Score a Donna batch; return matrix + enforced flag policy."""
+    """Score a Dana batch; return matrix + enforced flag policy."""
     if not proposals:
         return {"evaluations": [], "green_flag": None, "threshold": GREEN_FLAG_THRESHOLD}
 
@@ -240,15 +240,15 @@ def evaluate_proposals(
 # ---------------------------------------------------------------------------
 
 TITAN_SUPERVISOR_PROMPT = """
-You are Titan, the adversarial supervisor for Donna's asynchronous Watchdog agent.
-You receive a monitoring task and a pure-Python script Donna assembled via the
+You are Titan, the adversarial supervisor for Dana's asynchronous Watchdog agent.
+You receive a monitoring task and a pure-Python script Dana assembled via the
 BaseWatchdog Template Method (GeneratedWatchdog with run_self_test + monitor_loop).
 
 Deterministic AST safety (forbidden imports, required methods) already passed.
 Focus on subjective quality only:
 1. Logic — the script must plausibly fulfill the stated monitoring task.
 2. Validation — run_self_test must meaningfully probe assumptions (not a no-op).
-3. TTS alert — monitor_loop should call self.alert(...) (or print '__DONNA_TTS__: …')
+3. TTS alert — monitor_loop should call self.alert(...) (or print '__DANA_TTS__: …')
    when the watch condition is met.
 
 If the script is acceptable, reply with EXACTLY:
@@ -270,8 +270,8 @@ def static_code_safety_reject(code: str) -> str | None:
         return "empty script — nothing to supervise"
 
     # 1. Pre-flight TTS check
-    if "__DONNA_TTS__" not in blob:
-        return "Missing mandatory TTS alert. You must include exactly: print('__DONNA_TTS__: <message>')"
+    if "__DANA_TTS__" not in blob:
+        return "Missing mandatory TTS alert. You must include exactly: print('__DANA_TTS__: <message>')"
 
     # 2. AST parsing for hostile operations
     try:

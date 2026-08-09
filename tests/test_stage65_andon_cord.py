@@ -32,8 +32,8 @@ def test_navigate_missing_target_pulls_andon(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
     """Dry-run: navigate_and_click for absent target → failed + Jason wake."""
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_DISABLE_TOAST", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_DISABLE_TOAST", "1")
     db = tmp_path / "bb.db"
     init_blackboard(db)
     # Screen has no matching Target box (typed OCR topic).

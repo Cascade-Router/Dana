@@ -9,7 +9,7 @@ into a deterministic control agent that:
 * pauses immediately on focus-loss / popup / drastic visual change
 
 Hotkey arming defaults to F9 (Win32 GetAsyncKeyState). Set
-``DONNA_GHOST_SKIP_HOTKEY=1`` for headless/tests. ``DONNA_OS_DRY_RUN=1``
+``DANA_GHOST_SKIP_HOTKEY=1`` for headless/tests. ``DANA_OS_DRY_RUN=1``
 skips real OS injection while still exercising the SEA loop.
 """
 
@@ -44,7 +44,7 @@ _UNSAFE_VISUAL_RE = re.compile(
 
 
 def _dry_run() -> bool:
-    return os.environ.get("DONNA_OS_DRY_RUN", "").strip().lower() in {
+    return os.environ.get("DANA_OS_DRY_RUN", "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -53,7 +53,7 @@ def _dry_run() -> bool:
 
 
 def _skip_hotkey() -> bool:
-    return os.environ.get("DONNA_GHOST_SKIP_HOTKEY", "").strip().lower() in {
+    return os.environ.get("DANA_GHOST_SKIP_HOTKEY", "").strip().lower() in {
         "1",
         "true",
         "yes",

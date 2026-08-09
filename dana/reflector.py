@@ -13,7 +13,7 @@ LESSONS_DOMAIN = "lessons_learned"
 LESSONS_VAULT_KEY = "lessons_learned"
 MAX_LESSONS = 32
 
-REFLECTION_PROMPT = """You are Donna's Execution Critic (offline meta-learning pass).
+REFLECTION_PROMPT = """You are Dana's Execution Critic (offline meta-learning pass).
 Analyze the failed agentic turn and distill EXACTLY ONE concise behavioral rule
 that would prevent repeating this mistake.
 

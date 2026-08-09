@@ -382,7 +382,7 @@ def _epic_py_paths(state: dict[str, Any]) -> list[Path]:
                 continue
             seen.add(key)
             # Skip protected package trees.
-            if rel.startswith(("dana/", "donna_security/", "website/", "legacy/")):
+            if rel.startswith(("dana/", "dana_security/", "website/", "legacy/")):
                 continue
             cand = workspace / rel
             if cand.is_file():

@@ -231,7 +231,7 @@ def _wait_boot(proc: subprocess.Popen, buf: StreamBuffer, deadline: float) -> bo
     needles = (
         "Headless mode: engine auto-ENGAGED",
         "Headless mode (--no-gui)",
-        "=== CAMGRASPER Donna voice agent ===",
+        "=== CAMGRASPER Dana voice agent ===",
         "Noise floor calibrated",
         "Dana is ready",
     )
@@ -547,13 +547,13 @@ def main() -> int:
     _clear_trigger()
 
     env = os.environ.copy()
-    env.setdefault("DONNA_OLLAMA_MODEL", "qwen2.5-coder:7b")
+    env.setdefault("DANA_OLLAMA_MODEL", "qwen2.5-coder:7b")
     env.setdefault("OLLAMA_MODEL", "qwen2.5-coder:7b")
-    env.setdefault("DONNA_LOCAL_MODEL", "qwen2.5-coder:7b")
-    env.setdefault("DONNA_SKIP_BOOT_READY", "1")
+    env.setdefault("DANA_LOCAL_MODEL", "qwen2.5-coder:7b")
+    env.setdefault("DANA_SKIP_BOOT_READY", "1")
     # Host often sits near/above 92% with Chrome; skip abort so epics can run,
     # while suite still samples RAM from MetaBroker health lines + psutil.
-    env["DONNA_SKIP_RAM_BREAKER"] = "1"
+    env["DANA_SKIP_RAM_BREAKER"] = "1"
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("PYTHONIOENCODING", "utf-8")
 

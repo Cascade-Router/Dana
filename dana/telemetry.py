@@ -1,9 +1,9 @@
-"""Donna telemetry: live dashboard + tagged JSONL structured logger.
+"""Dana telemetry: live dashboard + tagged JSONL structured logger.
 
 Dashboard (``CAMGRASPER/dashboard.md``):
   A daemon thread refreshes the markdown table every ~45 seconds.
 
-Tagged telemetry (``CAMGRASPER/logs/donna_telemetry.jsonl``):
+Tagged telemetry (``CAMGRASPER/logs/dana_telemetry.jsonl``):
   Queryable JSON lines with bureaucratic tags:
   ``[VOICE_ASR]``, ``[ROUTER]``, ``[REASONING_TRACE]``, ``[TOOL_EXECUTION]``, ``[HANDOFF]``.
 """
@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from dana.paths import DASHBOARD_PATH, DONNA_WORKSPACE, LOGS_DIR
+from dana.paths import DASHBOARD_PATH, DANA_WORKSPACE, LOGS_DIR
 
 _LOCK = threading.Lock()
 _STATUS = "Healthy"
@@ -33,7 +33,7 @@ _DASHBOARD_STOP = threading.Event()
 DASHBOARD_INTERVAL_SEC = 45.0
 
 # --- Tagged JSONL telemetry (Module 1) ---
-TELEMETRY_JSONL_PATH: Path = LOGS_DIR / "donna_telemetry.jsonl"
+TELEMETRY_JSONL_PATH: Path = LOGS_DIR / "dana_telemetry.jsonl"
 TelemetryTag = Literal[
     "VOICE_ASR",
     "ROUTER",
@@ -70,7 +70,7 @@ def cascade_latency_threshold_ms() -> float:
     try:
         return max(
             1000.0,
-            float(os.environ.get("DONNA_CASCADE_LATENCY_THRESHOLD_MS", "120000") or "120000"),
+            float(os.environ.get("DANA_CASCADE_LATENCY_THRESHOLD_MS", "120000") or "120000"),
         )
     except ValueError:
         return 120000.0
@@ -123,7 +123,7 @@ def _bug_counts() -> tuple[int, int]:
         return 0, 0
 
 
-def _resolve_donna_pid(explicit: int | None = None) -> int:
+def _resolve_dana_pid(explicit: int | None = None) -> int:
     if explicit:
         return int(explicit)
     # Prefer the live singleton listener on :47474 over this process (monitor scripts
@@ -157,14 +157,14 @@ def write_dashboard(
     pid: int | None = None,
 ) -> str:
     """Overwrite ``CAMGRASPER/dashboard.md`` with a clean status table."""
-    DONNA_WORKSPACE.mkdir(parents=True, exist_ok=True)
+    DANA_WORKSPACE.mkdir(parents=True, exist_ok=True)
     with _LOCK:
         cur_status = status or _STATUS
         recent = list(_RECENT_TOOLS)
         cascade_ms = _CASCADE_LAT_MS
         cascade_model = _CASCADE_MODEL
         cascade_over = _CASCADE_OVER_THRESHOLD
-    cur_pid = _resolve_donna_pid(pid)
+    cur_pid = _resolve_dana_pid(pid)
     pending, patched = _bug_counts()
     tools_cell = ", ".join(recent) if recent else "—"
     thr = cascade_latency_threshold_ms()
@@ -176,7 +176,7 @@ def write_dashboard(
         cascade_cell = f"{cascade_ms:.0f} ms{model_bit} (threshold {thr:.0f} ms){flag}"
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     body = (
-        "# Donna Live Telemetry\n\n"
+        "# Dana Live Telemetry\n\n"
         f"_Updated: {stamp}_\n\n"
         "| Field | Value |\n"
         "| --- | --- |\n"
@@ -215,7 +215,7 @@ def start_dashboard_thread() -> None:
     _DASHBOARD_STOP.clear()
     _DASHBOARD_THREAD = threading.Thread(
         target=_dashboard_loop,
-        name="DonnaDashboard",
+        name="DanaDashboard",
         daemon=True,
     )
     _DASHBOARD_THREAD.start()
@@ -257,7 +257,7 @@ def emit_tagged(
     payload: dict[str, Any] | None = None,
     latency_ms: float | None = None,
 ) -> dict[str, Any]:
-    """Append one structured JSON line to ``logs/donna_telemetry.jsonl``.
+    """Append one structured JSON line to ``logs/dana_telemetry.jsonl``.
 
     Tags are written as ``[VOICE_ASR]``-style strings for greppable diagnostics.
     """
@@ -270,7 +270,7 @@ def emit_tagged(
         "current_agent": (current_agent or "").strip(),
         "active_intent": (active_intent or "").strip(),
         "pid": os.getpid(),
-        "workspace": str(DONNA_WORKSPACE),
+        "workspace": str(DANA_WORKSPACE),
     }
     if latency_ms is not None:
         try:

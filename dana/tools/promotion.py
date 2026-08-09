@@ -28,7 +28,7 @@ from dana.tools.schema import ToolParameterSpec, ToolSpec
 _TOOL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 _FENCE_RE = re.compile(r"```(?:python)?\s*([\s\S]*?)```", re.I)
 
-SCRUB_SYSTEM = """You are Donna's tool promotion scrubber.
+SCRUB_SYSTEM = """You are Dana's tool promotion scrubber.
 You receive Python source for a custom tool that will be committed to a shared
 general-purpose library. Remove ALL personal / machine-specific data:
 
@@ -36,7 +36,7 @@ general-purpose library. Remove ALL personal / machine-specific data:
 - Absolute Windows/Unix home paths (C:\\Users\\..., /Users/..., /home/...)
 - IP addresses, hostnames, MAC addresses
 - API keys, tokens, passwords, vault secrets
-- Specific Desktop/Donna absolute paths — prefer relative or generic names
+- Specific Desktop/Dana absolute paths — prefer relative or generic names
 
 Keep the tool functionally equivalent. Preserve the public function name.
 Output ONLY the scrubbed Python module source. No markdown fences. No commentary.
@@ -101,16 +101,16 @@ def _deterministic_scrub(code: str) -> str:
     )
     out = re.sub(r"/Users/[^/\s\"']+", "/<USER_HOME>", out)
     out = re.sub(r"/home/[^/\s\"']+", "/<USER_HOME>", out)
-    # Desktop/Donna absolute workspace paths → generic relative hint
+    # Desktop/Dana absolute workspace paths → generic relative hint
     out = re.sub(
-        r"[A-Za-z]:\\Users\\[^\\\s\"']+\\Desktop\\Donna",
-        r"<DONNA_WORKSPACE>",
+        r"[A-Za-z]:\\Users\\[^\\\s\"']+\\Desktop\\Dana",
+        r"<DANA_WORKSPACE>",
         out,
         flags=re.I,
     )
     out = re.sub(
-        r"/Users/[^/\s\"']+/Desktop/Donna",
-        "/<DONNA_WORKSPACE>",
+        r"/Users/[^/\s\"']+/Desktop/Dana",
+        "/<DANA_WORKSPACE>",
         out,
     )
     # Private / local network IPv4

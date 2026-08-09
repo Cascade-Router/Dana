@@ -60,7 +60,7 @@ def test_append_persona_mixer_refreshes(tmp_path: Path) -> None:
     db = tmp_path / "bb.db"
     init_blackboard(db)
     set_persona_trait("humor", 10, db_path=db)
-    p1 = append_persona_mixer_override("You are Donna.", db_path=db)
+    p1 = append_persona_mixer_override("You are Dana.", db_path=db)
     assert p1.count("[SYSTEM OVERRIDE:") == 1
     set_persona_trait("humor", 100, db_path=db)
     p2 = append_persona_mixer_override(p1, db_path=db)
@@ -118,7 +118,7 @@ def test_persona_mixer_gui_writes_on_apply(tmp_path: Path, monkeypatch) -> None:
     """Headless GUI apply_values path (no mainloop)."""
     db = tmp_path / "bb.db"
     init_blackboard(db)
-    monkeypatch.setenv("DONNA_DISABLE_TOAST", "1")
+    monkeypatch.setenv("DANA_DISABLE_TOAST", "1")
     try:
         from dana.ui.persona_mixer import PersonaMixerApp
     except Exception as exc:  # noqa: BLE001

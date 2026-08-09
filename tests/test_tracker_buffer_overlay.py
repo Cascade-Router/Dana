@@ -45,7 +45,7 @@ def test_map_box_to_screen() -> None:
 
 
 def test_roi_overlay_update_clear(monkeypatch) -> None:
-    monkeypatch.setenv("DONNA_DEBUG_VISION", "1")
+    monkeypatch.setenv("DANA_DEBUG_VISION", "1")
     ov = RoiOverlay()
     ov.start()
     assert ov._ready.wait(timeout=3.0)

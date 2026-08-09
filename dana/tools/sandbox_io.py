@@ -4,7 +4,7 @@
 
 Generated tools MUST call ``sandbox_read(filepath)`` instead of native ``open()``.
 
-Reads are restricted to ``DONNA_WORKSPACE/execution_jail`` (CAMGRASPER/execution_jail).
+Reads are restricted to ``DANA_WORKSPACE/execution_jail`` (CAMGRASPER/execution_jail).
 
 """
 

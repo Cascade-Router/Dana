@@ -10,7 +10,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END
 
 from dana.agentic_react_graph import (
-    compile_donna_react_graph,
+    compile_dana_react_graph,
     route_after_execution,
     route_after_verifier,
 )
@@ -196,7 +196,7 @@ def test_graph_tools_halt_hits_verifier() -> None:
             "pending_synthesis": False,
         }
 
-    graph = compile_donna_react_graph(
+    graph = compile_dana_react_graph(
         agent,
         tools,
         planner_node_fn=planner,

@@ -51,7 +51,7 @@ def test_moa_reasoner_files_think_and_returns_clean_only(
 ) -> None:  # noqa: ANN001
     db = tmp_path / "bb.db"
     init_blackboard(db)
-    tel = tmp_path / "donna_telemetry.jsonl"
+    tel = tmp_path / "dana_telemetry.jsonl"
     monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", tel)
     monkeypatch.setattr(
         "dana.memory.blackboard.BLACKBOARD_DB_PATH",

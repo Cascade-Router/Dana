@@ -4,13 +4,13 @@ vision bounding boxes.
 Completes the basic UI interaction loop alongside ``mouse_actuator`` (click),
 ``keyboard_actuator`` (type), and ``scroll_actuator`` (wheel): grabs an
 element at a source bounding box and releases it over a destination bounding
-box. No pyautogui/pynput — reuses the existing hardware SendInput backend in
-``dana.tools.os_control`` (``move_cursor_absolute``, ``mouse_down_sendinput``,
+box. No pyautogui/pynput — reuses the existing Win32 ``SendInput`` (ctypes)
+backend in ``dana.tools.os_control`` (``move_cursor_absolute``, ``mouse_down_sendinput``,
 ``mouse_up_sendinput``), sending move-to-source -> mouse down -> a short
 sequence of human-cadenced intermediate moves -> mouse up at the destination.
 
 Safety:
-  - ``DONNA_OS_DRY_RUN=1`` skips the real SendInput calls but still runs
+  - ``DANA_OS_DRY_RUN=1`` skips the real SendInput calls but still runs
     every validation/rate-limit check, so dry-run exercises the full safety
     path.
   - Failsafe: aborts with no motion at all if either computed point (source
@@ -47,7 +47,7 @@ _last_actuation_ts = 0.0
 
 
 def _dry_run() -> bool:
-    return os.environ.get("DONNA_OS_DRY_RUN", "").strip().lower() in {
+    return os.environ.get("DANA_OS_DRY_RUN", "").strip().lower() in {
         "1",
         "true",
         "yes",

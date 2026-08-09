@@ -65,7 +65,7 @@ def evaluate_slide_and_type(
     delay = (
         float(focus_delay_sec)
         if focus_delay_sec is not None
-        else float(os.environ.get("DONNA_SLIDE_FOCUS_DELAY", _FOCUS_DELAY_DEFAULT))
+        else float(os.environ.get("DANA_SLIDE_FOCUS_DELAY", _FOCUS_DELAY_DEFAULT))
     )
     delay = max(0.0, min(delay, 5.0))
 
@@ -125,7 +125,7 @@ def evaluate_slide_and_type(
 
     if dry_run is True or (
         dry_run is None
-        and os.environ.get("DONNA_OS_DRY_RUN", "").strip().lower() in ("1", "true", "yes")
+        and os.environ.get("DANA_OS_DRY_RUN", "").strip().lower() in ("1", "true", "yes")
     ):
         return (
             f"OK: evaluate_slide_and_type dry_run route={route}\n"

@@ -18,7 +18,7 @@
       "total_score": 92,
       "flag": "green",
       "status": "deployed",
-      "module": "donna_tools/plugins/naming_fix.py",
+      "module": "dana_tools/plugins/naming_fix.py",
       "deployed_at": "2026-07-13T19:35:00+00:00",
       "round": "round1_baseline",
       "appended_at": "2026-07-13T19:27:20.975775+00:00"
@@ -40,7 +40,7 @@
       "total_score": 97,
       "flag": "green",
       "status": "deployed",
-      "module": "donna_tools/plugins/file_jail_enforcer.py",
+      "module": "dana_tools/plugins/file_jail_enforcer.py",
       "deployed_at": "2026-07-13T20:10:00+00:00",
       "round": "round2_docs_capabilities",
       "appended_at": "2026-07-13T20:04:17.357064+00:00"

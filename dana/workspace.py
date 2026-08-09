@@ -1,7 +1,7 @@
 """CAMGRASPER workspace bootstrap + one-shot legacy migration.
 
 Ensures ``CAMGRASPER/{logs,tracker,sandbox,custom_tools,cursor_handoffs,captures}``
-exist (``DONNA_WORKSPACE`` == repo root) and migrates prior artifacts without data loss.
+exist (``DANA_WORKSPACE`` == repo root) and migrates prior artifacts without data loss.
 """
 
 
@@ -36,7 +36,7 @@ from dana.paths import (
 
     CUSTOM_TOOLS_DIR,
 
-    DONNA_WORKSPACE,
+    DANA_WORKSPACE,
 
     DOCS_DIR,
 
@@ -54,7 +54,7 @@ from dana.paths import (
 
     REPO_CUSTOM_TOOLS_DIR,
 
-    DONNA_SECURITY_DIR,
+    DANA_SECURITY_DIR,
 
     EXECUTION_JAIL_DIR,
 
@@ -62,8 +62,6 @@ from dana.paths import (
 
     TASK_QUEUE_PATH,
     TEXT_INJECTION_PATH,
-
-    TRACKER_DIR,
 
     WORKSPACE_MIGRATION_MARKER,
 
@@ -205,11 +203,11 @@ def _safe_move_tree_files(src_dir: Path, dst_dir: Path, *, pattern: str = "*") -
 
 def write_workspace_readme() -> None:
 
-    readme = DONNA_WORKSPACE / "README.md"
+    readme = DANA_WORKSPACE / "README.md"
 
-    body = """# Donna Workspace (CAMGRASPER)
+    body = """# Dana Workspace (CAMGRASPER)
 
-Repo root is the runtime workspace (`DONNA_WORKSPACE == PROJECT_ROOT`).
+Repo root is the runtime workspace (`DANA_WORKSPACE == PROJECT_ROOT`).
 
 | Folder | Contents |
 |--------|----------|
@@ -218,7 +216,7 @@ Repo root is the runtime workspace (`DONNA_WORKSPACE == PROJECT_ROOT`).
 | `execution_jail/` | Filesystem jail (`task_queue.json`, `library/`, fixture copies). Not the Python package. |
 | `dana_security/` | Importable security package + `patch_ledger.md` |
 | `custom_tools/` | Sole Tool Forge write/load root (ephemeral; wiped on context reset) |
-| `cursor_handoffs/` | `donna_handoff.md` (mirrored into `.cursor/instructions/`) |
+| `cursor_handoffs/` | `dana_handoff.md` (mirrored into `.cursor/instructions/`) |
 | `captures/` | Screen captures from OS computer-use |
 | `_archive/` | Unused legacy snapshots (not loaded at runtime) |
 
@@ -340,7 +338,7 @@ def ensure_repo_custom_tools_package() -> Path:
 
 def ensure_cursor_handoff_mirror() -> None:
 
-    """Keep project ``.cursor/instructions/donna_handoff.md`` linked/copied to workspace."""
+    """Keep project ``.cursor/instructions/dana_handoff.md`` linked/copied to workspace."""
 
     CURSOR_HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -452,7 +450,7 @@ def _migrate_desktop_generated_to_custom() -> list[str]:
 
 def migrate_legacy_artifacts() -> dict[str, Any]:
 
-    """One-shot move of prior CAMGRASPER artifacts into ``DONNA_WORKSPACE``.
+    """One-shot move of prior CAMGRASPER artifacts into ``DANA_WORKSPACE``.
 
 
 
@@ -480,10 +478,10 @@ def migrate_legacy_artifacts() -> dict[str, Any]:
 
     legacy_logs = PROJECT_ROOT / "logs"
 
-    for name in ("dana_runtime.log", "dana_conversation.log", "donna_runtime.log", "donna_conversation.log"):
+    for name in ("dana_runtime.log", "dana_conversation.log", "dana_runtime.log", "dana_conversation.log"):
 
-        if name.startswith("donna_"):
-            modern = name.replace("donna_", "dana_", 1)
+        if name.startswith("dana_"):
+            modern = name.replace("dana_", "dana_", 1)
             if _safe_move_file(legacy_logs / name, LOGS_DIR / modern):
                 report["moved"].append(f"logs/{modern}")
             elif _safe_move_file(LOGS_DIR / name, LOGS_DIR / modern):
@@ -514,11 +512,11 @@ def migrate_legacy_artifacts() -> dict[str, Any]:
 
     # Cursor handoff
 
-    legacy_handoff = PROJECT_ROOT / ".cursor" / "instructions" / "donna_handoff.md"
+    legacy_handoff = PROJECT_ROOT / ".cursor" / "instructions" / "dana_handoff.md"
 
     if _safe_move_file(legacy_handoff, CURSOR_HANDOFF_PATH):
 
-        report["moved"].append("cursor_handoffs/donna_handoff.md")
+        report["moved"].append("cursor_handoffs/dana_handoff.md")
 
 
 
@@ -566,7 +564,7 @@ def migrate_legacy_artifacts() -> dict[str, Any]:
 
     # Legacy jail library misplaced under the security package (do NOT move package code).
 
-    legacy_lib = DONNA_SECURITY_DIR / "library"
+    legacy_lib = DANA_SECURITY_DIR / "library"
 
     n_lib = _safe_move_tree_files(legacy_lib, EXECUTION_JAIL_LIBRARY_DIR, pattern="*.py")
 
@@ -622,7 +620,7 @@ def _migrate_renamed_workspace_roots() -> None:
     """Rename pre-collision roots if they still exist on disk."""
     pairs = (
         (PROJECT_ROOT / "sandbox", EXECUTION_JAIL_DIR),
-        (PROJECT_ROOT / "donna_sandbox", DONNA_SECURITY_DIR),
+        (PROJECT_ROOT / "donna_sandbox", DANA_SECURITY_DIR),  # legacy source dir name kept intentionally
     )
     for src, dst in pairs:
         try:
@@ -635,11 +633,11 @@ def _migrate_renamed_workspace_roots() -> None:
             pass
 
 
-def ensure_donna_workspace(*, migrate: bool = True) -> Path:
+def ensure_dana_workspace(*, migrate: bool = True) -> Path:
 
     """Create CAMGRASPER workspace trees, migrate legacy artifacts, prepare forge imports."""
 
-    DONNA_WORKSPACE.mkdir(parents=True, exist_ok=True)
+    DANA_WORKSPACE.mkdir(parents=True, exist_ok=True)
 
     _migrate_renamed_workspace_roots()
 
@@ -687,7 +685,7 @@ def ensure_donna_workspace(*, migrate: bool = True) -> Path:
 
         if moved:
 
-            _log(f"Migrated {len(moved)} artifact group(s) → {DONNA_WORKSPACE}")
+            _log(f"Migrated {len(moved)} artifact group(s) → {DANA_WORKSPACE}")
 
             for item in moved:
 
@@ -695,11 +693,11 @@ def ensure_donna_workspace(*, migrate: bool = True) -> Path:
 
         else:
 
-            _log(f"Workspace ready at {DONNA_WORKSPACE}")
+            _log(f"Workspace ready at {DANA_WORKSPACE}")
 
     else:
 
-        _log(f"Workspace ready at {DONNA_WORKSPACE} (migration skipped)")
+        _log(f"Workspace ready at {DANA_WORKSPACE} (migration skipped)")
 
 
 
@@ -721,6 +719,6 @@ def ensure_donna_workspace(*, migrate: bool = True) -> Path:
 
 
 
-    return DONNA_WORKSPACE
+    return DANA_WORKSPACE
 
 

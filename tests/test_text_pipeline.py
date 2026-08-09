@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Headless text-integration harness for Donna (no mic / Whisper / VAD).
+"""Headless text-integration harness for Dana (no mic / Whisper / VAD).
 
 Bypasses InputStream + STT and injects raw strings into the broker / tool_router
 and deep-research swarm orchestration. Also enforces the 100-line runtime log
@@ -79,7 +79,7 @@ def _fail(msg: str) -> None:
 
 def turn1_titan_watchdog() -> None:
     print("\n=== Turn 1: Titan initiative -> dispatch_watchdog ===")
-    raw = "Donna, activate the Titan initiative and watch for Notepad."
+    raw = "Dana, activate the Titan initiative and watch for Notepad."
     cleaned, call = _broker_route(raw)
     print(f"  cleaned={cleaned!r}")
     print(f"  routed={None if call is None else (call.tool_id, call.arguments)}")
@@ -127,7 +127,7 @@ def turn1_titan_watchdog() -> None:
 
 def turn2_deep_research_swarm() -> None:
     print("\n=== Turn 2: Deep research swarm layout ===")
-    raw = "Donna, write a comprehensive report on robots navigating a maze."
+    raw = "Dana, write a comprehensive report on robots navigating a maze."
     cleaned, call = _broker_route(raw)
     print(f"  cleaned={cleaned!r}")
     print(f"  routed={None if call is None else (call.tool_id, call.arguments)}")
@@ -588,7 +588,7 @@ def _run_forge_turn(
 def turn4_describe_images_forge() -> None:
     print("\n=== Turn 4: Describe Images Tool Forge ===")
     _run_forge_turn(
-        raw="Donna, describe the contents of the image located at docs/sample_photo.jpg.",
+        raw="Dana, describe the contents of the image located at docs/sample_photo.jpg.",
         made_up_tool_name="describe_image_contents",
         filepath_arg="docs/sample_photo.jpg",
         expected_tool_id="describe_images_forge",
@@ -600,7 +600,7 @@ def turn4_describe_images_forge() -> None:
 def turn5_aesthetics_grasp_forge() -> None:
     print("\n=== Turn 5: Aesthetics Grasp Tool Forge ===")
     _run_forge_turn(
-        raw="Donna, evaluate the visual aesthetics and color palette of docs/design_concept.jpg.",
+        raw="Dana, evaluate the visual aesthetics and color palette of docs/design_concept.jpg.",
         made_up_tool_name="evaluate_visual_aesthetics",
         filepath_arg="docs/design_concept.jpg",
         expected_tool_id="aesthetics_grasp_forge",
@@ -615,7 +615,7 @@ def turn5_aesthetics_grasp_forge() -> None:
 
 
 def main() -> int:
-    print("Donna headless text-integration suite")
+    print("Dana headless text-integration suite")
     print("=" * 60)
     try:
         _ensure_runtime_log_clipped()

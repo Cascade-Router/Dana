@@ -5,7 +5,7 @@ ARCHITECTURAL TICKETS, AND SELF-IMPROVEMENT REQUESTS. This is the only
 authorized tool for logging code changes.
 
 Writes structured tickets for the human to execute in Cursor.
-Does **not** mutate Donna's live core memory or apply patches in-process.
+Does **not** mutate Dana's live core memory or apply patches in-process.
 
 Ledger path (repo-rooted): ``CAMGRASPER/dana_security/patch_ledger.md``
 """
@@ -20,7 +20,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 _SUCCESS_MSG = "Ticket added to patch_ledger.md. Status is PENDING."
-_LEDGER_HEADER = "# Donna Patch Ledger\n"
+_LEDGER_HEADER = "# Dana Patch Ledger\n"
 _WRITE_ERROR_MSG = "Error writing to ledger"
 _REJECT_AMBIGUOUS_MSG = (
     "Error: Draft rejected. Context must include concrete target files or symbols "
@@ -118,9 +118,9 @@ class DraftCursorPromptArgs(BaseModel):
 def _ledger_path() -> Path:
     """Resolve ``dana_security/patch_ledger.md`` under the CAMGRASPER project root."""
     try:
-        from dana.paths import DONNA_SECURITY_DIR, PATCH_LEDGER_PATH, PROJECT_ROOT
+        from dana.paths import DANA_SECURITY_DIR, PATCH_LEDGER_PATH, PROJECT_ROOT
 
-        DONNA_SECURITY_DIR.mkdir(parents=True, exist_ok=True)
+        DANA_SECURITY_DIR.mkdir(parents=True, exist_ok=True)
         path = Path(PATCH_LEDGER_PATH)
         root = Path(PROJECT_ROOT).resolve()
         try:
@@ -230,7 +230,7 @@ def draft_cursor_prompt(
         context: Expanded developer ticket body (>50 chars). File paths optional.
 
     Returns:
-        A short status string for Donna TTS / MoA. Never raises into the
+        A short status string for Dana TTS / MoA. Never raises into the
         parent agent runtime graph.
     """
     # Ignore legacy target_files if a stale caller still passes it — schema forbids it.

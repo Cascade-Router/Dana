@@ -1,4 +1,4 @@
-"""End-to-end lifecycle stress test for Donna agentic upgrade.
+"""End-to-end lifecycle stress test for Dana agentic upgrade.
 
 Simulates: Vault daemon → wake → English STT → ReAct → write_vault_memory →
 English SpatialIR synthesis → English TTS, with RAM/VRAM profiling.
@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import Any
 
 # Isolate E2E vault daemon from any production instance on 47475.
-os.environ.setdefault("DONNA_VAULT_PORT", "47476")
+os.environ.setdefault("DANA_VAULT_PORT", "47476")
 # Never touch the real OS input stack during E2E.
-os.environ["DONNA_OS_DRY_RUN"] = "1"
+os.environ["DANA_OS_DRY_RUN"] = "1"
 
 import psutil  # noqa: E402
 
@@ -308,7 +308,7 @@ def _force_max_iter_and_gc(report: E2EReport) -> None:
     _install_script(ask_fn)
     result = run_react_loop(
         user_text="what do you see",
-        system_prompt="You are Donna. Reply FINAL only after tools.",
+        system_prompt="You are Dana. Reply FINAL only after tools.",
         execute_fn=execute_fn,
         max_iters=REACT_MAX_ITERS,
         broker=IntentBroker())
@@ -457,12 +457,12 @@ def _run_tool_synthesis(report: E2EReport) -> None:
         architect_new_tool,
         execute_dynamic_tool,
         validate_ast)
-    from dana.settings import load_donna_settings
+    from dana.settings import load_dana_settings
     from dana.tools.broker import IntentBroker, reload_broker_registry
     from dana.tools.schema import ToolCall
 
     # Production lock must block synthesis when flag is false.
-    load_donna_settings(force_reload=True)
+    load_dana_settings(force_reload=True)
     locked = architect_new_tool(
         "should_not_exist",
         "def should_not_exist(text):\n    return text\n")
@@ -477,7 +477,7 @@ def _run_tool_synthesis(report: E2EReport) -> None:
     # Temporarily enable for sandbox verification, then restore.
     import dana.settings as ds
 
-    prev = dict(ds.load_donna_settings())
+    prev = dict(ds.load_dana_settings())
     ds._CACHE = {**prev, "enable_dynamic_tool_synthesis": True}
 
     try:
@@ -526,13 +526,13 @@ def _run_tool_synthesis(report: E2EReport) -> None:
 
     # Restore production lock.
     ds._CACHE = prev
-    load_donna_settings(force_reload=True)
+    load_dana_settings(force_reload=True)
 
 
 def run_e2e() -> E2EReport:
     report = E2EReport(ok=False)
     daemon: VaultKeyDaemon | None = None
-    tmpdir = tempfile.mkdtemp(prefix="donna_e2e_")
+    tmpdir = tempfile.mkdtemp(prefix="dana_e2e_")
     vault_path = os.path.join(tmpdir, "e2e_memory.enc")
     wav_path = Path(tmpdir) / "e2e_en.wav"
 
@@ -615,7 +615,7 @@ def run_e2e() -> E2EReport:
 
 
 def main() -> int:
-    print(f"[E2E] DONNA_VAULT_PORT={_vault_port()}", flush=True)
+    print(f"[E2E] DANA_VAULT_PORT={_vault_port()}", flush=True)
     report = run_e2e()
     summary = {
         "ok": report.ok,

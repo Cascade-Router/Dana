@@ -35,13 +35,13 @@ This matches `website/src/utils/hf_api.ts` (Astro global chat).
 | `GROQ_API_KEY` | Alt | Auto-wires Groq OpenAI-compatible base URL |
 | `DEEPSEEK_API_KEY` | Alt | Auto-wires `https://api.deepseek.com/v1` |
 | `ANTHROPIC_API_KEY` | Optional | Reserved for future Anthropic cascade |
-| `DONNA_CLOUD_MODEL` | Optional | Model id (default `gpt-4o-mini` or provider default) |
-| `OPENAI_BASE_URL` / `DONNA_OPENAI_BASE_URL` | Optional | Custom OpenAI-compatible endpoint |
+| `DANA_CLOUD_MODEL` | Optional | Model id (default `gpt-4o-mini` or provider default) |
+| `OPENAI_BASE_URL` / `DANA_OPENAI_BASE_URL` | Optional | Custom OpenAI-compatible endpoint |
 | `OLLAMA_URL` | Optional | Remote Ollama instead of cloud LLM |
-| `DONNA_VAULT_KEY` | Optional | Avoids interactive vault unlock (default ephemeral) |
-| `DONNA_HITL_AUTO_APPROVE` | Auto-set | `1` — Spaces have no HITL GUI |
-| `DONNA_OS_DRY_RUN` | Auto-set | `1` — no desktop keystrokes |
-| `DONNA_CLOUD` | Auto-set | `1` — enables mocks |
+| `DANA_VAULT_KEY` | Optional | Avoids interactive vault unlock (default ephemeral) |
+| `DANA_HITL_AUTO_APPROVE` | Auto-set | `1` — Spaces have no HITL GUI |
+| `DANA_OS_DRY_RUN` | Auto-set | `1` — no desktop keystrokes |
+| `DANA_CLOUD` | Auto-set | `1` — enables mocks |
 
 At least one LLM path must work: **OpenAI / Groq / DeepSeek key** **or** a reachable **`OLLAMA_URL`**.
 
@@ -58,8 +58,8 @@ Vision (`analyze_visual_context`, `ocr_with_region`) and desktop actuators
 
 ```bash
 pip install -r deploy/requirements.txt
-# plus your preferred venv with the Donna package importable
-set DONNA_CLOUD=1
+# plus your preferred venv with the Dana package importable
+set DANA_CLOUD=1
 set OPENAI_API_KEY=sk-...
 python deploy/hf_app.py
 # open http://127.0.0.1:7860 — or curl:

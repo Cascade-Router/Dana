@@ -7,7 +7,7 @@ Runs three deterministic tasks **without** live cloud LLMs / desktop UIA:
 2. Multi-window UIA inspection (mocked UIA provider / injected tree)
 3. REPL 90th-percentile latency with inline pytest assertions
 
-Each task compiles a stubbed Donna ReAct graph (mocked agent/tools) that still
+Each task compiles a stubbed Dana ReAct graph (mocked agent/tools) that still
 routes through the real ``verifier_node`` + ``TaskTracker`` protocol.
 
 Usage (from repo root)::
@@ -104,7 +104,7 @@ def _run_offline_graph(
     from langchain_core.messages import AIMessage, HumanMessage
     from langgraph.checkpoint.memory import MemorySaver
 
-    from dana.agentic_react_graph import compile_donna_react_graph
+    from dana.agentic_react_graph import compile_dana_react_graph
     from dana.graph.nodes.verifier import make_verifier_node
     from dana.schema import ReactGraphState
 
@@ -183,7 +183,7 @@ def _run_offline_graph(
         path.append("consolidate_memory")
         return {"current_agent": "MemoryConsolidate"}
 
-    graph = compile_donna_react_graph(
+    graph = compile_dana_react_graph(
         agent,
         tools,
         planner_node_fn=planner,

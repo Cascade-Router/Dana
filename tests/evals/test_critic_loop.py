@@ -8,8 +8,8 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from dana.agentic import set_donna_mode
-from dana.agentic_react_graph import compile_donna_react_graph, route_after_execution
+from dana.agentic import set_dana_mode
+from dana.agentic_react_graph import compile_dana_react_graph, route_after_execution
 from dana.graph.nodes.critic import (
     fail_closed_node,
     heuristic_critique,
@@ -22,9 +22,9 @@ from dana.schema import ReactGraphState
 
 @pytest.fixture(autouse=True)
 def _chat_mode() -> None:
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     yield
-    set_donna_mode("chat")
+    set_dana_mode("chat")
 
 
 def _tool_call_msg(name: str, args: dict[str, Any] | None = None) -> AIMessage:
@@ -146,7 +146,7 @@ def test_critic_loop_self_heals_within_two_retries() -> None:
         path.append("critic")
         return critic(state)
 
-    graph = compile_donna_react_graph(
+    graph = compile_dana_react_graph(
         agent,
         tools,
         planner_node_fn=planner,
@@ -251,7 +251,7 @@ def test_fail_closed_after_max_retries() -> None:
             ],
         }
 
-    graph = compile_donna_react_graph(
+    graph = compile_dana_react_graph(
         agent,
         tools,
         planner_node_fn=planner,

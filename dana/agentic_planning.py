@@ -68,8 +68,8 @@ _TICKET_PLAN_RE = re.compile(
     re.IGNORECASE,
 )
 
-_DONNA_TITLE_MARKERS = (
-    "donna",
+_DANA_TITLE_MARKERS = (
+    "dana",
     "dānā",
     "dana",
     "control dashboard",
@@ -111,7 +111,7 @@ def hydrate_tool_catalog(*, limit: int = 24) -> list[str]:
 
 
 def active_window_metadata() -> dict[str, Any]:
-    """Best-effort foreground window info; excludes Donna's own UI titles."""
+    """Best-effort foreground window info; excludes Dana's own UI titles."""
     meta: dict[str, Any] = {
         "platform": sys.platform,
         "title": "",
@@ -139,10 +139,10 @@ def active_window_metadata() -> dict[str, Any]:
         meta["pid"] = int(pid.value) if pid.value else None
         meta["available"] = True
         low = title.lower()
-        if any(m in low for m in _DONNA_TITLE_MARKERS):
+        if any(m in low for m in _DANA_TITLE_MARKERS):
             meta["excluded_self"] = True
             meta["title"] = ""
-            meta["note"] = "Foreground window is Donna UI — ignored for planning."
+            meta["note"] = "Foreground window is Dana UI — ignored for planning."
     except Exception as exc:  # noqa: BLE001
         meta["error"] = type(exc).__name__
     return meta
@@ -235,7 +235,7 @@ def build_structured_plan(
     if title:
         env_bits.append(f"Active window title: {title}")
     elif window.get("excluded_self"):
-        env_bits.append("Active window is Donna UI (excluded); use screen capture tools.")
+        env_bits.append("Active window is Dana UI (excluded); use screen capture tools.")
     else:
         env_bits.append("Active window title unavailable; prefer screen capture tools.")
     if tools:

@@ -5,12 +5,12 @@ from __future__ import annotations
 
 def test_header_pill_only_and_accent() -> None:
     from dana.core_agent import (
-        DonnaGUI,
+        DanaGUI,
         _UI_ACCENT,
         _TRACE_STATUS_ICONS,
     )
 
-    app = DonnaGUI()
+    app = DanaGUI()
     try:
         # No redundant brand / plain Mode label — mode_badge itself was later
         # removed as a further dedupe (see core_agent.py: "removed redundant
@@ -33,7 +33,7 @@ def test_header_pill_only_and_accent() -> None:
         assert _TRACE_STATUS_ICONS["active"] == "[~]"
         assert "✅" not in _TRACE_STATUS_ICONS.values()
 
-        # DonnaGUI auto-engages the engine on construction (see
+        # DanaGUI auto-engages the engine on construction (see
         # engage_engine() called from _build_unified_canvas), which locks
         # the Behavior Mixer immediately — so the hint shows the
         # locked/amber state, not the old standby/gray default.

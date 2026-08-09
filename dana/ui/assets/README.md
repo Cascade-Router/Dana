@@ -1,4 +1,4 @@
-# Donna UI Assets
+# Dana UI Assets
 
 Brand icons are centralized at the project root:
 

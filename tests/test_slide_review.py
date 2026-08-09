@@ -13,7 +13,7 @@ from dana.tools.slide_review import _format_comment, _parse_reasoner_output, eva
 
 
 INJECT = (
-    "Donna, I need you to evaluate the slide on my screen. "
+    "Dana, I need you to evaluate the slide on my screen. "
     "Check if it follows the rule of having a clear title and less than 30 words. "
     "Then, type your evaluation summary directly into my active window."
 )
@@ -48,7 +48,7 @@ def test_format_and_parse() -> None:
 
 
 def test_pipeline_dry_run_moa(monkeypatch) -> None:
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
 
     monkeypatch.setattr(
         "dana.tools.os_control.capture_screen_png_bytes",

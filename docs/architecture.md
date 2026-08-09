@@ -137,7 +137,7 @@ Implemented at process entry in `run.py` before `core_agent.main()`:
 - First instance holds the socket for the process lifetime.
 - Second instance prints:
 
-  `[Main] ERROR: Another instance of Donna is already running. Aborting to protect execution jail.`
+  `[Main] ERROR: Another instance of Dana is already running. Aborting to protect execution jail.`
 
   and exits with code `1`.
 
@@ -164,7 +164,7 @@ Headless E2E and Startup-registered `pythonw` launches make multi-instance races
 
 | Thread / owner | Responsibility |
 |----------------|----------------|
-| Tk main (`DonnaGUI.mainloop`) | Live Trace + settings; only thread that mutates widgets (legacy class name) |
+| Tk main (`DanaGUI.mainloop`) | Live Trace + settings; only thread that mutates widgets (legacy class name) |
 | AgentLoop | Wake/VAD/Whisper/brain/TTS orchestration |
 | MicIngest | Mic producer |
 | InputIngest watcher | `input.txt` → queue |

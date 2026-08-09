@@ -413,7 +413,7 @@ def ensure_dynamic_package() -> None:
     DYNAMIC_DIR.mkdir(parents=True, exist_ok=True)
     init_path = DYNAMIC_DIR / "__init__.py"
     if not init_path.is_file():
-        init_path.write_text('"""Dynamically synthesized Donna tools."""\n', encoding="utf-8")
+        init_path.write_text('"""Dynamically synthesized Dana tools."""\n', encoding="utf-8")
     if not GENERATED_TOOLS_PATH.is_file():
         GENERATED_TOOLS_PATH.write_text(
             '"""Auto-generated tools (architect_new_tool). Do not edit by hand."""\n\n',

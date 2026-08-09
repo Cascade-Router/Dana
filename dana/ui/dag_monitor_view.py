@@ -42,7 +42,7 @@ def _pick_workspace_file() -> tuple[str, str]:
         key = rel.replace("\\", "/").lstrip("./")
         if not key or key in seen:
             continue
-        if key.startswith(("dana/", "donna_security/", "website/")):
+        if key.startswith(("dana/", "dana_security/", "website/")):
             continue
         seen.add(key)
         ordered.append(key)

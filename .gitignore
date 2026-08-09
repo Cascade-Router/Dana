@@ -15,10 +15,10 @@ credentials.json
 **/secrets.json
 **/github_reporter.json
 
-# Local Donna runtime secrets / machine config
+# Local Dana runtime secrets / machine config
 settings.json
-donna_memory.enc
-donna_memory.enc.tmp
+dana_memory.enc
+dana_memory.enc.tmp
 .trigger_ask
 temp_reply.wav
 vault/
@@ -58,17 +58,17 @@ dist/
 *.egg-info/
 
 # Headless / login-startup debug logs
-donna_headless.log
+dana_headless.log
 start_dana.bat
 start_donna.bat
 
 # Regenerable pyreverse UML dumps (do not clutter production tree)
-donna_class_uml.md
-donna_module_uml.md
-docs/architecture/donna_class_uml.md
-docs/architecture/donna_module_uml.md
-classes_Donna.*
-packages_Donna.*
+dana_class_uml.md
+dana_module_uml.md
+docs/architecture/dana_class_uml.md
+docs/architecture/dana_module_uml.md
+classes_Dana.*
+packages_Dana.*
 
 # Root triage / scratch dumps (keep tree clean)
 _*_triage*.txt
@@ -111,7 +111,7 @@ memory/
 /tracker/
 docs/*.db
 
-# Repo-rooted runtime workspace (DONNA_WORKSPACE == CAMGRASPER)
+# Repo-rooted runtime workspace (DANA_WORKSPACE == CAMGRASPER)
 /execution_jail/
 /custom_tools/
 /captures/
@@ -119,17 +119,17 @@ docs/*.db
 /generated_tools/
 /dashboard.md
 docs/user_guide/dashboard.md
-.donna_workspace_migrated
+.dana_workspace_migrated
 archive/legacy_donna/.donna_workspace_migrated
 archive/legacy_donna/donna_memory.enc
-.donna_sandbox.py
+.dana_sandbox.py
 .dana_scratch/
 /_archive/
 /archive/
 .shadow_state/
 
 # Watchdog REPL scratch files (keep package + ledger docs)
-dana_security/run_*_donna_watchdog.py
+dana_security/run_*_dana_watchdog.py
 dana_security/__pycache__/
 dana_security/patch_ledger.md
 dana_security/patch_ledger_archive.md
@@ -144,7 +144,7 @@ dana/tools/custom/*
 *.onnx
 *.bin
 
-# OpenWakeWord / Piper local training clutter (regenerable via train_donna_local.py)
+# OpenWakeWord / Piper local training clutter (regenerable via train_dana_local.py)
 audioset/
 audioset_16k/
 esc50_src/
@@ -161,8 +161,8 @@ _training_archive/
 # Local diagnostics / harness scratch
 _e2e_*.py
 _e2e_*.json
-donna_branch_diagnostics.md
-docs/architecture/donna_branch_diagnostics.md
+dana_branch_diagnostics.md
+docs/architecture/dana_branch_diagnostics.md
 REPO_AUDIT.md
 docs/user_guide/REPO_AUDIT.md
 
@@ -171,8 +171,8 @@ debug_*.py
 !dana/tools/debug_vision_live.py
 audio_diagnostics.py
 scripts/diagnostics/audio_diagnostics.py
-train_donna_local.py
-scripts/train_donna_local.py
+train_dana_local.py
+scripts/train_dana_local.py
 verify_agentic.py
 scripts/diagnostics/verify_agentic.py
 

@@ -281,7 +281,7 @@ def parse_draft_cursor_prompt_args(raw: str) -> dict[str, str]:
         args["objective"] = first or "Self-improvement ticket"
     # Do not copy the full raw string into context when sections were absent —
     # enrich_draft_cursor_args scrubs raw_text once; duplicating it here caused
-    # stacked "Technical intent:" / "Donna," echoes in patch_ledger.md.
+    # stacked "Technical intent:" / "Dana," echoes in patch_ledger.md.
     if not args.get("context"):
         args["context"] = ""
 
@@ -479,11 +479,31 @@ _BROWSER_HINT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
-# Jason/Titan conversational supervisor → Donna coder handoff (not Watchdog).
+# Explicit "look this up online" phrasing — narrower than generic "search"
+# (which _MEMORY_HINT_RE already owns for vault/codebase search) so this only
+# fires for public-web research intent, mirroring web_search's own
+# aliases_en._intent list in tools.json. Semantic top-K alone is unreliable
+# here: the hashing embedder over-weights a literal "python"/"code" token
+# toward python_repl/execute_python_script and can push web_search past the
+# top-K cutoff even on a plain "research the latest updates on X" query.
+_WEB_SEARCH_HINT_RE = re.compile(
+    r"("
+    r"\b(?:web_search)\b|"
+    r"\bsearch\s+(?:the\s+)?web\b|"
+    r"\bsearch\s+online\b|"
+    r"\blook\s+up\b|"
+    r"\bgoogle\s+(?:it|that|this|for)\b|"
+    r"\bfind\s+online\b|"
+    r"\bresearch\s+(?:the\s+)?(?:latest|current)\b|"
+    r"\blatest\s+(?:news|updates?)\b"
+    r")",
+    re.IGNORECASE,
+)
+# Jason/Titan conversational supervisor → Dana coder handoff (not Watchdog).
 _JASON_SUPERVISOR_HINT_RE = re.compile(
     r"("
     r"(?:hey\s+|hi\s+|ok\s+)?(?:jason|titan)\b[\s\S]{0,500}?"
-    r"(?:have\s+her|ask\s+donna|donna|delegate)\b[\s\S]{0,300}?"
+    r"(?:have\s+her|ask\s+dana|dana|delegate)\b[\s\S]{0,300}?"
     r"(?:write|create|code|generate)\b|"
     r"(?:hey\s+|hi\s+)?(?:jason|titan)\b[\s\S]{0,300}?"
     r"\bread\b[\s\S]{0,160}?\bnotes\.txt\b"
@@ -779,7 +799,7 @@ def merge_bound_tool_ids(
         _add("analyze_visual_context")
         if _OCR_GROUND_HINT_RE.search(user_text or ""):
             _add("ocr_with_region")
-    # Jason→Donna supervisor owns file reads/writes inside its graph — do not
+    # Jason→Dana supervisor owns file reads/writes inside its graph — do not
     # also bind dual-intent file_editor on the outer ReAct loop (avoids loops).
     if _FILE_WRITE_HINT_RE.search(user_text or "") and not jason_sup:
         _add("file_editor")
@@ -798,6 +818,8 @@ def merge_bound_tool_ids(
             _add("get_sandbox_job_status")
         if _BROWSER_HINT_RE.search(user_text or ""):
             _add("fetch_webpage")
+        if _WEB_SEARCH_HINT_RE.search(user_text or ""):
+            _add("web_search")
         if _TEMPORAL_ACTIVITY_HINT_RE.search(user_text or ""):
             _add("list_activity_for_day")
         if _SYSTEM_TELEMETRY_HINT_RE.search(user_text or ""):
@@ -1146,7 +1168,7 @@ class IntentBroker:
         if _looks_like_whisper_bias_echo(raw) and not forge_hit and not mem_write_hit:
             _foresight_cascade(raw, None)
             return None
-        # Jason/Titan supervisor → Donna coder (before notes.txt dual-intent /
+        # Jason/Titan supervisor → Dana coder (before notes.txt dual-intent /
         # Watchdog titan protocol so "Hey Jason, read notes… have her write" works).
         if jason_supervisor_hit and not mem_write_hit and not forge_hit:
             _foresight_cascade(raw, "dispatch_jason_supervisor")

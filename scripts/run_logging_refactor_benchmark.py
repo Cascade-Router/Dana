@@ -1,4 +1,4 @@
-"""3-step Donna logging refactor benchmark via DAG supervisor + staging.
+"""3-step Dana logging refactor benchmark via DAG supervisor + staging.
 
 Steps:
   1. Ensure dana/db_core.py exists (create/stage if missing)
@@ -341,7 +341,7 @@ def main() -> int:
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in sid)[:120]
     session_dir = ROOT / ".dana_scratch" / safe
 
-    print("=== Donna logging refactor benchmark ===")
+    print("=== Dana logging refactor benchmark ===")
     print(f"status:           {status}")
     print(f"dag tasks:        {[(t.get('task_id'), t.get('status')) for t in dag]}")
     print(f"checkpoint_log:   {ck}")

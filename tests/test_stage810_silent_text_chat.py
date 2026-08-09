@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-
 def test_chat_bar_widgets_and_standby_guard() -> None:
     from dana.core_agent import (
-        DonnaGUI,
+        DanaGUI,
         clear_injected_question,
         pop_injected_question_ex,
         set_engine_engaged,
@@ -13,7 +12,7 @@ def test_chat_bar_widgets_and_standby_guard() -> None:
 
     set_engine_engaged(False)
     clear_injected_question()
-    app = DonnaGUI()
+    app = DanaGUI()
     try:
         assert app.chat_entry is not None
         assert app._chat_send_btn is not None
@@ -58,7 +57,7 @@ def test_chat_bar_widgets_and_standby_guard() -> None:
 
 def test_submit_text_command_injects_when_engaged() -> None:
     from dana.core_agent import (
-        DonnaGUI,
+        DanaGUI,
         clear_injected_question,
         is_recording,
         pop_injected_question_ex,
@@ -68,7 +67,7 @@ def test_submit_text_command_injects_when_engaged() -> None:
     set_engine_engaged(False)
     clear_injected_question()
     is_recording.clear()
-    app = DonnaGUI()
+    app = DanaGUI()
     try:
         app.engage_engine()
         assert app.engine_active is True

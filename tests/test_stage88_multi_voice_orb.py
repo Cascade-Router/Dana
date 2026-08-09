@@ -24,8 +24,8 @@ from dana.core_agent import _parse_tts_spool_item, chunk_text_for_tts, enqueue_s
 
 @pytest.fixture(autouse=True)
 def _dry(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_AUDIO_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_AUDIO_DRY_RUN", "1")
     set_active_tts_agent("broker")
 
 
@@ -51,7 +51,7 @@ def test_agent_voice_map_and_profiles() -> None:
 
 
 def test_synthesize_speech_by_agent_id(tmp_path, monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_AUDIO_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_AUDIO_DRY_RUN", "1")
     for agent, voice in (("broker", "dana"), ("moa", "moa"), ("vision", "vision")):
         out = synthesize_speech(
             f"Hello from {agent}.",

@@ -1,4 +1,4 @@
-"""Lightweight web search for Donna (ddgs / DuckDuckGo — no API key)."""
+"""Lightweight web search for Dana (ddgs / DuckDuckGo — no API key)."""
 
 from __future__ import annotations
 

@@ -41,13 +41,13 @@ Offline voice agent for CAMGRASPER: wake-word → STT → native LangChain tool 
 |---------|----------|--------|
 | **Isolated Meta-Broker** | Epics run in a spawned `multiprocessing.Process`; parent drains a non-blocking Queue (`put_nowait`, drop-on-full) so GUI/headless never deadlocks | `dana/graph/meta_broker_process.py` |
 | **IPC telemetry** | Child `child_queue_put` → parent `on_event` → Task Tracker + optional TTS notifications | `emit_meta_broker_telemetry`, `TTSManager.notify` |
-| **Zero keep-alive** | `DONNA_OLLAMA_KEEP_ALIVE=0` + inter-epic `gc.collect()` reclaim RAM under AST load | `dana/system_health.py`, broker GC hooks |
+| **Zero keep-alive** | `DANA_OLLAMA_KEEP_ALIVE=0` + inter-epic `gc.collect()` reclaim RAM under AST load | `dana/system_health.py`, broker GC hooks |
 | **`manifest.json` contract** | AST `ClassDef` + `FunctionDef` exports written to `.dana_scratch/manifest.json` and prepended to the next epic | `dana/graph/artifact_manifest.py` |
 | **Stdlib-first codegen** | Worker / broker / supervisor prompts require Python stdlib unless the prompt requests third-party packages | `META_BROKER_STDLIB_RULE` |
 | **TTSManager** | One `speech_queue`, one daemon Piper consumer — sequential system-wide voice | `dana/audio/tts_manager.py` |
 | **Gradio HF Space** | `app.py` submits via `HeadlessBrokerBridge` (background thread + poll/stream) | `dana/web/headless_bridge.py` |
 
-Headless boot: `python run.py --no-gui` sets `DONNA_NO_GUI` / `DONNA_HEADLESS` and starts `start_headless_telemetry_drainer`.
+Headless boot: `python run.py --no-gui` sets `DANA_NO_GUI` / `DANA_HEADLESS` and starts `start_headless_telemetry_drainer`.
 
 > **Stage 3 FSM hybrid:** LangGraph state is minimized to `session_id` / `current_agent` / `active_intent`. Full conversational history and DeepSeek `<think>` traces live on `memory/blackboard.db`. See [`docs/architecture.md`](docs/architecture.md).
 
@@ -90,7 +90,7 @@ User query → System (SpatialIR + synthesis guide + protocol)
   to the latest user message via `format_recency_context_block`.
 
 Production ReAct corridor entry: `START → hydrate_memory → planner → executor → agent`
-(`compile_donna_react_graph` in `dana/agentic_react_graph.py`).
+(`compile_dana_react_graph` in `dana/agentic_react_graph.py`).
 
 ## Background work
 
@@ -136,5 +136,5 @@ flowchart TD
 
 - Settings in `settings.json`: `{mic_id, speaker_id, enable_dynamic_tool_synthesis}`.
 - Self-awareness: `read_system_architecture` returns this file + tools schema summary.
-- OS typing: production uses real injection; `DONNA_OS_DRY_RUN=1` for debug/E2E.
-- Singleton agent lock port `47474`; vault daemon `47475` (or `DONNA_VAULT_PORT`).
+- OS typing: production uses real injection; `DANA_OS_DRY_RUN=1` for debug/E2E.
+- Singleton agent lock port `47474`; vault daemon `47475` (or `DANA_VAULT_PORT`).

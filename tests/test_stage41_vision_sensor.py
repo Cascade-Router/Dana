@@ -47,7 +47,7 @@ def test_publish_emits_sensor_vision_telemetry(
     from dana.memory.blackboard import publish_perception_objects
 
     db = tmp_path / "bb.db"
-    out = tmp_path / "donna_telemetry.jsonl"
+    out = tmp_path / "dana_telemetry.jsonl"
     monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
     monkeypatch.setattr(
         "dana.middleware.vision_poller.publish_perception_objects",

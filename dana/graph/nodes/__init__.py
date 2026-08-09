@@ -1,4 +1,4 @@
-"""Graph node callables for the Donna ReAct corridor."""
+"""Graph node callables for the Dana ReAct corridor."""
 
 from dana.graph.nodes.execute_macro import (
     execute_macro_node,

@@ -33,7 +33,7 @@ def check_system_health(*, ram_limit_pct: float = _RAM_ABORT_PCT) -> dict[str, A
         "cpu_percent": cpu,
         "ram_threshold_percent": float(ram_limit_pct),
     }
-    skip = (os.environ.get("DONNA_SKIP_RAM_BREAKER") or "").strip().lower() in {
+    skip = (os.environ.get("DANA_SKIP_RAM_BREAKER") or "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -54,7 +54,7 @@ def check_system_health(*, ram_limit_pct: float = _RAM_ABORT_PCT) -> dict[str, A
     if skip and float(mem.percent) > float(ram_limit_pct):
         print(
             f"[SystemHealth] RAM breaker skipped "
-            f"(DONNA_SKIP_RAM_BREAKER=1, ram={mem.percent:.1f}%)",
+            f"(DANA_SKIP_RAM_BREAKER=1, ram={mem.percent:.1f}%)",
             flush=True,
         )
     return snap

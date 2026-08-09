@@ -168,7 +168,7 @@ class PersonaMixerApp(ctk.CTk):
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Donna Persona Mixer GUI")
+    parser = argparse.ArgumentParser(description="Dana Persona Mixer GUI")
     parser.add_argument(
         "--db",
         default=None,

@@ -1,4 +1,4 @@
-"""Live vision diagnostic monitor for Donna's typed perception topics.
+"""Live vision diagnostic monitor for Dana's typed perception topics.
 
 Polls ``memory/blackboard.db`` every 500ms and prints objects vs OCR age,
 latency, sample text, and bounding-box count. Optional frame dump with boxes.
@@ -260,7 +260,7 @@ def run_monitor(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Live Donna vision diagnostic (typed objects vs OCR)."
+        description="Live Dana vision diagnostic (typed objects vs OCR)."
     )
     parser.add_argument(
         "--save-frames",

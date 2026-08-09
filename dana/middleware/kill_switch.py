@@ -63,7 +63,7 @@ def trigger_halt(*, db_path: Any = None, reason: str = "hotkey") -> dict[str, An
 
 
 def _resolve_hotkey() -> str:
-    raw = (os.environ.get("DONNA_KILL_HOTKEY") or "").strip()
+    raw = (os.environ.get("DANA_KILL_HOTKEY") or "").strip()
     return raw or _DEFAULT_HOTKEY
 
 
@@ -80,13 +80,13 @@ def start_kill_switch_listener(*, hotkey: str | None = None) -> bool:
     with _LISTENER_LOCK:
         if _LISTENER_STARTED:
             return True
-        if os.environ.get("DONNA_DISABLE_KILL_SWITCH", "").strip().lower() in {
+        if os.environ.get("DANA_DISABLE_KILL_SWITCH", "").strip().lower() in {
             "1",
             "true",
             "yes",
             "on",
         }:
-            _log("listener disabled via DONNA_DISABLE_KILL_SWITCH")
+            _log("listener disabled via DANA_DISABLE_KILL_SWITCH")
             return False
 
         key = (hotkey or _resolve_hotkey()).strip() or _DEFAULT_HOTKEY
@@ -104,7 +104,7 @@ def start_kill_switch_listener(*, hotkey: str | None = None) -> bool:
 
         t = threading.Thread(
             target=_run,
-            name="DonnaKillSwitch",
+            name="DanaKillSwitch",
             daemon=True,
         )
         t.start()

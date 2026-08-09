@@ -69,7 +69,7 @@ from abc import ABC, abstractmethod
 class BaseWatchdog(ABC):
     """Fixed orchestration skeleton — subclass only fills the abstract hooks."""
 
-    TTS_MARKER = "__DONNA_TTS__:"
+    TTS_MARKER = "__DANA_TTS__:"
 
     def alert(self, phrase: str) -> None:
         """Speak via the stdout TTS pipe (mandatory prefix)."""
@@ -84,7 +84,7 @@ class BaseWatchdog(ABC):
 
     @abstractmethod
     def monitor_loop(self) -> None:
-        """One monitoring pass (DONNA_WATCHDOG_ONCE=1) or a bounded loop."""
+        """One monitoring pass (DANA_WATCHDOG_ONCE=1) or a bounded loop."""
 
     def run(self) -> None:
         self.run_self_test()
@@ -95,7 +95,7 @@ class BaseWatchdog(ABC):
 class BaseWatchdog(ABC):
     """In-process reference of the sandbox BaseWatchdog (tests / imports)."""
 
-    TTS_MARKER = "__DONNA_TTS__:"
+    TTS_MARKER = "__DANA_TTS__:"
 
     def alert(self, phrase: str) -> None:
         text = (phrase or "").strip()

@@ -18,8 +18,8 @@ _OVERLAY: Optional[RoiOverlay] = None
 
 
 def vision_debug_enabled() -> bool:
-    """ROI / vision debug windows open only when ``DONNA_DEBUG_VISION=1``."""
-    return (os.environ.get("DONNA_DEBUG_VISION") or "").strip().lower() in {
+    """ROI / vision debug windows open only when ``DANA_DEBUG_VISION=1``."""
+    return (os.environ.get("DANA_DEBUG_VISION") or "").strip().lower() in {
         "1",
         "true",
         "yes",

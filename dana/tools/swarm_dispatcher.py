@@ -72,7 +72,7 @@ def dispatch_research_swarm(
     thread = threading.Thread(
         target=_swarm_worker,
         args=(q, on_complete),
-        name="DonnaResearchSwarm",
+        name="DanaResearchSwarm",
         daemon=True,
     )
     thread.start()
@@ -115,7 +115,7 @@ def dispatch_titan_repair(
     thread = threading.Thread(
         target=_titan_repair_worker,
         args=((query or "").strip(), on_complete),
-        name="DonnaTitanRepair",
+        name="DanaTitanRepair",
         daemon=True,
     )
     thread.start()

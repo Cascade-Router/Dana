@@ -26,7 +26,7 @@ def test_build_langchain_tools_from_registry() -> None:
     assert "save_script_to_library" in names
     assert len(tools) >= 10
 
-    # Invoke the structured tool → Donna ToolCall IR.
+    # Invoke the structured tool → Dana ToolCall IR.
     open_tool = next(t for t in tools if t.name == "open_application")
     result = open_tool.invoke({"app_name": "notepad"})
     assert result == "OK: open_application"
@@ -161,7 +161,7 @@ def test_spoken_answer_path_with_scripted_llm(monkeypatch) -> None:
 
     result = run_react_loop(
         user_text="hi",
-        system_prompt="You are Donna.",
+        system_prompt="You are Dana.",
         execute_fn=execute,
         max_iters=REACT_MAX_ITERS,
         broker=IntentBroker(),
@@ -212,7 +212,7 @@ def test_langchain_loop_with_mocked_llm(monkeypatch) -> None:
 
     result = run_react_loop(
         user_text="Open Notepad",
-        system_prompt="You are Donna.",
+        system_prompt="You are Dana.",
         execute_fn=execute,
         max_iters=REACT_MAX_ITERS,
         broker=IntentBroker(),

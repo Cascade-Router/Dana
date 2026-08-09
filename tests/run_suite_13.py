@@ -48,18 +48,18 @@ def _artifacts_ready() -> bool:
 
 def _configure_env() -> dict[str, str]:
     env = os.environ.copy()
-    env["DONNA_FORCE_LOCAL"] = "1"
-    env["DONNA_OLLAMA_KEEP_ALIVE"] = "0"
-    env["DONNA_OLLAMA_MODEL"] = "qwen2.5-coder:7b"
+    env["DANA_FORCE_LOCAL"] = "1"
+    env["DANA_OLLAMA_KEEP_ALIVE"] = "0"
+    env["DANA_OLLAMA_MODEL"] = "qwen2.5-coder:7b"
     env["OLLAMA_MODEL"] = "qwen2.5-coder:7b"
-    env["DONNA_LOCAL_MODEL"] = "qwen2.5-coder:7b"
-    env["DONNA_SKIP_BOOT_READY"] = "1"
-    env["DONNA_SKIP_RAM_BREAKER"] = "1"
-    env["DONNA_NO_GUI"] = "1"
-    env["DONNA_HEADLESS"] = "1"
-    env["DONNA_DEBUG_VISION"] = "1"
-    env["DONNA_META_BROKER_LOG"] = str(SUITE_LOG)
-    env["DONNA_META_BROKER_TIMEOUT_S"] = "900"
+    env["DANA_LOCAL_MODEL"] = "qwen2.5-coder:7b"
+    env["DANA_SKIP_BOOT_READY"] = "1"
+    env["DANA_SKIP_RAM_BREAKER"] = "1"
+    env["DANA_NO_GUI"] = "1"
+    env["DANA_HEADLESS"] = "1"
+    env["DANA_DEBUG_VISION"] = "1"
+    env["DANA_META_BROKER_LOG"] = str(SUITE_LOG)
+    env["DANA_META_BROKER_TIMEOUT_S"] = "900"
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     return env

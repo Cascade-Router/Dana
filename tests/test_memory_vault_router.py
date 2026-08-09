@@ -46,7 +46,7 @@ def test_clear_chat_memory_does_not_force_vault_tool() -> None:
 
 def test_how_are_you_stays_on_chat_not_vault() -> None:
     broker = get_broker()
-    for phrase in ("how are you", "Hello Donna, how are you?", "how's it going"):
+    for phrase in ("how are you", "Hello Dana, how are you?", "how's it going"):
         call = broker.parse_utterance(phrase)
         assert call is None or call.tool_id not in {
             "search_vault",

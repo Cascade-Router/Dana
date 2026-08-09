@@ -8,7 +8,7 @@ from dana.mcp.client import MCPTool, format_mcp_tools_block
 def test_format_mcp_tools_block_empty() -> None:
     block = format_mcp_tools_block([])
     assert "MCP Tools" in block
-    assert "none discovered" in block.lower() or "DONNA_MCP_SERVERS" in block
+    assert "none discovered" in block.lower() or "DANA_MCP_SERVERS" in block
 
 
 def test_format_mcp_tools_block_lists_tools() -> None:

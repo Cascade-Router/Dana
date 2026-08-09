@@ -27,12 +27,12 @@ def ensure_dotenv_loaded() -> None:
 
 def cloud_fallback_enabled() -> bool:
     ensure_dotenv_loaded()
-    raw = (os.environ.get("DONNA_ALLOW_CLOUD_FALLBACK") or "").strip().lower()
+    raw = (os.environ.get("DANA_ALLOW_CLOUD_FALLBACK") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
 def force_local() -> bool:
-    return (os.environ.get("DONNA_FORCE_LOCAL") or "").strip().lower() in {
+    return (os.environ.get("DANA_FORCE_LOCAL") or "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -43,7 +43,7 @@ def force_local() -> bool:
 def local_model_name() -> str:
     ensure_dotenv_loaded()
     return (
-        (os.environ.get("DONNA_LOCAL_MODEL") or "").strip()
+        (os.environ.get("DANA_LOCAL_MODEL") or "").strip()
         or (os.environ.get("OLLAMA_MODEL") or "").strip()
         or _DEFAULT_LOCAL_MODEL
     )
@@ -52,7 +52,7 @@ def local_model_name() -> str:
 def cloud_provider_name() -> str:
     ensure_dotenv_loaded()
     return (
-        (os.environ.get("DONNA_CLOUD_PROVIDER") or "").strip().lower()
+        (os.environ.get("DANA_CLOUD_PROVIDER") or "").strip().lower()
         or "gemini"
     )
 
@@ -248,7 +248,7 @@ class ModelProvider:
                 or "https://api.groq.com/openai/v1"
             )
             model = (
-                (os.environ.get("DONNA_GROQ_MODEL") or "").strip()
+                (os.environ.get("DANA_GROQ_MODEL") or "").strip()
                 or "llama-3.3-70b-versatile"
             )
         elif provider == "anthropic":
@@ -270,7 +270,7 @@ class ModelProvider:
                 or "https://api.openai.com/v1"
             )
             model = (
-                (os.environ.get("DONNA_OPENAI_MODEL") or "").strip()
+                (os.environ.get("DANA_OPENAI_MODEL") or "").strip()
                 or "gpt-4o-mini"
             )
         if not key:
@@ -330,7 +330,7 @@ class ModelProvider:
                 }
             )
         model = (
-            (os.environ.get("DONNA_ANTHROPIC_MODEL") or "").strip()
+            (os.environ.get("DANA_ANTHROPIC_MODEL") or "").strip()
             or "claude-3-5-haiku-latest"
         )
         payload: dict[str, Any] = {

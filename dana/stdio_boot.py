@@ -20,7 +20,7 @@ class NullStdio:
     encoding = "utf-8"
     errors = "replace"
     closed = False
-    name = "<donna-null-stdio>"
+    name = "<dana-null-stdio>"
 
     def write(self, data: Any) -> int:
         if data is None:

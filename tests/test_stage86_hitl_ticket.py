@@ -15,7 +15,7 @@ from dana.agentic_react_graph import (
     _route_after_jason_review,
     _route_after_ticket_approval,
     _route_after_ticket_validate,
-    compile_donna_react_graph,
+    compile_dana_react_graph,
     extract_draft_cursor_payload,
     message_has_draft_cursor_prompt,
 )
@@ -32,10 +32,10 @@ _VALID_CTX = (
 
 @pytest.fixture(autouse=True)
 def _hitl_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DONNA_HITL_TICKET", "1")
-    monkeypatch.delenv("DONNA_HITL_AUTO_APPROVE", raising=False)
-    monkeypatch.delenv("DONNA_HITL_AUTO_DENY", raising=False)
-    monkeypatch.delenv("DONNA_HITL_REQUIRE_GUI", raising=False)
+    monkeypatch.setenv("DANA_HITL_TICKET", "1")
+    monkeypatch.delenv("DANA_HITL_AUTO_APPROVE", raising=False)
+    monkeypatch.delenv("DANA_HITL_AUTO_DENY", raising=False)
+    monkeypatch.delenv("DANA_HITL_REQUIRE_GUI", raising=False)
     hitl.clear_pending()
     yield
     hitl.clear_pending()
@@ -80,7 +80,7 @@ def test_extract_draft_payload_and_route() -> None:
 
 
 def test_hitl_bridge_approve_deny() -> None:
-    os.environ["DONNA_HITL_REQUIRE_GUI"] = "1"
+    os.environ["DANA_HITL_REQUIRE_GUI"] = "1"
     hitl.publish_pending(
         {"tool": "draft_cursor_prompt", "objective": "O", "context": "C"},
         thread_id="t",
@@ -145,7 +145,7 @@ def test_langgraph_interrupt_approve_runs_tools(monkeypatch: pytest.MonkeyPatch)
         lambda *_a, **_k: None,
     )
 
-    graph = compile_donna_react_graph(agent, tools, checkpointer=MemorySaver())
+    graph = compile_dana_react_graph(agent, tools, checkpointer=MemorySaver())
     cfg = {"configurable": {"thread_id": "hitl-approve"}}
 
     list(graph.stream({"messages": [], "halt": False}, cfg, stream_mode="values"))
@@ -188,7 +188,7 @@ def test_langgraph_interrupt_deny_skips_tools(monkeypatch: pytest.MonkeyPatch) -
         lambda *_a, **_k: None,
     )
 
-    graph = compile_donna_react_graph(agent, tools, checkpointer=MemorySaver())
+    graph = compile_dana_react_graph(agent, tools, checkpointer=MemorySaver())
     cfg = {"configurable": {"thread_id": "hitl-deny"}}
 
     list(graph.stream({"messages": [], "halt": False}, cfg, stream_mode="values"))
@@ -212,7 +212,7 @@ def test_compile_includes_ticket_approval_node() -> None:
     def tools(state: ReactGraphState) -> dict[str, Any]:
         return {"halt": True}
 
-    graph = compile_donna_react_graph(agent, tools, checkpointer=MemorySaver())
+    graph = compile_dana_react_graph(agent, tools, checkpointer=MemorySaver())
     nodes = set(graph.get_graph().nodes)
     assert "ticket_validate" in nodes
     assert "jason_ticket_review" in nodes
@@ -222,7 +222,7 @@ def test_compile_includes_ticket_approval_node() -> None:
 
 
 def test_gui_hitl_buttons_toggle() -> None:
-    os.environ.setdefault("DONNA_OS_DRY_RUN", "1")
+    os.environ.setdefault("DANA_OS_DRY_RUN", "1")
     import customtkinter as ctk
 
     from dana.ui.trace_window import LiveTracePanel

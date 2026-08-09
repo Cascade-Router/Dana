@@ -139,13 +139,13 @@ def _check_state_contract(report: IntegrityReport) -> None:
 
 
 def _check_react_graph_nodes(report: IntegrityReport) -> None:
-    from dana.agentic_react_graph import compile_donna_react_graph
+    from dana.agentic_react_graph import compile_dana_react_graph
 
     # Prefer live compile with stubs (same topology as production).
     try:
         from langgraph.checkpoint.memory import MemorySaver
 
-        compiled = compile_donna_react_graph(
+        compiled = compile_dana_react_graph(
             _stub_node,
             _stub_node,
             checkpointer=MemorySaver(),
@@ -155,19 +155,19 @@ def _check_react_graph_nodes(report: IntegrityReport) -> None:
     except Exception as exc:  # noqa: BLE001 — fall back to source inspection
         names = set()
         source_ok = False
-        src = _source_of(compile_donna_react_graph)
+        src = _source_of(compile_dana_react_graph)
         for node in _REQUIRED_REACT_NODES:
             if f'"{node}"' in src or f"'{node}'" in src:
                 names.add(node)
         report.add(
-            "Graph compile (donna react)",
+            "Graph compile (dana react)",
             False,
             f"compile failed ({exc}); used source fallback for node names",
         )
 
     if source_ok:
         report.add(
-            "Graph compile (donna react)",
+            "Graph compile (dana react)",
             True,
             f"compiled; nodes={sorted(n for n in names if not n.startswith('__'))}",
         )
@@ -177,11 +177,11 @@ def _check_react_graph_nodes(report: IntegrityReport) -> None:
         report.add(
             f"Graph node: {node}",
             present,
-            "registered" if present else "NOT registered on compile_donna_react_graph",
+            "registered" if present else "NOT registered on compile_dana_react_graph",
         )
 
     # Injectable parameter surface (memory / critic / fail_closed).
-    sig = inspect.signature(compile_donna_react_graph)
+    sig = inspect.signature(compile_dana_react_graph)
     for param in (
         "critic_node_fn",
         "fail_closed_node_fn",
@@ -193,7 +193,7 @@ def _check_react_graph_nodes(report: IntegrityReport) -> None:
         report.add(
             f"Injectable: {param}",
             present,
-            "in compile_donna_react_graph" if present else "MISSING injectable",
+            "in compile_dana_react_graph" if present else "MISSING injectable",
         )
 
 

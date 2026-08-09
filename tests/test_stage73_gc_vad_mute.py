@@ -36,8 +36,8 @@ def test_system_state_is_typing_roundtrip(tmp_path: Path) -> None:
 
 
 def test_ghost_typist_sets_is_typing_flag(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_GHOST_SKIP_HOTKEY", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_GHOST_SKIP_HOTKEY", "1")
     db = tmp_path / "bb.db"
     init_blackboard(db)
     monkeypatch.setattr(

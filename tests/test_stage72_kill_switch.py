@@ -50,8 +50,8 @@ def test_trigger_halt_cancels_pending_and_running(tmp_path: Path) -> None:
 
 
 def test_ghost_typist_aborts_on_halt(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_GHOST_SKIP_HOTKEY", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_GHOST_SKIP_HOTKEY", "1")
     clear_global_halt()
     typed: list[str] = []
 
@@ -74,7 +74,7 @@ def test_ghost_typist_aborts_on_halt(monkeypatch) -> None:  # noqa: ANN001
 
 
 def test_navigation_aborts_on_halt(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
     clear_global_halt()
     moves = 0
 
@@ -98,7 +98,7 @@ def test_navigation_aborts_on_halt(monkeypatch) -> None:  # noqa: ANN001
 
 
 def test_start_listener_idempotent(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_DISABLE_KILL_SWITCH", "1")
+    monkeypatch.setenv("DANA_DISABLE_KILL_SWITCH", "1")
     # Force re-entry path for disabled flag.
     import dana.middleware.kill_switch as ks
 

@@ -202,7 +202,7 @@ def stop_sidekick_supervisor() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Donna sidekick eyes/hands supervisor")
+    parser = argparse.ArgumentParser(description="Dana sidekick eyes/hands supervisor")
     parser.add_argument(
         "--once",
         action="store_true",

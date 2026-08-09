@@ -11,7 +11,7 @@ existing docs it links to below.
   Trace design doc. Still accurate for the legacy `gui_telemetry_queue` /
   `TraceCell` path and the JSONL forensic logger; it predates the Neural
   Stream / `AsyncRingBuffer` path documented here.
-- [`docs/architecture/donna_architecture.md`](donna_architecture.md) — the
+- [`docs/architecture/dana_architecture.md`](dana_architecture.md) — the
   auto-exported ReAct `StateGraph` (chat/vision/research turns). A
   **different** graph from the DAG-supervisor/Meta-Broker graph covered below.
 - [`docs/architecture/LLM_SYSTEM_MAP.md`](LLM_SYSTEM_MAP.md) — broader
@@ -29,7 +29,7 @@ nothing outside the GUI process calls Tk directly.
 
 ```mermaid
 flowchart TB
-    subgraph GUI["DonnaGUI process (Tk main thread)"]
+    subgraph GUI["DanaGUI process (Tk main thread)"]
         direction TB
         HDR["Header HUD<br/>Engage/Standby · STOP · Diagnostics · Tasks ▸ · DAG ▸"]
         subgraph CANVAS["Unified Agent Canvas (60/40 split)"]
@@ -127,7 +127,7 @@ sequenceDiagram
     participant Worker as Tool/Agent worker thread
     participant ET as emit_trace()
     participant GTQ as gui_telemetry_queue
-    participant PT as DonnaGUI.process_telemetry<br/>(self.after(100, …))
+    participant PT as DanaGUI.process_telemetry<br/>(self.after(100, …))
     participant NSE as NeuralStreamEmitter
     participant ARB as AsyncRingBuffer
     participant RNS as _render_neural_stream()
@@ -172,7 +172,7 @@ sequenceDiagram
 exponential-backoff polling (`t_min=0.05s → t_max=0.5s`, `gamma=1.5`) on a
 **background thread**. It exists and is unit-testable, but today it is only
 wired into the standalone smoke harness (`dana/ui/main.py`), not into
-`DonnaGUI.process_telemetry`, which instead uses a fixed 100ms `self.after`
+`DanaGUI.process_telemetry`, which instead uses a fixed 100ms `self.after`
 recursion on the Tk main thread. That's the correct choice for touching Tk
 widgets safely (Tk is not thread-safe), but it also means the production
 poller never backs off when idle — see enhancement vectors below.
@@ -183,7 +183,7 @@ poller never backs off when idle — see enhancement vectors below.
 
 This is the graph the DAG Monitor overlay visualizes. It's distinct from the
 simpler chat/vision/research ReAct graph in
-[`donna_architecture.md`](donna_architecture.md). Built on LangGraph
+[`dana_architecture.md`](dana_architecture.md). Built on LangGraph
 (`dana/graph/builder.py`); the Meta-Broker variant runs `recursion_limit=72`
 and is spawned inside an isolated `multiprocessing.Process`
 (`dana/graph/meta_broker_process.py`) so a hang or crash never touches the
@@ -259,7 +259,7 @@ sequenceDiagram
 ### MCP integration (`dana/mcp/`)
 
 Client-only (no server side): plain JSON-RPC 2.0 over stdio.
-`discover_mcp_tools()` reads `DONNA_MCP_SERVERS` (`id=cmd args;id2=cmd2`) and
+`discover_mcp_tools()` reads `DANA_MCP_SERVERS` (`id=cmd args;id2=cmd2`) and
 connects to each; `format_mcp_tools_block()` renders the discovered tools into
 a prompt block consumed by `spec_compiler.py` and `broker.py`. **It only does
 discovery and prompting today — it does not execute tool calls itself**, and
@@ -271,7 +271,7 @@ generated epics still run through the same `worker.py` → staged-file →
 The actuator layer the graph's workers ultimately depend on: `shell_execute`
 (15s timeout, destructive-command blocklist, process-tree kill),
 `file_editor` (transactional staging), and `python_repl` — which never
-`exec()`s in-process; it writes to `.donna_sandbox.py` and runs it in a
+`exec()`s in-process; it writes to `.dana_sandbox.py` and runs it in a
 **separate `python.exe` subprocess** jailed to `PROJECT_ROOT`. Failures are
 formatted as `"--- EXECUTION ERROR ---\nFile: …, Line: …\nTraceback:\n…"`,
 which is exactly the string the Neural Stream's keyword tagging looks for.

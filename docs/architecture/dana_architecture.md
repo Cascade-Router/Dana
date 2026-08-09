@@ -1,8 +1,8 @@
-# Donna LangGraph Architecture
+# Dana LangGraph Architecture
 
 Native export from the production ReAct ``StateGraph`` via
 ``CompiledGraph.get_graph().draw_mermaid()``
-(``dana.agentic_react_graph.compile_donna_react_graph``).
+(``dana.agentic_react_graph.compile_dana_react_graph``).
 
 ## Graph
 
@@ -42,7 +42,7 @@ graph TD;
 These policies run **before** or **inside** node bodies - they do not add extra
 LangGraph nodes, but matter when auditing starvation / vision bugs:
 
-- **Mode foresight** (`dana.agentic.get_donna_mode`): chat bypasses this graph;
+- **Mode foresight** (`dana.agentic.get_dana_mode`): chat bypasses this graph;
   vision/research keep ReAct and may force ``analyze_visual_context`` into the
   bind set via ``merge_bound_tool_ids``.
 - **Broker foresight** (`IntentBroker.parse_utterance`): may seed a forced tool

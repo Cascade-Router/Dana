@@ -1,11 +1,11 @@
 /**
- * Windows-exclusive download CTA for Donna GitHub Releases.
+ * Windows-exclusive download CTA for Dana GitHub Releases.
  */
 (function () {
   "use strict";
 
   var DOWNLOAD_HREF =
-    "https://github.com/Cascade-Router/Donna/releases/latest/download/Donna-windows-x64.zip";
+    "https://github.com/Cascade-Router/Dana/releases/latest/download/Dana-windows-x64.zip";
   var DOWNLOAD_LABEL = "Download for Windows (RTX Required)";
 
   var ASSETS = {
@@ -33,7 +33,7 @@
   }
 
   // Expose for manual verification / tests.
-  window.DonnaLanding = {
+  window.DanaLanding = {
     applyDownloadButton: applyDownloadButton,
     ASSETS: ASSETS,
   };

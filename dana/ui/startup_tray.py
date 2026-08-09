@@ -11,7 +11,7 @@ _TRAY_ASSET_RELS = (
     "assets/dana_logo.png",
     "dana/assets/dana_icon.ico",  # legacy
     "dana/ui/assets/dana_icon.png",  # legacy
-    "dana/assets/donna.ico",  # legacy
+    "dana/assets/dana.ico",  # legacy
     "dana/ui/assets/dana_logo_highres.png",  # legacy
 )
 

@@ -21,7 +21,7 @@ def teardown_function() -> None:  # noqa: D103
 
 
 def test_yield_check_waits_quiet_window(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_DISABLE_TOAST", "1")
+    monkeypatch.setenv("DANA_DISABLE_TOAST", "1")
     reset_physical_input_clock()
     note_physical_input(source="test")
     events: list[str] = []
@@ -54,9 +54,9 @@ def test_yield_check_noop_without_physical_input() -> None:
 
 
 def test_ghost_typist_yields_mid_type(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_GHOST_SKIP_HOTKEY", "1")
-    monkeypatch.setenv("DONNA_DISABLE_TOAST", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_GHOST_SKIP_HOTKEY", "1")
+    monkeypatch.setenv("DANA_DISABLE_TOAST", "1")
     reset_physical_input_clock()
 
     typed: list[str] = []

@@ -24,7 +24,7 @@ from dana.graph.nodes.verifier import route_after_verifier  # noqa: F401
 
 __all__ = (
     "ReactGraphState",
-    "compile_donna_react_graph",
+    "compile_dana_react_graph",
     "route_after_execution",
     "route_after_verifier",
     "run_react_langgraph",
@@ -154,6 +154,14 @@ def _default_args_for_forced_tool(tool_id: str, user_text: str) -> dict[str, Any
         return {"query": (user_text or "").strip()[:200]}
     if tid == "click_ui_element":
         return {"target_description": raw[:200]}
+    if tid == "focus_window":
+        return {"target_description": raw[:200]}
+    if tid == "press_keyboard_shortcut":
+        return {"shortcut": raw[:200]}
+    if tid == "write_clipboard":
+        return {"text": raw[:200]}
+    if tid == "send_notification":
+        return {"message": raw[:200]}
     if tid == "drag_ui_element":
         low = raw.lower()
         idx = low.find(" to ")
@@ -524,7 +532,7 @@ def generate_jason_ticket_critique(
 ) -> str:
     """Lightweight Jason review → 1–2 sentence spoken critique."""
     system = (
-        "You are Jason, Donna's CTO supervisor. Review a drafted self-improvement "
+        "You are Jason, Dana's CTO supervisor. Review a drafted self-improvement "
         "ticket against the user's original request. Reply with ONLY 1-2 short "
         "spoken sentences. Either confirm it accurately captures the request, or "
         "name what is missing and recommend deny. No markdown, no bullet lists."
@@ -797,7 +805,7 @@ def route_after_execution(state: ReactGraphState) -> str:
 _route_after_tools = route_after_execution
 
 
-def compile_donna_react_graph(
+def compile_dana_react_graph(
     agent_node: Callable[..., Any],
     tools_node: Callable[..., Any],
     *,
@@ -814,7 +822,7 @@ def compile_donna_react_graph(
     os_worker_node_fn: Callable[..., Any] | None = None,
     checkpointer: Any | None = None,
 ) -> Any:
-    """Compile the production ReAct StateGraph (same topology as live Donna).
+    """Compile the production ReAct StateGraph (same topology as live Dana).
 
     Topology:
       START → hydrate_memory → planner → executor
@@ -1184,7 +1192,7 @@ async def run_react_langgraph(
     _merged_always = merge_bound_tool_ids(
         user_text=user_text,
         forced_tool_id=forced_tool.tool_id if forced_tool is not None else None,
-        mode=ag.get_donna_mode(),
+        mode=ag.get_dana_mode(),
         known_ids=_early_known,
     )
     _merged_always = list(dict.fromkeys(_merged_always))
@@ -1264,7 +1272,7 @@ async def run_react_langgraph(
             merge_bound_tool_ids(
                 user_text=user_text,
                 forced_tool_id=forced_tool.tool_id if forced_tool is not None else None,
-                mode=ag.get_donna_mode(),
+                mode=ag.get_dana_mode(),
                 known_ids=known_ids,
             )
         )
@@ -1405,7 +1413,7 @@ async def run_react_langgraph(
         session_id=session_id,
         current_agent=current_agent,
         active_intent=active_intent,
-        payload={"mode": ag.get_donna_mode(), "always_include": list(always)},
+        payload={"mode": ag.get_dana_mode(), "always_include": list(always)},
     )
     # When the broker merge is non-empty, bind_tools must match it exactly —
     # do not dilute/overwrite with MoA/Vision semantic top-K defaults.
@@ -1786,9 +1794,9 @@ async def run_react_langgraph(
                 )
             elif forced_tool.tool_id == "dispatch_jason_supervisor":
                 spoken = (
-                    "Jason read the notes and Donna wrote the script."
+                    "Jason read the notes and Dana wrote the script."
                     if reply_lang != "fa"
-                    else "Jason     Donna   ."
+                    else "Jason     Dana   ."
                 )
             elif forced_tool.tool_id == "dispatch_watchdog":
                 spoken = (
@@ -1878,7 +1886,7 @@ async def run_react_langgraph(
                     forced_tool_id=(
                         forced_tool.tool_id if forced_tool is not None else None
                     ),
-                    mode=ag.get_donna_mode(),
+                    mode=ag.get_dana_mode(),
                     known_ids=list(semantic_fresh.as_spec_dict().keys()),
                 )
             )
@@ -2046,12 +2054,12 @@ async def run_react_langgraph(
         ag.sanitize_react_message_history(lc_messages)
         if forced_tool.tool_id == "evaluate_slide_and_type" and last_obs:
             return _finish(ag._obs_fallback(last_obs, reply_lang), 1)
-        # Jason→Donna supervisor is a complete multi-agent run — do not continue
+        # Jason→Dana supervisor is a complete multi-agent run — do not continue
         # the outer ReAct loop (prevents file_editor ping-pong after handoff).
         if forced_tool.tool_id == "dispatch_jason_supervisor":
             if str(last_obs).startswith("OK:"):
                 spoken = str(last_obs)[3:].strip() or (
-                    "Jason read the notes and Donna wrote the script."
+                    "Jason read the notes and Dana wrote the script."
                 )
                 return _finish(spoken, 1)
             return _finish(ag._obs_fallback(last_obs, reply_lang), 1)
@@ -2138,7 +2146,7 @@ async def run_react_langgraph(
                     f"Forced tool call for pending always_include "
                     f"`{pending_start[0]}` (step {step})"
                 ),
-                mode=ag.get_donna_mode(),
+                mode=ag.get_dana_mode(),
                 state_keys=("messages", "iterations", "always_include"),
             )
             return {
@@ -2155,7 +2163,7 @@ async def run_react_langgraph(
             "node_enter",
             node="agent",
             message=f"Router/Synthesis step {step}",
-            mode=ag.get_donna_mode(),
+            mode=ag.get_dana_mode(),
             state_keys=("messages", "iterations", "always_include"),
         )
         ag.sanitize_react_message_history(messages)
@@ -2580,7 +2588,7 @@ async def run_react_langgraph(
             "node_enter",
             node="tools",
             message=f"Tool node ({len(tool_calls)} call(s))",
-            mode=ag.get_donna_mode(),
+            mode=ag.get_dana_mode(),
             state_keys=("messages", "last_obs"),
         )
         new_msgs: list[Any] = []
@@ -3018,6 +3026,111 @@ async def run_react_langgraph(
                         if not ok:
                             observation = terr or TOOL_TIMEOUT_MESSAGE
                             _on_timeout()
+                    elif tool_call.tool_id == "list_active_windows":
+                        from dana.tools.workspace import (
+                            list_active_windows as _list_active_windows,
+                        )
+
+                        ok, observation, terr = run_with_tool_timeout(
+                            _list_active_windows, timeout_s=_tool_timeout_s
+                        )
+                        if not ok:
+                            observation = terr or TOOL_TIMEOUT_MESSAGE
+                            _on_timeout()
+                    elif tool_call.tool_id == "focus_window":
+                        from dana.tools.workspace import (
+                            focus_window as _focus_window,
+                        )
+
+                        def _run_focus_window() -> str:
+                            return str(
+                                _focus_window(
+                                    str(
+                                        (tool_call.arguments or {}).get(
+                                            "target_description"
+                                        )
+                                        or ""
+                                    ).strip()
+                                )
+                            )
+
+                        ok, observation, terr = run_with_tool_timeout(
+                            _run_focus_window, timeout_s=_tool_timeout_s
+                        )
+                        if not ok:
+                            observation = terr or TOOL_TIMEOUT_MESSAGE
+                            _on_timeout()
+                    elif tool_call.tool_id == "press_keyboard_shortcut":
+                        from dana.tools.workspace import (
+                            press_keyboard_shortcut as _press_keyboard_shortcut,
+                        )
+
+                        def _run_press_keyboard_shortcut() -> str:
+                            return str(
+                                _press_keyboard_shortcut(
+                                    str(
+                                        (tool_call.arguments or {}).get("shortcut")
+                                        or ""
+                                    ).strip()
+                                )
+                            )
+
+                        ok, observation, terr = run_with_tool_timeout(
+                            _run_press_keyboard_shortcut, timeout_s=_tool_timeout_s
+                        )
+                        if not ok:
+                            observation = terr or TOOL_TIMEOUT_MESSAGE
+                            _on_timeout()
+                    elif tool_call.tool_id == "read_clipboard":
+                        from dana.tools.workspace import (
+                            read_clipboard as _read_clipboard,
+                        )
+
+                        ok, observation, terr = run_with_tool_timeout(
+                            _read_clipboard, timeout_s=_tool_timeout_s
+                        )
+                        if not ok:
+                            observation = terr or TOOL_TIMEOUT_MESSAGE
+                            _on_timeout()
+                    elif tool_call.tool_id == "write_clipboard":
+                        from dana.tools.workspace import (
+                            write_clipboard as _write_clipboard,
+                        )
+
+                        def _run_write_clipboard() -> str:
+                            return str(
+                                _write_clipboard(
+                                    str((tool_call.arguments or {}).get("text") or "")
+                                )
+                            )
+
+                        ok, observation, terr = run_with_tool_timeout(
+                            _run_write_clipboard, timeout_s=_tool_timeout_s
+                        )
+                        if not ok:
+                            observation = terr or TOOL_TIMEOUT_MESSAGE
+                            _on_timeout()
+                    elif tool_call.tool_id == "send_notification":
+                        from dana.tools.notifications import (
+                            send_notification as _send_notification,
+                        )
+
+                        def _run_send_notification() -> str:
+                            return str(
+                                _send_notification(
+                                    str(
+                                        (tool_call.arguments or {}).get("message")
+                                        or ""
+                                    ).strip()
+                                )
+                            )
+
+                        ok, observation, terr = run_with_tool_timeout(
+                            _run_send_notification, timeout_s=_tool_timeout_s
+                        )
+                        if not ok:
+                            observation = terr or TOOL_TIMEOUT_MESSAGE
+                            _on_timeout()
                     else:
                         tool_map = {getattr(t, "name", ""): t for t in tools}
                         st = tool_map.get(tool_call.tool_id)
@@ -3157,7 +3270,7 @@ async def run_react_langgraph(
                 node="tools",
                 tool=tool_call.tool_id,
                 message=f"Tool: {tool_call.tool_id}",
-                mode=ag.get_donna_mode(),
+                mode=ag.get_dana_mode(),
                 payload=llm_obs[:800],
                 state_keys=("last_obs",),
             )
@@ -3231,7 +3344,7 @@ async def run_react_langgraph(
             **repl_heal,
         }
 
-    graph = compile_donna_react_graph(
+    graph = compile_dana_react_graph(
         _agent_node,
         _tools_node,
         checkpointer=ag._react_checkpointer(),
@@ -3288,7 +3401,7 @@ async def run_react_langgraph(
         "node_enter",
         node="router",
         message="LangGraph ReAct start",
-        mode=ag.get_donna_mode(),
+        mode=ag.get_dana_mode(),
         state_keys=("session_id", "current_agent", "active_intent"),
     )
     _chain_t0: dict[str, float] = {}
@@ -3314,7 +3427,7 @@ async def run_react_langgraph(
                     "node_enter",
                     node=name,
                     message=f"chain start: {name}",
-                    mode=ag.get_donna_mode(),
+                    mode=ag.get_dana_mode(),
                 )
                 try:
                     from dana.ui.status_bus import emit_state_change
@@ -3344,7 +3457,7 @@ async def run_react_langgraph(
                     "node_exit",
                     node=name,
                     message=f"chain end: {name}",
-                    mode=ag.get_donna_mode(),
+                    mode=ag.get_dana_mode(),
                     latency_ms=ms,
                 )
             if kind == "on_chat_model_start":
@@ -3355,7 +3468,7 @@ async def run_react_langgraph(
                     "status",
                     node="synthesis",
                     message="LLM synthesis streaming",
-                    mode=ag.get_donna_mode(),
+                    mode=ag.get_dana_mode(),
                 )
             elif kind == "on_tool_start":
                 # Flush any buffered speech before tool-status TTS.
@@ -3388,7 +3501,7 @@ async def run_react_langgraph(
                     node="tools",
                     tool=tool_name,
                     message=f"on_tool_start: {tool_name}",
-                    mode=ag.get_donna_mode(),
+                    mode=ag.get_dana_mode(),
                 )
                 try:
                     from dana.telemetry import log_tool_execution
@@ -3414,7 +3527,7 @@ async def run_react_langgraph(
                     node="tools",
                     tool=tool_name,
                     message=f"on_tool_end: {tool_name}",
-                    mode=ag.get_donna_mode(),
+                    mode=ag.get_dana_mode(),
                     payload=str(output or "")[:800],
                     state_keys=("messages", "last_obs"),
                 )
@@ -3489,7 +3602,7 @@ async def run_react_langgraph(
             node="ticket_approval",
             message="HITL_RESUME",
             payload=f"approved={approved} action={decision.get('action')}",
-            mode=ag.get_donna_mode(),
+            mode=ag.get_dana_mode(),
         )
         try:
             await _consume_astream(Command(resume=decision))
@@ -3533,7 +3646,7 @@ async def run_react_langgraph(
         "node_exit",
         node="synthesis",
         message="ReAct complete",
-        mode=ag.get_donna_mode(),
+        mode=ag.get_dana_mode(),
         payload=answer[:800],
         latency_ms=(time.perf_counter() - _graph_t0) * 1000.0,
         state_keys=("session_id", "current_agent", "active_intent", "final_raw"),

@@ -1,11 +1,11 @@
-"""Export Donna's production LangGraph ReAct topology as Mermaid.
+"""Export Dana's production LangGraph ReAct topology as Mermaid.
 
 Uses LangGraph's native ``CompiledGraph.get_graph().draw_mermaid()`` — never
 asks an LLM to guess the structure.
 
 Usage:
   python -m dana.tools.export_graph
-  python -m dana.tools.export_graph --out docs/architecture/donna_architecture.md
+  python -m dana.tools.export_graph --out docs/architecture/dana_architecture.md
 """
 
 from __future__ import annotations
@@ -47,10 +47,10 @@ async def _stub_tools(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def compile_production_react_app() -> Any:
-    """Build the compiled ReAct app with the same wiring as live Donna."""
-    from dana.agentic_react_graph import compile_donna_react_graph
+    """Build the compiled ReAct app with the same wiring as live Dana."""
+    from dana.agentic_react_graph import compile_dana_react_graph
 
-    return compile_donna_react_graph(_stub_agent, _stub_tools)
+    return compile_dana_react_graph(_stub_agent, _stub_tools)
 
 
 def export_mermaid(app: Any) -> str:
@@ -87,11 +87,11 @@ def try_export_png(app: Any, dest: Path) -> Path | None:
 
 def build_markdown(mermaid: str) -> str:
     """Wrap Mermaid in a markdown doc with routing-audit notes."""
-    return f"""# Donna LangGraph Architecture
+    return f"""# Dana LangGraph Architecture
 
 Native export from the production ReAct ``StateGraph`` via
 ``CompiledGraph.get_graph().draw_mermaid()``
-(``dana.agentic_react_graph.compile_donna_react_graph``).
+(``dana.agentic_react_graph.compile_dana_react_graph``).
 
 ## Graph
 
@@ -114,7 +114,7 @@ Native export from the production ReAct ``StateGraph`` via
 These policies run **before** or **inside** node bodies - they do not add extra
 LangGraph nodes, but matter when auditing starvation / vision bugs:
 
-- **Mode foresight** (`dana.agentic.get_donna_mode`): chat bypasses this graph;
+- **Mode foresight** (`dana.agentic.get_dana_mode`): chat bypasses this graph;
   vision/research keep ReAct and may force ``analyze_visual_context`` into the
   bind set via ``merge_bound_tool_ids``.
 - **Broker foresight** (`IntentBroker.parse_utterance`): may seed a forced tool
@@ -134,19 +134,19 @@ python -m dana.tools.export_graph
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Export Donna's production LangGraph ReAct topology as Mermaid."
+        description="Export Dana's production LangGraph ReAct topology as Mermaid."
     )
     parser.add_argument(
         "--out",
         type=Path,
         default=None,
-        help="Markdown output path (default: <repo>/docs/architecture/donna_architecture.md)",
+        help="Markdown output path (default: <repo>/docs/architecture/dana_architecture.md)",
     )
     parser.add_argument(
         "--png",
         type=Path,
         default=None,
-        help="Optional PNG path (default: <repo>/docs/architecture/donna_architecture.png when drawable)",
+        help="Optional PNG path (default: <repo>/docs/architecture/dana_architecture.png when drawable)",
     )
     parser.add_argument(
         "--no-png",
@@ -157,8 +157,8 @@ def main(argv: list[str] | None = None) -> int:
 
     root = _project_root()
     arch_dir = root / "docs" / "architecture"
-    out_md = args.out or (arch_dir / "donna_architecture.md")
-    out_png = args.png or (arch_dir / "donna_architecture.png")
+    out_md = args.out or (arch_dir / "dana_architecture.md")
+    out_png = args.png or (arch_dir / "dana_architecture.png")
 
     print("[export_graph] Compiling production ReAct graph…", flush=True)
     app = compile_production_react_app()

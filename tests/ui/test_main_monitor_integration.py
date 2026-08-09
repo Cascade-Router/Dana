@@ -1,4 +1,4 @@
-"""Wire-up tests: monitor bus → DagMonitorView → DonnaGUI drawer."""
+"""Wire-up tests: monitor bus → DagMonitorView → DanaGUI drawer."""
 
 from __future__ import annotations
 
@@ -99,15 +99,15 @@ def test_dag_monitor_view_renders_headless() -> None:
             pass
 
 
-def test_donna_gui_has_dag_drawer_and_toggle() -> None:
+def test_dana_gui_has_dag_drawer_and_toggle() -> None:
     try:
-        from dana.core_agent import DonnaGUI
+        from dana.core_agent import DanaGUI
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"DonnaGUI unavailable: {exc}")
+        pytest.skip(f"DanaGUI unavailable: {exc}")
 
     bus = reset_monitor_bus()
     try:
-        app = DonnaGUI()
+        app = DanaGUI()
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"Tk unavailable: {exc}")
     try:
@@ -149,13 +149,13 @@ def test_donna_gui_has_dag_drawer_and_toggle() -> None:
 
 def test_async_dag_stream_keeps_ui_thread_free(tmp_path: Path) -> None:
     try:
-        from dana.core_agent import DonnaGUI
+        from dana.core_agent import DanaGUI
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"DonnaGUI unavailable: {exc}")
+        pytest.skip(f"DanaGUI unavailable: {exc}")
 
     reset_monitor_bus()
     try:
-        app = DonnaGUI()
+        app = DanaGUI()
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"Tk unavailable: {exc}")
 

@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 LOG = ROOT / "logs" / "dana_runtime.log"
 
 RMS_RE = re.compile(r"RMS:\s*([0-9.]+)")
-SCORE_RE = re.compile(r"donna[=:]?\s*([0-9.]+)", re.I)
+SCORE_RE = re.compile(r"dana[=:]?\s*([0-9.]+)", re.I)
 WAKE_HIT_RE = re.compile(r"Wake word detected\s*\(([^)]+)\)", re.I)
 
 
@@ -28,7 +28,7 @@ def _tail_follow(path: Path, *, seconds: float) -> list[str]:
         fh.seek(0, 2)
         deadline = time.time() + max(5.0, float(seconds))
         buf = ""
-        print(f"[diag] Tailing {path} for {seconds:.0f}s — say 'Donna' now.", flush=True)
+        print(f"[diag] Tailing {path} for {seconds:.0f}s — say 'Dana' now.", flush=True)
         while time.time() < deadline:
             chunk = fh.read()
             if not chunk:

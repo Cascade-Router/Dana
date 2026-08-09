@@ -1,6 +1,6 @@
 """Encrypted long-term profile vault (PBKDF2 + Fernet).
 
-Shared by the Donna agent and the in-RAM vault key daemon.
+Shared by the Dana agent and the in-RAM vault key daemon.
 No plaintext credentials are written to disk.
 """
 
@@ -15,8 +15,8 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-DEFAULT_VAULT_NAME = "donna_memory.enc"
-DEFAULT_SALT = b"donna_secure_salt"
+DEFAULT_VAULT_NAME = "dana_memory.enc"
+DEFAULT_SALT = b"dana_secure_salt"
 DEFAULT_PBKDF2_ITERATIONS = 390_000
 
 
@@ -27,7 +27,7 @@ def default_vault_path() -> str:
 
 
 class SecureMemory:
-    """Password-gated encrypted JSON profile stored in donna_memory.enc.
+    """Password-gated encrypted JSON profile stored in dana_memory.enc.
 
     New vaults use a dual-slot format so either the master password or a
     backup recovery key can unlock the same ciphertext. Legacy single-Fernet

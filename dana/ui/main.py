@@ -5,7 +5,7 @@ Usage::
     python -m dana.ui.main
     python -m dana.ui.main --stay --dag-demo
 
-Headless / CI: constructs ``DonnaGUI`` and exits after a short idle so the
+Headless / CI: constructs ``DanaGUI`` and exits after a short idle so the
 process does not hang forever. Pass ``--stay`` to keep the window open.
 """
 
@@ -60,13 +60,13 @@ def main(argv: list[str] | None = None) -> int:
         pass
 
     try:
-        from dana.core_agent import DonnaGUI
+        from dana.core_agent import DanaGUI
     except Exception as exc:  # noqa: BLE001
-        print(f"DonnaGUI unavailable: {exc}", file=sys.stderr)
+        print(f"DanaGUI unavailable: {exc}", file=sys.stderr)
         return 1
 
     try:
-        app = DonnaGUI()
+        app = DanaGUI()
         try:
             app.withdraw()
         except Exception:
@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
         # AdaptivePoller.start() runs callbacks on a background thread, which
         # is unsafe here since the callback touches Tk widgets — drive it
         # from the widget's own self.after() chain instead (same pattern as
-        # DonnaGUI._master_telemetry_tick).
+        # DanaGUI._master_telemetry_tick).
         poller = AdaptivePoller(_refresh_canvas)
 
         def _telemetry_tick() -> None:

@@ -9,7 +9,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from dana.agentic_react_graph import compile_donna_react_graph
+from dana.agentic_react_graph import compile_dana_react_graph
 from dana.graph.nodes.memory import (
     heuristic_extract_facts,
     make_consolidate_memory_node,
@@ -115,7 +115,7 @@ def test_graph_wires_hydrate_then_consolidate(store: EpisodicMemoryStore) -> Non
         path.append("consolidate_memory")
         return consolidate(state)
 
-    graph = compile_donna_react_graph(
+    graph = compile_dana_react_graph(
         agent,
         tools,
         planner_node_fn=planner,

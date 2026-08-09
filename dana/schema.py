@@ -1,4 +1,4 @@
-"""Leaf shared types for Donna — no imports from core_agent / agentic / tools workers."""
+"""Leaf shared types for Dana — no imports from core_agent / agentic / tools workers."""
 
 from __future__ import annotations
 

@@ -19,7 +19,7 @@ def test_dispatch_research_swarm_returns_ok_without_blocking() -> None:
         mock_thread_cls.assert_called_once()
         kwargs = mock_thread_cls.call_args.kwargs
         assert kwargs.get("daemon") is True
-        assert kwargs.get("name") == "DonnaResearchSwarm"
+        assert kwargs.get("name") == "DanaResearchSwarm"
         mock_thread.start.assert_called_once()
         # Fire-and-forget: never join/wait.
         mock_thread.join.assert_not_called()

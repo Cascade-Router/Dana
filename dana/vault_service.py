@@ -155,7 +155,7 @@ _SEMANTIC_FAMILIES: tuple[frozenset[str], ...] = (
     frozenset({"family_notes", "family", "family_info"}),
 )
 
-_META_KEY = "_donna_memory_meta"
+_META_KEY = "_dana_memory_meta"
 
 
 def _normalize_key(key: str) -> str:
@@ -311,7 +311,7 @@ def profile_for_prompt(profile: dict[str, Any]) -> dict[str, Any]:
 
 
 def _vault_port() -> int:
-    raw = os.environ.get("DONNA_VAULT_PORT", "").strip()
+    raw = os.environ.get("DANA_VAULT_PORT", "").strip()
     if raw.isdigit():
         return int(raw)
     return 47475
@@ -611,7 +611,7 @@ def ensure_daemon_running(
     if vault_path:
         cmd.extend(["--vault", vault_path])
     env = os.environ.copy()
-    env["DONNA_VAULT_PORT"] = str(_vault_port())
+    env["DANA_VAULT_PORT"] = str(_vault_port())
     from dana.paths import PROJECT_ROOT
 
     popen_kwargs: dict[str, Any] = {
@@ -645,7 +645,7 @@ class VaultClient:
     def ensure_ready(self, vault_path: str | None = None) -> None:
         if not ensure_daemon_running(vault_path=vault_path):
             raise RuntimeError(
-                "Could not start or reach Donna vault daemon on "
+                "Could not start or reach Dana vault daemon on "
                 f"{VAULT_DAEMON_HOST}:{_vault_port()}"
             )
 
@@ -817,13 +817,13 @@ def main(argv: list[str] | None = None) -> int:
         ensure_stdio()
     except Exception:
         pass
-    parser = argparse.ArgumentParser(description="Donna vault key daemon")
+    parser = argparse.ArgumentParser(description="Dana vault key daemon")
     parser.add_argument("--serve", action="store_true", help="Run the vault key daemon")
-    parser.add_argument("--vault", default=None, help="Path to donna_memory.enc")
+    parser.add_argument("--vault", default=None, help="Path to dana_memory.enc")
     parser.add_argument("--port", type=int, default=None, help="Override loopback port")
     args = parser.parse_args(argv)
     if args.port is not None:
-        os.environ["DONNA_VAULT_PORT"] = str(args.port)
+        os.environ["DANA_VAULT_PORT"] = str(args.port)
     if args.serve:
         VaultKeyDaemon(vault_path=args.vault).serve_forever()
         return 0

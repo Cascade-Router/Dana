@@ -1,4 +1,4 @@
-"""Donna runtime feature flags loaded from settings.json."""
+"""Dana runtime feature flags loaded from settings.json."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import os
 from typing import Any
 
-from dana.paths import DONNA_WORKSPACE, PROJECT_ROOT, SETTINGS_PATH as _SETTINGS_PATH
+from dana.paths import PROJECT_ROOT, SETTINGS_PATH as _SETTINGS_PATH
 
 _ROOT = str(PROJECT_ROOT)
 SETTINGS_PATH = str(_SETTINGS_PATH)
@@ -29,7 +29,7 @@ DEFAULT_FLAGS: dict[str, Any] = {
     "home_region": "",
     # When False, boot to tray/orb only (main dashboard stays hidden).
     "open_window_on_startup": True,
-    # Default Piper voice id (hfc_female — CC BY-NC-SA). Override via DONNA_PIPER_VOICE.
+    # Default Piper voice id (hfc_female — CC BY-NC-SA). Override via DANA_PIPER_VOICE.
     "piper_voice": "en_US-hfc_female-medium",
     # Hybrid Broker: optional cloud-assisted DAG / epic planning (workers stay local).
     # Default False — Dānā remains 100% offline unless the user explicitly enables this.
@@ -39,13 +39,13 @@ DEFAULT_FLAGS: dict[str, Any] = {
 
 def get_assistant_language() -> str:
     """Return assistant language lock (public release: always ``en``)."""
-    _ = load_donna_settings().get("assistant_language")
+    _ = load_dana_settings().get("assistant_language")
     return "en"
 
 
 def get_whisper_language() -> str:
     """HF transformers Whisper language id (public release: always English)."""
-    _ = load_donna_settings()
+    _ = load_dana_settings()
     return "english"
 
 
@@ -57,13 +57,13 @@ def resolve_reply_lang(user_text: str = "") -> str:
 
 def get_timezone() -> str:
     """IANA timezone id from settings (default America/Los_Angeles)."""
-    raw = str(load_donna_settings().get("timezone") or "America/Los_Angeles").strip()
+    raw = str(load_dana_settings().get("timezone") or "America/Los_Angeles").strip()
     return raw or "America/Los_Angeles"
 
 
 def get_home_place() -> dict[str, str]:
     """User place labels for prompt injection."""
-    cfg = load_donna_settings()
+    cfg = load_dana_settings()
     city = str(cfg.get("home_city") or "").strip()
     region = str(cfg.get("home_region") or "").strip()
     return {"city": city, "region": region}
@@ -175,7 +175,7 @@ def update_place_settings(
 ) -> None:
     """Persist place/timezone overrides into settings.json and refresh cache."""
     global _CACHE
-    cfg = load_donna_settings(force_reload=True)
+    cfg = load_dana_settings(force_reload=True)
     if timezone is not None and str(timezone).strip():
         cfg["timezone"] = str(timezone).strip()
     if home_city is not None:
@@ -194,7 +194,7 @@ def update_place_settings(
 _CACHE: dict[str, Any] | None = None
 
 
-def load_donna_settings(*, force_reload: bool = False) -> dict[str, Any]:
+def load_dana_settings(*, force_reload: bool = False) -> dict[str, Any]:
     """Load settings.json merged over production defaults."""
     global _CACHE
     if _CACHE is not None and not force_reload:
@@ -214,13 +214,13 @@ def load_donna_settings(*, force_reload: bool = False) -> dict[str, Any]:
 
 def is_open_window_on_startup() -> bool:
     """True when the main dashboard should deiconify on boot (default True)."""
-    return bool(load_donna_settings().get("open_window_on_startup", True))
+    return bool(load_dana_settings().get("open_window_on_startup", True))
 
 
 def set_open_window_on_startup(enabled: bool) -> None:
     """Persist ``open_window_on_startup`` and refresh the settings cache."""
     global _CACHE
-    cfg = load_donna_settings(force_reload=True)
+    cfg = load_dana_settings(force_reload=True)
     cfg["open_window_on_startup"] = bool(enabled)
     try:
         with open(SETTINGS_PATH, "w", encoding="utf-8") as fh:
@@ -233,13 +233,13 @@ def set_open_window_on_startup(enabled: bool) -> None:
 
 def is_hybrid_planner_enabled() -> bool:
     """True when Settings → Hybrid Broker (Cloud Planner) is checked."""
-    return bool(load_donna_settings().get("hybrid_planner_enabled", False))
+    return bool(load_dana_settings().get("hybrid_planner_enabled", False))
 
 
 def set_hybrid_planner_enabled(enabled: bool) -> None:
     """Persist ``hybrid_planner_enabled`` and refresh the settings cache."""
     global _CACHE
-    cfg = load_donna_settings(force_reload=True)
+    cfg = load_dana_settings(force_reload=True)
     cfg["hybrid_planner_enabled"] = bool(enabled)
     try:
         with open(SETTINGS_PATH, "w", encoding="utf-8") as fh:
@@ -252,7 +252,7 @@ def set_hybrid_planner_enabled(enabled: bool) -> None:
 
 def is_dynamic_tool_synthesis_enabled() -> bool:
     """True only when settings explicitly enable architect_new_tool / sandbox writes."""
-    cfg = load_donna_settings()
+    cfg = load_dana_settings()
     return bool(cfg.get("enable_dynamic_tool_synthesis", False))
 
 

@@ -1,5 +1,5 @@
 # Optional deps for the out-of-process research swarm only.
-# Install into the same venv Donna uses, or a dedicated swarm env.
+# Install into the same venv Dana uses, or a dedicated swarm env.
 langgraph>=0.2.0
 langchain-core>=0.3.0
 langchain-ollama>=0.2.0

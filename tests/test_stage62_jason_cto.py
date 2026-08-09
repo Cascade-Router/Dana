@@ -66,7 +66,7 @@ def test_slide_parser_two_slide_deck(tmp_path: Path) -> None:
 def test_bulk_evaluate_slides_enqueues_two_type_stealth(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_JASON_DRY_REASONER", "1")
+    monkeypatch.setenv("DANA_JASON_DRY_REASONER", "1")
     deck = tmp_path / "dummy_two_slides.pptx"
     _make_dummy_deck(deck)
     db = tmp_path / "bb.db"

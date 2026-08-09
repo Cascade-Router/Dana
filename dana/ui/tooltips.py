@@ -1,7 +1,7 @@
 """Lightweight hover tooltips for CustomTkinter controls.
 
 Installed CustomTkinter builds may lack ``CTkToolTip``; this module provides a
-compatible helper used by the Donna control dashboard.
+compatible helper used by the Dana control dashboard.
 """
 
 from __future__ import annotations

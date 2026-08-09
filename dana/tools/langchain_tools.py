@@ -1,4 +1,4 @@
-"""Build LangChain tools from ``tools.json``, dispatching through Donna's ToolCall IR."""
+"""Build LangChain tools from ``tools.json``, dispatching through Dana's ToolCall IR."""
 
 from __future__ import annotations
 
@@ -97,7 +97,7 @@ def _watchdog_worker(
     task: str,
     tts_callback: Callable[[str], None] | None = None,
 ) -> None:
-    """Background: compile + invoke the Donna↔Titan Watchdog StateGraph."""
+    """Background: compile + invoke the Dana↔Titan Watchdog StateGraph."""
     with _watchdog_lock:
         entry = active_watchdogs.get(task_id)
         stop = entry.get("stop") if entry else None
@@ -200,7 +200,7 @@ def dispatch_watchdog_impl(
     thread = threading.Thread(
         target=_watchdog_worker,
         args=(task_id, q, tts_callback),
-        name=f"DonnaWatchdog-{task_id}",
+        name=f"DanaWatchdog-{task_id}",
         daemon=True,
     )
     with _watchdog_lock:
@@ -259,13 +259,13 @@ def kill_watchdog_impl(task_id: str) -> str:
 
 _JASON_SUPERVISOR_TOOL_DESCRIPTION = (
     "Jason/Titan conversational supervisor. Call when the user addresses Jason/Titan "
-    "to read/evaluate a prior Donna file (notes.txt) and have Donna write a Python "
-    "script (e.g. scaling_metrics.py). Runs a linear Jason→Donna LangGraph handoff."
+    "to read/evaluate a prior Dana file (notes.txt) and have Dana write a Python "
+    "script (e.g. scaling_metrics.py). Runs a linear Jason→Dana LangGraph handoff."
 )
 
 
 def dispatch_jason_supervisor_impl(query: str) -> str:
-    """Synchronous Jason→Donna supervisor graph (ReAct-safe; no background thread)."""
+    """Synchronous Jason→Dana supervisor graph (ReAct-safe; no background thread)."""
     from dana.swarm.jason_supervisor_graph import dispatch_jason_supervisor_impl as _run
 
     return _run(query)
@@ -276,7 +276,7 @@ def dispatch_jason_supervisor_impl(query: str) -> str:
     description=_JASON_SUPERVISOR_TOOL_DESCRIPTION,
 )
 def dispatch_jason_supervisor(query: str) -> str:
-    """Jason reads/evaluates a file then hands off to Donna to write a Python script."""
+    """Jason reads/evaluates a file then hands off to Dana to write a Python script."""
     return dispatch_jason_supervisor_impl(query)
 
 
@@ -321,7 +321,7 @@ def save_script_to_library_impl(script_name: str, code: str) -> str:
     except Exception:
         pass
 
-    from dana.paths import DONNA_WORKSPACE
+    from dana.paths import DANA_WORKSPACE
 
     _SANDBOX_LIBRARY.mkdir(parents=True, exist_ok=True)
     target = (_SANDBOX_LIBRARY / f"{name}.py").resolve()
@@ -334,7 +334,7 @@ def save_script_to_library_impl(script_name: str, code: str) -> str:
 
     target.write_text(body + ("\n" if not body.endswith("\n") else ""), encoding="utf-8")
     try:
-        rel = os.path.relpath(str(target), str(DONNA_WORKSPACE)).replace("\\", "/")
+        rel = os.path.relpath(str(target), str(DANA_WORKSPACE)).replace("\\", "/")
     except ValueError:
         rel = str(target)
     return f"OK: saved script to CAMGRASPER/{rel}"

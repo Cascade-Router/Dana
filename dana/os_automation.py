@@ -52,11 +52,11 @@ _NAKED_SHELL_RE = re.compile(
     r")"
 )
 
-_TRANSIENT_AUTH_ENV = "DONNA_OS_AUTH_CONTEXT"
+_TRANSIENT_AUTH_ENV = "DANA_OS_AUTH_CONTEXT"
 # Production default: real keystroke injection (unset / "0" / "false").
-# Debug re-enable: set DONNA_OS_DRY_RUN=1 in the environment to validate the
+# Debug re-enable: set DANA_OS_DRY_RUN=1 in the environment to validate the
 # inject_keystrokes pipeline without touching the OS input stack (used by E2E).
-_DRY_RUN_ENV = "DONNA_OS_DRY_RUN"
+_DRY_RUN_ENV = "DANA_OS_DRY_RUN"
 
 
 @dataclass
@@ -99,7 +99,7 @@ def sanitize_keystroke_text(text: str, *, authenticated: bool | None = None) -> 
             blocked=True,
             reason=(
                 "naked shell/command line blocked; "
-                "requires authenticated context (DONNA_OS_AUTH_CONTEXT)"
+                "requires authenticated context (DANA_OS_AUTH_CONTEXT)"
             ),
         )
 
@@ -129,7 +129,7 @@ def inject_keystrokes(
     """Type sanitized plaintext into the focused window (pyautogui).
 
     Never sends hotkey chords — only printable / newline characters via typewrite.
-    Set DONNA_OS_DRY_RUN=1 to validate without touching the OS input stack.
+    Set DANA_OS_DRY_RUN=1 to validate without touching the OS input stack.
     """
     result = sanitize_keystroke_text(text, authenticated=authenticated)
     if result.blocked:
@@ -322,7 +322,7 @@ def open_application(app_name: str) -> str:
         "close_fds": True,
     }
     if os.name == "nt":
-        # Detach from Donna's console; shell=True resolves App Paths (chrome.exe, code).
+        # Detach from Dana's console; shell=True resolves App Paths (chrome.exe, code).
         creation = int(getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
         creation |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
         popen_kwargs["creationflags"] = creation
@@ -359,7 +359,7 @@ def _resolve_repo_file_candidates(filepath: str) -> list[str]:
 
     normalized = raw.replace("\\", "/")
     # Common hallucination: dana/core/<module> instead of dana/<module>.
-    normalized = re.sub(r"(?i)\bdonna/core/", "dana/", normalized)
+    normalized = re.sub(r"(?i)\bdana/core/", "dana/", normalized)
     normalized = re.sub(r"(?i)^core/", "dana/", normalized)
 
     root = Path(PROJECT_ROOT).resolve()

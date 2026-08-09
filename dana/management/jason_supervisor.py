@@ -84,8 +84,8 @@ def feather_rules_system_preamble(rules: str | None = None) -> str:
 
 
 def audit_mode_enabled() -> bool:
-    """True when ``DONNA_AUDIT_MODE=1`` — no physical actuator enqueue."""
-    return os.environ.get("DONNA_AUDIT_MODE", "").strip().lower() in {
+    """True when ``DANA_AUDIT_MODE=1`` — no physical actuator enqueue."""
+    return os.environ.get("DANA_AUDIT_MODE", "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -94,7 +94,7 @@ def audit_mode_enabled() -> bool:
 
 
 def shadow_run_audit_path() -> Path:
-    """``logs/shadow_run_audit.txt`` under the Donna workspace."""
+    """``logs/shadow_run_audit.txt`` under the Dana workspace."""
     try:
         from dana.paths import LOGS_DIR
 
@@ -162,7 +162,7 @@ def enqueue_jason_physical(
 
 
 def _dry_reasoner() -> bool:
-    return os.environ.get("DONNA_JASON_DRY_REASONER", "").strip().lower() in {
+    return os.environ.get("DANA_JASON_DRY_REASONER", "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -241,7 +241,7 @@ def reason_slide_evaluation(
     prompt = (
         f"{rules_preamble}\n\n"
         f"{behavior}\n\n"
-        "You are Donna's MoA slide reasoner. Evaluate the slide CONTENT against "
+        "You are Dana's MoA slide reasoner. Evaluate the slide CONTENT against "
         "the INSTRUCTIONS. Reply with ONE concise plain-text evaluation only — "
         "no markdown, no bullet lists, no greetings, no JSON.\n\n"
         f"INSTRUCTIONS:\n{(instructions or '').strip() or '(none)'}\n\n"
@@ -296,7 +296,7 @@ def enqueue_stealth_evaluation(
 ) -> int:
     """INSERT ``type_stealth_text`` pending action; return action_id.
 
-    When ``DONNA_AUDIT_MODE=1``, skip the physical queue and append DeepSeek's
+    When ``DANA_AUDIT_MODE=1``, skip the physical queue and append DeepSeek's
     evaluation to ``logs/shadow_run_audit.txt`` (returns ``0``).
     """
     if audit_mode_enabled():
@@ -746,7 +746,7 @@ def recovery_mode(
     """Jason recovery_mode: read screen state, enqueue close + retry sequence."""
     from dana.memory.blackboard import get_action, read_perception_ocr_text
 
-    # Stage 8.1 — Jason talks over Donna as Andon wakes.
+    # Stage 8.1 — Jason talks over Dana as Andon wakes.
     voice_meta = announce_jason_andon_override()
 
     args = dict(failed_arguments or {})

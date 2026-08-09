@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Propose an enhancement or community idea for Donna
+about: Propose an enhancement or community idea for Dana
 title: "[feat] "
 labels: enhancement
 assignees: ""
@@ -8,7 +8,7 @@ assignees: ""
 
 ## Problem / motivation
 
-What gap or friction does this address for local-first Donna users?
+What gap or friction does this address for local-first Dana users?
 
 ## Proposed solution
 

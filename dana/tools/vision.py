@@ -1,4 +1,29 @@
-"""Screen OCR actuator + Phase 3 visual history summaries."""
+"""Vision-grounded UI interaction tools + screen OCR / visual history summaries.
+
+Two families of tools live in this module:
+
+  - Grounding-driven actuation — ``click_ui_element``, ``type_text_in_element``,
+    ``drag_ui_element`` locate a UI element by plain-language description via
+    hybrid Win32 UI-Automation + Florence-2 vision grounding
+    (``dana.graph.nodes.vision.locate_ui_element`` /
+    ``dana.vision.hybrid_grounding.HybridVisionGrounding``: UIA hit-test
+    first, coarse Florence-2 phrase grounding fallback, crop+2x-zoom
+    re-ground if the box is small). Grounding returns a bounding box in
+    Florence's normalized ``[0, 1000]`` coordinate space; this module
+    rescales it to real screen pixels (``vision_math.normalize_coordinates``,
+    ``source_resolution=(1000.0, 1000.0)``) before handing it to
+    ``dana.tools.mouse_actuator.MouseActuator`` /
+    ``dana.tools.drag_actuator.DragActuator``. ``scroll_screen`` is pure
+    actuation with no vision lookup — it just reveals off-screen content.
+  - Screen OCR + Phase 3 visual history summaries — ``analyze_visual_context``/
+    ``summarize_visual_history`` read text/object labels from the Tracker's
+    rolling frame buffer via pytesseract, independent of the grounding
+    pipeline above.
+
+No pyautogui/pynput anywhere in this file or the actuators it calls into —
+every physical action bottoms out in Win32 ``SendInput`` (ctypes) via
+``dana.tools.os_control``.
+"""
 
 from __future__ import annotations
 
@@ -215,7 +240,7 @@ def click_ui_element(target_description: str) -> str:
     (``dana.graph.nodes.vision.locate_ui_element``) -> convert the returned
     ``[0,1000]``-normalized box to real screen pixels and click its inset
     centroid via ``dana.tools.mouse_actuator.MouseActuator`` (rate-limited,
-    failsafe-bounded, kill-switch aware, ``DONNA_OS_DRY_RUN``-safe).
+    failsafe-bounded, kill-switch aware, ``DANA_OS_DRY_RUN``-safe).
 
     Returns a single observation string for the LLM: ``"SUCCESS: ..."`` on a
     completed click, ``"ERROR: ..."`` when the element can't be located or
@@ -420,7 +445,7 @@ def drag_ui_element(source_description: str, destination_description: str) -> st
     ``[0,1000]``-normalized boxes to real screen pixels and drag from the
     source's inset centroid to the destination's via
     ``dana.tools.drag_actuator.DragActuator`` (rate-limited, failsafe-bounded,
-    kill-switch aware, ``DONNA_OS_DRY_RUN``-safe).
+    kill-switch aware, ``DANA_OS_DRY_RUN``-safe).
 
     Fails closed: if either element can't be located, the drag never starts.
 

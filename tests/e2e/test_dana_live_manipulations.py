@@ -26,7 +26,7 @@ _VISION_MARKER = "VISION_GROUNDING_TEST_899"
 
 
 def _debug_vision_enabled() -> bool:
-    return (os.environ.get("DONNA_DEBUG_VISION") or "").strip().lower() in {
+    return (os.environ.get("DANA_DEBUG_VISION") or "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -141,12 +141,12 @@ def test_os_manipulation() -> None:
 
 @pytest.mark.skipif(
     os.name != "nt" or not _tesseract_available() or not _debug_vision_enabled(),
-    reason="Live vision OCR requires Windows + Tesseract + DONNA_DEBUG_VISION=1",
+    reason="Live vision OCR requires Windows + Tesseract + DANA_DEBUG_VISION=1",
 )
 def test_vision_manipulation() -> None:
     """Show a temporary CTk window on the main thread, OCR, assert marker text.
 
-    Gated behind ``DONNA_DEBUG_VISION=1`` so the grounding window never opens
+    Gated behind ``DANA_DEBUG_VISION=1`` so the grounding window never opens
     during standard agent / suite runs.
     """
     ctk = pytest.importorskip("customtkinter")

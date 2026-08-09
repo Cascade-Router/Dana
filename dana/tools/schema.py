@@ -1,4 +1,4 @@
-"""Language-agnostic tool Intermediate Representation (IR) for Donna."""
+"""Language-agnostic tool Intermediate Representation (IR) for Dana."""
 
 from __future__ import annotations
 

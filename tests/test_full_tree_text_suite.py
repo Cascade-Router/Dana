@@ -28,9 +28,9 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 # Allow toasts during live diagnostic (tests may override).
-os.environ.setdefault("DONNA_DISABLE_TOAST", "0")
+os.environ.setdefault("DANA_DISABLE_TOAST", "0")
 
-from dana.paths import DONNA_WORKSPACE, LOGS_DIR  # noqa: E402
+from dana.paths import DANA_WORKSPACE, LOGS_DIR  # noqa: E402
 
 SESSION_ID = "full-tree-text-suite"
 MARKER = f"FULL_TREE_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
@@ -43,12 +43,12 @@ BRANCH3 = (
 )
 BRANCH4 = "What did I just say my default test repository was?"
 BRANCH5 = (
-    "Donna, use the web_search tool to research the latest ROS2 Jazzy "
+    "Dana, use the web_search tool to research the latest ROS2 Jazzy "
     "Jalisco release notes and summarize the key updates for "
     "multi-agent communication."
 )
 BRANCH6_ENQUEUE = (
-    "Donna, use the draft_cursor_prompt tool to log a self-improvement "
+    "Dana, use the draft_cursor_prompt tool to log a self-improvement "
     "ticket to optimize the SQLite WAL checkpoint interval in our "
     "blackboard memory module."
 )
@@ -258,18 +258,18 @@ class _ActuatorDaemon:
 
 
 def branch1_mailroom() -> BranchResult:
-    from dana.agentic import get_donna_mode, set_donna_mode
+    from dana.agentic import get_dana_mode, set_dana_mode
     from dana.cascade_router import decide_route, fuzzy_match_command
     from dana.handoff import execute_handoff
     from dana.schema import Handoff
     from dana.telemetry import log_router
 
     r = BranchResult("Branch 1 (Mailroom Switch)", BRANCH1, False)
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     words = len(BRANCH1.split())
     hit = fuzzy_match_command(BRANCH1)
     decision = decide_route(BRANCH1)
-    mode = get_donna_mode()
+    mode = get_dana_mode()
     r.details.append(f"word_count={words}")
     r.details.append(f"fuzzy_hit={hit}")
     r.details.append(f"decide_route.reason={decision.reason!r}")
@@ -328,12 +328,12 @@ def branch2_vision_sensor_read() -> BranchResult:
     from dana.agentic import (
         build_lightweight_chat_system_prompt,
         run_lightweight_chat,
-        set_donna_mode,
+        set_dana_mode,
     )
     from dana.memory import read_visual_state
 
     r = BranchResult("Branch 2 (Vision Sensor Read)", BRANCH2, False)
-    set_donna_mode("vision")
+    set_dana_mode("vision")
     _seed_vision_sensor()
 
     yolo_calls = {"n": 0}
@@ -419,9 +419,9 @@ def branch3_chat_ingest() -> BranchResult:
     from dana.agentic import (
         build_lightweight_chat_system_prompt,
         clear_chat_memory,
-        get_donna_mode,
+        get_dana_mode,
         run_lightweight_chat,
-        set_donna_mode,
+        set_dana_mode,
     )
     from dana.cascade_router import decide_route, fuzzy_match_command
     from dana.handoff import execute_handoff
@@ -431,7 +431,7 @@ def branch3_chat_ingest() -> BranchResult:
     clear_chat_memory()
     hit = fuzzy_match_command(BRANCH3)
     decision = decide_route(BRANCH3)
-    mode = get_donna_mode()
+    mode = get_dana_mode()
     residual = (hit.residual if hit else "") or ""
     if "camgrasper-v4" not in residual.lower():
         # Split on chat-mode phrase.
@@ -462,7 +462,7 @@ def branch3_chat_ingest() -> BranchResult:
     except Exception as exc:  # noqa: BLE001
         r.errors.append(f"handoff: {exc}")
 
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     fact = residual or BRANCH3
     _bb_append("user", fact, agent="Chat_Node", intent="memory_ingest")
 
@@ -492,29 +492,29 @@ def branch3_chat_ingest() -> BranchResult:
 
     hits = _bb_search("camgrasper-v4")
     r.details.append(f"bb_repo_hits={len(hits)}")
-    r.details.append(f"mode={get_donna_mode()!r}")
+    r.details.append(f"mode={get_dana_mode()!r}")
     r.passed = bool(
-        get_donna_mode() == "chat"
+        get_dana_mode() == "chat"
         and hits
         and "mailroom" in (decision.reason or "").lower()
     )
     if not hits:
         r.errors.append("camgrasper-v4 not ingested into blackboard.db")
-    if get_donna_mode() != "chat":
-        r.errors.append(f"mode is {get_donna_mode()!r}, expected chat")
+    if get_dana_mode() != "chat":
+        r.errors.append(f"mode is {get_dana_mode()!r}, expected chat")
     return r
 
 
 def branch4_chat_recall() -> BranchResult:
     from dana.agentic import (
         build_lightweight_chat_system_prompt,
-        get_donna_mode,
+        get_dana_mode,
         run_lightweight_chat,
-        set_donna_mode,
+        set_dana_mode,
     )
 
     r = BranchResult("Branch 4 (Chat Recall)", BRANCH4, False)
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     prior_hits = _bb_search("camgrasper-v4")
     r.details.append(f"prior_bb_hits={len(prior_hits)}")
 
@@ -555,15 +555,15 @@ def branch4_chat_recall() -> BranchResult:
 
     recalled = "camgrasper-v4" in (answer or "").lower()
     r.details.append(f"recalled={recalled}")
-    r.details.append(f"mode={get_donna_mode()!r}")
-    r.passed = bool(get_donna_mode() == "chat" and recalled and prior_hits)
+    r.details.append(f"mode={get_dana_mode()!r}")
+    r.passed = bool(get_dana_mode() == "chat" and recalled and prior_hits)
     if not recalled:
         r.errors.append("Chat Node did not recall camgrasper-v4")
     return r
 
 
 def branch5_research_moa() -> BranchResult:
-    from dana.agentic import REACT_MAX_ITERS, run_react_loop, set_donna_mode
+    from dana.agentic import REACT_MAX_ITERS, run_react_loop, set_dana_mode
     from dana.cascade_router import fuzzy_match_command
     from dana.handoff import execute_handoff
     from dana.schema import Handoff
@@ -571,7 +571,7 @@ def branch5_research_moa() -> BranchResult:
     from dana.tools.schema import ToolCall
 
     r = BranchResult("Branch 5 (Research / MoA Reasoning)", BRANCH5, False)
-    set_donna_mode("research")
+    set_dana_mode("research")
     words = len(BRANCH5.split())
     mail_hit = fuzzy_match_command(BRANCH5)
     r.details.append(f"word_count={words}")
@@ -629,7 +629,7 @@ def branch5_research_moa() -> BranchResult:
         result = run_react_loop(
             user_text=BRANCH5,
             system_prompt=(
-                "You are Donna's MoA research path. Use web_search. "
+                "You are Dana's MoA research path. Use web_search. "
                 "Include <think> planning. Summarize ROS2 Jazzy multi-agent updates.\n\n"
                 f"=== BLACKBOARD SESSION {SESSION_ID} ===\n{bb_brief}\n"
                 "=== END BLACKBOARD ==="
@@ -711,7 +711,7 @@ def branch6_async_queue_callback(actuator: _ActuatorDaemon) -> BranchResult:
         build_lightweight_chat_system_prompt,
         run_lightweight_chat,
         run_react_loop,
-        set_donna_mode,
+        set_dana_mode,
     )
     from dana.memory.blackboard import (
         enqueue_action,
@@ -721,7 +721,7 @@ def branch6_async_queue_callback(actuator: _ActuatorDaemon) -> BranchResult:
     from dana.tools.schema import ToolCall
 
     r = BranchResult("Branch 6 (Async Queue & Callback)", BRANCH6_ENQUEUE, False)
-    set_donna_mode("developer")
+    set_dana_mode("developer")
     _bb_append("user", BRANCH6_ENQUEUE, agent="MoA_Reasoner", intent="draft_cursor_prompt")
 
     ack = ""
@@ -759,7 +759,7 @@ def branch6_async_queue_callback(actuator: _ActuatorDaemon) -> BranchResult:
         result = run_react_loop(
             user_text=BRANCH6_ENQUEUE,
             system_prompt=(
-                "You are Donna. Call draft_cursor_prompt exactly once with "
+                "You are Dana. Call draft_cursor_prompt exactly once with "
                 "objective/context for WAL checkpoint optimization."
             ),
             execute_fn=execute_fn,
@@ -825,7 +825,7 @@ def branch6_async_queue_callback(actuator: _ActuatorDaemon) -> BranchResult:
     r.details.append(f"actuator_processed={actuator.processed}")
 
     # Piggyback chat turn.
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     piggy_answer = ""
     captured_system = ""
 
@@ -944,7 +944,7 @@ def _print_report(
 
     print()
     print("=" * 60)
-    print("DONNA FULL-TREE DIAGNOSTIC REPORT")
+    print("DANA FULL-TREE DIAGNOSTIC REPORT")
     print("=" * 60)
     for r in results:
         print(f"{r.name+':':<36} [{_mark(r.passed)}]")
@@ -979,7 +979,7 @@ def _print_report(
 
 def run_suite() -> tuple[list[BranchResult], dict[str, Any]]:
     print("=" * 60)
-    print("Donna Full-Tree Text Diagnostic Suite")
+    print("Dana Full-Tree Text Diagnostic Suite")
     print(f"session_id={SESSION_ID}")
     print(f"marker={MARKER}")
     print("=" * 60)
@@ -1024,7 +1024,7 @@ def run_suite() -> tuple[list[BranchResult], dict[str, Any]]:
     report_path = LOGS_DIR / "full_tree_text_suite_report.txt"
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     lines = [
-        "DONNA FULL-TREE DIAGNOSTIC REPORT",
+        "DANA FULL-TREE DIAGNOSTIC REPORT",
         f"session_id={SESSION_ID}",
         f"marker={MARKER}",
         f"overall={'PASS' if all(r.passed for r in results) else 'FAIL'}",

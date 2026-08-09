@@ -59,7 +59,7 @@ def test_bezier_path_is_nonlinear_and_unique() -> None:
 
 
 def test_navigation_operator_clicks_dummy_target(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
     clicks: list[tuple[int, int]] = []
     trail: list[tuple[int, int]] = []
 
@@ -91,8 +91,8 @@ def test_navigation_operator_clicks_dummy_target(monkeypatch) -> None:  # noqa: 
 def test_navigation_emits_operator_telemetry(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    out = tmp_path / "donna_telemetry.jsonl"
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+    out = tmp_path / "dana_telemetry.jsonl"
     monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
     result = navigate_and_click("Target", visual_context=DUMMY_VISUAL)
     assert result.startswith("OK: navigate_and_click")
@@ -106,8 +106,8 @@ def test_navigation_emits_operator_telemetry(
 def test_actuator_navigate_and_click(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_DISABLE_TOAST", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_DISABLE_TOAST", "1")
     db = tmp_path / "bb.db"
     init_blackboard(db)
     set_sensor_state(LATEST_VISUAL_CONTEXT_KEY, DUMMY_VISUAL, db_path=db)
@@ -144,17 +144,17 @@ def test_actuator_navigate_and_click(
 
 
 def test_live_dummy_target_window_harness(monkeypatch) -> None:  # noqa: ANN001
-    """Optional visual demo — skipped unless DONNA_NAV_LIVE_DEMO=1."""
+    """Optional visual demo — skipped unless DANA_NAV_LIVE_DEMO=1."""
     import os
 
-    if os.environ.get("DONNA_NAV_LIVE_DEMO", "").strip() not in {"1", "true", "yes"}:
+    if os.environ.get("DANA_NAV_LIVE_DEMO", "").strip() not in {"1", "true", "yes"}:
         return
     # Live path: show a blue Target box, publish bbox, move for real.
-    monkeypatch.delenv("DONNA_OS_DRY_RUN", raising=False)
+    monkeypatch.delenv("DANA_OS_DRY_RUN", raising=False)
     import tkinter as tk
 
     root = tk.Tk()
-    root.title("Donna Nav Target")
+    root.title("Dana Nav Target")
     root.geometry("700x500+100+100")
     canvas = tk.Canvas(root, width=700, height=500, bg="#222")
     canvas.pack()

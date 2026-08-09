@@ -53,7 +53,7 @@ _MUTED = "#94A3B8"
 
 
 class AssistiveTouchOrb:
-    """Draggable always-on-top glassmorphic pill owned by the DonnaGUI Tk root."""
+    """Draggable always-on-top glassmorphic pill owned by the DanaGUI Tk root."""
 
     def __init__(
         self,

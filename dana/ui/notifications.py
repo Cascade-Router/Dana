@@ -17,7 +17,7 @@ PlannerFn = Callable[[str, str], Any]
 ErrorHook = Callable[[str, str], None]
 
 
-def show_watchdog_toast(title: str, message: str, *, app_id: str = "Donna") -> bool:
+def show_watchdog_toast(title: str, message: str, *, app_id: str = "Dana") -> bool:
     """Best-effort native toast; never raises. No-op off Windows / when disabled."""
     try:
         from dana.middleware.toast_notify import show_silent_toast
@@ -42,7 +42,7 @@ def show_watchdog_toast(title: str, message: str, *, app_id: str = "Donna") -> b
         return False
 
 
-def show_watchdog_toast_async(title: str, message: str, *, app_id: str = "Donna") -> None:
+def show_watchdog_toast_async(title: str, message: str, *, app_id: str = "Dana") -> None:
     """Fire-and-forget toast so feed paths never block on WinRT."""
 
     def _run() -> None:
@@ -51,7 +51,7 @@ def show_watchdog_toast_async(title: str, message: str, *, app_id: str = "Donna"
         except Exception:  # noqa: BLE001
             pass
 
-    threading.Thread(target=_run, name="donna-watchdog-toast", daemon=True).start()
+    threading.Thread(target=_run, name="dana-watchdog-toast", daemon=True).start()
 
 
 def submit_to_planner(trace: str, summary: str = "") -> dict[str, Any] | None:

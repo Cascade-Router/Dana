@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from dana.agentic import get_donna_mode, set_donna_mode
+from dana.agentic import get_dana_mode, set_dana_mode
 from dana.handoff import execute_handoff, parse_handoff_payload
 from dana.schema import Handoff
 from dana.tools.guards import (
@@ -115,9 +115,9 @@ def test_handoff_model_and_parse_json() -> None:
 def test_execute_handoff_switches_mode_and_emits_telemetry(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
-    out = tmp_path / "donna_telemetry.jsonl"
+    out = tmp_path / "dana_telemetry.jsonl"
     monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     ho = Handoff(
         target_agent="Vision_Agent",
         reason="ASR requested vision",
@@ -125,7 +125,7 @@ def test_execute_handoff_switches_mode_and_emits_telemetry(
     )
     result = execute_handoff(ho, session_id="m4", current_agent="Chat_Node")
     assert result["current_agent"] == "Vision_Agent"
-    assert get_donna_mode() == "vision"
+    assert get_dana_mode() == "vision"
     lines = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines()]
     tags = [r["tag"] for r in lines]
     assert "[HANDOFF]" in tags

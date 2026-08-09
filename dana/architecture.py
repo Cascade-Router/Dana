@@ -1,4 +1,4 @@
-"""Read-only architecture / capability self-awareness for Donna."""
+"""Read-only architecture / capability self-awareness for Dana."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _assert_allowed(path: Path) -> Path:
     if suffix in {".py", ".env", ".enc", ".key", ".pem"}:
         raise ArchitectureAccessError(f"Blocked file type: {suffix}")
     name = resolved.name.lower()
-    if name in {"settings.json", ".env", "donna_memory.enc"}:
+    if name in {"settings.json", ".env", "dana_memory.enc"}:
         raise ArchitectureAccessError(f"Blocked config path: {name}")
     return resolved
 

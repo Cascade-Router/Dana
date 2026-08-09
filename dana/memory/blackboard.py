@@ -1,4 +1,4 @@
-"""Persistent Blackboard (SQLite) for Donna session memory & reasoning traces.
+"""Persistent Blackboard (SQLite) for Dana session memory & reasoning traces.
 
 LangGraph state stays minimal (``session_id`` / ``current_agent`` / ``active_intent``).
 Chat turns and chain-of-thought are filed here and pulled by ID when needed.
@@ -16,10 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from dana.paths import DONNA_WORKSPACE
+from dana.paths import DANA_WORKSPACE
 
 # Runtime artifact (not under source package) — do not edit dana/paths.py.
-BLACKBOARD_DB_PATH: Path = DONNA_WORKSPACE / "memory" / "blackboard.db"
+BLACKBOARD_DB_PATH: Path = DANA_WORKSPACE / "memory" / "blackboard.db"
 
 _LOCK = threading.Lock()
 

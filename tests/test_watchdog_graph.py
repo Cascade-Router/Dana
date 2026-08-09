@@ -16,7 +16,7 @@ from dana.swarm.watchdog_graph import (
     analyze_watchdog_ast,
     ast_static_analyzer,
     build_watchdog_graph,
-    donna_coder,
+    dana_coder,
     preflight_watchdog_write,
     titan_supervisor,
     repl_executor,
@@ -45,7 +45,7 @@ def _state(**overrides: object) -> WatchdogState:
 def test_static_safety_rejects_destructive() -> None:
     bad = (
         "import subprocess\n"
-        "print('__DONNA_TTS__: wipe')\n"
+        "print('__DANA_TTS__: wipe')\n"
         "subprocess.run(['rm', '-rf', '/'])\n"
     )
     reason = static_code_safety_reject(bad)
@@ -101,7 +101,7 @@ def test_ast_static_analyzer_bypasses_titan_on_fail() -> None:
     print("[PASS] ast_static_analyzer LINT_FAIL")
 
 
-def test_donna_coder_assembles_from_json(monkeypatch) -> None:
+def test_dana_coder_assembles_from_json(monkeypatch) -> None:
     class _Msg:
         content = (
             '{"extra_imports": ["time"], '
@@ -115,7 +115,7 @@ def test_donna_coder_assembles_from_json(monkeypatch) -> None:
         "dana.swarm.watchdog_graph._chat_ollama",
         lambda **_k: fake_llm,
     )
-    out = donna_coder(
+    out = dana_coder(
         _state(
             task="Watch for Notepad",
             lint_errors="FATAL: ast.Import detected 'os'. Remove immediately.",
@@ -126,7 +126,7 @@ def test_donna_coder_assembles_from_json(monkeypatch) -> None:
     assert "assert True" in (out.get("code") or "")
     user_blob = fake_llm.invoke.call_args[0][0][1]["content"]
     assert "FATAL AST LINT ERRORS" in user_blob
-    print("[PASS] donna_coder assembles from JSON + prefers lint_errors")
+    print("[PASS] dana_coder assembles from JSON + prefers lint_errors")
 
 
 def test_parse_coder_payload_json_and_python_fallback() -> None:
@@ -178,7 +178,7 @@ def test_route_after_ast_and_titan() -> None:
         _route_after_ast(_state(status="LINT_OK", revisions=0)) == "titan_supervisor"
     )
     assert (
-        _route_after_ast(_state(status="LINT_FAIL", revisions=1)) == "donna_coder"
+        _route_after_ast(_state(status="LINT_FAIL", revisions=1)) == "dana_coder"
     )
     assert (
         _route_after_ast(_state(status="LINT_FAIL", revisions=3))
@@ -191,7 +191,7 @@ def test_route_after_ast_and_titan() -> None:
         _route_after_titan(
             _state(status="REJECTED: missing tts", revisions=1)
         )
-        == "donna_coder"
+        == "dana_coder"
     )
     assert (
         _route_after_titan(
@@ -298,7 +298,7 @@ def test_repl_executor_uses_execution_jail_cwd(monkeypatch) -> None:
     assert isinstance(argv, (list, tuple)) and len(argv) >= 2
     script_path = Path(argv[1]).resolve()
     assert script_path.parent == sandbox
-    assert script_path.name.endswith("_donna_watchdog.py")
+    assert script_path.name.endswith("_dana_watchdog.py")
     print("[PASS] repl_executor sandboxed cwd + script path")
 
 

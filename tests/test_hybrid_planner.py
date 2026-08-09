@@ -15,7 +15,7 @@ from dana.llm_client import ask_planner_structured
 from dana.llm_schemas import DAGPlan
 from dana.settings import (
     is_hybrid_planner_enabled,
-    load_donna_settings,
+    load_dana_settings,
     set_hybrid_planner_enabled,
 )
 
@@ -45,12 +45,19 @@ def test_hybrid_planner_persists_to_settings_json(isolated_settings: Path) -> No
     set_hybrid_planner_enabled(False)
     raw2 = json.loads(isolated_settings.read_text(encoding="utf-8"))
     assert raw2.get("hybrid_planner_enabled") is False
-    assert load_donna_settings(force_reload=True)["hybrid_planner_enabled"] is False
+    assert load_dana_settings(force_reload=True)["hybrid_planner_enabled"] is False
 
 
 def test_hybrid_active_requires_api_key(
     isolated_settings: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # ensure_dotenv_loaded() re-reads the repo-root .env on every call; on a
+    # machine with a real GOOGLE_API_KEY/etc. configured there, that silently
+    # resurrects the var right after delenv() below. No-op it so the deleted
+    # env actually stays deleted for this assertion.
+    monkeypatch.setattr(
+        "dana.graph.cloud_planner.ensure_dotenv_loaded", lambda: None
+    )
     set_hybrid_planner_enabled(True)
     for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AI_API_KEY"):
         monkeypatch.delenv(name, raising=False)

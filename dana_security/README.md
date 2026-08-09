@@ -8,5 +8,5 @@ ticket ledger. **Not** the same as `execution_jail/` (filesystem jail).
 | `__init__.py` | AST gates, subprocess sandbox, `architect_new_tool`, dynamic tool helpers |
 | `patch_ledger.md` | PENDING Cursor tickets from `draft_cursor_prompt` |
 
-Canonical path: `dana.paths.DONNA_SECURITY_DIR` / `REPO_SANDBOX_DIR` / `PATCH_LEDGER_PATH`.
+Canonical path: `dana.paths.DANA_SECURITY_DIR` / `REPO_SANDBOX_DIR` / `PATCH_LEDGER_PATH`.
 Legacy snapshots live under `/_archive/` — not loaded at runtime.

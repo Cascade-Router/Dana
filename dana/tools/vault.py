@@ -7,13 +7,13 @@ import logging
 import os
 import sys
 
-KEYRING_SERVICE = "donna_agent"
+KEYRING_SERVICE = "dana_agent"
 KEYRING_USERNAME = "vault_master_key"
-ENV_VAR = "DONNA_VAULT_KEY"
+ENV_VAR = "DANA_VAULT_KEY"
 
 _log = logging.getLogger("dana.vault")
 
-DEFAULT_PROMPT = "Enter Master Password (or pasted Recovery Key) to unlock Donna: "
+DEFAULT_PROMPT = "Enter Master Password (or pasted Recovery Key) to unlock Dana: "
 
 
 class VaultCredentialsMissing(RuntimeError):
@@ -24,8 +24,8 @@ def _get_master_key(*, prompt: str | None = None) -> str:
     """Resolve the vault unlock credential without hanging headless boots.
 
     Precedence:
-      1. ``DONNA_VAULT_KEY`` environment variable
-      2. OS keyring (``donna_agent`` / ``vault_master_key``)
+      1. ``DANA_VAULT_KEY`` environment variable
+      2. OS keyring (``dana_agent`` / ``vault_master_key``)
       3. Interactive ``getpass`` when stdin is a TTY (then persist to keyring)
       4. Raise ``VaultCredentialsMissing`` when headless and no credential exists
     """

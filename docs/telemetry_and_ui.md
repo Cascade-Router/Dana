@@ -1,8 +1,8 @@
 # Telemetry and Live Trace UI
 
-Donna’s operator UI is a **decoupled CustomTkinter surface**. Perception, cognition, and tool workers must never call Tk APIs directly. All Live Trace updates cross a single thread-safe queue and are applied on the GUI main thread.
+Dana’s operator UI is a **decoupled CustomTkinter surface**. Perception, cognition, and tool workers must never call Tk APIs directly. All Live Trace updates cross a single thread-safe queue and are applied on the GUI main thread.
 
-**Stage 3 also adds a structured JSONL logger** (`dana/telemetry.py` → `logs/donna_telemetry.jsonl`) for forensic / queryable bureaucracy events. Live Trace and JSONL are complementary: UI for operators, JSONL for diagnostics and soak tests.
+**Stage 3 also adds a structured JSONL logger** (`dana/telemetry.py` → `logs/dana_telemetry.jsonl`) for forensic / queryable bureaucracy events. Live Trace and JSONL are complementary: UI for operators, JSONL for diagnostics and soak tests.
 
 ---
 
@@ -21,10 +21,10 @@ Donna’s operator UI is a **decoupled CustomTkinter surface**. Perception, cogn
 |--------|----------|------|
 | `gui_telemetry_queue` | `dana/core_agent.py` | Process-wide `queue.Queue` of trace event dicts |
 | `emit_trace(...)` | `dana/core_agent.py` | Safe producer API for any thread |
-| `DonnaGUI.process_telemetry` | `dana/core_agent.py` | Consumer: `get_nowait` + `after(100, ...)` |
+| `DanaGUI.process_telemetry` | `dana/core_agent.py` | Consumer: `get_nowait` + `after(100, ...)` |
 | `TraceCell` | `dana/core_agent.py` | One stage row (icon + message + border pulse) |
 | `emit_tagged` / helpers | `dana/telemetry.py` | Structured JSONL writer (Stage 3) |
-| `TELEMETRY_JSONL_PATH` | `logs/donna_telemetry.jsonl` | Append-only forensic event stream |
+| `TELEMETRY_JSONL_PATH` | `logs/dana_telemetry.jsonl` | Append-only forensic event stream |
 
 ```text
   Worker threads                    Tk main thread
@@ -38,14 +38,14 @@ Donna’s operator UI is a **decoupled CustomTkinter surface**. Perception, cogn
 
   Worker threads                    Disk
   ─────────────                    ────
-  emit_tagged / log_* ───────────► logs/donna_telemetry.jsonl
+  emit_tagged / log_* ───────────► logs/dana_telemetry.jsonl
 ```
 
 ---
 
 ## Structured JSONL Telemetry (Stage 3)
 
-Path: **`logs/donna_telemetry.jsonl`** (one JSON object per line).
+Path: **`logs/dana_telemetry.jsonl`** (one JSON object per line).
 
 | Tag | Helper | When |
 |-----|--------|------|
@@ -96,7 +96,7 @@ Implementation notes for contributors:
 
 - Prefer `put_nowait` semantics (already used inside `emit_trace`) so a stalled UI cannot block audio/LLM threads.
 - Invalid `status` values coerce to `"active"`.
-- Do **not** hold references to `DonnaGUI` widgets from worker code; only call `emit_trace`.
+- Do **not** hold references to `DanaGUI` widgets from worker code; only call `emit_trace`.
 - For FSM / soak diagnostics, also emit the matching JSONL tag via `dana.telemetry` helpers.
 
 ---

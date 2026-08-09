@@ -26,8 +26,8 @@ def test_notepad_phonetic_corrections() -> None:
 def test_titan_codename_corrections() -> None:
     reload_vocabulary()
     assert correct_stt("activate the json initiative") == "activate the Titan initiative"
-    assert correct_stt("Donna, activate the Jason initiative") == (
-        "Donna, activate the Titan initiative"
+    assert correct_stt("Dana, activate the Jason initiative") == (
+        "Dana, activate the Titan initiative"
     )
     assert correct_stt("start the json protocol") == "start the Titan Protocol"
     assert correct_stt("run the json supervisor") == "run the Titan supervisor"

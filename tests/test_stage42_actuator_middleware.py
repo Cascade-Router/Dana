@@ -78,9 +78,9 @@ def test_actuator_processes_pending_in_background(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
     db = tmp_path / "bb.db"
-    out = tmp_path / "donna_telemetry.jsonl"
+    out = tmp_path / "dana_telemetry.jsonl"
     monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
-    monkeypatch.setenv("DONNA_DISABLE_TOAST", "1")
+    monkeypatch.setenv("DANA_DISABLE_TOAST", "1")
     init_blackboard(db)
 
     monkeypatch.setattr(
@@ -134,7 +134,7 @@ def test_process_action_failure_marks_failed(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
     db = tmp_path / "bb.db"
-    monkeypatch.setenv("DONNA_DISABLE_TOAST", "1")
+    monkeypatch.setenv("DANA_DISABLE_TOAST", "1")
     init_blackboard(db)
     monkeypatch.setattr(
         "dana.middleware.actuator_executor.execute_tool_payload",

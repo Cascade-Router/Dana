@@ -66,7 +66,7 @@ class ToolForgeState(TypedDict):
 
 
 CODER_SYSTEM = """
-You are Donna's Tool Forge coder. You do NOT invent a full Python module.
+You are Dana's Tool Forge coder. You do NOT invent a full Python module.
 You ONLY fill fields for a deterministic BaseTool template.
 
 Output ONLY one JSON object. Zero markdown. Zero commentary. Zero prose.
@@ -101,8 +101,8 @@ Hard rules for the body:
 - CPU / RAM / process metrics: use ``psutil`` (Tier-2 approved). Example body:
   ``cpu = psutil.cpu_percent(interval=0.1)\\n    mem = psutil.virtual_memory().percent\\n    return f'cpu={cpu} ram={mem}'``
   The assembler injects ``import psutil`` when the body references it.
-- Count files under the Donna sandbox with pathlib only, e.g.:
-  ``root = Path.home() / 'Desktop' / 'Donna' / 'execution_jail'\\n    n = len(list(root.glob('*.txt')))\\n    return str(n)``
+- Count files under the Dana sandbox with pathlib only, e.g.:
+  ``root = Path.home() / 'Desktop' / 'Dana' / 'execution_jail'\\n    n = len(list(root.glob('*.txt')))\\n    return str(n)``
 - Forbidden in the body: os, sys, subprocess, shutil, socket, ctypes, pickle,
   eval, exec, compile, __import__, native open().
 - Keep the body short and deterministic. Indent the body with 4 spaces per line
@@ -110,7 +110,7 @@ Hard rules for the body:
 """.strip()
 
 SECURITY_REVIEWER_SYSTEM = """
-You are a zero-trust security auditor for Donna's Tool Forge.
+You are a zero-trust security auditor for Dana's Tool Forge.
 You do NOT evaluate utility or cleverness — ONLY threat vectors.
 
 Inspect the Python tool source for:
@@ -351,7 +351,7 @@ def analyze_tool_ast(
     return unique
 
 
-def donna_coder_forge(
+def dana_coder_forge(
     state: ToolForgeState,
     *,
     model: str = DEFAULT_MODEL,
@@ -364,7 +364,7 @@ def donna_coder_forge(
     hinted = _safe_tool_name(state.get("tool_name") or suggest_tool_name(query))
     _forge_log(
         "ToolForge",
-        f"tool_forge_node=donna_coder_forge revision={revisions} "
+        f"tool_forge_node=dana_coder_forge revision={revisions} "
         f"hint={hinted!r} query={query[:80]!r}",
     )
 
@@ -553,7 +553,7 @@ def security_reviewer_agent(
     pathlib tools, then the coder collapses into invalid JSON. When the
     deterministic AST gate already passed (Tier-1/2 only, no native open),
     short-circuit to APPROVED. LLM audit remains available only as a soft
-    advisory when ``DONNA_FORGE_LLM_SECURITY=1``.
+    advisory when ``DANA_FORGE_LLM_SECURITY=1``.
     """
     code = state.get("code") or ""
     query = state.get("query") or ""
@@ -568,7 +568,7 @@ def security_reviewer_agent(
     fatal = analyze_tool_ast(code)
     history = list(state.get("history") or [])
     if not fatal:
-        use_llm = os.environ.get("DONNA_FORGE_LLM_SECURITY", "").strip().lower() in (
+        use_llm = os.environ.get("DANA_FORGE_LLM_SECURITY", "").strip().lower() in (
             "1",
             "true",
             "yes",
@@ -867,25 +867,25 @@ def hot_load_forged_tool(state: ToolForgeState) -> dict[str, Any]:
 
 def _route_after_ast(
     state: ToolForgeState,
-) -> Literal["security_reviewer", "donna_coder", "terminal_failure"]:
+) -> Literal["security_reviewer", "dana_coder", "terminal_failure"]:
     status = (state.get("status") or "").strip().upper()
     revisions = int(state.get("revisions") or 0)
     if status == "LINT_OK":
         return "security_reviewer"
     if status == "LINT_FAIL" and revisions < MAX_FORGE_REVISIONS:
-        return "donna_coder"
+        return "dana_coder"
     return "terminal_failure"
 
 
 def _route_after_security(
     state: ToolForgeState,
-) -> Literal["hot_load", "donna_coder", "terminal_failure"]:
+) -> Literal["hot_load", "dana_coder", "terminal_failure"]:
     status = (state.get("status") or "").strip().upper()
     revisions = int(state.get("revisions") or 0)
     if status == "APPROVED":
         return "hot_load"
     if status == "SEC_REJECTED" and revisions < MAX_FORGE_REVISIONS:
-        return "donna_coder"
+        return "dana_coder"
     return "terminal_failure"
 
 
@@ -935,7 +935,7 @@ def build_tool_forge_graph(*, model: str = DEFAULT_MODEL):
     """Compile Coder → AST → Security Reviewer → Hot-Load."""
 
     def _coder(state: ToolForgeState) -> dict[str, Any]:
-        return donna_coder_forge(state, model=model)
+        return dana_coder_forge(state, model=model)
 
     def _ast(state: ToolForgeState) -> dict[str, Any]:
         return ast_gatekeeper_forge(state)
@@ -944,20 +944,20 @@ def build_tool_forge_graph(*, model: str = DEFAULT_MODEL):
         return security_reviewer_agent(state, model=model)
 
     graph = StateGraph(ToolForgeState)
-    graph.add_node("donna_coder", _coder)
+    graph.add_node("dana_coder", _coder)
     graph.add_node("ast_gatekeeper", _ast)
     graph.add_node("security_reviewer", _sec)
     graph.add_node("hot_load", hot_load_forged_tool)
     graph.add_node("terminal_failure", terminal_failure_forge)
 
-    graph.add_edge(START, "donna_coder")
-    graph.add_edge("donna_coder", "ast_gatekeeper")
+    graph.add_edge(START, "dana_coder")
+    graph.add_edge("dana_coder", "ast_gatekeeper")
     graph.add_conditional_edges(
         "ast_gatekeeper",
         _route_after_ast,
         {
             "security_reviewer": "security_reviewer",
-            "donna_coder": "donna_coder",
+            "dana_coder": "dana_coder",
             "terminal_failure": "terminal_failure",
         },
     )
@@ -966,7 +966,7 @@ def build_tool_forge_graph(*, model: str = DEFAULT_MODEL):
         _route_after_security,
         {
             "hot_load": "hot_load",
-            "donna_coder": "donna_coder",
+            "dana_coder": "dana_coder",
             "terminal_failure": "terminal_failure",
         },
     )

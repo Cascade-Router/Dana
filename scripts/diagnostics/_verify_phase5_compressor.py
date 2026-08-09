@@ -32,7 +32,7 @@ def a_star(start, goal, costmap: Costmap):
     )
     assert len(raw.split()) >= 2000 or True  # helpers push size
 
-    tmp = tempfile.mkdtemp(prefix="donna_p5_vault_")
+    tmp = tempfile.mkdtemp(prefix="dana_p5_vault_")
     try:
         vault = CodebaseVault(tmp, embeddings=FakeEmbeddings())
         comp = MemoryCompressor(max_tokens=180)

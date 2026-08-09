@@ -6,7 +6,7 @@ from dana.agentic import (
     clear_chat_memory,
     requires_tool_graph,
     run_lightweight_chat,
-    set_donna_mode,
+    set_dana_mode,
 )
 from dana.agentic_planning import desktop_plan_intent
 from dana.cascade_router import decide_route
@@ -19,7 +19,7 @@ from dana.tools.broker import get_broker
 
 
 def test_greeting_stays_chat_path() -> None:
-    assert requires_tool_graph("Hello Donna, how are you?") is False
+    assert requires_tool_graph("Hello Dana, how are you?") is False
     assert requires_tool_graph("What time is it?") is False
 
 
@@ -39,7 +39,7 @@ def test_tool_graph_escalates_research_store_and_ollama() -> None:
     assert requires_tool_graph("Don't you have access to your research store?") is True
     assert requires_tool_graph("Is my Olama local server online?") is True
     assert requires_tool_graph("Is Ollama online?") is True
-    assert requires_tool_graph("Hello Donna, how are you?") is False
+    assert requires_tool_graph("Hello Dana, how are you?") is False
 
 
 def test_tool_graph_escalates_desktop_window_ticket() -> None:
@@ -79,14 +79,14 @@ def test_readonly_agent_verification_prompts_require_tool_graph() -> None:
     for prompt in prompts:
         assert requires_tool_graph(prompt) is True, prompt
     # Optional: cascade must not take lightweight chat early-return.
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     for prompt in prompts:
         d = decide_route(prompt, forced_tool=None)
         assert "tools/MoA bypassed" not in (d.reason or ""), prompt
 
 
 def test_cascade_chat_mode_escalates_on_tool_intent() -> None:
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     d = decide_route(
         "Use your tools to read the system_repl.py file.",
         forced_tool=None,
@@ -96,7 +96,7 @@ def test_cascade_chat_mode_escalates_on_tool_intent() -> None:
 
 
 def test_broker_foresight_file_editor_for_system_repl() -> None:
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     broker = get_broker()
     call = broker.parse_utterance(
         "Use your tools to read the system_repl.py file."

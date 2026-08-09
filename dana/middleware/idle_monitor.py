@@ -226,10 +226,10 @@ def ollama_keep_alive() -> int | str:
     """Ollama keep_alive for API payloads.
 
     Default is ``0`` (immediate unload after each call) for zero-latency VRAM
-    reclaim during multi-epic runs. Override with ``DONNA_OLLAMA_KEEP_ALIVE``
+    reclaim during multi-epic runs. Override with ``DANA_OLLAMA_KEEP_ALIVE``
     (e.g. ``5m``) when warm-cache is preferred. Never returns ``-1`` / ``"-1"``.
     """
-    override = (os.environ.get("DONNA_OLLAMA_KEEP_ALIVE") or "").strip()
+    override = (os.environ.get("DANA_OLLAMA_KEEP_ALIVE") or "").strip()
     if override:
         if override in {"-1", "-1.0"}:
             return 0
@@ -584,13 +584,13 @@ def start_idle_monitor(
     with _START_LOCK:
         if _STARTED and _MONITOR is not None:
             return _MONITOR
-        if os.environ.get("DONNA_DISABLE_IDLE_MONITOR", "").strip().lower() in {
+        if os.environ.get("DANA_DISABLE_IDLE_MONITOR", "").strip().lower() in {
             "1",
             "true",
             "yes",
             "on",
         }:
-            _log("disabled via DONNA_DISABLE_IDLE_MONITOR")
+            _log("disabled via DANA_DISABLE_IDLE_MONITOR")
             return None
         mon = IdleMonitor(threshold_s=threshold_s, poll_s=poll_s)
         mon.start()

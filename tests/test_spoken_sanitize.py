@@ -60,7 +60,7 @@ def test_research_latest_updates_forces_web_search() -> None:
 
 def test_write_a_report_forces_swarm() -> None:
     broker = IntentBroker()
-    call = broker.parse_utterance("Donna, write a report on robots navigating a maze")
+    call = broker.parse_utterance("Dana, write a report on robots navigating a maze")
     assert call is not None
     assert call.tool_id == "dispatch_research_swarm"
     assert str(call.arguments.get("query") or "").strip()

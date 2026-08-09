@@ -29,7 +29,7 @@ EMBLEM_FRAC = 0.62
 _EMBLEM_CANDIDATES = (
     ROOT / "dana" / "ui" / "assets" / "dana_logo_highres.png",
     ROOT / "dana" / "ui" / "assets" / "orb_logo.png",
-    ROOT / "dana" / "ui" / "assets" / "donna_logo_highres.png",
+    ROOT / "dana" / "ui" / "assets" / "dana_logo_highres.png",
     ROOT / "dana" / "ui" / "assets" / "dana_icon.png",
     ROOT / "dana" / "assets" / "orb_logo.png",
     ROOT / "assets" / "dana_logo.png",

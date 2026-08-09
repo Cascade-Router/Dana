@@ -30,11 +30,11 @@ _SUCCESS_FMT = (
 
 def _workspace_config_path() -> Path | None:
     try:
-        from dana.paths import DONNA_WORKSPACE
+        from dana.paths import DANA_WORKSPACE
 
-        return Path(DONNA_WORKSPACE) / "execution_jail" / "github_reporter.json"
+        return Path(DANA_WORKSPACE) / "execution_jail" / "github_reporter.json"
     except Exception:  # noqa: BLE001
-        desktop = Path.home() / "Desktop" / "Donna" / "execution_jail" / "github_reporter.json"
+        desktop = Path.home() / "Desktop" / "Dana" / "execution_jail" / "github_reporter.json"
         return desktop
 
 
@@ -98,7 +98,7 @@ def _format_issue_body(body: str) -> str:
         "## Bug report\n\n"
         f"{content}\n\n"
         "---\n"
-        "*Submitted via Donna community reporter*\n"
+        "*Submitted via Dana community reporter*\n"
     )
 
 
@@ -109,7 +109,7 @@ def report_github_issue(
 ) -> str:
     """Create a GitHub issue for a community bug report.
 
-    Returns a short status string suitable for Donna TTS / chat.
+    Returns a short status string suitable for Dana TTS / chat.
     Never raises into the parent agent runtime graph.
     """
     title_text = (title or "").strip()
@@ -139,7 +139,7 @@ def report_github_issue(
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "User-Agent": "Donna-GitHubIssueReporter",
+            "User-Agent": "Dana-GitHubIssueReporter",
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )

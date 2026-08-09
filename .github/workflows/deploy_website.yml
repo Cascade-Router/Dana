@@ -35,9 +35,9 @@ jobs:
       - name: Install and build Astro site
         working-directory: website
         env:
-          # Project Pages URL: https://cascade-router.github.io/Donna/
+          # Project Pages URL: https://cascade-router.github.io/Dana/
           SITE_URL: https://cascade-router.github.io
-          BASE_PATH: /Donna/
+          BASE_PATH: /Dana/
           ASTRO_PAGES: "1"
         run: |
           npm ci

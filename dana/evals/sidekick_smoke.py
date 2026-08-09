@@ -59,7 +59,7 @@ def turn_broker_modality() -> list[TurnResult]:
         ("read the paragraph on the page", "ocr_with_region", "Florence OCR"),
         ("find the Target button", "ocr_with_region", "Florence OCR"),
         (
-            "Donna, use the draft_cursor_prompt tool to log a self-improvement ticket",
+            "Dana, use the draft_cursor_prompt tool to log a self-improvement ticket",
             "draft_cursor_prompt",
             "MoA-force tool",
         ),
@@ -79,7 +79,7 @@ def turn_broker_modality() -> list[TurnResult]:
 
 def turn_cascade_moa_escalation() -> list[TurnResult]:
     """Escalation management: decide_route / classify_complexity still active."""
-    from dana.agentic import set_donna_mode
+    from dana.agentic import set_dana_mode
     from dana.cascade_router import (
         classify_complexity,
         decide_route,
@@ -88,13 +88,13 @@ def turn_cascade_moa_escalation() -> list[TurnResult]:
 
     out: list[TurnResult] = []
     # Developer mode so chat bypass does not swallow MoA.
-    set_donna_mode("developer", as_voice=False)
+    set_dana_mode("developer", as_voice=False)
 
     high_q = (
         "Please draft a cursor prompt for a complex self-improvement ticket "
         "about DeepSeek MoA routing."
     )
-    low_q = "hey donna, how are you today?"
+    low_q = "hey dana, how are you today?"
 
     high_c = classify_complexity(high_q)
     low_c = classify_complexity(low_q)
@@ -165,12 +165,12 @@ def turn_cascade_moa_escalation() -> list[TurnResult]:
 
 def turn_chat_tool_escalation() -> list[TurnResult]:
     """Chat→ReAct escalation (requires_tool_graph) still fires."""
-    from dana.agentic import requires_tool_graph, set_donna_mode
+    from dana.agentic import requires_tool_graph, set_dana_mode
 
-    set_donna_mode("chat", as_voice=True)
+    set_dana_mode("chat", as_voice=True)
     out: list[TurnResult] = []
     cases = [
-        ("hi donna, how's it going?", False),
+        ("hi dana, how's it going?", False),
         ("please read dana/paths.py and summarize it", True),
         ("run a python script to print hello", True),
         ("what do you see on my screen", False),  # visual ≠ file/tool graph regex
@@ -196,9 +196,9 @@ def turn_perception_contract_dry() -> list[TurnResult]:
         read_perception_ocr_text,
         read_visual_state,
     )
-    from dana.paths import DONNA_WORKSPACE
+    from dana.paths import DANA_WORKSPACE
 
-    db = DONNA_WORKSPACE / "memory" / "blackboard.db"
+    db = DANA_WORKSPACE / "memory" / "blackboard.db"
     init_blackboard(db)
     publish_perception_objects(
         "[Vision Output] Detected: 1 book.",
@@ -296,7 +296,7 @@ def turn_headless_react_complex() -> list[TurnResult]:
     from dana.tools.broker import IntentBroker
 
     query = (
-        "Donna, use the draft_cursor_prompt tool to log a self-improvement ticket "
+        "Dana, use the draft_cursor_prompt tool to log a self-improvement ticket "
         "about DeepSeek MoA routing and Florence OCR perception contracts."
     )
     try:
@@ -333,7 +333,7 @@ def turn_supervisor_health() -> list[TurnResult]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Donna sidekick text smoke suite")
+    parser = argparse.ArgumentParser(description="Dana sidekick text smoke suite")
     parser.add_argument(
         "--live-vision",
         action="store_true",
@@ -351,11 +351,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    os.environ.setdefault("DONNA_OS_DRY_RUN", "1")
-    os.environ.setdefault("DONNA_CURSOR_LAUNCH", "0")
-    os.environ.setdefault("DONNA_DISABLE_TOAST", "1")
+    os.environ.setdefault("DANA_OS_DRY_RUN", "1")
+    os.environ.setdefault("DANA_CURSOR_LAUNCH", "0")
+    os.environ.setdefault("DANA_DISABLE_TOAST", "1")
 
-    print("Donna Sidekick text smoke")
+    print("Dana Sidekick text smoke")
     print("=" * 60)
 
     results: list[TurnResult] = []

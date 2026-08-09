@@ -104,10 +104,10 @@ _EPIC_SPLIT_RE = re.compile(r"(?=(?:\bEpic\s*\d+\s*:))", re.I)
 
 
 def hitl_spec_approval_enabled() -> bool:
-    """Human-in-the-loop Approve & Run gate (default on; set DONNA_HITL_SPEC_APPROVAL=0 to skip)."""
+    """Human-in-the-loop Approve & Run gate (default on; set DANA_HITL_SPEC_APPROVAL=0 to skip)."""
     import os
 
-    raw = str(os.environ.get("DONNA_HITL_SPEC_APPROVAL", "1") or "1").strip().lower()
+    raw = str(os.environ.get("DANA_HITL_SPEC_APPROVAL", "1") or "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
 

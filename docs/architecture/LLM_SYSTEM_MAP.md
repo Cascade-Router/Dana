@@ -9,7 +9,7 @@ Dense topology for LLM / agent reasoning. Paths and symbols match current code (
 ```
 run.py
   └─ verify_environment() → dana.core_agent.main()
-       ├─ [GUI] DonnaGUI (Tk main thread) + AssistiveTouchOrb
+       ├─ [GUI] DanaGUI (Tk main thread) + AssistiveTouchOrb
        │     ├─ drain_state_changes ← dana.ui.status_bus
        │     ├─ PerceptionFeed (mss ~8 FPS on Perception tab)
        │     └─ after(…) → agent_loop thread + pystray tray
@@ -35,9 +35,9 @@ Optional sidecar (not desktop boot path):
 | Layer | Role | Modules / symbols |
 |-------|------|-------------------|
 | Entry | Desktop / frozen | `run.py` → `core_agent.main` / `agent_loop`; package via `build_dana.py` → `dist/Dana/Dana.exe` |
-| UI smoke | Headless paint | `python -m dana.ui.main` constructs `DonnaGUI`, auto-destroys unless `--stay` |
+| UI smoke | Headless paint | `python -m dana.ui.main` constructs `DanaGUI`, auto-destroys unless `--stay` |
 | Cognition | Chat vs tools | `dana.agentic.run_lightweight_chat`, `run_react_loop` → `_run_react_loop_langchain` |
-| Graph | LangGraph corridor | `dana.agentic_react_graph.compile_donna_react_graph` |
+| Graph | LangGraph corridor | `dana.agentic_react_graph.compile_dana_react_graph` |
 | Intent IR | STT fast-path | `dana.tools.broker.IntentBroker` / `get_broker()` / `parse_utterance` |
 | Tools exec | Bound actuators | `core_agent.execute_tool_call` ← LangChain tools + plugins |
 | Secure KV | Encrypted profile | `dana.secure_memory.SecureMemory`, `dana.vault_service.VaultClient` `:47475` |
@@ -46,7 +46,7 @@ Optional sidecar (not desktop boot path):
 | Blackboard | Session / mode | `dana.memory.blackboard` (hydrate corridor) |
 | Paths | Cwd-independent | `dana.paths` (`PROJECT_ROOT`, workspace) — do not alter in patches |
 
-**Production graph topology** (`compile_donna_react_graph`):
+**Production graph topology** (`compile_dana_react_graph`):
 
 ```
 START → hydrate_memory → planner → executor
@@ -124,7 +124,7 @@ OS mic (native rate, often 44100)
 - Singleton `StatusEventBus` (`queue.Queue` max 128; silent drop on full).
 - Statuses: `idle` | `listening` | `routing` | `executing`.
 - Writers (workers, tools, daemon, graph): `emit_state_change(status, tool=, message=)`.
-- Readers: `DonnaGUI._poll_state_changes` (~5 Hz) → `drain_state_changes` → `_apply_state_change` (System Status line + VAD mic pip).
+- Readers: `DanaGUI._poll_state_changes` (~5 Hz) → `drain_state_changes` → `_apply_state_change` (System Status line + VAD mic pip).
 - Headless-safe: no Tk imports in bus module.
 
 ### Conversation / UI phase (`core_agent`)
@@ -155,7 +155,7 @@ OS mic (native rate, often 44100)
 
 | Component | Threading model |
 |-----------|-----------------|
-| `DonnaGUI` | Tk mainloop owns UI; agent_loop in background thread |
+| `DanaGUI` | Tk mainloop owns UI; agent_loop in background thread |
 | `AssistiveTouchOrb` | Frameless topmost Toplevel; dictation / HITL / dashboard callbacks; agent label via `get_active_tts_agent` |
 | Theme | `dana.ui.theme` — Obsidian Mint / Cyber Amber / Ghost Light; `apply_dana_ctk_theme` |
 | Perception feed | Worker thread `_capture_perception_frame` → `after(0, _apply)`; schedule `after(125)` |
@@ -174,7 +174,7 @@ OS mic (native rate, often 44100)
 | Hybrid grounding | `dana.graph.nodes.vision.get_hybrid_grounding` | UIA → Florence crop/zoom |
 | SpatialIR | `spatial_context.SPATIAL_AGGREGATOR` | `synthesize_prompt_block`, transcript updates |
 | OCR actuator | `dana.tools.vision.analyze_visual_context` | mss → Pillow → pytesseract; `emit_state_change(executing)` |
-| GUI preview | `DonnaGUI._schedule_perception_feed` | mss primary monitor, thumbnail 480×270 |
+| GUI preview | `DanaGUI._schedule_perception_feed` | mss primary monitor, thumbnail 480×270 |
 | Overlay | `dana.vision.overlay.get_overlay` | ROI HUD for grounding |
 
 ### Actuation / tools
@@ -197,7 +197,7 @@ OS mic (native rate, often 44100)
 
 | Store | Path / binding | API |
 |-------|----------------|-----|
-| SecureMemory (AES profile) | `donna_memory.enc` via `default_vault_path()` | `unlock_donna_memory`, `VaultClient` session token |
+| SecureMemory (AES profile) | `dana_memory.enc` via `default_vault_path()` | `unlock_dana_memory`, `VaultClient` session token |
 | Hot cache | process `VAULT_HOT_CACHE` | `populate_vault_hot_cache` — skip ReAct for identity |
 | Chroma codebase | `.dana/vault/` collection `dana_codebase_vault` | `CodebaseVault.ingest_local_directory` / `search_vault` |
 | Episodic SQLite | `EpisodicMemoryStore` (`episodic_facts` + TTL) | `hydrate_memory_node` / `consolidate_memory_node` |
@@ -218,7 +218,7 @@ OS mic (native rate, often 44100)
 | **Ollama dependency** | Brain is local Ollama (`ask_ollama_messages`); wake waits `ollama_ready`. Unreachable → spoken `OLLAMA_UNREACHABLE_SPEECH`. |
 | **Chat vs graph** | Chat = no tools; filler/verbal-tool → one escalate to `run_react_loop`. Daemon uses `requires_tool_graph` (small-talk stays lightweight). |
 | **run.py vs dist exe** | Dev: `python run.py` (singleton port `47473`, torch major check). Ship: `build_dana.py` packs `run.py` → `dist/Dana/Dana.exe` (not `dana.ui.main` / daemon). Frozen assets: `sys._MEIPASS` / `sys.frozen` in `dana.resources`, `dana.ui.logo`. |
-| **UI smoke vs product** | `dana.ui.main` = short-lived `DonnaGUI` smoke. Product UI = `core_agent.DonnaGUI` from `main()`. |
+| **UI smoke vs product** | `dana.ui.main` = short-lived `DanaGUI` smoke. Product UI = `core_agent.DanaGUI` from `main()`. |
 | **English-only release** | Settings language lock logged at boot; Distil-Whisper `.en`. |
 | **Security / paths** | Do not modify ToolForge gates, offline routing structure, or `dana/paths.py` in casual patches. |
 | **Wiretap** | No `wiretap` symbol in current tree (no removal needed). |
@@ -234,9 +234,9 @@ OS mic (native rate, often 44100)
 | VAD | `record_utterance`, `audio.vad_consumer.is_speech_frame` |
 | STT | `transcribe_audio`, `load_whisper` / `ensure_whisper_bundle` |
 | Brain turn | `conversation_worker` → `run_brain_turn` |
-| ReAct graph | `agentic_react_graph.compile_donna_react_graph`, `agentic.run_react_loop` |
+| ReAct graph | `agentic_react_graph.compile_dana_react_graph`, `agentic.run_react_loop` |
 | Broker | `tools.broker.get_broker`, `parse_utterance`, `tool_router` |
 | TTS spool | `enqueue_speech`, `tts_worker` |
-| Status UI | `ui.status_bus`, `DonnaGUI._poll_state_changes` |
+| Status UI | `ui.status_bus`, `DanaGUI._poll_state_changes` |
 | Daemon | `daemon.engine.EngineDaemon`, `daemon.protocol.METHODS` |
 | Chroma / episodic | `memory.vault.CodebaseVault`, `memory.store.EpisodicMemoryStore` |

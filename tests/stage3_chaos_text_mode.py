@@ -23,13 +23,13 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from dana.paths import LOGS_DIR, DONNA_WORKSPACE  # noqa: E402
+from dana.paths import LOGS_DIR, DANA_WORKSPACE  # noqa: E402
 
 TURN1 = "switch to vision mounts."
 TURN2 = "Switch back to chat mode. My favorite color is cobalt blue."
 TURN3 = "What did I just tell you my favorite color was?"
 TURN4 = (
-    "Donna, use the draft_cursor_prompt tool to log a self-improvement ticket "
+    "Dana, use the draft_cursor_prompt tool to log a self-improvement ticket "
     "to implement a sliding-window garbage collector for our SQLite blackboard "
     "so it doesn't grow infinitely."
 )
@@ -155,16 +155,16 @@ def _tags_present(events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]
 
 
 def turn1_mailroom() -> TurnResult:
-    from dana.agentic import get_donna_mode, set_donna_mode
+    from dana.agentic import get_dana_mode, set_dana_mode
     from dana.cascade_router import decide_route, fuzzy_match_command
     from dana.handoff import execute_handoff
     from dana.schema import Handoff
 
     r = TurnResult("Turn 1 Mailroom / RapidFuzz", TURN1, False)
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     hit = fuzzy_match_command(TURN1)
     decision = decide_route(TURN1)
-    mode = get_donna_mode()
+    mode = get_dana_mode()
     r.details.append(f"fuzzy_hit={hit}")
     r.details.append(f"decide_route.reason={decision.reason!r}")
     r.details.append(f"mode_after={mode!r}")
@@ -205,11 +205,11 @@ def turn2_chat_memory() -> TurnResult:
     from dana.agentic import (
         append_chat_memory_turn,
         clear_chat_memory,
-        get_donna_mode,
+        get_dana_mode,
         mode_switch_spoken_ack,
         parse_mode_switch,
         run_lightweight_chat,
-        set_donna_mode,
+        set_dana_mode,
     )
     from dana.cascade_router import decide_route
     from dana.memory import append_message, ensure_session
@@ -226,7 +226,7 @@ def turn2_chat_memory() -> TurnResult:
     r.details.append(f"decide_route.reason={decision.reason!r}")
 
     if switched is not None:
-        active = set_donna_mode(switched)
+        active = set_dana_mode(switched)
         ack = mode_switch_spoken_ack(active)
         r.details.append(f"mode_switch_ack={ack!r} mode={active!r}")
         try:
@@ -301,7 +301,7 @@ def turn2_chat_memory() -> TurnResult:
     else:
         r.errors.append("mode switch to chat did not fire")
 
-    mode_ok = get_donna_mode() == "chat"
+    mode_ok = get_dana_mode() == "chat"
     bb_hits = _bb_search("cobalt")
     r.details.append(f"blackboard_cobalt_hits={len(bb_hits)}")
     if bb_hits:
@@ -310,7 +310,7 @@ def turn2_chat_memory() -> TurnResult:
     # Pass requires chat mode + cobalt on Blackboard (Stage 3 contract).
     r.passed = bool(mode_ok and bb_hits)
     if not mode_ok:
-        r.errors.append(f"mode={get_donna_mode()!r} expected chat")
+        r.errors.append(f"mode={get_dana_mode()!r} expected chat")
     if not bb_hits:
         r.errors.append("cobalt blue not found in blackboard.db")
     return r
@@ -319,14 +319,14 @@ def turn2_chat_memory() -> TurnResult:
 def turn3_recall() -> TurnResult:
     from dana.agentic import (
         build_lightweight_chat_system_prompt,
-        get_donna_mode,
+        get_dana_mode,
         run_lightweight_chat,
-        set_donna_mode,
+        set_dana_mode,
     )
     from dana.memory import load_messages
 
     r = TurnResult("Turn 3 Blackboard Memory Recall", TURN3, False)
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     bb_msgs = load_messages("chaos-stage3", limit=20)
     r.details.append(f"bb_message_count={len(bb_msgs)}")
     try:
@@ -349,7 +349,7 @@ def turn3_recall() -> TurnResult:
     # Prefer model answer; fall back to Blackboard evidence of cobalt.
     has_cobalt = "cobalt" in answer.lower()
     bb_has = bool(_bb_search("cobalt"))
-    r.passed = bool(get_donna_mode() == "chat" and (has_cobalt or bb_has and "color" in TURN3.lower()))
+    r.passed = bool(get_dana_mode() == "chat" and (has_cobalt or bb_has and "color" in TURN3.lower()))
     # Stricter: spoken/chat answer must mention cobalt.
     if not has_cobalt:
         r.errors.append("chat answer did not mention cobalt blue")
@@ -361,13 +361,13 @@ def turn3_recall() -> TurnResult:
 
 
 def turn4_moa_guard() -> TurnResult:
-    from dana.agentic import REACT_MAX_ITERS, run_react_loop, set_donna_mode
+    from dana.agentic import REACT_MAX_ITERS, run_react_loop, set_dana_mode
     from dana.cascade_router import fuzzy_match_command
     from dana.tools.broker import IntentBroker
     from dana.tools.schema import ToolCall
 
     r = TurnResult("Turn 4 DeepSeek Extractor & Pydantic Guard", TURN4, False)
-    set_donna_mode("developer")
+    set_dana_mode("developer")
 
     # Stage 3.1: long prompt must NOT hit the mailroom.
     mail_hit = fuzzy_match_command(TURN4)
@@ -413,7 +413,7 @@ def turn4_moa_guard() -> TurnResult:
         result = run_react_loop(
             user_text=TURN4,
             system_prompt=(
-                "You are Donna in developer mode. Prefer draft_cursor_prompt for "
+                "You are Dana in developer mode. Prefer draft_cursor_prompt for "
                 "self-improvement tickets. Include target files, root cause, "
                 "step-by-step changes, and acceptance criteria in the tool args."
             ),
@@ -459,7 +459,7 @@ def turn4_moa_guard() -> TurnResult:
             pass
     r.details.append(f"reasoning_traces_rows={think_rows}")
 
-    ledger = DONNA_WORKSPACE / "dana_security" / "patch_ledger.md"
+    ledger = DANA_WORKSPACE / "dana_security" / "patch_ledger.md"
     ledger_snip = ""
     if ledger.is_file():
         text = ledger.read_text(encoding="utf-8", errors="replace")
@@ -486,8 +486,8 @@ def turn4_moa_guard() -> TurnResult:
 def audit_logs(start_lines: int) -> dict[str, Any]:
     events = _jsonl_since(start_lines)
     buckets = _tags_present(events)
-    conv = LOGS_DIR / "donna_conversation.log"
-    runtime = LOGS_DIR / "donna_runtime.log"
+    conv = LOGS_DIR / "dana_conversation.log"
+    runtime = LOGS_DIR / "dana_runtime.log"
     conv_tail = ""
     runtime_tail = ""
     if conv.is_file():
@@ -537,7 +537,7 @@ def audit_logs(start_lines: int) -> dict[str, Any]:
 
 def main() -> int:
     print("=" * 72)
-    print("Donna Stage 3 Chaos Test — Text Mode (no STT/TTS)")
+    print("Dana Stage 3 Chaos Test — Text Mode (no STT/TTS)")
     print(f"marker={CHAOS_MARKER}")
     print("=" * 72)
 

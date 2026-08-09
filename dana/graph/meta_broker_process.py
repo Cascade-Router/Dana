@@ -78,8 +78,8 @@ def _mp_put_nowait(q: Any, payload: dict[str, Any], *, critical: bool = False) -
 
 
 def resolve_headless_log_path() -> Path:
-    """Prefer ``DONNA_META_BROKER_LOG``, else ``logs/meta_broker_headless.log``."""
-    override = (os.environ.get("DONNA_META_BROKER_LOG") or "").strip()
+    """Prefer ``DANA_META_BROKER_LOG``, else ``logs/meta_broker_headless.log``."""
+    override = (os.environ.get("DANA_META_BROKER_LOG") or "").strip()
     if override:
         return Path(override)
     try:
@@ -88,10 +88,10 @@ def resolve_headless_log_path() -> Path:
         root = Path(PROJECT_ROOT)
     except Exception:  # noqa: BLE001
         root = Path.cwd()
-    # Suite harnesses often set DONNA_META_BROKER_LOG=logs/lru_cache_suite.log.
+    # Suite harnesses often set DANA_META_BROKER_LOG=logs/lru_cache_suite.log.
     # Fall back to a dedicated headless IPC log under logs/.
     preferred = root / "logs" / "lru_cache_suite.log"
-    if preferred.is_file() or (os.environ.get("DONNA_SUITE_LOG") or "").strip():
+    if preferred.is_file() or (os.environ.get("DANA_SUITE_LOG") or "").strip():
         return preferred
     return root / "logs" / "meta_broker_headless.log"
 
@@ -208,7 +208,7 @@ def _broker_worker(prompt: str, queue: Any, env_extra: dict[str, str] | None) ->
     _CHILD_QUEUE = queue
     if env_extra:
         os.environ.update({str(k): str(v) for k, v in env_extra.items()})
-    log_path = (os.environ.get("DONNA_META_BROKER_LOG") or "").strip()
+    log_path = (os.environ.get("DANA_META_BROKER_LOG") or "").strip()
     _log_fh = None
     if log_path:
         try:
@@ -339,12 +339,12 @@ def run_meta_broker_isolated(
         timeout_s = DEFAULT_ISOLATED_TIMEOUT_S
 
     # Ensure headless drainer is alive when no GUI is draining via Tk after().
-    if (os.environ.get("DONNA_HEADLESS") or "").strip().lower() in {
+    if (os.environ.get("DANA_HEADLESS") or "").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
-    } or (os.environ.get("DONNA_NO_GUI") or "").strip().lower() in {
+    } or (os.environ.get("DANA_NO_GUI") or "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -355,9 +355,9 @@ def run_meta_broker_isolated(
     ctx = mp.get_context("spawn")
     queue: mp.Queue = ctx.Queue(maxsize=_TELEMETRY_QUEUE_MAX)
     child_env = dict(env_extra or {})
-    if "DONNA_META_BROKER_LOG" not in child_env:
+    if "DANA_META_BROKER_LOG" not in child_env:
         try:
-            child_env["DONNA_META_BROKER_LOG"] = str(resolve_headless_log_path())
+            child_env["DANA_META_BROKER_LOG"] = str(resolve_headless_log_path())
         except Exception:
             pass
 

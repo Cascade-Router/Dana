@@ -1,4 +1,4 @@
-"""Donna evals package — headless CI harness for agent routing."""
+"""Dana evals package — headless CI harness for agent routing."""
 
 from __future__ import annotations
 

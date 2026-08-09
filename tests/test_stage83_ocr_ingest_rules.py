@@ -55,7 +55,7 @@ def test_strip_llm_markdown_fences() -> None:
 
 
 def test_clean_ocr_dry_llm(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_INGEST_DRY_LLM", "1")
+    monkeypatch.setenv("DANA_INGEST_DRY_LLM", "1")
     out = clean_ocr_with_llm("Max 30 words\nCite sources")
     assert out.startswith("# Project rules")
     assert "- Max 30 words" in out
@@ -63,9 +63,9 @@ def test_clean_ocr_dry_llm(monkeypatch) -> None:  # noqa: ANN001
 
 
 def test_ingest_rules_end_to_end(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_INGEST_DRY_LLM", "1")
-    monkeypatch.setenv("DONNA_AUDIO_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_INGEST_SKIP_FRESHNESS", "1")
+    monkeypatch.setenv("DANA_INGEST_DRY_LLM", "1")
+    monkeypatch.setenv("DANA_AUDIO_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_INGEST_SKIP_FRESHNESS", "1")
     db = tmp_path / "bb.db"
     dest = tmp_path / "feather_project_rules.md"
     init_blackboard(db)
@@ -104,7 +104,7 @@ def test_clean_ocr_uses_local_llama_not_reasoner(monkeypatch) -> None:  # noqa: 
     def _fake_sleep(seconds: float) -> None:
         calls["slept"] = float(seconds)
 
-    monkeypatch.delenv("DONNA_INGEST_DRY_LLM", raising=False)
+    monkeypatch.delenv("DANA_INGEST_DRY_LLM", raising=False)
     monkeypatch.setattr(
         "dana.cascade_router.local_model_name",
         lambda: "llama3.2:latest",
@@ -163,7 +163,7 @@ def test_wait_for_fresh_ocr_rejects_stale_then_accepts(
     def _no_force(*, db_path=None):  # noqa: ANN001
         return ""
 
-    monkeypatch.delenv("DONNA_INGEST_SKIP_FRESHNESS", raising=False)
+    monkeypatch.delenv("DANA_INGEST_SKIP_FRESHNESS", raising=False)
     monkeypatch.setattr("dana.management.ingest_rules.time.sleep", _fake_sleep)
     # Avoid GPU Florence in unit test — exercise poll path only.
     monkeypatch.setattr(

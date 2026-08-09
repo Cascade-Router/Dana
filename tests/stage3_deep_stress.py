@@ -22,19 +22,19 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from dana.paths import DONNA_WORKSPACE, LOGS_DIR  # noqa: E402
+from dana.paths import DANA_WORKSPACE, LOGS_DIR  # noqa: E402
 
 SESSION_ID = "deep-stress-stage3"
 MARKER = f"DEEP_STRESS_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
 
 TURN1 = (
-    "Hey Donna, I am working on my YC project, Cascade Router, and we are "
+    "Hey Dana, I am working on my YC project, Cascade Router, and we are "
     "hitting some severe latency spikes during message passing."
 )
 TURN2 = "Switch to vision mode."
 TURN3 = "Do you see the architecture diagram on my screen?"
 TURN4 = (
-    "Donna, use the draft_cursor_prompt tool to log a self-improvement ticket "
+    "Dana, use the draft_cursor_prompt tool to log a self-improvement ticket "
     "to fix the latency spikes in the project I mentioned earlier. Make sure "
     "to specify RapidFuzz as a requirement in the acceptance criteria."
 )
@@ -202,14 +202,14 @@ def turn1_memory_ingest() -> TurnResult:
     from dana.agentic import (
         build_lightweight_chat_system_prompt,
         clear_chat_memory,
-        get_donna_mode,
+        get_dana_mode,
         run_lightweight_chat,
-        set_donna_mode,
+        set_dana_mode,
     )
 
     r = TurnResult("Turn 1 Memory Ingest (Chat)", TURN1, False)
     clear_chat_memory()
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     _bb_append("user", TURN1, agent="Chat_Node", intent="memory_ingest")
     try:
         from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
@@ -234,8 +234,8 @@ def turn1_memory_ingest() -> TurnResult:
         r.errors.append(f"chat_llm: {exc}")
 
     hits = _bb_search("Cascade Router")
-    mode_ok = get_donna_mode() == "chat"
-    r.details.append(f"mode={get_donna_mode()!r}")
+    mode_ok = get_dana_mode() == "chat"
+    r.details.append(f"mode={get_dana_mode()!r}")
     r.details.append(f"bb_cascade_hits={len(hits)}")
     r.passed = bool(mode_ok and hits)
     if not hits:
@@ -244,7 +244,7 @@ def turn1_memory_ingest() -> TurnResult:
 
 
 def turn2_mailroom_vision() -> TurnResult:
-    from dana.agentic import get_donna_mode, set_donna_mode
+    from dana.agentic import get_dana_mode, set_dana_mode
     from dana.cascade_router import decide_route, fuzzy_match_command
     from dana.handoff import execute_handoff
     from dana.schema import Handoff
@@ -255,7 +255,7 @@ def turn2_mailroom_vision() -> TurnResult:
     r.details.append(f"word_count={words}")
     hit = fuzzy_match_command(TURN2)
     decision = decide_route(TURN2)
-    mode = get_donna_mode()
+    mode = get_dana_mode()
     r.details.append(f"fuzzy_hit={hit}")
     r.details.append(f"decide_route.reason={decision.reason!r}")
     r.details.append(f"mode_after={mode!r}")
@@ -318,10 +318,10 @@ def turn2_mailroom_vision() -> TurnResult:
 
 
 def turn3_vision_distraction() -> TurnResult:
-    from dana.agentic import get_donna_mode, set_donna_mode
+    from dana.agentic import get_dana_mode, set_dana_mode
 
     r = TurnResult("Turn 3 Context Distraction (Vision)", TURN3, False)
-    set_donna_mode("vision")
+    set_dana_mode("vision")
     _bb_append("user", TURN3, agent="Vision_Agent", intent="visual_query")
     # Deterministic visual ingest (no live capture dependency).
     _bb_append(
@@ -331,7 +331,7 @@ def turn3_vision_distraction() -> TurnResult:
         intent="visual_context",
     )
     msgs = _bb_load(limit=50)
-    r.details.append(f"mode={get_donna_mode()!r}")
+    r.details.append(f"mode={get_dana_mode()!r}")
     r.details.append(f"bb_message_count={len(msgs)}")
     r.details.append(f"visual_snippet={VISUAL_DISTRACTION[:120]!r}")
 
@@ -341,7 +341,7 @@ def turn3_vision_distraction() -> TurnResult:
     r.details.append(f"bb_cascade_still={len(cascade_still)}")
     r.details.append(f"bb_visual_hits={len(visual_hits)}")
     r.passed = bool(
-        get_donna_mode() == "vision" and visual_hits and cascade_still
+        get_dana_mode() == "vision" and visual_hits and cascade_still
     )
     if not visual_hits:
         r.errors.append("visual context not on Blackboard")
@@ -351,7 +351,7 @@ def turn3_vision_distraction() -> TurnResult:
 
 
 def turn4_moa_cross_agent() -> TurnResult:
-    from dana.agentic import REACT_MAX_ITERS, run_react_loop, set_donna_mode
+    from dana.agentic import REACT_MAX_ITERS, run_react_loop, set_dana_mode
     from dana.cascade_router import fuzzy_match_command
     from dana.handoff import execute_handoff
     from dana.schema import Handoff
@@ -359,7 +359,7 @@ def turn4_moa_cross_agent() -> TurnResult:
     from dana.tools.schema import ToolCall
 
     r = TurnResult("Turn 4 Cross-Agent Recall + Tool Guard", TURN4, False)
-    set_donna_mode("developer")
+    set_dana_mode("developer")
     try:
         execute_handoff(
             Handoff(
@@ -420,7 +420,7 @@ def turn4_moa_cross_agent() -> TurnResult:
         result = run_react_loop(
             user_text=TURN4,
             system_prompt=(
-                "You are Donna's MoA path in developer mode. "
+                "You are Dana's MoA path in developer mode. "
                 "Use draft_cursor_prompt. Pull project name from Blackboard "
                 "history (Cascade Router / YC). Acceptance criteria MUST mention "
                 "RapidFuzz. Include Target files, Root cause, Step-by-step "
@@ -482,7 +482,7 @@ def turn4_moa_cross_agent() -> TurnResult:
     r.details.append(f"reasoning_traces_rows={think_rows}")
     r.details.append(f"bb_cascade_hits_total={len(think_hits)}")
 
-    ledger = DONNA_WORKSPACE / "dana_security" / "patch_ledger.md"
+    ledger = DANA_WORKSPACE / "dana_security" / "patch_ledger.md"
     ledger_has_cascade = False
     ledger_has_rapid = False
     if ledger.is_file():
@@ -518,11 +518,11 @@ def turn4_moa_cross_agent() -> TurnResult:
 def turn5_chat_verify() -> TurnResult:
     from dana.agentic import (
         build_lightweight_chat_system_prompt,
-        get_donna_mode,
+        get_dana_mode,
         mode_switch_spoken_ack,
         parse_mode_switch,
         run_lightweight_chat,
-        set_donna_mode,
+        set_dana_mode,
     )
     from dana.cascade_router import decide_route, fuzzy_match_command
     from dana.handoff import execute_handoff
@@ -539,7 +539,7 @@ def turn5_chat_verify() -> TurnResult:
     r.details.append(f"parse_mode_switch={switched!r}")
 
     if switched:
-        set_donna_mode(switched)
+        set_dana_mode(switched)
         r.details.append(f"ack={mode_switch_spoken_ack(switched)!r}")
     try:
         execute_handoff(
@@ -592,7 +592,7 @@ def turn5_chat_verify() -> TurnResult:
     for m in _bb_load(limit=20):
         if m.get("role") == "assistant" and m.get("content"):
             evidence.append(m["content"][:180])
-    ledger = DONNA_WORKSPACE / "dana_security" / "patch_ledger.md"
+    ledger = DANA_WORKSPACE / "dana_security" / "patch_ledger.md"
     ledger_tail = ""
     if ledger.is_file():
         ledger_tail = ledger.read_text(encoding="utf-8", errors="replace")[-4000:]
@@ -627,13 +627,13 @@ def turn5_chat_verify() -> TurnResult:
         r.errors.append(f"chat_llm: {exc}")
         traceback.print_exc()
 
-    mode_ok = get_donna_mode() == "chat"
+    mode_ok = get_dana_mode() == "chat"
     mentions = "cascade" in answer.lower()
     affirmative = any(
         tok in answer.lower()
         for tok in ("yes", "created", "logged", "ticket", "success", "wrote")
     )
-    r.details.append(f"mode={get_donna_mode()!r}")
+    r.details.append(f"mode={get_dana_mode()!r}")
     r.details.append(f"mentions_cascade={mentions}")
     r.details.append(f"affirmative={affirmative}")
     r.details.append(f"tool_execution_events_seen={len(tool_events)}")
@@ -678,7 +678,7 @@ def audit(start_lines: int) -> dict[str, Any]:
 
 def main() -> int:
     print("=" * 72)
-    print("Donna Stage 3 Deep Stress — Cross-Agent Memory & MoA")
+    print("Dana Stage 3 Deep Stress — Cross-Agent Memory & MoA")
     print(f"session_id={SESSION_ID}")
     print(f"marker={MARKER}")
     print("=" * 72)

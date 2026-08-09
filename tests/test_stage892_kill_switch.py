@@ -11,11 +11,11 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _dry(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
 
 
-def test_kill_donna_processes_launches_bat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from dana.core_agent import DonnaGUI
+def test_kill_dana_processes_launches_bat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from dana.core_agent import DanaGUI
 
     bat = tmp_path / "stop_dana.bat"
     bat.write_text("@echo off\n", encoding="utf-8")
@@ -29,9 +29,9 @@ def test_kill_donna_processes_launches_bat(monkeypatch: pytest.MonkeyPatch, tmp_
 
     monkeypatch.setattr("dana.core_agent.subprocess.Popen", _fake_popen)
 
-    app = DonnaGUI()
+    app = DanaGUI()
     app.update_idletasks()
-    result = app.kill_donna_processes()
+    result = app.kill_dana_processes()
     assert result["ok"] is True
     assert result["pid"] == 4242
     assert launched
@@ -44,8 +44,8 @@ def test_kill_donna_processes_launches_bat(monkeypatch: pytest.MonkeyPatch, tmp_
     app.destroy()
 
 
-def test_kill_donna_processes_prefers_vbs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from dana.core_agent import DonnaGUI
+def test_kill_dana_processes_prefers_vbs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from dana.core_agent import DanaGUI
 
     (tmp_path / "stop_dana.bat").write_text("@echo off\n", encoding="utf-8")
     (tmp_path / "stop_dana.vbs").write_text("' silent\n", encoding="utf-8")
@@ -59,26 +59,26 @@ def test_kill_donna_processes_prefers_vbs(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     monkeypatch.setattr("dana.core_agent.subprocess.Popen", _fake_popen)
 
-    app = DonnaGUI()
-    result = app.kill_donna_processes()
+    app = DanaGUI()
+    result = app.kill_dana_processes()
     assert result["ok"] is True
     assert "stop_dana.vbs" in str(launched[0]["args"][0])
     app.destroy()
 
 
-def test_kill_donna_missing_bat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from dana.core_agent import DonnaGUI
+def test_kill_dana_missing_bat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from dana.core_agent import DanaGUI
 
     monkeypatch.setattr("dana.paths.PROJECT_ROOT", tmp_path)
-    app = DonnaGUI()
-    result = app.kill_donna_processes()
+    app = DanaGUI()
+    result = app.kill_dana_processes()
     assert result["ok"] is False
     assert "not found" in str(result.get("message") or "").lower()
     app.destroy()
 
 
 def test_stop_button_shows_terminating(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from dana.core_agent import DonnaGUI
+    from dana.core_agent import DanaGUI
 
     bat = tmp_path / "stop_dana.bat"
     bat.write_text("@echo off\n", encoding="utf-8")
@@ -89,14 +89,14 @@ def test_stop_button_shows_terminating(monkeypatch: pytest.MonkeyPatch, tmp_path
         lambda *a, **k: calls.append(1) or SimpleNamespace(pid=1),
     )
 
-    app = DonnaGUI()
+    app = DanaGUI()
     app.update_idletasks()
-    assert "STOP DANA" in str(app.stop_donna_btn.cget("text"))
+    assert "STOP DANA" in str(app.stop_dana_btn.cget("text"))
     # Bypass after(80) — invoke the click handler then kill directly.
-    app.stop_donna_btn.configure(text="TERMINATING...", state="disabled")
+    app.stop_dana_btn.configure(text="TERMINATING...", state="disabled")
     app.update_idletasks()
-    assert "TERMINATING" in str(app.stop_donna_btn.cget("text")).upper()
-    assert app.kill_donna_processes()["ok"] is True
+    assert "TERMINATING" in str(app.stop_dana_btn.cget("text")).upper()
+    assert app.kill_dana_processes()["ok"] is True
     assert calls
     app.destroy()
 
@@ -105,7 +105,7 @@ def test_live_trace_has_no_footer_kill_switch() -> None:
     """Stage 8.9.8 — footer KILL SWITCH removed; header STOP DANA is sole exit."""
     import customtkinter as ctk
 
-    from dana.core_agent import DonnaGUI
+    from dana.core_agent import DanaGUI
     from dana.ui.trace_window import LiveTracePanel
 
     root = ctk.CTk()
@@ -116,9 +116,9 @@ def test_live_trace_has_no_footer_kill_switch() -> None:
     assert not hasattr(panel, "_on_kill_switch")
     root.destroy()
 
-    app = DonnaGUI()
+    app = DanaGUI()
     try:
-        assert app.stop_donna_btn is not None
-        assert "STOP DANA" in str(app.stop_donna_btn.cget("text"))
+        assert app.stop_dana_btn is not None
+        assert "STOP DANA" in str(app.stop_dana_btn.cget("text"))
     finally:
         app.destroy()

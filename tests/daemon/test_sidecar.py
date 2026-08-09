@@ -40,6 +40,19 @@ def _fast_react_loop(**kwargs: Any) -> AgenticResult:
     )
 
 
+def _fast_ask_ollama_messages(messages: Any, model: str = "", **_kwargs: Any) -> str:
+    """Offline stand-in for the lightweight-chat LLM call.
+
+    Greetings/small talk (e.g. "ping") route through ``run_lightweight_chat``
+    instead of the ReAct graph (see ``dana.agentic.requires_tool_graph``), so
+    patching only ``run_react_loop`` never exercises that path — this mock
+    keeps it hermetic too.
+    """
+    user_msgs = [m for m in (messages or []) if m.get("role") == "user"]
+    text = str(user_msgs[-1].get("content") or "") if user_msgs else ""
+    return f"live:{text}"
+
+
 class _DaemonThread:
     """Run ``EngineDaemon.serve_forever`` on a background asyncio loop."""
 
@@ -117,7 +130,12 @@ def test_ui_client_connects_and_streams(session_path: Path) -> None:
         assert client.connect(retries=3) is True
         assert client.connected is True
 
-        with patch("dana.agentic.run_react_loop", side_effect=_fast_react_loop):
+        with patch(
+            "dana.agentic.run_react_loop", side_effect=_fast_react_loop
+        ), patch(
+            "dana.core_agent.ask_ollama_messages",
+            side_effect=_fast_ask_ollama_messages,
+        ):
             frames = list(client.stream_chat("hello sidecar"))
             assert frames, "expected streaming frames"
             types = [f.get("type") for f in frames]

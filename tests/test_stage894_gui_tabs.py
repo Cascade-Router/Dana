@@ -7,11 +7,11 @@ import pytest
 
 def _make_gui():
     try:
-        from dana.core_agent import DonnaGUI
+        from dana.core_agent import DanaGUI
 
-        return DonnaGUI()
+        return DanaGUI()
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"DonnaGUI/Tk unavailable: {exc}")
+        pytest.skip(f"DanaGUI/Tk unavailable: {exc}")
 
 
 def test_tab_order_and_dashboard_widgets() -> None:
@@ -45,7 +45,7 @@ def test_tab_order_and_dashboard_widgets() -> None:
         assert getattr(app, "task_tracker_view", None) is not None
         assert "Dana" in str(app.title())
         assert "Donna" not in str(app.title())
-        assert "STOP DANA" in str(app.stop_donna_btn.cget("text"))
+        assert "STOP DANA" in str(app.stop_dana_btn.cget("text"))
         # Developer Diagnostics lives under Memory & Settings (not Assistant).
         assert getattr(app, "_diag_shell", None) is not None
         assert getattr(app, "_diag_btn", None) is not None

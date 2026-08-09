@@ -25,7 +25,7 @@ const DEFAULT_TIMEOUT_MS = 90_000;
 /** Public Space / Gradio API root — set in `.env` as PUBLIC_DANA_HF_API. */
 export function getHfApiBase(): string {
   const hfSpaceUrl =
-    import.meta.env.PUBLIC_DANA_HF_API || "https://amixxm-donna.hf.space";
+    import.meta.env.PUBLIC_DANA_HF_API || "https://amixxm-dana.hf.space";
   return String(hfSpaceUrl || "").trim().replace(/\/+$/, "");
 }
 

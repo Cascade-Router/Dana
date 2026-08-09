@@ -16,7 +16,7 @@ langchain-community>=0.3.0,<0.4.0
 langchain-ollama>=0.2.0,<0.3.0
 langchain-groq>=0.2.0,<0.3.0
 
-# Core Donna imports used by cloud_bridge (keep lean)
+# Core Dana imports used by cloud_bridge (keep lean)
 pydantic>=2.7.0,<3
 requests>=2.32.0
 python-dotenv>=1.0.0

@@ -726,14 +726,14 @@ def load_custom_tools_from_disk() -> list[str]:
 
 
 def ensure_generated_tools_package() -> Path:
-    """Create Desktop ``Donna/custom_tools/`` and put it on ``sys.path``."""
+    """Create Desktop ``Dana/custom_tools/`` and put it on ``sys.path``."""
     from dana.workspace import ensure_custom_tools_package as _ensure
 
     return _ensure()
 
 
 def ensure_custom_tools_package() -> Path:
-    """Create Desktop ``Donna/custom_tools/`` and put it on ``sys.path``."""
+    """Create Desktop ``Dana/custom_tools/`` and put it on ``sys.path``."""
     from dana.workspace import ensure_custom_tools_package as _ensure
 
     return _ensure()

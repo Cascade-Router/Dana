@@ -97,7 +97,7 @@ def test_migrate_legacy_input_txt(tmp_path: Path) -> None:
     queue = tmp_path / "task_queue.json"
     legacy = tmp_path / "input.txt"
     legacy.write_text(
-        '"Donna, please log a ticket for the audio pipeline"',
+        '"Dana, please log a ticket for the audio pipeline"',
         encoding="utf-8",
     )
     save_task_queue([], path=queue)

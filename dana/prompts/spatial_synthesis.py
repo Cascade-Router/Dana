@@ -35,7 +35,7 @@ SPATIAL_AWARENESS = """
 - If the user asks 'what am I holding?' or 'what is this?', answer directly using the visual context.
 """.strip()
 
-DONNA_PERSONA = """
+DANA_PERSONA = """
 ## Persona
 You are Dānā, a local Windows control plane with direct access to desktop tools
 (Florence-2 vision, Win32 ROI, HITL ticket gate). Do not issue generic refusals
@@ -262,7 +262,7 @@ When the user asks to read on-screen text, find a button/label, or ground UI ele
 - capture_and_analyze_screen(prompt=<optional>)  # OS screenshot + vision UI summary
 - execute_os_keystrokes(text=<plaintext>|hotkey=<ctrl+c>)  # rate-limited physical typing
 - evaluate_slide_and_type(rule=<compliance rule>)  # capture → Cascade judge → type comment (Chrome)
-- delegate_to_cursor(query=<failure_context>)  # write CAMGRASPER/cursor_handoffs/donna_handoff.md
+- delegate_to_cursor(query=<failure_context>)  # write CAMGRASPER/cursor_handoffs/dana_handoff.md
 - read_system_architecture()
 - web_search(query=<search_terms>)
 - naming_fix(text=<stt_transcript>)
@@ -286,7 +286,7 @@ Tool Forge routing (HARD):
 
 Cursor handoff (HARD):
 - "fix my bug", "delegate to Cursor", "hand off to Cursor" → delegate_to_cursor.
-- After writing donna_handoff.md, tell the user to open Cursor and instruct Grok to execute it.
+- After writing dana_handoff.md, tell the user to open Cursor and instruct Grok to execute it.
 
 OS computer use:
 - "capture/analyze my screen" → capture_and_analyze_screen (not describe_spatial_scene alone).
@@ -611,7 +611,7 @@ def build_agent_system_prompt(
 
     prompt = (
         f"{planning_system_preamble()}\n\n"
-        f"{DONNA_PERSONA}\n"
+        f"{DANA_PERSONA}\n"
         f"{SPATIAL_AWARENESS}\n"
         f"{lang_line}\n"
         f"Local now: {ctx['local_now']} ({ctx['timezone']}).\n"

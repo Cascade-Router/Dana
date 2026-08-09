@@ -48,7 +48,7 @@ def _log(msg: str) -> None:
 
 
 def _dry_llm() -> bool:
-    return os.environ.get("DONNA_INGEST_DRY_LLM", "").strip().lower() in {
+    return os.environ.get("DANA_INGEST_DRY_LLM", "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -57,7 +57,7 @@ def _dry_llm() -> bool:
 
 
 def _skip_freshness() -> bool:
-    return os.environ.get("DONNA_INGEST_SKIP_FRESHNESS", "").strip().lower() in {
+    return os.environ.get("DANA_INGEST_SKIP_FRESHNESS", "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -266,17 +266,17 @@ def write_feather_rules(markdown: str, *, dest: Path | None = None) -> Path:
 
 
 def acknowledge_ingestion(*, speak: bool = True) -> None:
-    """Console print + optional Donna TTS cue."""
+    """Console print + optional Dana TTS cue."""
     _log(ACK_LINE)
     print(ACK_LINE, flush=True)
     if not speak:
         return
     try:
         from dana.audio.multi_voice_tts import synthesize_speech
-        from dana.ui.audio_mixer import play_donna
+        from dana.ui.audio_mixer import play_dana
 
         wav = synthesize_speech(ACK_LINE, voice_id="dana")
-        play_donna(wav, block=False)
+        play_dana(wav, block=False)
     except Exception as exc:  # noqa: BLE001
         _log(f"TTS cue skipped: {exc}")
 

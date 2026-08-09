@@ -171,7 +171,7 @@ def _extract_symbol(instructions: str) -> str | None:
 
 
 def _worker_llm_enabled() -> bool:
-    raw = (os.environ.get("DONNA_WORKER_LLM") or "1").strip().lower()
+    raw = (os.environ.get("DANA_WORKER_LLM") or "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
 
@@ -381,7 +381,7 @@ def extract_and_save_code(
 
 def _worker_should_escalate(repair_attempts: int) -> bool:
     """Senior-dev fallback: cloud after N local repair failures when hybrid is on."""
-    if (os.environ.get("DONNA_FORCE_LOCAL") or "").strip().lower() in {
+    if (os.environ.get("DANA_FORCE_LOCAL") or "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -389,7 +389,7 @@ def _worker_should_escalate(repair_attempts: int) -> bool:
     }:
         return False
     try:
-        threshold = int(os.environ.get("DONNA_WORKER_ESCALATE_AFTER") or "3")
+        threshold = int(os.environ.get("DANA_WORKER_ESCALATE_AFTER") or "3")
     except ValueError:
         threshold = 3
     if threshold < 1:

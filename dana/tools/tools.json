@@ -3,7 +3,7 @@
   "tools": [
     {
       "id": "switch_vision_source",
-      "description_en": "Switch Donna's vision feed between screen capture and camera.",
+      "description_en": "Switch Dana's vision feed between screen capture and camera.",
       "parameters": [
         {
           "name": "source",
@@ -233,6 +233,142 @@
       },
       "aliases_fa": {
         "source_description": []
+      }
+    },
+    {
+      "id": "list_active_windows",
+      "description_en": "List all currently visible top-level application windows on the desktop (title + process id), topmost first. Use before focus_window when you don't know the exact window title, or to check what applications are currently open.",
+      "parameters": [],
+      "aliases_en": {
+        "_intent": [
+          "what windows are open",
+          "list open apps",
+          "show open windows",
+          "what's running",
+          "what applications are open"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
+      "id": "focus_window",
+      "description_en": "Bring a specific application window to the foreground by matching its title (case-insensitive regex, e.g. 'Cursor', 'chrome', 'Notepad'). Use before click_ui_element/type_text_in_element/drag_ui_element/scroll_screen to make sure the intended application is actually active. Fails closed if no window matches or the OS denies the focus-steal.",
+      "parameters": [
+        {
+          "name": "target_description",
+          "type": "string",
+          "required": true,
+          "description_en": "The window to focus, in plain language or as a regex fragment (e.g. 'Cursor', 'the terminal', 'Chrome').",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "target_description": [
+          "switch to",
+          "focus on",
+          "bring to front",
+          "switch to the terminal",
+          "focus the code editor",
+          "switch windows"
+        ]
+      },
+      "aliases_fa": {
+        "target_description": []
+      }
+    },
+    {
+      "id": "press_keyboard_shortcut",
+      "description_en": "Press a keyboard shortcut/key combination (e.g. 'ctrl+c', 'ctrl+v', 'ctrl+a', 'alt+tab', 'ctrl+shift+n'). Use to select-all/copy/paste, switch windows, or trigger app shortcuts — especially 'ctrl+a' then 'ctrl+c' to extract exact text via read_clipboard instead of lossy vision OCR. Fails closed if any key in the combo isn't recognized.",
+      "parameters": [
+        {
+          "name": "shortcut",
+          "type": "string",
+          "required": true,
+          "description_en": "The key combination, keys joined by '+' (e.g. 'ctrl+c', 'alt+tab', 'ctrl+shift+n').",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "shortcut": [
+          "press ctrl+c",
+          "select all",
+          "copy that",
+          "paste it",
+          "press alt+tab",
+          "switch tabs",
+          "select all and copy"
+        ]
+      },
+      "aliases_fa": {
+        "shortcut": []
+      }
+    },
+    {
+      "id": "read_clipboard",
+      "description_en": "Read the current plaintext system clipboard exactly, with no vision/OCR loss. Use after selecting and copying text (e.g. via press_keyboard_shortcut 'ctrl+a' then 'ctrl+c') to extract large logs or code precisely.",
+      "parameters": [],
+      "aliases_en": {
+        "_intent": [
+          "read the clipboard",
+          "what did i copy",
+          "paste what's copied",
+          "get the copied text",
+          "read what i just copied"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
+      "id": "write_clipboard",
+      "description_en": "Write text to the system clipboard, replacing its current contents. Use before press_keyboard_shortcut 'ctrl+v' to paste specific text into a focused window or field.",
+      "parameters": [
+        {
+          "name": "text",
+          "type": "string",
+          "required": true,
+          "description_en": "The text to place on the clipboard.",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "text": [
+          "copy this to clipboard",
+          "put this on the clipboard",
+          "set the clipboard to",
+          "copy this text"
+        ]
+      },
+      "aliases_fa": {
+        "text": []
+      }
+    },
+    {
+      "id": "send_notification",
+      "description_en": "Send a push notification to the user's phone via Pushover — use when Dānā is running unattended in the background and needs to alert the user about something (a finished background task, a watchdog alert, an important result) without them watching the desktop UI. Fails gracefully with an error string if Pushover credentials aren't configured or the request fails.",
+      "parameters": [
+        {
+          "name": "message",
+          "type": "string",
+          "required": true,
+          "description_en": "The notification text to push to the user's phone.",
+          "description_fa": ""
+        }
+      ],
+      "aliases_en": {
+        "message": [
+          "notify me",
+          "send me a notification",
+          "push a notification",
+          "let me know on my phone",
+          "alert me"
+        ]
+      },
+      "aliases_fa": {
+        "message": []
       }
     },
     {
@@ -652,7 +788,7 @@
     },
     {
       "id": "read_local_file",
-      "description_en": "Reads the contents of a local text/code file (truncated for token safety). USE THIS when the user asks to read a file, document, project file, graph, or code — NEVER use vision/spatial tools for text files. For the Donna watchdog monitoring graph, read dana/swarm/watchdog_graph.py and list imports/nodes from the dependency digest — do not guess. For repo files, paths are relative to PROJECT_ROOT (e.g. dana/core_agent.py). NEVER invent a dana/core/ subdirectory.",
+      "description_en": "Reads the contents of a local text/code file (truncated for token safety). USE THIS when the user asks to read a file, document, project file, graph, or code — NEVER use vision/spatial tools for text files. For the Dana watchdog monitoring graph, read dana/swarm/watchdog_graph.py and list imports/nodes from the dependency digest — do not guess. For repo files, paths are relative to PROJECT_ROOT (e.g. dana/core_agent.py). NEVER invent a dana/core/ subdirectory.",
       "parameters": [
         {
           "name": "filepath",
@@ -1077,7 +1213,7 @@
     },
     {
       "id": "read_system_architecture",
-      "description_en": "Read Donna architecture docs and a high-level tools.json schema summary (documentation scope only).",
+      "description_en": "Read Dana architecture docs and a high-level tools.json schema summary (documentation scope only).",
       "parameters": [],
       "aliases_en": {
         "_intent": [
@@ -1217,13 +1353,13 @@
     },
     {
       "id": "dispatch_jason_supervisor",
-      "description_en": "Jason/Titan conversational supervisor: read a prior Donna file (e.g. notes.txt), evaluate it, then hand off to Donna to write a Python script (e.g. scaling_metrics.py). Use when the user addresses Jason/Titan and asks him to read/evaluate then have Donna write code.",
+      "description_en": "Jason/Titan conversational supervisor: read a prior Dana file (e.g. notes.txt), evaluate it, then hand off to Dana to write a Python script (e.g. scaling_metrics.py). Use when the user addresses Jason/Titan and asks him to read/evaluate then have Dana write code.",
       "parameters": [
         {
           "name": "query",
           "type": "string",
           "required": true,
-          "description_en": "Full user utterance for Jason→Donna handoff.",
+          "description_en": "Full user utterance for Jason→Dana handoff.",
           "description_fa": " ."
         }
       ],
@@ -1233,7 +1369,7 @@
           "hey titan read notes",
           "jason supervisor handoff",
           "dispatch jason supervisor",
-          "jason evaluate notes and have donna write"
+          "jason evaluate notes and have dana write"
         ]
       },
       "aliases_fa": {
@@ -1618,7 +1754,7 @@
     },
     {
       "id": "delegate_to_cursor",
-      "description_en": "Write a detailed markdown implementation plan to CAMGRASPER/cursor_handoffs/donna_handoff.md (mirrored to .cursor/instructions/) and optionally launch Cursor for agent handoff.",
+      "description_en": "Write a detailed markdown implementation plan to CAMGRASPER/cursor_handoffs/dana_handoff.md (mirrored to .cursor/instructions/) and optionally launch Cursor for agent handoff.",
       "parameters": [
         {
           "name": "query",

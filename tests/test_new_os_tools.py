@@ -47,7 +47,7 @@ def test_open_application_chrome_mocked_popen() -> None:
 
 
 def test_open_application_unknown() -> None:
-    result = open_application("not_a_real_donna_app_xyz")
+    result = open_application("not_a_real_dana_app_xyz")
     assert result.startswith("ERROR:")
     print(f"[PASS] open_application unknown: {result}")
 

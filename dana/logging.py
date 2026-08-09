@@ -2,7 +2,7 @@
 
 Runtime (``CAMGRASPER/logs/dana_runtime.log``):
   - Circular last-100-lines buffer across the process life.
-  - ``log()`` / ``log_debug()`` — debug is silenced unless ``DONNA_DEBUG=1``.
+  - ``log()`` / ``log_debug()`` — debug is silenced unless ``DANA_DEBUG=1``.
 
 Conversation (``CAMGRASPER/logs/dana_conversation.log``):
   - Truncated (cleared) on every new agent run.
@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 from dana.paths import LOGS_DIR, PROJECT_ROOT
 from dana.sanitize import sanitize_log_message
-from dana.stdio_boot import NullStdio, ensure_stdio, ensure_stdio_for_pythonw
+from dana.stdio_boot import NullStdio, ensure_stdio
 
 _PROJECT_DIR = str(PROJECT_ROOT)
 # Any import of dana.logging (hot path) hardens pythonw stdio immediately.
@@ -30,7 +30,7 @@ RUNTIME_LOG_DIR = str(LOGS_DIR)
 RUNTIME_LOG_PATH = str(LOGS_DIR / "dana_runtime.log")
 CONVERSATION_LOG_PATH = str(LOGS_DIR / "dana_conversation.log")
 FATAL_CRASH_LOG_PATH = str(LOGS_DIR / "fatal_crash.log")
-# Legacy filenames — migrated on first enable when still present.
+# Legacy filenames (pre-rename) — migrated on first enable when still present.
 _LEGACY_RUNTIME_LOG = str(LOGS_DIR / "donna_runtime.log")
 _LEGACY_CONVERSATION_LOG = str(LOGS_DIR / "donna_conversation.log")
 # Keep enough headroom for multi-line ``log_exception`` stack traces.
@@ -46,7 +46,7 @@ _runtime_log_tee_installed = False
 
 
 def debug_logging_enabled() -> bool:
-    return os.environ.get("DONNA_DEBUG", "").strip().lower() in ("1", "true", "yes")
+    return os.environ.get("DANA_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
 
 def _stamp() -> str:
@@ -54,7 +54,7 @@ def _stamp() -> str:
 
 
 def _migrate_legacy_log(legacy: str, modern: str) -> None:
-    """Rename legacy donna_*.log → dana_*.log when the modern file is absent."""
+    """Rename legacy dana_*.log → dana_*.log when the modern file is absent."""
     try:
         if os.path.isfile(modern) or not os.path.isfile(legacy):
             return
@@ -128,7 +128,7 @@ def _print_line(line: str) -> None:
 
 
 def log(thread: str, message: str, *, level: str = "info") -> None:
-    """Emit a runtime log line. ``level=\"debug\"`` is no-op unless DONNA_DEBUG=1."""
+    """Emit a runtime log line. ``level=\"debug\"`` is no-op unless DANA_DEBUG=1."""
     level_l = (level or "info").strip().lower()
     if level_l == "debug" and not debug_logging_enabled():
         return
@@ -331,7 +331,7 @@ def log_conversation(role: str, text: str, *, extra: str = "") -> None:
     console breadcrumbs if needed.
     """
     role_s = (role or "Dana").strip() or "Dana"
-    if role_s.lower() == "donna":
+    if role_s.lower() == "dana":
         role_s = "Dana"
     body = sanitize_log_message(str(text or "").strip())
     if not body:

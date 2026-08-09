@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from dana.schema import AgenticResult
-from dana.tools.broker import IntentBroker, ToolValidationError, get_broker
+from dana.tools.broker import IntentBroker
 from dana.tools.schema import ToolCall
 
 REACT_MAX_ITERS = 3
@@ -65,9 +65,9 @@ def is_ollama_connection_error(exc: BaseException) -> bool:
 
 
 # Process-wide mode: chat (default) | developer | vision | research.
-donna_mode: str = "chat"
-_DONNA_MODE_LOCK = threading.Lock()
-_VALID_DONNA_MODES = frozenset({"chat", "developer", "vision", "research"})
+dana_mode: str = "chat"
+_DANA_MODE_LOCK = threading.Lock()
+_VALID_DANA_MODES = frozenset({"chat", "developer", "vision", "research"})
 
 DEVELOPER_MODE_ACK = "Developer mode active."
 CHAT_MODE_ACK = "Chat mode active."
@@ -285,7 +285,7 @@ _MODE_SWITCH_RESEARCH_RE = re.compile(
 
 # Greetings / small-talk — always stay on lightweight chat (never LangGraph).
 _SMALL_TALK_RE = re.compile(
-    r"(?i)^\s*(?:(?:hey|hi|hello)\s+)?(?:donna\s*[,!]?\s*)?"
+    r"(?i)^\s*(?:(?:hey|hi|hello)\s+)?(?:dana\s*[,!]?\s*)?"
     r"(?:"
     r"how\s+are\s+you(?:\s+doing)?(?:\s+today)?|"
     r"how'?s\s+it\s+going|"
@@ -417,7 +417,7 @@ def requires_tool_graph(text: str) -> bool:
 
 
 _MODE_WAKE_PREFIX_RE = re.compile(
-    r"^\s*(?:hey\s+)?donna\b[\s,.\-!:]*",
+    r"^\s*(?:hey\s+)?dana\b[\s,.\-!:]*",
     re.IGNORECASE,
 )
 _CLEAR_CHAT_MEMORY_RE = re.compile(
@@ -430,13 +430,13 @@ _CLEAR_CHAT_MEMORY_RE = re.compile(
 )
 
 
-def get_donna_mode() -> str:
+def get_dana_mode() -> str:
     """Return the active mode (``chat`` / ``developer`` / ``vision`` / ``research``)."""
-    with _DONNA_MODE_LOCK:
-        mode = (donna_mode or "chat").strip().lower()
+    with _DANA_MODE_LOCK:
+        mode = (dana_mode or "chat").strip().lower()
     if mode == "agent":
         return "developer"
-    if mode in _VALID_DONNA_MODES:
+    if mode in _VALID_DANA_MODES:
         return mode
     return "chat"
 
@@ -448,24 +448,24 @@ def get_voice_mode() -> str:
 
         return get_voice_session_mode()
     except Exception:  # noqa: BLE001
-        return get_donna_mode()
+        return get_dana_mode()
 
 
-def set_donna_mode(mode: str, *, as_voice: bool = True) -> str:
+def set_dana_mode(mode: str, *, as_voice: bool = True) -> str:
     """Set and return the normalized mode (``agent`` → ``developer``).
 
     When ``as_voice`` is True (mailroom / user switches), also persist
     ``voice_session_mode`` on the Blackboard. System job escalations should
     pass ``as_voice=False`` so they do not steal the live conversation mode.
     """
-    global donna_mode
+    global dana_mode
     raw = (mode or "").strip().lower()
     if raw == "agent":
         raw = "developer"
-    if raw not in _VALID_DONNA_MODES:
+    if raw not in _VALID_DANA_MODES:
         raw = "chat"
-    with _DONNA_MODE_LOCK:
-        donna_mode = raw
+    with _DANA_MODE_LOCK:
+        dana_mode = raw
     if as_voice:
         try:
             from dana.memory.blackboard import set_voice_session_mode
@@ -479,7 +479,7 @@ def set_donna_mode(mode: str, *, as_voice: bool = True) -> str:
 def restore_voice_mode() -> str:
     """Restore process mode from durable voice_session_mode after a system job."""
     voice = get_voice_mode()
-    return set_donna_mode(voice, as_voice=False)
+    return set_dana_mode(voice, as_voice=False)
 
 
 def parse_mode_switch(text: str) -> str | None:
@@ -547,9 +547,9 @@ def _format_chat_memory_context() -> str:
     if not turns:
         return ""
     history_lines = [
-        f"User: {turn.get('user', '')}\nDonna: {turn.get('dana', '')}"
+        f"User: {turn.get('user', '')}\nDana: {turn.get('dana', '')}"
         for turn in turns
-        if (turn.get("user") or turn.get("donna"))
+        if (turn.get("user") or turn.get("dana"))
     ]
     if not history_lines:
         return ""
@@ -563,22 +563,22 @@ def chat_memory_as_role_messages() -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for turn in turns:
         user = (turn.get("user") or "").strip()
-        donna = (turn.get("donna") or "").strip()
+        dana = (turn.get("dana") or "").strip()
         if user:
             out.append({"role": "user", "content": user})
-        if donna:
-            out.append({"role": "assistant", "content": donna})
+        if dana:
+            out.append({"role": "assistant", "content": dana})
     return out
 
 
 def append_chat_memory_turn(user_text: str, assistant_text: str) -> None:
-    """Append one ``{user, donna}`` turn into ``chat_memory_buffer``."""
+    """Append one ``{user, dana}`` turn into ``chat_memory_buffer``."""
     user = (user_text or "").strip()
-    donna = (assistant_text or "").strip()
-    if not user and not donna:
+    dana = (assistant_text or "").strip()
+    if not user and not dana:
         return
     with _CHAT_MEMORY_LOCK:
-        chat_memory_buffer.append({"user": user, "donna": donna})
+        chat_memory_buffer.append({"user": user, "dana": dana})
 
 
 def clear_chat_memory() -> bool:
@@ -703,7 +703,7 @@ _VOICE_TOPIC_FILE_MAP: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 )
 
 _VOICE_WRAPPER_RES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"(?i)\bdonna[,:]?\s*"),
+    re.compile(r"(?i)\bdana[,:]?\s*"),
     re.compile(
         r"(?i)\buse the draft[_\s-]*cursor[_\s-]*prompt tool to log "
         r"(?:a )?(?:self-improvement )?ticket(?:\s+to)?\b"
@@ -1105,7 +1105,7 @@ class ThinkBlockTtsFilter:
 
 # LangGraph checkpointer — consistent thread_id keeps cross-turn graph memory.
 _REACT_CHECKPOINTER: Any | None = None
-_REACT_THREAD_ID = "donna-react-session"
+_REACT_THREAD_ID = "dana-react-session"
 
 
 def _react_checkpointer() -> Any:
@@ -1309,7 +1309,7 @@ def _enqueue_tts_nonblocking(
             pass
 
     try:
-        threading.Thread(target=_run, daemon=True, name="donna-react-tts").start()
+        threading.Thread(target=_run, daemon=True, name="dana-react-tts").start()
     except Exception:  # noqa: BLE001
         pass
 
@@ -1395,7 +1395,7 @@ _ARROW_ROUTE_LINE_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _ANSWER_LABEL_LINE_RE = re.compile(
-    r"^\s*(?:Answer|Donna|Assistant|Response|Final)\s*[:：]\s*(.+)$",
+    r"^\s*(?:Answer|Dana|Assistant|Response|Final)\s*[:：]\s*(.+)$",
     re.IGNORECASE | re.MULTILINE,
 )
 _INLINE_USER_ECHO_RE = re.compile(
@@ -2001,7 +2001,7 @@ def strip_simulated_dialog_leaks(text: str) -> str:
     """Remove few-shot roleplay / template echoes before TTS or conversation logs.
 
     llama3.2 often mirrors prompt examples like ``User: "What time is it?"`` or
-    ``→ speak: ...``. Keep only Donna's direct narrative payload.
+    ``→ speak: ...``. Keep only Dana's direct narrative payload.
     """
     raw = (text or "").strip()
     if not raw:
@@ -2692,7 +2692,7 @@ def build_lightweight_chat_system_prompt(
         pass
     parts.append(_chat_situational_context())
     try:
-        parts.append(f"Active Donna mode: {get_donna_mode()}.")
+        parts.append(f"Active Dana mode: {get_dana_mode()}.")
     except Exception:  # noqa: BLE001
         pass
     if reply_lang == "fa":
@@ -3082,7 +3082,7 @@ def sanitize_react_message_history(messages: list[Any]) -> list[Any]:
 
 
 def _tool_call_from_lc(tc: Any, *, raw_text: str = "") -> ToolCall:
-    """Normalize a LangChain tool_call dict / object into Donna ToolCall IR."""
+    """Normalize a LangChain tool_call dict / object into Dana ToolCall IR."""
     if isinstance(tc, dict):
         name = str(tc.get("name") or tc.get("tool") or tc.get("tool_id") or "")
         args = (

@@ -11,7 +11,7 @@ from dana.core_agent import VAD_FRAME_SAMPLES, VAD_SILENCE_MS
 
 
 MASS = (
-    "Donna, build three different tools back-to-back: one that tells me the time, "
+    "Dana, build three different tools back-to-back: one that tells me the time, "
     "one that generates a random number, and one that lists files in the sandbox."
 )
 
@@ -37,7 +37,7 @@ def test_split_three_goals() -> None:
 def test_silero_vad_frame_config() -> None:
     assert SILERO_WINDOW_SAMPLES == 512
     assert VAD_FRAME_SAMPLES == SILERO_WINDOW_SAMPLES
-    assert SILERO_SPEECH_THRESHOLD == 0.5
+    assert SILERO_SPEECH_THRESHOLD == 0.38  # quiet-mic/headphone tuned, see vad_consumer.py
     assert VAD_SILENCE_MS == 1500
     print("[PASS] Silero VAD frame / threshold config")
 

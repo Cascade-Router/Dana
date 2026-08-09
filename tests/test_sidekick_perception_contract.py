@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dana.agentic import get_donna_mode, restore_voice_mode, set_donna_mode
+from dana.agentic import get_dana_mode, restore_voice_mode, set_dana_mode
 from dana.memory.blackboard import (
     PERCEPTION_OBJECTS_KEY,
     PERCEPTION_OCR_KEY,
@@ -89,14 +89,14 @@ def test_voice_mode_not_stolen_by_job_escalation(tmp_path: Path, monkeypatch) ->
         "dana.memory.blackboard.BLACKBOARD_DB_PATH",
         db,
     )
-    set_donna_mode("chat", as_voice=True)
+    set_dana_mode("chat", as_voice=True)
     assert get_voice_session_mode(db_path=db) == "chat"
-    set_donna_mode("developer", as_voice=False)
-    assert get_donna_mode() == "developer"
+    set_dana_mode("developer", as_voice=False)
+    assert get_dana_mode() == "developer"
     assert get_voice_session_mode(db_path=db) == "chat"
     restored = restore_voice_mode()
     assert restored == "chat"
-    assert get_donna_mode() == "chat"
+    assert get_dana_mode() == "chat"
 
 
 def test_actuator_lease_is_exclusive(tmp_path: Path) -> None:

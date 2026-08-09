@@ -22,7 +22,7 @@ class AdaptivePoller:
     from inside this poller's own thread. Tk callers should instead call
     ``note_activity()`` synchronously from their own main-thread
     ``self.after()`` chain to get the next adaptive delay — see
-    ``DonnaGUI._master_telemetry_tick`` for the pattern. ``start()``/``stop()``
+    ``DanaGUI._master_telemetry_tick`` for the pattern. ``start()``/``stop()``
     remain here for non-Tk callback use (e.g. pure I/O polling).
     """
 

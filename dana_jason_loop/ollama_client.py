@@ -1,4 +1,4 @@
-"""Minimal Ollama chat client for the Donna/Jason discovery loop (no agent.py imports)."""
+"""Minimal Ollama chat client for the Dana/Jason discovery loop (no agent.py imports)."""
 
 from __future__ import annotations
 

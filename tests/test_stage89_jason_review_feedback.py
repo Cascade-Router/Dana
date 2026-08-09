@@ -138,7 +138,7 @@ def test_submit_decision_writes_feedback(
         "dana.memory.feedback_log.feedback_log_path",
         lambda: target,
     )
-    monkeypatch.setenv("DONNA_HITL_REQUIRE_GUI", "1")
+    monkeypatch.setenv("DANA_HITL_REQUIRE_GUI", "1")
     hitl.publish_pending(
         {
             "objective": "O",

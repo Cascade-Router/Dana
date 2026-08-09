@@ -15,7 +15,7 @@ from dana.tools.schema import ToolCall
 
 def test_broker_routes_build_a_tool_to_architect_with_goal() -> None:
     broker = IntentBroker()
-    raw = "Donna, build a tool that reverses a string."
+    raw = "Dana, build a tool that reverses a string."
     call = broker.parse_utterance(raw)
     assert call is not None, "broker returned None"
     assert call.tool_id == "architect_new_tool", call.tool_id
@@ -89,7 +89,7 @@ def test_bug_tracker_append_roundtrip() -> None:
 
 def test_list_todo_basket_broker_route() -> None:
     broker = IntentBroker()
-    call = broker.parse_utterance("Donna, list the todo basket.")
+    call = broker.parse_utterance("Dana, list the todo basket.")
     assert call is not None
     assert call.tool_id == "list_todo_basket", call.tool_id
     print("[PASS] broker list_todo_basket verbal command")
@@ -171,7 +171,7 @@ def test_titan_repair_graph_writes_pending_patch() -> None:
 
 def test_titan_repair_broker_route() -> None:
     broker = IntentBroker()
-    call = broker.parse_utterance("Donna, run titan repair on the bug tracker.")
+    call = broker.parse_utterance("Dana, run titan repair on the bug tracker.")
     assert call is not None
     assert call.tool_id == "dispatch_titan_repair", call.tool_id
     print("[PASS] broker titan repair verbal command")

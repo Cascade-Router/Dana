@@ -10,11 +10,11 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END
 
-from dana.agentic import requires_tool_graph, set_donna_mode
+from dana.agentic import requires_tool_graph, set_dana_mode
 from dana.agentic_planning import build_structured_plan, desktop_plan_intent
 from dana.agentic_react_graph import (
     _route_after_agent,
-    compile_donna_react_graph,
+    compile_dana_react_graph,
 )
 from dana.schema import ReactGraphState
 from dana.tools.broker import merge_bound_tool_ids
@@ -63,9 +63,9 @@ def _tool_call_msg(name: str, args: dict[str, Any] | None = None) -> AIMessage:
 
 @pytest.fixture(autouse=True)
 def _chat_mode() -> None:
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     yield
-    set_donna_mode("chat")
+    set_dana_mode("chat")
 
 
 def test_summarize_text_routes_to_vision_plan() -> None:
@@ -129,7 +129,7 @@ def test_mocked_supervisor_routes_vision_then_tools() -> None:
         path.append("tools")
         return {"halt": True, "final_raw": "vision_ok", "last_obs": "OK: screen"}
 
-    graph = compile_donna_react_graph(
+    graph = compile_dana_react_graph(
         agent,
         tools,
         planner_node_fn=planner,
@@ -187,7 +187,7 @@ def test_mocked_supervisor_routes_repl_tool() -> None:
         assert "python_repl" in names
         return {"halt": True, "final_raw": "repl_ok", "last_obs": "OK: 2"}
 
-    graph = compile_donna_react_graph(
+    graph = compile_dana_react_graph(
         agent,
         tools,
         planner_node_fn=planner,

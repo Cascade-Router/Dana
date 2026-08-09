@@ -13,8 +13,8 @@ Usage:
 
 Env (optional judge backends):
   GROQ_API_KEY / OPENAI_API_KEY
-  DONNA_EVAL_JUDGE_MODEL (default: llama-3.1-8b-instant for Groq, gpt-4o-mini for OpenAI)
-  DONNA_EVAL_LIVE_TOOL_SELECT=1  (opt-in IntentBroker; default offline heuristics only)
+  DANA_EVAL_JUDGE_MODEL (default: llama-3.1-8b-instant for Groq, gpt-4o-mini for OpenAI)
+  DANA_EVAL_LIVE_TOOL_SELECT=1  (opt-in IntentBroker; default offline heuristics only)
 """
 
 from __future__ import annotations
@@ -38,9 +38,9 @@ if str(_ROOT) not in sys.path:
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 from langgraph.checkpoint.memory import MemorySaver  # noqa: E402
 
-from dana.agentic import requires_tool_graph, set_donna_mode  # noqa: E402
+from dana.agentic import requires_tool_graph, set_dana_mode  # noqa: E402
 from dana.agentic_planning import desktop_plan_intent  # noqa: E402
-from dana.agentic_react_graph import compile_donna_react_graph  # noqa: E402
+from dana.agentic_react_graph import compile_dana_react_graph  # noqa: E402
 from dana.schema import ReactGraphState  # noqa: E402
 from dana.tools.broker import (  # noqa: E402
     explicit_tool_ids_in_text,
@@ -131,7 +131,7 @@ def _clip_score(value: Any, default: int = 3) -> int:
 
 def _live_tool_select_enabled() -> bool:
     """Opt-in only: IntentBroker foresight / live plan can hang on network LLM."""
-    return os.environ.get("DONNA_EVAL_LIVE_TOOL_SELECT", "").strip().lower() in {
+    return os.environ.get("DANA_EVAL_LIVE_TOOL_SELECT", "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -169,7 +169,7 @@ def _select_tools_for_case(case: dict[str, Any]) -> list[tuple[str, dict[str, An
 
     Uses golden fields (category, expected_initial_node, requires_hitl, user_input)
     plus keyword / explicit tool-id heuristics. Live broker is opt-in via
-    DONNA_EVAL_LIVE_TOOL_SELECT=1 (short timeout).
+    DANA_EVAL_LIVE_TOOL_SELECT=1 (short timeout).
     """
     q = str(case.get("user_input") or "")
     cat = str(case.get("category") or "")
@@ -391,8 +391,8 @@ def execute_case_offline(case: dict[str, Any]) -> Trajectory:
         }
 
     try:
-        set_donna_mode("developer")
-        graph = compile_donna_react_graph(
+        set_dana_mode("developer")
+        graph = compile_dana_react_graph(
             agent,
             tools,
             planner_node_fn=planner,
@@ -435,7 +435,7 @@ def execute_case_offline(case: dict[str, Any]) -> Trajectory:
         traj.nodes_visited = list(path) or ["error"]
         traj.final_response = f"ERROR: {exc}"
     finally:
-        set_donna_mode("chat")
+        set_dana_mode("chat")
     return traj
 
 
@@ -541,7 +541,7 @@ def _heuristic_judge(case: dict[str, Any], traj: Trajectory) -> CaseJudgment:
 
 def _build_judge_llm(backend: str) -> Any | None:
     backend = (backend or "auto").strip().lower()
-    model_env = os.environ.get("DONNA_EVAL_JUDGE_MODEL", "").strip()
+    model_env = os.environ.get("DANA_EVAL_JUDGE_MODEL", "").strip()
 
     if backend in {"heuristic", "none", "off"}:
         return None

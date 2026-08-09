@@ -52,12 +52,12 @@ def _pref_base_dirs() -> tuple[Path, Path | None]:
     """Return (primary, legacy) preference directories.
 
     Primary is ``%APPDATA%/Dana`` (or ``~/.config/dana``). Legacy
-    ``Donna`` / ``donna`` is consulted on read only for migration.
+    ``Dana`` / ``dana`` is consulted on read only for migration.
     """
     appdata = os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME")
     if appdata:
-        return Path(appdata) / "Dana", Path(appdata) / "Donna"
-    return Path.home() / ".config" / "dana", Path.home() / ".config" / "donna"
+        return Path(appdata) / "Dana", Path(appdata) / "Dana"
+    return Path.home() / ".config" / "dana", Path.home() / ".config" / "dana"
 
 
 def _pref_path() -> Path:

@@ -49,7 +49,7 @@ _KEY_ALIASES: dict[str, int] = {
 
 
 def _dry_run() -> bool:
-    return os.environ.get("DONNA_OS_DRY_RUN", "").strip().lower() in {
+    return os.environ.get("DANA_OS_DRY_RUN", "").strip().lower() in {
         "1",
         "true",
         "yes",

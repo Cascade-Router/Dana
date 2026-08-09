@@ -1,6 +1,6 @@
-# Contributing to Donna
+# Contributing to Dana
 
-Thank you for helping harden a local-first agentic voice OS. Donna prioritizes **low-latency infrastructure**, **strict state isolation**, and **observable graph orchestration**. PRs that bypass verification or mutate local-state contracts will be rejected.
+Thank you for helping harden a local-first agentic voice OS. Dana prioritizes **low-latency infrastructure**, **strict state isolation**, and **observable graph orchestration**. PRs that bypass verification or mutate local-state contracts will be rejected.
 
 ---
 
@@ -26,8 +26,8 @@ Thank you for helping harden a local-first agentic voice OS. Donna prioritizes *
 ## Local setup & unit tests
 
 ```bash
-git clone https://github.com/Cascade-Router/Donna.git
-cd Donna
+git clone https://github.com/Cascade-Router/Dana.git
+cd Dana
 python -m venv .venv
 
 # Windows
@@ -65,10 +65,10 @@ Any PR that adds or changes tool calls, Intent Broker / Cascade routes, LangGrap
 
 #### Method (InputIngest)
 
-1. Ensure a **single** Donna instance is running (`python run.py`).
+1. Ensure a **single** Dana instance is running (`python run.py`).
 2. For Chat / mode switches, inject via `.trigger_ask` (Main file trigger).
 3. For Developer tool / jail paths: switch to developer mode, write the command into `execution_jail/input.txt`, and wake the session so `task_queue.json` drains.
-4. Verify in `logs/donna_runtime.log` (and Live Trace where applicable): expected mode transitions, tool execution, and no dual-writer corruption.
+4. Verify in `logs/dana_runtime.log` (and Live Trace where applicable): expected mode transitions, tool execution, and no dual-writer corruption.
 
 PRs without evidence of this headless reachability pass (log excerpts, harness output, or equivalent CI) will not be merged.
 
@@ -94,4 +94,4 @@ See [`SECURITY.md`](SECURITY.md) for local privacy guarantees and private vulner
 
 ## Code of Conduct (engineering)
 
-Prefer minimal diffs, explicit failure modes, and telemetry over silent fallbacks. Donna is infrastructure: correctness under concurrency beats feature surface area.
+Prefer minimal diffs, explicit failure modes, and telemetry over silent fallbacks. Dana is infrastructure: correctness under concurrency beats feature surface area.

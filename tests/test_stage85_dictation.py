@@ -22,8 +22,8 @@ from dana.memory.blackboard import (
 
 
 def test_mentions_and_strip_dictate() -> None:
-    assert mentions_dictate("Donna, dictate click the next button")
-    assert strip_dictate_wrapper("hey donna, dictate open the menu") == "open the menu"
+    assert mentions_dictate("Dana, dictate click the next button")
+    assert strip_dictate_wrapper("hey dana, dictate open the menu") == "open the menu"
 
 
 def test_record_dictation_with_ocr_ref(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
@@ -38,7 +38,7 @@ def test_record_dictation_with_ocr_ref(tmp_path: Path, monkeypatch) -> None:  # 
         lambda **_k: "OCR: Enter Comments [10,20,100,40]",
     )
     out = handle_dictation(
-        "Donna, dictate type the evaluation into Enter Comments",
+        "Dana, dictate type the evaluation into Enter Comments",
         db_path=db,
         force_ocr=False,
     )

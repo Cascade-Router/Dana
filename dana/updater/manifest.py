@@ -557,9 +557,9 @@ def _overlay_tool_modules(extract_root: Path) -> None:
 
 def _load_auto_update_mode() -> AutoUpdateMode:
     try:
-        from dana.settings import load_donna_settings
+        from dana.settings import load_dana_settings
 
-        raw = str(load_donna_settings().get("auto_update_mode") or "manual").strip().lower()
+        raw = str(load_dana_settings().get("auto_update_mode") or "manual").strip().lower()
         return "silent" if raw == "silent" else "manual"
     except Exception:  # noqa: BLE001
         return "manual"
@@ -567,9 +567,9 @@ def _load_auto_update_mode() -> AutoUpdateMode:
 
 def _persist_auto_update_mode(mode: AutoUpdateMode) -> None:
     try:
-        from dana.settings import SETTINGS_PATH, load_donna_settings
+        from dana.settings import SETTINGS_PATH, load_dana_settings
 
-        cfg = load_donna_settings(force_reload=True)
+        cfg = load_dana_settings(force_reload=True)
         cfg["auto_update_mode"] = mode
         with open(SETTINGS_PATH, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh, indent=2, ensure_ascii=False)

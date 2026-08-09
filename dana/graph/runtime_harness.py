@@ -26,7 +26,7 @@ _TRIAGE_CODE_RE = re.compile(r"\bCODE\b", re.I)
 # Paths that must never be deleted by fail-fast rollback.
 _ROLLBACK_PROTECTED_PREFIXES = (
     "dana/",
-    "donna_security/",
+    "dana_security/",
     "dana_security/",
     "website/",
     "legacy/",

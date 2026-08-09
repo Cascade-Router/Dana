@@ -23,7 +23,7 @@ class FileJailEnforcerTests(unittest.TestCase):
         cls.sample = DOCS_JAIL / "sample_notes.txt"
         if not cls.sample.is_file():
             cls.sample.write_text(
-                "Donna Local Docs Jail\nALPHA-42\n",
+                "Dana Local Docs Jail\nALPHA-42\n",
                 encoding="utf-8",
             )
 

@@ -49,7 +49,7 @@ def build_github_issue_url(
     critique = str(jason_critique or "").strip() or "(no Jason critique)"
     body = (
         "## Escalation\n"
-        "Donna HITL denied this drafted ticket repeatedly. "
+        "Dana HITL denied this drafted ticket repeatedly. "
         "Please review and advise.\n\n"
         "## Jason Review\n"
         f"{critique}\n\n"

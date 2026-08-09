@@ -107,15 +107,15 @@ def test_chat_bubble_view_headless() -> None:
 
 def test_gui_uses_theme_and_chat_view() -> None:
     try:
-        from dana.core_agent import DonnaGUI, _UI_CANVAS, _UI_ACCENT
+        from dana.core_agent import DanaGUI, _UI_CANVAS, _UI_ACCENT
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"DonnaGUI unavailable: {exc}")
+        pytest.skip(f"DanaGUI unavailable: {exc}")
 
     assert _UI_CANVAS == T.BG
     assert _UI_ACCENT == T.ACCENT
 
     try:
-        app = DonnaGUI()
+        app = DanaGUI()
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"Tk unavailable: {exc}")
     try:
@@ -133,7 +133,7 @@ def test_gui_uses_theme_and_chat_view() -> None:
         assert "#10b981" in send_fg
         engage_fg = str(app._engage_btn.cget("fg_color")).lower()
         assert "#10b981" in engage_fg
-        stop_fg = str(app.stop_donna_btn.cget("fg_color")).lower()
+        stop_fg = str(app.stop_dana_btn.cget("fg_color")).lower()
         assert "#f43f5e" in stop_fg
     finally:
         try:

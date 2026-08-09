@@ -26,7 +26,7 @@ The product brand is **Dānā** / **Dana**; the Python package is `dana`. Suppor
 
 ### 1.1 Live ReAct corridor (production topology)
 
-`compile_donna_react_graph` wires the following StateGraph over `ReactGraphState`. Entry is **Memory Hydration → Supervisor Router** (`hydrate_memory` → `planner` Plan-Then-Execute), then executor → agent:
+`compile_dana_react_graph` wires the following StateGraph over `ReactGraphState`. Entry is **Memory Hydration → Supervisor Router** (`hydrate_memory` → `planner` Plan-Then-Execute), then executor → agent:
 
 ```text
 START
@@ -70,7 +70,7 @@ flowchart TB
     TOAST -.->|build_structured_plan| PL
   end
 
-  subgraph Corridor["ReAct corridor — compile_donna_react_graph"]
+  subgraph Corridor["ReAct corridor — compile_dana_react_graph"]
     HM[hydrate_memory]
     PL[planner / supervisor router]
     EX[executor]
@@ -276,7 +276,7 @@ Dānā’s corridor is intentionally **injectable**: production defaults bind re
 ```python
 from typing import Any
 
-from dana.agentic_react_graph import compile_donna_react_graph
+from dana.agentic_react_graph import compile_dana_react_graph
 from dana.graph.nodes.critic import critic_node, fail_closed_node
 from dana.graph.nodes.memory import (
     consolidate_memory_node,
@@ -298,7 +298,7 @@ def my_planner(state: ReactGraphState) -> dict[str, Any]:
     return {"execution_plan": {"steps": []}, "current_agent": "Planner"}
 
 
-graph = compile_donna_react_graph(
+graph = compile_dana_react_graph(
     my_agent_node,
     my_tools_node,
     planner_node_fn=my_planner,

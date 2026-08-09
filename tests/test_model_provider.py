@@ -22,8 +22,8 @@ def test_is_complexity_reject_marker() -> None:
 def test_complete_with_complexity_fallback_routes_to_cloud(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("DONNA_ALLOW_CLOUD_FALLBACK", "1")
-    monkeypatch.delenv("DONNA_FORCE_LOCAL", raising=False)
+    monkeypatch.setenv("DANA_ALLOW_CLOUD_FALLBACK", "1")
+    monkeypatch.delenv("DANA_FORCE_LOCAL", raising=False)
     assert cloud_fallback_enabled() is True
 
     provider = ModelProvider()
@@ -60,7 +60,7 @@ def test_complete_with_complexity_fallback_routes_to_cloud(
 def test_complete_with_complexity_fallback_stays_local_when_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("DONNA_ALLOW_CLOUD_FALLBACK", "0")
+    monkeypatch.setenv("DANA_ALLOW_CLOUD_FALLBACK", "0")
     provider = ModelProvider()
 
     monkeypatch.setattr(

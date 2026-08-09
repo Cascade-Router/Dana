@@ -5,10 +5,10 @@ Usage:
   python tests/test_inference_speed.py --compare   # baseline vs speculative
 
 Env:
-  DONNA_LOCAL_MODEL / OLLAMA_MODEL  — main model (default llama3.2)
-  DONNA_SPECULATIVE_DECODING        — set by --compare / --speculative
-  DONNA_DRAFT_MODEL                 — draft tag (default llama3.2:1b)
-  DONNA_DRAFT_NUM_PREDICT           — draft depth (default 4; 0 = off)
+  DANA_LOCAL_MODEL / OLLAMA_MODEL  — main model (default llama3.2)
+  DANA_SPECULATIVE_DECODING        — set by --compare / --speculative
+  DANA_DRAFT_MODEL                 — draft tag (default llama3.2:1b)
+  DANA_DRAFT_NUM_PREDICT           — draft depth (default 4; 0 = off)
   OLLAMA_URL                        — default http://127.0.0.1:11434
 """
 
@@ -58,7 +58,7 @@ def _ollama_base() -> str:
 
 def _main_model() -> str:
     return (
-        (os.environ.get("DONNA_LOCAL_MODEL") or "").strip()
+        (os.environ.get("DANA_LOCAL_MODEL") or "").strip()
         or (os.environ.get("OLLAMA_MODEL") or "").strip()
         or "llama3.2"
     )
@@ -76,15 +76,15 @@ def stream_raw_chat(
     from dana.llm_client import merge_ollama_options
 
     # Isolate A/B: force env for merge_ollama_options for this call only.
-    prev_spec = os.environ.get("DONNA_SPECULATIVE_DECODING")
-    prev_draft_n = os.environ.get("DONNA_DRAFT_NUM_PREDICT")
+    prev_spec = os.environ.get("DANA_SPECULATIVE_DECODING")
+    prev_draft_n = os.environ.get("DANA_DRAFT_NUM_PREDICT")
     try:
         if speculative:
-            os.environ["DONNA_SPECULATIVE_DECODING"] = "1"
-            os.environ["DONNA_DRAFT_NUM_PREDICT"] = str(draft_num_predict)
+            os.environ["DANA_SPECULATIVE_DECODING"] = "1"
+            os.environ["DANA_DRAFT_NUM_PREDICT"] = str(draft_num_predict)
         else:
-            os.environ["DONNA_SPECULATIVE_DECODING"] = "0"
-            os.environ.pop("DONNA_DRAFT_NUM_PREDICT", None)
+            os.environ["DANA_SPECULATIVE_DECODING"] = "0"
+            os.environ.pop("DANA_DRAFT_NUM_PREDICT", None)
 
         options = merge_ollama_options(
             {
@@ -178,13 +178,13 @@ def stream_raw_chat(
         )
     finally:
         if prev_spec is None:
-            os.environ.pop("DONNA_SPECULATIVE_DECODING", None)
+            os.environ.pop("DANA_SPECULATIVE_DECODING", None)
         else:
-            os.environ["DONNA_SPECULATIVE_DECODING"] = prev_spec
+            os.environ["DANA_SPECULATIVE_DECODING"] = prev_spec
         if prev_draft_n is None:
-            os.environ.pop("DONNA_DRAFT_NUM_PREDICT", None)
+            os.environ.pop("DANA_DRAFT_NUM_PREDICT", None)
         else:
-            os.environ["DONNA_DRAFT_NUM_PREDICT"] = prev_draft_n
+            os.environ["DANA_DRAFT_NUM_PREDICT"] = prev_draft_n
 
 
 def _print_result(r: SpeedResult) -> None:
@@ -231,13 +231,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--speculative",
         action="store_true",
-        help="Single run with DONNA_SPECULATIVE_DECODING=1",
+        help="Single run with DANA_SPECULATIVE_DECODING=1",
     )
     parser.add_argument("--num-predict", type=int, default=256)
     parser.add_argument(
         "--draft-num-predict",
         type=int,
-        default=int(os.environ.get("DONNA_DRAFT_NUM_PREDICT") or "4"),
+        default=int(os.environ.get("DANA_DRAFT_NUM_PREDICT") or "4"),
     )
     parser.add_argument("--model", default=_main_model())
     parser.add_argument(
@@ -278,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     speculative = bool(args.speculative) or (
-        (os.environ.get("DONNA_SPECULATIVE_DECODING") or "").strip().lower()
+        (os.environ.get("DANA_SPECULATIVE_DECODING") or "").strip().lower()
         in {"1", "true", "yes", "on"}
     )
     result = stream_raw_chat(

@@ -19,8 +19,8 @@ def test_load_premium_logo_lanczos_ctkimage() -> None:
     assert path.name in {
         "dana_logo.png",
         "dana_logo_highres.png",
-        "donna_logo_highres.png",
-        "donna_logo.png",
+        "dana_logo_highres.png",
+        "dana_logo.png",
         "orb_logo.png",
     }
 
@@ -40,7 +40,7 @@ def test_gui_header_and_dashboard_use_ctkimage() -> None:
 
     from dana.ui.logo import load_premium_logo
 
-    # Fresh root before DonnaGUI so CTkImage PhotoImages have a living master.
+    # Fresh root before DanaGUI so CTkImage PhotoImages have a living master.
     try:
         root = ctk.CTk()
         root.withdraw()
@@ -53,11 +53,11 @@ def test_gui_header_and_dashboard_use_ctkimage() -> None:
         assert header is not None
         assert dash is not None
         try:
-            from dana.core_agent import DonnaGUI
+            from dana.core_agent import DanaGUI
 
-            app = DonnaGUI()
+            app = DanaGUI()
         except Exception as exc:  # noqa: BLE001
-            pytest.skip(f"DonnaGUI/Tk isolation: {exc}")
+            pytest.skip(f"DanaGUI/Tk isolation: {exc}")
         try:
             # Construction may soft-fail logo labels under Tk isolation; attributes
             # must still be assignable CTkImage instances when load succeeds.

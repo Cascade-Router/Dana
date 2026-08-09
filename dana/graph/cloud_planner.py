@@ -74,7 +74,7 @@ def cloud_planner_key_present() -> bool:
 
 def hybrid_cloud_planner_active() -> bool:
     """True only when the UI toggle is on AND a cloud API key is present."""
-    if (os.environ.get("DONNA_FORCE_LOCAL") or "").strip().lower() in {
+    if (os.environ.get("DANA_FORCE_LOCAL") or "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -93,7 +93,7 @@ def hybrid_cloud_planner_active() -> bool:
 
 def planner_mode_label() -> str:
     """UI / monitor label: LOCAL vs HYBRID CLOUD (or hybrid requested but keyless)."""
-    if (os.environ.get("DONNA_FORCE_LOCAL") or "").strip().lower() in {
+    if (os.environ.get("DANA_FORCE_LOCAL") or "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -143,7 +143,7 @@ def publish_planner_mode(*, warn_missing_key: bool = False) -> str:
 
 def _gemini_model_id() -> str:
     return (
-        (os.environ.get("DONNA_GEMINI_MODEL") or "").strip()
+        (os.environ.get("DANA_GEMINI_MODEL") or "").strip()
         or (os.environ.get("GEMINI_MODEL") or "").strip()
         or _DEFAULT_GEMINI_MODEL
     )

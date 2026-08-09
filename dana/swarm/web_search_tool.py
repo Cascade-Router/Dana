@@ -66,7 +66,7 @@ def search_once(query: str, *, max_results: int = 5) -> SearchSummary:
 
 
 class WebSearchTool(BaseTool):
-    """Donna's ``web.run`` wrapper — bind this tool to the Search Agent LLM."""
+    """Dana's ``web.run`` wrapper — bind this tool to the Search Agent LLM."""
 
     name: str = "web_search"
     description: str = (

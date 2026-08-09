@@ -1,6 +1,6 @@
 """Pytest coverage for the foundational scroll actuator (dry-run, no real hardware input).
 
-Clears ``DONNA_OS_DRY_RUN`` from the ambient environment before each test:
+Clears ``DANA_OS_DRY_RUN`` from the ambient environment before each test:
 at least one other test module in this suite (``tests/test_e2e_lifecycle.py``)
 sets it at import time via a raw ``os.environ[...] = ...`` (not
 ``monkeypatch``), which leaks into every test that runs afterward in the
@@ -19,7 +19,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("DONNA_OS_DRY_RUN", raising=False)
+    monkeypatch.delenv("DANA_OS_DRY_RUN", raising=False)
     scroll_actuator._last_actuation_ts = 0.0
     yield
     scroll_actuator._last_actuation_ts = 0.0
@@ -119,7 +119,7 @@ def test_scroll_surfaces_backend_failure_after_partial_ticks() -> None:
 def test_scroll_dry_run_validates_but_never_calls_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
     actuator, calls = _stub_actuator()
     result = actuator.scroll("down", ticks=5)
     assert result == {"ok": True, "direction": "down", "ticks": 5, "dry_run": True}
@@ -129,7 +129,7 @@ def test_scroll_dry_run_validates_but_never_calls_backend(
 def test_scroll_dry_run_still_validates_direction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
     actuator, calls = _stub_actuator()
     result = actuator.scroll("sideways", ticks=1)
     assert result["ok"] is False
@@ -150,6 +150,6 @@ def test_module_level_scroll_uses_real_os_control_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Dry-run end-to-end: no dependency injection, no real hardware call.
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
     result = scroll("up", ticks=2)
     assert result == {"ok": True, "direction": "up", "ticks": 2, "dry_run": True}

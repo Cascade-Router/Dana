@@ -2,14 +2,14 @@
 
 Completes the basic UI interaction loop alongside ``mouse_actuator`` (click)
 and ``keyboard_actuator`` (type): reveals off-screen elements by scrolling.
-No pyautogui/pynput — reuses the existing hardware SendInput backend in
-``dana.tools.os_control`` (``scroll_wheel_sendinput``), sending one wheel
+No pyautogui/pynput — reuses the existing Win32 ``SendInput`` (ctypes)
+backend in ``dana.tools.os_control`` (``scroll_wheel_sendinput``), sending one wheel
 notch (``WHEEL_DELTA``) per tick with a small randomized inter-tick delay,
 matching the humanized cadence used elsewhere in the OS-control surface
 (clicking, typing).
 
 Safety:
-  - ``DONNA_OS_DRY_RUN=1`` skips the real SendInput calls but still runs
+  - ``DANA_OS_DRY_RUN=1`` skips the real SendInput calls but still runs
     every validation/rate-limit check.
   - Rate-limited to one scroll actuation (i.e. one ``scroll()`` call, which
     may itself send several wheel ticks) per ``_MIN_ACTUATION_INTERVAL_S``
@@ -49,7 +49,7 @@ _last_actuation_ts = 0.0
 
 
 def _dry_run() -> bool:
-    return os.environ.get("DONNA_OS_DRY_RUN", "").strip().lower() in {
+    return os.environ.get("DANA_OS_DRY_RUN", "").strip().lower() in {
         "1",
         "true",
         "yes",

@@ -2,7 +2,7 @@
 
 ## Local privacy guarantees
 
-Donna is designed as a **local-first** agentic voice OS:
+Dana is designed as a **local-first** agentic voice OS:
 
 - Cognition on the voice critical path is intended to stay on-device (e.g. Ollama), not round-trip through a required cloud LLM.
 - Machine-local artifacts (`vault/`, `execution_jail/`, `logs/`, `.env`, `settings.json`, model weights) are gitignored and must not be committed.
@@ -21,7 +21,7 @@ Security fixes are applied on the active `main` branch of this repository. If yo
 Report privately so we can assess and patch before disclosure:
 
 1. Prefer GitHub **[Private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing/privately-reporting-a-security-vulnerability)** on this repository (Security → Report a vulnerability), when enabled.
-2. Otherwise email the maintainers via the contact listed on the GitHub org/profile for **Cascade-Router / AMIXXM**, with subject line `[Donna security]`.
+2. Otherwise email the maintainers via the contact listed on the GitHub org/profile for **Cascade-Router / AMIXXM**, with subject line `[Dana security]`.
 
 Include:
 

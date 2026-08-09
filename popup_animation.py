@@ -30,7 +30,7 @@ def main() -> None:
     )
 
     # Optional auto-close for harness / CI (frames). 0 = run until window closed.
-    max_frames = int(os.environ.get("DONNA_ANIMATION_FRAMES") or "0")
+    max_frames = int(os.environ.get("DANA_ANIMATION_FRAMES") or "0")
     frame = {"n": 0}
 
     def tick() -> None:

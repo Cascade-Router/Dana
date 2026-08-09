@@ -1,4 +1,4 @@
-"""Keystroke operator + Jason Shadow Run (DONNA_AUDIT_MODE)."""
+"""Keystroke operator + Jason Shadow Run (DANA_AUDIT_MODE)."""
 
 from __future__ import annotations
 
@@ -39,16 +39,16 @@ def test_resolve_vk_arrows() -> None:
 
 
 def test_press_key_dry_run(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_DISABLE_HUMAN_YIELD", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_DISABLE_HUMAN_YIELD", "1")
     out = press_key("right")
     assert out.startswith("OK: press_key dry_run")
     assert "0x27" in out
 
 
 def test_press_left_right_arrow_wrappers(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_DISABLE_HUMAN_YIELD", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_DISABLE_HUMAN_YIELD", "1")
     left = press_left_arrow()
     right = press_right_arrow()
     assert left.startswith("OK: press_key dry_run")
@@ -93,7 +93,7 @@ def test_reasoner_injects_feather_rules(monkeypatch) -> None:  # noqa: ANN001
 def test_audit_mode_writes_shadow_file_not_queue(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_AUDIT_MODE", "1")
+    monkeypatch.setenv("DANA_AUDIT_MODE", "1")
     db = tmp_path / "bb.db"
     init_blackboard(db)
     audit = tmp_path / "shadow_run_audit.txt"
@@ -127,8 +127,8 @@ def test_jason_bulk_audit_mode_no_pending_actions(
 
     from dana.management.jason_supervisor import bulk_evaluate_slides
 
-    monkeypatch.setenv("DONNA_AUDIT_MODE", "1")
-    monkeypatch.setenv("DONNA_JASON_DRY_REASONER", "1")
+    monkeypatch.setenv("DANA_AUDIT_MODE", "1")
+    monkeypatch.setenv("DANA_JASON_DRY_REASONER", "1")
     db = tmp_path / "bb.db"
     init_blackboard(db)
     reset_bulk_progress(db_path=db)

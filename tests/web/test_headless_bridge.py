@@ -7,8 +7,8 @@ import sys
 
 
 def test_headless_env_flags_and_no_tkinter() -> None:
-    os.environ["DONNA_NO_GUI"] = "1"
-    os.environ["DONNA_HEADLESS"] = "1"
+    os.environ["DANA_NO_GUI"] = "1"
+    os.environ["DANA_HEADLESS"] = "1"
     for name in (
         "customtkinter",
         "dana.ui.assistive_orb",
@@ -47,8 +47,8 @@ def test_app_module_imports_without_tkinter() -> None:
         "dana.core_agent",
     ):
         sys.modules.pop(name, None)
-    os.environ["DONNA_NO_GUI"] = "1"
-    os.environ["DONNA_HEADLESS"] = "1"
+    os.environ["DANA_NO_GUI"] = "1"
+    os.environ["DANA_HEADLESS"] = "1"
     import importlib
 
     import dana.web.headless_bridge as hb
@@ -79,5 +79,5 @@ def test_app_py_is_control_plane_not_legacy_florence() -> None:
     assert "Epic Task Tracker" in text
     assert "Spec Approval" in text
     assert "_chat_append_user" in text
-    assert "DONNA_FORCE_LOCAL" in text
+    assert "DANA_FORCE_LOCAL" in text
     assert "customtkinter" not in low

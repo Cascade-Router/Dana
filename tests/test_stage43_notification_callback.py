@@ -57,17 +57,17 @@ def test_format_background_system_alert() -> None:
 
 def test_toast_copy() -> None:
     title, body = format_actuator_toast("draft_cursor_prompt", "completed")
-    assert title == "Donna Task"
-    assert body == "Donna Task: draft_cursor_prompt completed."
+    assert title == "Dana Task"
+    assert body == "Dana Task: draft_cursor_prompt completed."
 
 
 def test_actuator_emits_notification_toast(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
     db = tmp_path / "bb.db"
-    out = tmp_path / "donna_telemetry.jsonl"
+    out = tmp_path / "dana_telemetry.jsonl"
     monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
-    monkeypatch.setenv("DONNA_DISABLE_TOAST", "1")
+    monkeypatch.setenv("DANA_DISABLE_TOAST", "1")
     monkeypatch.setattr(
         "dana.middleware.actuator_executor.execute_tool_payload",
         lambda tool_name, arguments, **_kw: "OK: done",
@@ -114,7 +114,7 @@ def test_chat_piggyback_injects_alert(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
     db = tmp_path / "bb.db"
-    out = tmp_path / "donna_telemetry.jsonl"
+    out = tmp_path / "dana_telemetry.jsonl"
     monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
     monkeypatch.setattr(
         "dana.memory.blackboard.BLACKBOARD_DB_PATH",
@@ -140,8 +140,8 @@ def test_chat_piggyback_injects_alert(
         return "Got it — that ticket is done."
 
     result = run_lightweight_chat(
-        user_text="hey donna",
-        system_prompt="You are Donna.",
+        user_text="hey dana",
+        system_prompt="You are Dana.",
         ask_fn=_ask,
         use_chat_memory=False,
         session_id="chat-sess",

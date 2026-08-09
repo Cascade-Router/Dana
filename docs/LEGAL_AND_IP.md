@@ -24,7 +24,7 @@ Dānā’s open-source tree primarily implements the Class 009 local control-pla
 1. **Default TTS voice switched away from non-commercial dataset licenses.**  
    The previous default Piper voice `en_US-hfc_female-medium` is licensed **CC BY-NC-SA 4.0** (non-commercial). The runtime default is now **`en_US-ljspeech-high`** (LJ Speech dataset — **public domain** per the Piper MODEL_CARD).
 2. **`en_US-lessac-medium` is intentionally not the commercial default.**  
-   Piper’s Lessac MODEL_CARD points at the Blizzard 2013 / Lessac research licence, which is limited to **research purposes** and excludes commercial voice-synthesis product use. Operators may still override via `DONNA_PIPER_VOICE=en_US-lessac-medium` for local research, but that is not the product default.
+   Piper’s Lessac MODEL_CARD points at the Blizzard 2013 / Lessac research licence, which is limited to **research purposes** and excludes commercial voice-synthesis product use. Operators may still override via `DANA_PIPER_VOICE=en_US-lessac-medium` for local research, but that is not the product default.
 3. **Legacy migration.**  
    If the preferred voice cannot be downloaded (offline / mocked tests) and `en_US-hfc_female-medium` is already on disk, the spooler may fall back to that file and log a warning. Legacy NC weights must not be redistributed in commercial packages.
 4. **Third-party Python packages are not uniformly MIT/Apache/PD.**  

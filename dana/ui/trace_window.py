@@ -337,7 +337,7 @@ class LiveTracePanel(ctk.CTkFrame):
         )
         self._clear_logs_status.pack(side="left", padx=(2, 10), pady=8)
         self._clear_logs_status_job: str | None = None
-        # Stage 8.9.8 — footer KILL SWITCH removed; header STOP DONNA is sole exit.
+        # Stage 8.9.8 — footer KILL SWITCH removed; header STOP DANA is sole exit.
 
     def _on_clear_feedback_logs(self) -> None:
         """Tk-main-thread clear of feedback_logs.jsonl + 3s status toast."""
@@ -394,7 +394,7 @@ class LiveTracePanel(ctk.CTkFrame):
             except Exception:  # noqa: BLE001
                 pass
 
-        threading.Thread(target=_worker, name=f"donna-dev-{label}", daemon=True).start()
+        threading.Thread(target=_worker, name=f"dana-dev-{label}", daemon=True).start()
 
     def _on_view_startup_log(self) -> None:
         self._run_dev_action(_open_startup_log, "View Startup Log")
@@ -524,7 +524,7 @@ class LiveTracePanel(ctk.CTkFrame):
         if key == "agentic":
             key = "developer"
         self._mode = key
-        # Global Mode indicator lives in DonnaGUI status bar; keep local title stable.
+        # Global Mode indicator lives in DanaGUI status bar; keep local title stable.
 
     def _append_timeline(self, line: str, *, accent: str | None = None) -> None:
         row = ctk.CTkFrame(

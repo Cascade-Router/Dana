@@ -178,7 +178,7 @@ class MCPClient:
 
 
 def _parse_server_specs(raw: str) -> list[tuple[str, list[str]]]:
-    """Parse ``DONNA_MCP_SERVERS`` — ``id=cmd arg1 arg2;id2=cmd2``."""
+    """Parse ``DANA_MCP_SERVERS`` — ``id=cmd arg1 arg2;id2=cmd2``."""
     out: list[tuple[str, list[str]]] = []
     for chunk in (raw or "").split(";"):
         chunk = chunk.strip()
@@ -194,7 +194,7 @@ def _parse_server_specs(raw: str) -> list[tuple[str, list[str]]]:
     return out
 
 
-def discover_mcp_tools(*, env_var: str = "DONNA_MCP_SERVERS") -> list[MCPTool]:
+def discover_mcp_tools(*, env_var: str = "DANA_MCP_SERVERS") -> list[MCPTool]:
     """Best-effort discovery across configured MCP servers (never raises)."""
     try:
         from dotenv import load_dotenv
@@ -226,7 +226,7 @@ def format_mcp_tools_block(tools: list[MCPTool] | None = None) -> str:
     if not rows:
         return (
             "### MCP Tools\n"
-            "(none discovered — set DONNA_MCP_SERVERS to enable live tool endpoints)\n"
+            "(none discovered — set DANA_MCP_SERVERS to enable live tool endpoints)\n"
         )
     lines = [
         "### MCP Tools (live endpoints — generate code that can call these)",

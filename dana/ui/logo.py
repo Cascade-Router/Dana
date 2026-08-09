@@ -15,8 +15,8 @@ _LOGO_CANDIDATES = (
     "dana_logo.png",
     "dana_logo_highres.png",  # legacy
     "orb_logo.png",  # legacy
-    "donna_logo_highres.png",  # legacy
-    "donna_logo.png",  # legacy
+    "dana_logo_highres.png",  # legacy
+    "dana_logo.png",  # legacy
 )
 
 # Windows HUD / orb chroma-key (must not appear in opaque logo pixels).
@@ -248,7 +248,7 @@ def resolve_logo_path() -> Path | None:
 _APP_ICON_RELS = (
     "assets/dana_logo.ico",
     "dana/assets/dana_icon.ico",  # legacy
-    "dana/assets/donna.ico",  # legacy
+    "dana/assets/dana.ico",  # legacy
 )
 
 
@@ -272,7 +272,7 @@ def app_icon_path() -> Path:
     candidates: list[Path] = [
         root_assets / "dana_logo.ico",
         legacy_dir / "dana_icon.ico",
-        legacy_dir / "donna.ico",
+        legacy_dir / "dana.ico",
     ]
     frozen = _frozen_root()
     if frozen is not None:
@@ -280,7 +280,7 @@ def app_icon_path() -> Path:
             [
                 frozen / "assets" / "dana_logo.ico",
                 frozen / "dana" / "assets" / "dana_icon.ico",
-                frozen / "dana" / "assets" / "donna.ico",
+                frozen / "dana" / "assets" / "dana.ico",
             ]
         )
     for path in candidates:
@@ -362,9 +362,9 @@ def apply_window_icon(root: Any) -> bool:
             root.iconphoto(True, photo)
         # Explicit keepalives — prevent GC reverting to a cached/default icon.
         root._icon_keepalive = photo  # type: ignore[attr-defined]
-        root._donna_iconphoto = photo  # type: ignore[attr-defined]
-        root._donna_runtime_icon_png = png_path  # type: ignore[attr-defined]
-        root._donna_runtime_icon_ico = ico_path  # type: ignore[attr-defined]
+        root._dana_iconphoto = photo  # type: ignore[attr-defined]
+        root._dana_runtime_icon_png = png_path  # type: ignore[attr-defined]
+        root._dana_runtime_icon_ico = ico_path  # type: ignore[attr-defined]
         applied = True
     except Exception:  # noqa: BLE001
         pass
@@ -488,7 +488,7 @@ def force_apply_window_icon(root_window: Any, ico_path: str | Path | None = None
         except Exception:  # noqa: BLE001
             root_window.iconphoto(True, photo)
         root_window._icon_keepalive = photo  # type: ignore[attr-defined]
-        root_window._donna_iconphoto = photo  # type: ignore[attr-defined]
+        root_window._dana_iconphoto = photo  # type: ignore[attr-defined]
         applied = True
     except Exception:  # noqa: BLE001
         pass
@@ -801,7 +801,7 @@ def get_overlay_logo(size: tuple[int, int] = (48, 48)) -> Any | None:
                 pass
             sentinel = ctk.CTk()
             sentinel.withdraw()
-            tk._donna_logo_sentinel = sentinel  # type: ignore[attr-defined]
+            tk._dana_logo_sentinel = sentinel  # type: ignore[attr-defined]
         ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(w, h))
         _ASSET_CACHE[key] = ctk_img
         return ctk_img
@@ -927,7 +927,7 @@ def load_premium_logo(size: tuple[int, int]) -> Any | None:
         import customtkinter as ctk
 
         # CTkImage builds PhotoImage against the default root. Keep a withdrawn
-        # sentinel root alive so images survive across DonnaGUI destroy cycles.
+        # sentinel root alive so images survive across DanaGUI destroy cycles.
         if getattr(tk, "_default_root", None) is None:
             try:
                 from dana.ui.theme import apply_dana_ctk_theme
@@ -937,7 +937,7 @@ def load_premium_logo(size: tuple[int, int]) -> Any | None:
                 pass
             sentinel = ctk.CTk()
             sentinel.withdraw()
-            tk._donna_logo_sentinel = sentinel  # type: ignore[attr-defined]
+            tk._dana_logo_sentinel = sentinel  # type: ignore[attr-defined]
         return ctk.CTkImage(light_image=img, dark_image=img, size=size)
     except Exception:  # noqa: BLE001
         return None

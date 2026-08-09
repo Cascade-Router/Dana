@@ -15,7 +15,7 @@ from dana.agentic_planning import (
     executor_node,
     planner_node,
 )
-from dana.agentic_react_graph import compile_donna_react_graph
+from dana.agentic_react_graph import compile_dana_react_graph
 from dana.schema import ReactGraphState
 
 
@@ -33,7 +33,7 @@ _VALID_CTX = (
 def test_desktop_plan_intent_escalates_from_chat() -> None:
     assert desktop_plan_intent(_DESKTOP_UTTERANCE) is True
     assert requires_tool_graph(_DESKTOP_UTTERANCE) is True
-    assert requires_tool_graph("Hello Donna, how are you?") is False
+    assert requires_tool_graph("Hello Dana, how are you?") is False
 
 
 def test_build_structured_plan_selects_vision_and_ticket() -> None:
@@ -78,10 +78,10 @@ def test_planner_then_executor_hydrate_state() -> None:
 def test_compile_graph_planner_executor_before_hitl(monkeypatch) -> None:
     path: list[str] = []
 
-    monkeypatch.setenv("DONNA_HITL_TICKET", "1")
-    monkeypatch.delenv("DONNA_HITL_AUTO_APPROVE", raising=False)
-    monkeypatch.delenv("DONNA_HITL_AUTO_DENY", raising=False)
-    monkeypatch.delenv("DONNA_HITL_REQUIRE_GUI", raising=False)
+    monkeypatch.setenv("DANA_HITL_TICKET", "1")
+    monkeypatch.delenv("DANA_HITL_AUTO_APPROVE", raising=False)
+    monkeypatch.delenv("DANA_HITL_AUTO_DENY", raising=False)
+    monkeypatch.delenv("DANA_HITL_REQUIRE_GUI", raising=False)
 
     def planner(state: ReactGraphState) -> dict[str, Any]:
         path.append("planner")
@@ -145,7 +145,7 @@ def test_compile_graph_planner_executor_before_hitl(monkeypatch) -> None:
     )
     monkeypatch.setattr("dana.core_agent.enqueue_speech", lambda *_a, **_k: None)
 
-    graph = compile_donna_react_graph(
+    graph = compile_dana_react_graph(
         agent,
         tools,
         planner_node_fn=planner,

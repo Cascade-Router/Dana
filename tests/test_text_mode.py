@@ -1,4 +1,4 @@
-"""Text-only Donna agentic loop test (no mic / wake word / TTS).
+"""Text-only Dana agentic loop test (no mic / wake word / TTS).
 
 Feeds a research query through run_react_loop with live Ollama + real web_search.
 """

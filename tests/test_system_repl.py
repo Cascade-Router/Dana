@@ -28,8 +28,8 @@ def test_shell_execute_timeout() -> None:
 
 
 def test_python_repl_runs_subprocess() -> None:
-    out = python_repl("print('donna-sandbox-ok')")
-    assert "donna-sandbox-ok" in out
+    out = python_repl("print('dana-sandbox-ok')")
+    assert "dana-sandbox-ok" in out
     assert "exit_code=0" in out
 
 
@@ -39,7 +39,7 @@ def test_output_truncation() -> None:
     assert "truncated" in out.lower() or out.count("X") <= 2000
 
 
-def test_file_editor_denies_write_to_donna_core() -> None:
+def test_file_editor_denies_write_to_dana_core() -> None:
     out = file_editor("write", "dana/tools/system_repl.py", content="hacked")
     assert out.startswith("ERROR:"), out
     assert "dana" in out.lower()
@@ -52,7 +52,7 @@ def test_file_editor_denies_write_to_git() -> None:
     assert ".git" in out.lower()
 
 
-def test_file_editor_allows_read_donna() -> None:
+def test_file_editor_allows_read_dana() -> None:
     out = file_editor("read", "dana/tools/system_repl.py")
     assert out.startswith("OK: read"), out
 

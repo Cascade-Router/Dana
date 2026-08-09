@@ -23,7 +23,7 @@ def test_human_delay_bounds() -> None:
 
 
 def test_dry_run_keystrokes(monkeypatch) -> None:
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
     # Reset rate limiter window.
     with osc._rate_lock:
         osc._last_keystroke_ts = 0.0

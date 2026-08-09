@@ -1,7 +1,7 @@
-"""Donna Watchdog — LangGraph swarm (coder → AST gate → Titan → REPL).
+"""Dana Watchdog — LangGraph swarm (coder → AST gate → Titan → REPL).
 
 Architecture:
-  1. ``donna_coder`` — Template Method: LLM fills ``run_self_test`` / ``monitor_loop``
+  1. ``dana_coder`` — Template Method: LLM fills ``run_self_test`` / ``monitor_loop``
      bodies (JSON preferred); assembler wraps them in ``BaseWatchdog``.
   2. ``ast_static_analyzer`` — deterministic AST gatekeeper (forbidden imports,
      required methods). Failures bypass the LLM supervisor entirely.
@@ -40,7 +40,7 @@ from dana.swarm.watchdog_template import (
 DEFAULT_MODEL = "qwen2.5-coder:7b"
 MAX_REVISIONS = 3
 DEFAULT_EXEC_TIMEOUT_S = 45.0
-_TTS_MARKER = "__DONNA_TTS__:"
+_TTS_MARKER = "__DANA_TTS__:"
 
 _REPO_ROOT = PROJECT_ROOT
 _EXECUTION_JAIL_DIR = EXECUTION_JAIL_DIR
@@ -85,7 +85,7 @@ def preflight_watchdog_write(
             f"Watchdog sandbox is not writable: {sandbox}"
         )
 
-    probe = sandbox / f".donna_write_probe_{os.getpid()}.tmp"
+    probe = sandbox / f".dana_write_probe_{os.getpid()}.tmp"
     try:
         probe.write_text("ok\n", encoding="utf-8")
     except OSError as exc:
@@ -114,7 +114,7 @@ def preflight_watchdog_write(
                 "class ",
                 "assert ",
                 "print(",
-                "__DONNA_TTS__",
+                "__DANA_TTS__",
                 "BaseWatchdog",
                 "GeneratedWatchdog",
             )
@@ -153,9 +153,9 @@ def verify_payload(tool_name: str, kwargs: dict) -> bool:
         return False
 
     try:
-        from dana.paths import DONNA_WORKSPACE
+        from dana.paths import DANA_WORKSPACE
 
-        workspace = Path(DONNA_WORKSPACE).resolve()
+        workspace = Path(DANA_WORKSPACE).resolve()
         target = Path(str(path_raw)).expanduser()
         if not target.is_absolute():
             target = (workspace / target).resolve()
@@ -196,8 +196,8 @@ class WatchdogState(TypedDict):
     history: list[dict[str, Any]]
 
 
-DONNA_CODER_SYSTEM = """
-You are Donna's Watchdog coder. You do NOT write a full Python script.
+DANA_CODER_SYSTEM = """
+You are Dana's Watchdog coder. You do NOT write a full Python script.
 You only fill the Template Method hooks on GeneratedWatchdog(BaseWatchdog).
 
 Output ONLY a JSON object (no markdown fences, no commentary) with this schema:
@@ -215,8 +215,8 @@ Rules for method bodies:
   ctypes, pickle, importlib, eval, exec.
 - run_self_test MUST validate assumptions (assert / raise) before monitoring.
 - monitor_loop MUST call self.alert("short phrase") when the watch condition is met.
-  self.alert already prints '__DONNA_TTS__: …' — do not invent other TTS APIs.
-- Honor a single-pass style suitable for DONNA_WATCHDOG_ONCE=1 (no infinite loops).
+  self.alert already prints '__DANA_TTS__: …' — do not invent other TTS APIs.
+- Honor a single-pass style suitable for DANA_WATCHDOG_ONCE=1 (no infinite loops).
 - Keep each method body short and self-contained.
 """.strip()
 
@@ -263,7 +263,7 @@ def _chat_ollama(model: str = DEFAULT_MODEL, temperature: float = 0.2):
     return ChatOllama(model=model, temperature=temperature)
 
 
-def donna_coder(state: WatchdogState, *, model: str = DEFAULT_MODEL) -> dict[str, Any]:
+def dana_coder(state: WatchdogState, *, model: str = DEFAULT_MODEL) -> dict[str, Any]:
     """Draft Template Method bodies (JSON) and assemble a full BaseWatchdog script."""
     task = (state.get("task") or "").strip()
     lint_errors = (state.get("lint_errors") or "").strip()
@@ -291,7 +291,7 @@ def donna_coder(state: WatchdogState, *, model: str = DEFAULT_MODEL) -> dict[str
         raw = _llm_content(
             llm.invoke(
                 [
-                    {"role": "system", "content": DONNA_CODER_SYSTEM},
+                    {"role": "system", "content": DANA_CODER_SYSTEM},
                     {"role": "user", "content": user},
                 ]
             )
@@ -303,7 +303,7 @@ def donna_coder(state: WatchdogState, *, model: str = DEFAULT_MODEL) -> dict[str
             return {
                 "code": "",
                 "lint_errors": "",
-                "feedback": "Donna coder returned empty Template Method bodies",
+                "feedback": "Dana coder returned empty Template Method bodies",
                 "status": "error",
                 "revisions": revisions,
             }
@@ -322,7 +322,7 @@ def donna_coder(state: WatchdogState, *, model: str = DEFAULT_MODEL) -> dict[str
         return {
             "code": state.get("code") or "",
             "lint_errors": "",
-            "feedback": f"Donna coder failed: {exc}",
+            "feedback": f"Dana coder failed: {exc}",
             "status": "error",
             "revisions": revisions,
         }
@@ -407,11 +407,11 @@ def analyze_watchdog_ast(code: str) -> list[str]:
             if isinstance(func, ast.Name) and func.id == "alert":
                 has_alert_call = True
                 break
-        has_tts_literal = "__DONNA_TTS__" in gen_src
+        has_tts_literal = "__DANA_TTS__" in gen_src
         if not has_alert_call and not has_tts_literal:
             errors.append(
                 "FATAL: missing TTS alert path in GeneratedWatchdog "
-                "(need self.alert(...) or print('__DONNA_TTS__: …'))."
+                "(need self.alert(...) or print('__DANA_TTS__: …'))."
             )
 
     # Deduplicate while preserving order.
@@ -596,8 +596,8 @@ def repl_executor(
     script = code + "\n"
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
-    env["DONNA_WATCHDOG_ONCE"] = "1"
-    env["DONNA_SANDBOX"] = str(sandbox)
+    env["DANA_WATCHDOG_ONCE"] = "1"
+    env["DANA_SANDBOX"] = str(sandbox)
     env["PYTHONPATH"] = (
         str(_REPO_ROOT)
         + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
@@ -610,7 +610,7 @@ def repl_executor(
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w",
-                suffix="_donna_watchdog.py",
+                suffix="_dana_watchdog.py",
                 delete=False,
                 encoding="utf-8",
                 dir=str(sandbox),
@@ -785,7 +785,7 @@ def terminal_failure(state: WatchdogState) -> dict[str, Any]:
 
 def _route_after_ast(
     state: WatchdogState,
-) -> Literal["titan_supervisor", "donna_coder", "terminal_failure"]:
+) -> Literal["titan_supervisor", "dana_coder", "terminal_failure"]:
     """Coder → AST → (pass) Titan | (fail, retries left) Coder | terminal."""
     status = (state.get("status") or "").strip().upper()
     revisions = int(state.get("revisions") or 0)
@@ -793,20 +793,20 @@ def _route_after_ast(
     if status == "LINT_OK":
         return "titan_supervisor"
     if status == "LINT_FAIL" and revisions < MAX_REVISIONS:
-        return "donna_coder"
+        return "dana_coder"
     return "terminal_failure"
 
 
 def _route_after_titan(
     state: WatchdogState,
-) -> Literal["repl_executor", "donna_coder", "terminal_failure"]:
+) -> Literal["repl_executor", "dana_coder", "terminal_failure"]:
     status = (state.get("status") or "").strip()
     revisions = int(state.get("revisions") or 0)
 
     if status.upper() == "APPROVED":
         return "repl_executor"
     if status.upper().startswith("REJECTED") and revisions < MAX_REVISIONS:
-        return "donna_coder"
+        return "dana_coder"
 
     return "terminal_failure"
 
@@ -843,7 +843,7 @@ def build_watchdog_graph(
     def _coder(state: WatchdogState) -> dict[str, Any]:
         if stop_event is not None and stop_event.is_set():
             return _cancelled()
-        return donna_coder(state, model=model)
+        return dana_coder(state, model=model)
 
     def _ast(state: WatchdogState) -> dict[str, Any]:
         if stop_event is not None and stop_event.is_set():
@@ -864,21 +864,21 @@ def build_watchdog_graph(
         )
 
     graph = StateGraph(WatchdogState)
-    graph.add_node("donna_coder", _coder)
+    graph.add_node("dana_coder", _coder)
     graph.add_node("ast_static_analyzer", _ast)
     graph.add_node("titan_supervisor", _titan)
     graph.add_node("repl_executor", _repl)
     graph.add_node("terminal_failure", terminal_failure)
     graph.add_node("log_episode", log_episode)
 
-    graph.add_edge(START, "donna_coder")
-    graph.add_edge("donna_coder", "ast_static_analyzer")
+    graph.add_edge(START, "dana_coder")
+    graph.add_edge("dana_coder", "ast_static_analyzer")
     graph.add_conditional_edges(
         "ast_static_analyzer",
         _route_after_ast,
         {
             "titan_supervisor": "titan_supervisor",
-            "donna_coder": "donna_coder",
+            "dana_coder": "dana_coder",
             "terminal_failure": "terminal_failure",
         },
     )
@@ -887,7 +887,7 @@ def build_watchdog_graph(
         _route_after_titan,
         {
             "repl_executor": "repl_executor",
-            "donna_coder": "donna_coder",
+            "dana_coder": "dana_coder",
             "terminal_failure": "terminal_failure",
         },
     )
@@ -943,7 +943,7 @@ if __name__ == "__main__":
 
     topic = " ".join(_sys.argv[1:]).strip() or (
         "Every 30 seconds, capture the primary screen and print "
-        "'__DONNA_TTS__: Notepad detected' if a window titled Notepad is visible; "
+        "'__DANA_TTS__: Notepad detected' if a window titled Notepad is visible; "
         "include a self-test before the loop."
     )
     print(f"Watchdog task: {topic}\n")

@@ -1,4 +1,4 @@
-# Donna production lock — pinned for reproducible deployments.
+# Dana production lock — pinned for reproducible deployments.
 #
 # Hugging Face ZeroGPU Spaces: do NOT pin CUDA torch wheels or download.pytorch.org
 # indexes here. The Space runtime supplies a compatible PyTorch (>=2.8). Local
@@ -6,7 +6,7 @@
 #   pip install -r requirements-cuda.txt
 #
 # Debug OS typing without injecting keystrokes:
-#   set DONNA_OS_DRY_RUN=1
+#   set DANA_OS_DRY_RUN=1
 # Production default is unset / 0 (real injection).
 
 # Torch is intentionally omitted from this file for ZeroGPU compatibility.

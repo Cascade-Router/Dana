@@ -28,10 +28,10 @@ StateCallback = Callable[[ConnectionState, str], None]
 def daemon_ipc_enabled() -> bool:
     """Opt-in IPC attach for the GUI (default on when unset is False for tests).
 
-    Set ``DONNA_ENGINE_DAEMON=1`` to auto-connect from the Control Dashboard.
+    Set ``DANA_ENGINE_DAEMON=1`` to auto-connect from the Control Dashboard.
     Tests may inject a client directly without flipping the env flag.
     """
-    raw = (os.environ.get("DONNA_ENGINE_DAEMON") or "").strip().lower()
+    raw = (os.environ.get("DANA_ENGINE_DAEMON") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 

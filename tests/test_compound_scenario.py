@@ -28,7 +28,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-os.environ.setdefault("DONNA_DISABLE_TOAST", "0")
+os.environ.setdefault("DANA_DISABLE_TOAST", "0")
 
 from dana.paths import LOGS_DIR  # noqa: E402
 
@@ -40,7 +40,7 @@ SEEDED_VISUAL = (
     "in dana/cascade_router.py during Florence-2 inference."
 )
 
-TURN1 = "Donna, what error is currently on my screen?"
+TURN1 = "Dana, what error is currently on my screen?"
 TURN2 = (
     "Use the web_search tool to find the recommended optimal batch size and "
     "quantization settings for Florence-2 on an 8GB VRAM GPU to prevent this OOM."
@@ -284,13 +284,13 @@ def step2_visual_awareness() -> StepResult:
         build_lightweight_chat_system_prompt,
         clear_chat_memory,
         run_lightweight_chat,
-        set_donna_mode,
+        set_dana_mode,
     )
     from dana.memory import read_visual_state
 
     r = StepResult("Step 2 (Visual Awareness)", TURN1, False)
     clear_chat_memory()
-    set_donna_mode("chat")
+    set_dana_mode("chat")
     yolo_calls = {"n": 0}
 
     def _tripwire(*_a, **_k):  # noqa: ANN001
@@ -356,14 +356,14 @@ def step2_visual_awareness() -> StepResult:
 
 
 def step3_research_enqueue() -> StepResult:
-    from dana.agentic import run_react_loop, set_donna_mode
+    from dana.agentic import run_react_loop, set_dana_mode
     from dana.handoff import execute_handoff
     from dana.schema import Handoff
     from dana.tools.broker import IntentBroker
     from dana.tools.schema import ToolCall
 
     r = StepResult("Step 3 (Research Enqueue)", TURN2, False)
-    set_donna_mode("research")
+    set_dana_mode("research")
     try:
         execute_handoff(
             Handoff(
@@ -408,7 +408,7 @@ def step3_research_enqueue() -> StepResult:
         result = run_react_loop(
             user_text=TURN2,
             system_prompt=(
-                "You are Donna's MoA research path. Call web_search once.\n"
+                "You are Dana's MoA research path. Call web_search once.\n"
                 f"=== BLACKBOARD {SESSION_ID} ===\n{bb_brief}\n=== END ==="
             ),
             execute_fn=execute_fn,
@@ -515,14 +515,14 @@ def step4_actuator_wait(
 
 
 def step5_synthesis_draft(search_result: str) -> StepResult:
-    from dana.agentic import run_react_loop, set_donna_mode
+    from dana.agentic import run_react_loop, set_dana_mode
     from dana.handoff import execute_handoff
     from dana.schema import Handoff
     from dana.tools.broker import IntentBroker
     from dana.tools.schema import ToolCall
 
     r = StepResult("Step 5 (Synthesis & Draft)", TURN3, False)
-    set_donna_mode("developer")
+    set_dana_mode("developer")
     try:
         execute_handoff(
             Handoff(
@@ -584,7 +584,7 @@ def step5_synthesis_draft(search_result: str) -> StepResult:
         result = run_react_loop(
             user_text=TURN3,
             system_prompt=(
-                "You are Donna's MoA path. Call draft_cursor_prompt once. "
+                "You are Dana's MoA path. Call draft_cursor_prompt once. "
                 "Hydrate from Blackboard research: include batch_size=1 and "
                 "quantization (4-bit NF4 or 8-bit) for Florence-2 on 8GB VRAM. "
                 "Target dana/cascade_router.py.\n\n"
@@ -672,12 +672,12 @@ def step6_piggyback(actuator: _ActuatorDaemon, draft_action_id: int | None) -> S
     from dana.agentic import (
         build_lightweight_chat_system_prompt,
         run_lightweight_chat,
-        set_donna_mode,
+        set_dana_mode,
     )
     from dana.memory.blackboard import get_action
 
     r = StepResult("Step 6 (Piggyback Confirm)", TURN4, False)
-    set_donna_mode("chat")
+    set_dana_mode("chat")
 
     # Wait for draft action to complete.
     if draft_action_id is not None:
@@ -766,7 +766,7 @@ def _print_report(results: list[StepResult], snapshot: dict[str, Any]) -> None:
 
     _safe_print("")
     _safe_print("=" * 72)
-    _safe_print("DONNA COMPOUND SCENARIO STRESS REPORT (Stage 5)")
+    _safe_print("DANA COMPOUND SCENARIO STRESS REPORT (Stage 5)")
     _safe_print("=" * 72)
     _safe_print(f"session_id={SESSION_ID}")
     _safe_print(f"marker={MARKER}")
@@ -797,7 +797,7 @@ def _print_report(results: list[StepResult], snapshot: dict[str, Any]) -> None:
 
 def run_suite() -> tuple[list[StepResult], dict[str, Any]]:
     print("=" * 72)
-    print("Donna Stage 5 — Compound Scenario Stress Test")
+    print("Dana Stage 5 — Compound Scenario Stress Test")
     print(f"session_id={SESSION_ID}")
     print(f"marker={MARKER}")
     print("=" * 72)
@@ -852,7 +852,7 @@ def run_suite() -> tuple[list[StepResult], dict[str, Any]]:
     report_path = LOGS_DIR / "compound_scenario_report.txt"
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     lines = [
-        "DONNA COMPOUND SCENARIO STRESS REPORT (Stage 5)",
+        "DANA COMPOUND SCENARIO STRESS REPORT (Stage 5)",
         f"session_id={SESSION_ID}",
         f"marker={MARKER}",
         f"overall={'PASS' if all(r.passed for r in results) else 'FAIL'}",

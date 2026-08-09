@@ -4,7 +4,7 @@ Replaces the legacy flat ``input.txt`` interceptor. The on-disk schema is a
 JSON array of task objects::
 
     [
-      {"id": "task_001", "status": "pending", "command": "Donna, please ..."}
+      {"id": "task_001", "status": "pending", "command": "Dana, please ..."}
     ]
 
 Valid statuses: ``pending``, ``completed``, ``failed``.
@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from dana.paths import (
-    DONNA_WORKSPACE,
+    DANA_WORKSPACE,
     EXECUTION_JAIL_DIR,
     TASK_QUEUE_PATH,
     TEXT_INJECTION_PATH,
@@ -80,7 +80,7 @@ def try_record_command(command: str) -> bool:
 
 
 def shadow_backup_before_write(src: Path | str) -> None:
-    """Copy ``src`` to ``DONNA_WORKSPACE/.shadow_state/<name>.bak`` before a write.
+    """Copy ``src`` to ``DANA_WORKSPACE/.shadow_state/<name>.bak`` before a write.
 
     No-op when the source file does not exist. Never raises into callers.
     """
@@ -88,7 +88,7 @@ def shadow_backup_before_write(src: Path | str) -> None:
         path = Path(src)
         if not path.is_file():
             return
-        shadow_dir = Path(DONNA_WORKSPACE) / ".shadow_state"
+        shadow_dir = Path(DANA_WORKSPACE) / ".shadow_state"
         shadow_dir.mkdir(parents=True, exist_ok=True)
         dest = shadow_dir / f"{path.name}.bak"
         shutil.copy2(path, dest)

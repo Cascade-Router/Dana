@@ -15,7 +15,7 @@ from dana.agentic_react_graph import (
     _route_after_jason_review,
     _route_after_ticket_approval,
     _route_after_ticket_validate,
-    compile_donna_react_graph,
+    compile_dana_react_graph,
 )
 from dana.middleware import hitl_ticket as hitl
 from dana.schema import ReactGraphState
@@ -35,10 +35,10 @@ _VALID_CTX = (
 
 @pytest.fixture(autouse=True)
 def _hitl_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DONNA_HITL_TICKET", "1")
-    monkeypatch.delenv("DONNA_HITL_AUTO_APPROVE", raising=False)
-    monkeypatch.delenv("DONNA_HITL_AUTO_DENY", raising=False)
-    monkeypatch.delenv("DONNA_HITL_REQUIRE_GUI", raising=False)
+    monkeypatch.setenv("DANA_HITL_TICKET", "1")
+    monkeypatch.delenv("DANA_HITL_AUTO_APPROVE", raising=False)
+    monkeypatch.delenv("DANA_HITL_AUTO_DENY", raising=False)
+    monkeypatch.delenv("DANA_HITL_REQUIRE_GUI", raising=False)
     hitl.clear_pending()
     yield
     hitl.clear_pending()
@@ -159,7 +159,7 @@ def test_hitl_ticket_node_halts_pending_approval(monkeypatch: pytest.MonkeyPatch
     )
     monkeypatch.setattr("dana.core_agent.enqueue_speech", lambda *_a, **_k: None)
 
-    graph = compile_donna_react_graph(
+    graph = compile_dana_react_graph(
         agent,
         tools,
         planner_node_fn=planner,
@@ -239,7 +239,7 @@ def test_multi_node_stream_preserves_session_id(monkeypatch: pytest.MonkeyPatch)
     def tools(state: ReactGraphState) -> dict[str, Any]:
         raise AssertionError("tools must not run on text-only FINAL")
 
-    graph = compile_donna_react_graph(
+    graph = compile_dana_react_graph(
         agent,
         tools,
         planner_node_fn=planner,

@@ -65,7 +65,7 @@ def _guess_watch_paths(arguments: dict[str, Any]) -> list[str]:
     return sorted({m.group(1).replace("\\", "/") for m in _FILE_TOKEN_RE.finditer(blob)})
 
 
-def get_mcp_client(server_id: str, *, env_var: str = "DONNA_MCP_SERVERS") -> MCPClient:
+def get_mcp_client(server_id: str, *, env_var: str = "DANA_MCP_SERVERS") -> MCPClient:
     """Return a persistent, connected client for ``server_id`` (spawn on first use).
 
     Reconnects automatically if a previous connection was killed after a

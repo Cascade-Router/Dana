@@ -100,12 +100,12 @@ def test_tool_graph_escalates_research_store_and_ollama() -> None:
     assert requires_tool_graph("Don't you have access to your research store?") is True
     assert requires_tool_graph("Is my Olama local server online?") is True
     assert requires_tool_graph("Is Ollama online?") is True
-    assert requires_tool_graph("Hello Donna, how are you?") is False
+    assert requires_tool_graph("Hello Dana, how are you?") is False
 
 
 def test_broker_objective_not_midword_truncated() -> None:
     long = (
-        "Donna, use the draft_cursor_prompt tool to log a self-improvement ticket "
+        "Dana, use the draft_cursor_prompt tool to log a self-improvement ticket "
         "to improve cursor handling in the deepseek pipeline by adding error logging "
         "for failed cursor handoffs and enhancing cursor prompt validation to reduce "
         "false positives."
@@ -179,7 +179,7 @@ def test_ledger_rejects_intent_echo_only() -> None:
 
 def test_ledger_accepts_structured_context(tmp_path, monkeypatch) -> None:  # noqa: ANN001
     ledger = tmp_path / "patch_ledger.md"
-    ledger.write_text("# Donna Patch Ledger\n\n", encoding="utf-8")
+    ledger.write_text("# Dana Patch Ledger\n\n", encoding="utf-8")
 
     def _fake_ledger_path():
         return ledger

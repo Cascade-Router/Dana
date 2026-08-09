@@ -40,8 +40,8 @@ def test_evaluate_visual_guard_ok_stable() -> None:
 
 
 def test_ghost_typist_completes_dry_run(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_GHOST_SKIP_HOTKEY", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_GHOST_SKIP_HOTKEY", "1")
     visual = {"v": "Notepad focused document.txt caret blinking in editor pane"}
 
     typed: list[str] = []
@@ -61,8 +61,8 @@ def test_ghost_typist_completes_dry_run(monkeypatch) -> None:  # noqa: ANN001
 
 def test_ghost_typist_pauses_when_focus_lost(monkeypatch) -> None:  # noqa: ANN001
     """Simulate clicking away mid-paragraph → Operator pauses."""
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_GHOST_SKIP_HOTKEY", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_GHOST_SKIP_HOTKEY", "1")
 
     states = {
         "n": 0,
@@ -103,9 +103,9 @@ def test_actuator_dispatches_type_stealth_text(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
     db = tmp_path / "bb.db"
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_GHOST_SKIP_HOTKEY", "1")
-    monkeypatch.setenv("DONNA_DISABLE_TOAST", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_GHOST_SKIP_HOTKEY", "1")
+    monkeypatch.setenv("DANA_DISABLE_TOAST", "1")
     init_blackboard(db)
 
     monkeypatch.setattr(
@@ -141,7 +141,7 @@ def test_actuator_dispatches_type_stealth_text(
 
 
 def test_type_stealth_text_entry(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_GHOST_SKIP_HOTKEY", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_GHOST_SKIP_HOTKEY", "1")
     out = type_stealth_text("abc", wait_hotkey=False)
     assert out.startswith("OK: type_stealth_text")

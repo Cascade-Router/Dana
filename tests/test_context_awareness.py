@@ -106,7 +106,7 @@ SUITE_3: list[ProbeSpec] = [
         "id": "3.2",
         "suite": "Suite 3 — Multi-Step Orchestration & Tool Chaining",
         "query": (
-            "Read the watchdog monitoring graph inside the local Donna "
+            "Read the watchdog monitoring graph inside the local Dana "
             "multi-agent framework and list its active dependencies."
         ),
         "force_graph": True,
@@ -203,9 +203,9 @@ ALL_PROBES: list[ProbeSpec] = SUITE_1 + SUITE_2 + SUITE_3 + SUITE_4 + SUITE_5
 
 def _ensure_workspace() -> Path:
     try:
-        from dana.workspace import ensure_donna_workspace
+        from dana.workspace import ensure_dana_workspace
 
-        ensure_donna_workspace(migrate=True)
+        ensure_dana_workspace(migrate=True)
     except Exception:  # noqa: BLE001
         pass
     from dana.paths import LOGS_DIR, PROJECT_ROOT
@@ -508,7 +508,7 @@ def _run_one_query(
     from dana.core_agent import (
         OLLAMA_MODEL,
         ask_ollama_messages,
-        build_donna_system_prompt,
+        build_dana_system_prompt,
         commit_agentic_turn,
         execute_tool_call,
     )
@@ -530,7 +530,7 @@ def _run_one_query(
     want_reflection = bool(enable_reflection or is_self_improvement_intent(query))
 
     if use_graph:
-        system = build_donna_system_prompt([], user_text=query)
+        system = build_dana_system_prompt([], user_text=query)
         result = run_react_loop(
             user_text=query,
             system_prompt=system,

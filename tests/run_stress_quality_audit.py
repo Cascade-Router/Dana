@@ -357,7 +357,7 @@ def _wait_boot(proc: subprocess.Popen, buf: StreamBuffer, deadline: float) -> bo
     needles = (
         "Headless mode: engine auto-ENGAGED",
         "Headless mode (--no-gui)",
-        "=== CAMGRASPER Donna voice agent ===",
+        "=== CAMGRASPER Dana voice agent ===",
         "Noise floor calibrated",
     )
     while time.time() < deadline:

@@ -13,7 +13,7 @@ from dana.agentic_react_graph import (
     _MAX_TICKET_VALIDATION_RETRIES,
     _route_after_agent,
     _route_after_ticket_validate,
-    compile_donna_react_graph,
+    compile_dana_react_graph,
     jason_ticket_review_node,
     ticket_approval_node,
     ticket_validate_node,
@@ -33,10 +33,10 @@ _VALID_CONTEXT = (
 
 @pytest.fixture(autouse=True)
 def _hitl_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DONNA_HITL_TICKET", "1")
-    monkeypatch.delenv("DONNA_HITL_AUTO_APPROVE", raising=False)
-    monkeypatch.delenv("DONNA_HITL_AUTO_DENY", raising=False)
-    monkeypatch.setenv("DONNA_HITL_REQUIRE_GUI", "1")
+    monkeypatch.setenv("DANA_HITL_TICKET", "1")
+    monkeypatch.delenv("DANA_HITL_AUTO_APPROVE", raising=False)
+    monkeypatch.delenv("DANA_HITL_AUTO_DENY", raising=False)
+    monkeypatch.setenv("DANA_HITL_REQUIRE_GUI", "1")
     hitl.clear_pending()
     yield
     hitl.clear_pending()
@@ -232,7 +232,7 @@ def test_valid_hits_hitl_with_full_payload(monkeypatch: pytest.MonkeyPatch) -> N
         lambda *_a, **_k: None,
     )
 
-    graph = compile_donna_react_graph(agent, tools, checkpointer=MemorySaver())
+    graph = compile_dana_react_graph(agent, tools, checkpointer=MemorySaver())
     cfg = {"configurable": {"thread_id": "valid-hitl"}}
     list(graph.stream({"messages": [], "halt": False}, cfg, stream_mode="values"))
     snap = graph.get_state(cfg)
@@ -303,7 +303,7 @@ def test_compile_includes_ticket_validate() -> None:
     def tools(state: ReactGraphState) -> dict[str, Any]:
         return {"halt": True}
 
-    graph = compile_donna_react_graph(agent, tools, checkpointer=MemorySaver())
+    graph = compile_dana_react_graph(agent, tools, checkpointer=MemorySaver())
     nodes = set(graph.get_graph().nodes)
     assert "ticket_validate" in nodes
     assert "jason_ticket_review" in nodes

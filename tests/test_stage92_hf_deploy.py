@@ -8,16 +8,16 @@ import pytest
 
 
 def test_predict_signature_and_cloud_env(monkeypatch) -> None:
-    monkeypatch.setenv("DONNA_CLOUD", "1")
-    monkeypatch.setenv("DONNA_HITL_AUTO_APPROVE", "1")
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_VAULT_KEY", "test-key")
+    monkeypatch.setenv("DANA_CLOUD", "1")
+    monkeypatch.setenv("DANA_HITL_AUTO_APPROVE", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_VAULT_KEY", "test-key")
 
     from deploy import cloud_bridge as cb
 
     cb.apply_cloud_mode()
     assert cb.is_cloud_mode() is True
-    assert os.environ.get("DONNA_HITL_AUTO_APPROVE") == "1"
+    assert os.environ.get("DANA_HITL_AUTO_APPROVE") == "1"
 
     # Empty prompt short-circuits without LangGraph.
     assert "Type a command" in cb.run_text_command("   ")
@@ -37,8 +37,8 @@ def test_cloud_execute_mocks_vision() -> None:
 def test_hf_app_predict_is_str_to_str(monkeypatch) -> None:
     """Gradio Interface schema requires predict(str) -> str for {"data":[prompt]}."""
     pytest.importorskip("gradio")
-    monkeypatch.setenv("DONNA_CLOUD", "1")
-    monkeypatch.setenv("DONNA_VAULT_KEY", "test-key")
+    monkeypatch.setenv("DANA_CLOUD", "1")
+    monkeypatch.setenv("DANA_VAULT_KEY", "test-key")
 
     import deploy.hf_app as app
 

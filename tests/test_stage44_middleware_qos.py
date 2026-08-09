@@ -49,7 +49,7 @@ def test_toast_async_returns_immediately(monkeypatch) -> None:  # noqa: ANN001
         return True
 
     monkeypatch.setattr(tn, "show_silent_toast", _slow_toast)
-    tn.show_silent_toast_async("Donna Task", "Donna Task: draft_cursor_prompt completed.")
+    tn.show_silent_toast_async("Dana Task", "Dana Task: draft_cursor_prompt completed.")
     elapsed = time.perf_counter() - started
     assert elapsed < 0.2, f"async toast blocked caller for {elapsed:.3f}s"
     # Allow background thread to run.

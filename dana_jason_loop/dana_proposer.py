@@ -1,4 +1,4 @@
-"""Donna — Batch Proposer: capability-gap discovery via local qwen2.5-coder:7b."""
+"""Dana — Batch Proposer: capability-gap discovery via local qwen2.5-coder:7b."""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ PROPOSAL_REQUIRED_KEYS = (
     "dependencies",
 )
 
-DONNA_SYSTEM_PROMPT = """
-You are Donna, CAMGRASPER's offline capability scout.
+DANA_SYSTEM_PROMPT = """
+You are Dana, CAMGRASPER's offline capability scout.
 You read recent failure traces / bottleneck logs from an on-device voice agent
 (Whisper STT, bilingual EN/FA routing, YOLO SpatialIR, local qwen2.5-coder:7b ReAct,
 encrypted vault memory, Piper TTS). Your job is to pitch concrete remedies.
@@ -94,7 +94,7 @@ def generate_capability_pitches(
     model: str = "qwen2.5-coder:7b",
     temperature: float = 0.35,
 ) -> list[dict[str, Any]]:
-    """Ask Donna (via Ollama) for exactly five capability pitches.
+    """Ask Dana (via Ollama) for exactly five capability pitches.
 
     ``traces`` may be a path to a log file, a raw string, or a list of
     recent error / bottleneck lines.
@@ -108,7 +108,7 @@ def generate_capability_pitches(
         "=== TRACES END ===\n"
     )
     raw = ask_ollama(
-        DONNA_SYSTEM_PROMPT,
+        DANA_SYSTEM_PROMPT,
         user_prompt,
         model=model,
         temperature=temperature,
@@ -118,7 +118,7 @@ def generate_capability_pitches(
     except ValueError:
         # One repair turn — 8B often emits Python triple-quotes inside "JSON".
         repair = ask_ollama(
-            DONNA_SYSTEM_PROMPT,
+            DANA_SYSTEM_PROMPT,
             (
                 "Your previous reply was not valid JSON. Rewrite it as a strict "
                 "JSON array of exactly 5 objects with double-quoted one-line "
@@ -131,14 +131,14 @@ def generate_capability_pitches(
         payload = extract_json_payload(repair)
 
     if not isinstance(payload, list):
-        raise ValueError(f"Donna must return a JSON array; got {type(payload).__name__}")
+        raise ValueError(f"Dana must return a JSON array; got {type(payload).__name__}")
     if len(payload) != 5:
         # Soft truncate / reject — require exactly 5 after normalize when possible.
         if len(payload) > 5:
             payload = payload[:5]
         else:
             raise ValueError(
-                f"Donna must return exactly 5 proposals; got {len(payload)}"
+                f"Dana must return exactly 5 proposals; got {len(payload)}"
             )
 
     proposals = [_normalize_proposal(item, i) for i, item in enumerate(payload)]

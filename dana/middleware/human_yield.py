@@ -1,6 +1,6 @@
 """Stage 7.4 — Yield to Human (physical input soft-interrupt).
 
-Low-level WH_MOUSE_LL / WH_KEYBOARD_LL hooks ignore injected (Donna) events
+Low-level WH_MOUSE_LL / WH_KEYBOARD_LL hooks ignore injected (Dana) events
 and stamp ``LAST_PHYSICAL_INPUT_TIME`` on real human mouse/keyboard activity.
 Operators call ``yield_check()`` before Act to pause until 3s of quiet.
 """
@@ -130,7 +130,7 @@ def _emit_pause_toast(body: str) -> None:
     try:
         from dana.middleware.toast_notify import show_silent_toast_async
 
-        show_silent_toast_async("Donna Operator", body)
+        show_silent_toast_async("Dana Operator", body)
     except Exception:  # noqa: BLE001
         pass
 
@@ -139,7 +139,7 @@ def _emit_resume_toast(body: str) -> None:
     try:
         from dana.middleware.toast_notify import show_silent_toast_async
 
-        show_silent_toast_async("Donna Operator", body)
+        show_silent_toast_async("Dana Operator", body)
     except Exception:  # noqa: BLE001
         pass
 
@@ -263,13 +263,13 @@ def start_human_yield_listener() -> bool:
     with _LISTENER_LOCK:
         if _LISTENER_STARTED:
             return True
-        if os.environ.get("DONNA_DISABLE_HUMAN_YIELD", "").strip().lower() in {
+        if os.environ.get("DANA_DISABLE_HUMAN_YIELD", "").strip().lower() in {
             "1",
             "true",
             "yes",
             "on",
         }:
-            _log("listener disabled via DONNA_DISABLE_HUMAN_YIELD")
+            _log("listener disabled via DANA_DISABLE_HUMAN_YIELD")
             return False
         if os.name != "nt":
             _log("listener skipped (non-Windows); note_physical_input still works")
@@ -278,7 +278,7 @@ def start_human_yield_listener() -> bool:
 
         t = threading.Thread(
             target=_hook_message_loop,
-            name="DonnaHumanYield",
+            name="DanaHumanYield",
             daemon=True,
         )
         t.start()

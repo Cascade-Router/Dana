@@ -1,4 +1,4 @@
-"""Stage 8.1 — Multi-voice audio mixer (Donna Channel 0, Jason Channel 1).
+"""Stage 8.1 — Multi-voice audio mixer (Dana Channel 0, Jason Channel 1).
 
 Jason's channel ducks the Receptionist to 0.2 while he speaks, then restores
 Channel 0 to full volume.
@@ -12,25 +12,25 @@ import time
 from pathlib import Path
 from typing import Any
 
-CHANNEL_DONNA = 0
+CHANNEL_DANA = 0
 CHANNEL_JASON = 1
-DONNA_FULL_VOLUME = 1.0
-DONNA_DUCK_VOLUME = 0.2
+DANA_FULL_VOLUME = 1.0
+DANA_DUCK_VOLUME = 0.2
 
 _LOCK = threading.Lock()
 _INIT_DONE = False
 _MIXER_OK = False
-_DONNA_CHANNEL: Any = None
+_DANA_CHANNEL: Any = None
 _JASON_CHANNEL: Any = None
 
 # Dry-run bookkeeping (tests / headless CI without a sound device).
-_DRY_VOLUME: float = DONNA_FULL_VOLUME
+_DRY_VOLUME: float = DANA_FULL_VOLUME
 _DRY_EVENTS: list[dict[str, Any]] = []
 _DRY_JASON_PLAYING = threading.Event()
 
 
 def _dry_run() -> bool:
-    return os.environ.get("DONNA_AUDIO_DRY_RUN", "").strip().lower() in {
+    return os.environ.get("DANA_AUDIO_DRY_RUN", "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -49,7 +49,7 @@ def _log(msg: str) -> None:
 
 def ensure_mixer(*, frequency: int = 22050, size: int = -16) -> bool:
     """Initialize pygame.mixer with at least 2 channels. Idempotent."""
-    global _INIT_DONE, _MIXER_OK, _DONNA_CHANNEL, _JASON_CHANNEL
+    global _INIT_DONE, _MIXER_OK, _DANA_CHANNEL, _JASON_CHANNEL
     with _LOCK:
         if _INIT_DONE:
             return _MIXER_OK
@@ -64,12 +64,12 @@ def ensure_mixer(*, frequency: int = 22050, size: int = -16) -> bool:
             if not pygame.mixer.get_init():
                 pygame.mixer.init(frequency=frequency, size=size, channels=2, buffer=512)
             pygame.mixer.set_num_channels(max(2, pygame.mixer.get_num_channels()))
-            _DONNA_CHANNEL = pygame.mixer.Channel(CHANNEL_DONNA)
+            _DANA_CHANNEL = pygame.mixer.Channel(CHANNEL_DANA)
             _JASON_CHANNEL = pygame.mixer.Channel(CHANNEL_JASON)
-            _DONNA_CHANNEL.set_volume(DONNA_FULL_VOLUME)
-            _JASON_CHANNEL.set_volume(DONNA_FULL_VOLUME)
+            _DANA_CHANNEL.set_volume(DANA_FULL_VOLUME)
+            _JASON_CHANNEL.set_volume(DANA_FULL_VOLUME)
             _MIXER_OK = True
-            _log("pygame.mixer ready channels=2 (Donna=0, Jason=1)")
+            _log("pygame.mixer ready channels=2 (Dana=0, Jason=1)")
             return True
         except Exception as exc:  # noqa: BLE001
             _MIXER_OK = False
@@ -77,76 +77,76 @@ def ensure_mixer(*, frequency: int = 22050, size: int = -16) -> bool:
             return False
 
 
-def get_donna_volume() -> float:
+def get_dana_volume() -> float:
     """Current Channel 0 volume (dry or live)."""
-    if _dry_run() or not _MIXER_OK or _DONNA_CHANNEL is None:
+    if _dry_run() or not _MIXER_OK or _DANA_CHANNEL is None:
         return float(_DRY_VOLUME)
     try:
-        return float(_DONNA_CHANNEL.get_volume())
+        return float(_DANA_CHANNEL.get_volume())
     except Exception:  # noqa: BLE001
         return float(_DRY_VOLUME)
 
 
-def _set_donna_volume(vol: float) -> None:
+def _set_dana_volume(vol: float) -> None:
     global _DRY_VOLUME
     v = max(0.0, min(1.0, float(vol)))
     _DRY_VOLUME = v
-    if _DONNA_CHANNEL is not None:
+    if _DANA_CHANNEL is not None:
         try:
-            _DONNA_CHANNEL.set_volume(v)
+            _DANA_CHANNEL.set_volume(v)
         except Exception:  # noqa: BLE001
             pass
 
 
-def play_donna(audio_file: str | Path, *, block: bool = False) -> bool:
+def play_dana(audio_file: str | Path, *, block: bool = False) -> bool:
     """Play Receptionist audio on Channel 0."""
     ensure_mixer()
     path = Path(audio_file)
-    _DRY_EVENTS.append({"event": "play_donna", "path": str(path), "t": time.time()})
-    if _dry_run() or not _MIXER_OK or _DONNA_CHANNEL is None:
+    _DRY_EVENTS.append({"event": "play_dana", "path": str(path), "t": time.time()})
+    if _dry_run() or not _MIXER_OK or _DANA_CHANNEL is None:
         # Approximate duration from file size when possible; else short stub.
         dur = _estimate_wav_duration_s(path) or 1.0
 
         def _stub() -> None:
-            _set_donna_volume(DONNA_FULL_VOLUME)
+            _set_dana_volume(DANA_FULL_VOLUME)
             time.sleep(dur)
 
         if block:
             _stub()
         else:
-            threading.Thread(target=_stub, name="DonnaPlayDry", daemon=True).start()
+            threading.Thread(target=_stub, name="DanaPlayDry", daemon=True).start()
         return True
     try:
         import pygame
 
         sound = pygame.mixer.Sound(str(path))
-        _set_donna_volume(DONNA_FULL_VOLUME)
-        _DONNA_CHANNEL.play(sound)
+        _set_dana_volume(DANA_FULL_VOLUME)
+        _DANA_CHANNEL.play(sound)
         if block:
-            while _DONNA_CHANNEL.get_busy():
+            while _DANA_CHANNEL.get_busy():
                 time.sleep(0.05)
         return True
     except Exception as exc:  # noqa: BLE001
-        _log(f"play_donna failed: {exc}")
+        _log(f"play_dana failed: {exc}")
         return False
 
 
 def play_jason(audio_file: str | Path, *, block: bool = True) -> bool:
-    """Duck Donna to 0.2, play Jason on Channel 1, then restore Donna to 1.0."""
+    """Duck Dana to 0.2, play Jason on Channel 1, then restore Dana to 1.0."""
     ensure_mixer()
     path = Path(audio_file)
     _DRY_EVENTS.append({"event": "play_jason_start", "path": str(path), "t": time.time()})
-    _set_donna_volume(DONNA_DUCK_VOLUME)
+    _set_dana_volume(DANA_DUCK_VOLUME)
     _DRY_EVENTS.append(
-        {"event": "duck", "volume": DONNA_DUCK_VOLUME, "t": time.time()}
+        {"event": "duck", "volume": DANA_DUCK_VOLUME, "t": time.time()}
     )
     _DRY_JASON_PLAYING.set()
 
     def _restore() -> None:
         _DRY_JASON_PLAYING.clear()
-        _set_donna_volume(DONNA_FULL_VOLUME)
+        _set_dana_volume(DANA_FULL_VOLUME)
         _DRY_EVENTS.append(
-            {"event": "restore", "volume": DONNA_FULL_VOLUME, "t": time.time()}
+            {"event": "restore", "volume": DANA_FULL_VOLUME, "t": time.time()}
         )
         _DRY_EVENTS.append({"event": "play_jason_end", "t": time.time()})
 
@@ -169,7 +169,7 @@ def play_jason(audio_file: str | Path, *, block: bool = True) -> bool:
         import pygame
 
         sound = pygame.mixer.Sound(str(path))
-        _JASON_CHANNEL.set_volume(DONNA_FULL_VOLUME)
+        _JASON_CHANNEL.set_volume(DANA_FULL_VOLUME)
         _JASON_CHANNEL.play(sound)
 
         def _wait_and_restore() -> None:

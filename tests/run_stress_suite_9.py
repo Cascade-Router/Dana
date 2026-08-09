@@ -439,7 +439,7 @@ def append_psol(
             f"- **Cloud model resolved to exit_code=0:** "
             f"`{'YES' if cloud_resolved else 'NO'}`",
             (
-                "- **Note:** Suite forces `DONNA_WORKER_ESCALATE_AFTER=1` so the "
+                "- **Note:** Suite forces `DANA_WORKER_ESCALATE_AFTER=1` so the "
                 "escalation path is observable; production default remains "
                 "`repair_attempts >= 3`. Cloud resolution requires a non-429 "
                 "Gemini response under Hybrid."
@@ -482,7 +482,7 @@ def append_psol(
 
 
 def _kill_stale_lock() -> None:
-    """Best-effort clear of Donna single-instance TCP lock (127.0.0.1:47473)."""
+    """Best-effort clear of Dana single-instance TCP lock (127.0.0.1:47473)."""
     try:
         import socket
 
@@ -541,14 +541,14 @@ def main() -> int:
     child_env = os.environ.copy()
     child_env["PYTHONIOENCODING"] = "utf-8"
     child_env["PYTHONUTF8"] = "1"
-    child_env["DONNA_HEADLESS"] = "1"
-    child_env["DONNA_DISABLE_TTS"] = "1"
-    child_env["DONNA_DISABLE_MIC"] = "1"
-    child_env["DONNA_DISABLE_IDLE_MONITOR"] = "1"
-    child_env["DONNA_DISABLE_TOAST"] = "1"
+    child_env["DANA_HEADLESS"] = "1"
+    child_env["DANA_DISABLE_TTS"] = "1"
+    child_env["DANA_DISABLE_MIC"] = "1"
+    child_env["DANA_DISABLE_IDLE_MONITOR"] = "1"
+    child_env["DANA_DISABLE_TOAST"] = "1"
     # Suite 9 forces early escalation so the Cloud fallback is observable even
     # when local repair would otherwise succeed before attempt 3.
-    child_env["DONNA_WORKER_ESCALATE_AFTER"] = "1"
+    child_env["DANA_WORKER_ESCALATE_AFTER"] = "1"
     proc = subprocess.Popen(
         [py, str(run_py), "--no-gui"],
         cwd=str(ROOT),

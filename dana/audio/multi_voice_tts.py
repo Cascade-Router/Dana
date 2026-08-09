@@ -187,7 +187,7 @@ def synthesize_speech(
         vid = "dana"
 
     if out_path is None:
-        fd, name = tempfile.mkstemp(prefix=f"donna_{vid}_", suffix=".wav")
+        fd, name = tempfile.mkstemp(prefix=f"dana_{vid}_", suffix=".wav")
         os.close(fd)
         dest = Path(name)
     else:
@@ -204,7 +204,7 @@ def synthesize_speech(
         if _synthesize_pyttsx3(body, dest, prefer_male=False, rate=VOICE_RATES["dana"]):
             return dest
         _write_silence_wav(dest, duration_s=1.0)
-        _log("donna TTS fallback — wrote silence placeholder")
+        _log("dana TTS fallback — wrote silence placeholder")
         return dest
 
     prefer_male = vid in {"jason", "moa", "typist"}

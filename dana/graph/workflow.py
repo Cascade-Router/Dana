@@ -1,4 +1,4 @@
-"""Workflow routing helpers / docs for the Donna ReAct corridor.
+"""Workflow routing helpers / docs for the Dana ReAct corridor.
 
 Topology (closed-loop verification)::
 
@@ -25,7 +25,7 @@ from dana.graph.nodes.verifier import (
     route_after_verifier,
 )
 
-# Public route labels used by compile_donna_react_graph conditional edges.
+# Public route labels used by compile_dana_react_graph conditional edges.
 ROUTE_AGENT = "agent"
 ROUTE_TOOLS = "tools"
 ROUTE_CRITIC = "critic"

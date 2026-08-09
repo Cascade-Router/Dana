@@ -14,7 +14,7 @@ from dana.ui import audio_mixer
 
 
 def test_synthesize_speech_voice_id(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_AUDIO_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_AUDIO_DRY_RUN", "1")
     # Force silence/placeholder path (no pygame device required).
     out_d = synthesize_speech("Hello receptionist.", voice_id="dana", out_path=tmp_path / "d.wav")
     out_j = synthesize_speech(JASON_ANDON_LINE, voice_id="jason", out_path=tmp_path / "j.wav")
@@ -22,22 +22,22 @@ def test_synthesize_speech_voice_id(tmp_path: Path, monkeypatch) -> None:  # noq
     assert out_j.is_file() and out_j.stat().st_size > 44
 
 
-def test_jason_ducks_donna_then_restores(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_AUDIO_DRY_RUN", "1")
+def test_jason_ducks_dana_then_restores(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("DANA_AUDIO_DRY_RUN", "1")
     audio_mixer.clear_dry_events()
     # Reset mixer init flag for dry path.
     audio_mixer._INIT_DONE = False  # noqa: SLF001
     audio_mixer._MIXER_OK = False  # noqa: SLF001
 
-    donna_wav = write_tone_wav(tmp_path / "donna_long.wav", duration_s=3.0, freq_hz=440.0)
+    dana_wav = write_tone_wav(tmp_path / "dana_long.wav", duration_s=3.0, freq_hz=440.0)
     jason_wav = write_tone_wav(tmp_path / "jason_line.wav", duration_s=0.8, freq_hz=220.0)
 
     audio_mixer.ensure_mixer()
-    audio_mixer.play_donna(donna_wav, block=False)
+    audio_mixer.play_dana(dana_wav, block=False)
     time.sleep(0.35)
-    assert abs(audio_mixer.get_donna_volume() - 1.0) < 0.05
+    assert abs(audio_mixer.get_dana_volume() - 1.0) < 0.05
 
-    # Trigger Jason override while Donna is "speaking".
+    # Trigger Jason override while Dana is "speaking".
     audio_mixer.play_jason(jason_wav, block=True)
     events = audio_mixer.dry_events()
     kinds = [e["event"] for e in events]
@@ -48,12 +48,12 @@ def test_jason_ducks_donna_then_restores(tmp_path: Path, monkeypatch) -> None:  
     assert duck_i < restore_i
     assert events[duck_i]["volume"] == 0.2
     assert events[restore_i]["volume"] == 1.0
-    assert abs(audio_mixer.get_donna_volume() - 1.0) < 0.05
+    assert abs(audio_mixer.get_dana_volume() - 1.0) < 0.05
 
 
 def test_recovery_mode_triggers_jason_voice(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setenv("DONNA_AUDIO_DRY_RUN", "1")
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_AUDIO_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
     from dana.management.jason_supervisor import recovery_mode
     from dana.memory.blackboard import init_blackboard, publish_perception_ocr
 

@@ -22,7 +22,7 @@ def test_format_issue_body_markdown() -> None:
     body = _format_issue_body("Steps:\n1. Open app\n2. Crash")
     assert body.startswith("## Bug report\n")
     assert "Steps:" in body
-    assert "*Submitted via Donna community reporter*" in body
+    assert "*Submitted via Dana community reporter*" in body
 
 
 def test_missing_config_returns_friendly_message(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -80,7 +80,7 @@ def test_successful_201_payload_and_tts_string(monkeypatch: pytest.MonkeyPatch) 
     ):
         msg = report_github_issue(
             title="Wake word false positive",
-            body="Heard Donna when TV was on",
+            body="Heard Dana when TV was on",
             labels=["bug", "voice"],
         )
 
@@ -91,7 +91,7 @@ def test_successful_201_payload_and_tts_string(monkeypatch: pytest.MonkeyPatch) 
     assert captured["url"].endswith("/repos/camgrasper/dana/issues")
     assert captured["body"]["title"] == "Wake word false positive"
     assert captured["body"]["body"].startswith("## Bug report\n")
-    assert "Heard Donna when TV was on" in captured["body"]["body"]
+    assert "Heard Dana when TV was on" in captured["body"]["body"]
     assert captured["body"]["labels"] == ["bug", "voice"]
     assert "Bearer test-token" in captured["headers"].get("Authorization", "")
 

@@ -1,6 +1,6 @@
 """click_ui_element / type_text_in_element / scroll_screen / drag_ui_element — tool wiring.
 
-Every hardware-adjacent test forces ``DONNA_OS_DRY_RUN=1`` so the full
+Every hardware-adjacent test forces ``DANA_OS_DRY_RUN=1`` so the full
 validation/rate-limit/failsafe path runs but no real SendInput call fires,
 and monkeypatches the vision lookup at its import sites so no real screen
 capture, Florence model, or UIA backend is touched. A couple of tests turn
@@ -20,7 +20,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _dry_run_and_reset_rate_limiter(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
     mouse_actuator._last_actuation_ts = 0.0
     keyboard_actuator._last_actuation_ts = 0.0
     scroll_actuator._last_actuation_ts = 0.0
@@ -227,7 +227,7 @@ def test_type_text_in_element_triggers_click_and_type_when_not_dry_run(
     """End-to-end with dry-run OFF: mocks the os_control SendInput entry
     points (never real hardware) and asserts both the mouse actuator and the
     keyboard actuator actually fire, in order, with the right data."""
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "0")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "0")
     _patch_vision_pipeline(monkeypatch, bbox_1000=[500, 500, 600, 600])
 
     import dana.middleware.kill_switch as kill_switch
@@ -326,7 +326,7 @@ def test_scroll_screen_translates_semantic_amount_to_backend_tick_count(
     """Dry-run OFF: mocks the os_control SendInput entry point (never real
     hardware) and counts exactly how many wheel ticks each semantic amount
     produces."""
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "0")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "0")
 
     import dana.middleware.kill_switch as kill_switch
     import dana.tools.os_control as os_control
@@ -477,7 +477,7 @@ def test_drag_ui_element_triggers_full_move_down_move_up_sequence_when_not_dry_r
     """End-to-end with dry-run OFF: mocks the os_control SendInput entry
     points (never real hardware) and asserts the compound tool triggers both
     vision lookups plus the exact move -> down -> move(s) -> up sequence."""
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "0")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "0")
 
     lookup_calls: list[str] = []
     bboxes_by_label = {

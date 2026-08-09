@@ -1,4 +1,4 @@
-"""Text-only Developer CLI Harness for Donna's LangGraph ReAct architecture.
+"""Text-only Developer CLI Harness for Dana's LangGraph ReAct architecture.
 
 Silent by design: no TTS, Whisper, or VAD imports. Streams graph events to
 the console via ``astream_events(version=\"v2\")`` with a dedicated MemorySaver
@@ -46,7 +46,7 @@ from dana.tools.langchain_tools import build_langchain_tools
 from dana.tools.schema import ToolCall
 
 VISION_DRAFT_PROMPT = (
-    "Donna, use the draft_cursor_prompt tool to log a self-improvement ticket "
+    "Dana, use the draft_cursor_prompt tool to log a self-improvement ticket "
     "to enhance cursor rendering capabilities."
 )
 
@@ -64,7 +64,7 @@ CLI_CHECKPOINTER = _cli_checkpointer()
 CLI_THREAD_ID = "cli-test-session"
 
 _SYSTEM_PROMPT = (
-    "You are Donna in developer CLI mode. "
+    "You are Dana in developer CLI mode. "
     "Never emit TTS protocol markers (TOOL:/FINAL:)."
 )
 
@@ -483,7 +483,7 @@ async def _run_turn(
             piece = think_filter.feed(piece)
             if piece:
                 if not streamed_any:
-                    print(_c(_BOLD, "Donna: "), end="", flush=True)
+                    print(_c(_BOLD, "Dana: "), end="", flush=True)
                     streamed_any = True
                 print(piece, end="", flush=True)
         elif kind == "on_chain_end":
@@ -517,7 +517,7 @@ async def _run_turn(
             return executed_tools
 
     if answer and not streamed_any:
-        print(_c(_BOLD, "Donna: ") + answer)
+        print(_c(_BOLD, "Dana: ") + answer)
     elif not answer and not streamed_any:
         print(
             _c(
@@ -535,10 +535,10 @@ async def _run_vision_draft_repro() -> int:
     """Headless Vision+draft always_include repro (exit 0 iff both tools run)."""
     _enable_ansi()
     text = VISION_DRAFT_PROMPT
-    print(_c(_BOLD, "Donna Vision+draft always_include repro"))
+    print(_c(_BOLD, "Dana Vision+draft always_include repro"))
     print(_c(_DIM, f"prompt={text!r}"))
     try:
-        ag.set_donna_mode("vision")
+        ag.set_dana_mode("vision")
     except Exception:  # noqa: BLE001
         pass
     graph = _compile_cli_graph(query=text, vision_mode=True, max_iters=4)
@@ -560,7 +560,7 @@ async def main() -> None:
     if any(a in {"--vision-draft", "--repro-vision-draft"} for a in sys.argv[1:]):
         raise SystemExit(await _run_vision_draft_repro())
 
-    print(_c(_BOLD, "Donna LangGraph Developer CLI"))
+    print(_c(_BOLD, "Dana LangGraph Developer CLI"))
     print(
         _c(
             _DIM,
@@ -594,7 +594,7 @@ async def main() -> None:
             text = VISION_DRAFT_PROMPT
             vision_mode = True
             try:
-                ag.set_donna_mode("vision")
+                ag.set_dana_mode("vision")
             except Exception:  # noqa: BLE001
                 pass
             print(_c(_DIM, f"[System: injecting Vision draft prompt] {text}"))

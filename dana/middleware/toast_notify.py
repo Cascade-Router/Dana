@@ -12,7 +12,7 @@ def show_silent_toast(
     title: str,
     message: str,
     *,
-    app_id: str = "Donna",
+    app_id: str = "Dana",
     icon: str | None = None,
 ) -> bool:
     """Show a native Windows toast with audio silenced.
@@ -25,14 +25,14 @@ def show_silent_toast(
 
     ``icon`` may be a filesystem path to a transparent PNG (RGBA toast logo).
     """
-    if (os.environ.get("DONNA_DISABLE_TOAST") or "").strip().lower() in {
+    if (os.environ.get("DANA_DISABLE_TOAST") or "").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }:
         return False
-    title_s = (title or "Donna").strip() or "Donna"
+    title_s = (title or "Dana").strip() or "Dana"
     body_s = (message or "").strip() or "Task update"
     if sys.platform != "win32":
         return False
@@ -69,7 +69,7 @@ def show_silent_toast_async(
     title: str,
     message: str,
     *,
-    app_id: str = "Donna",
+    app_id: str = "Dana",
 ) -> None:
     """Fire-and-forget toast so actuator workers never block on UI (Stage 4.4)."""
 
@@ -79,7 +79,7 @@ def show_silent_toast_async(
         except Exception:  # noqa: BLE001
             pass
 
-    threading.Thread(target=_run, name="donna-toast", daemon=True).start()
+    threading.Thread(target=_run, name="dana-toast", daemon=True).start()
 
 
 def _powershell_silent_toast(title: str, message: str) -> bool:
@@ -106,7 +106,7 @@ $template = @"
 $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
 $xml.LoadXml($template)
 $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Donna').Show($toast)
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Dana').Show($toast)
 """
     try:
         run_kwargs: dict = {
@@ -141,4 +141,4 @@ def format_actuator_toast(tool_name: str, status: str) -> tuple[str, str]:
     tool = (tool_name or "task").strip() or "task"
     st = (status or "").strip().lower() or "completed"
     outcome = "completed" if st == "completed" else "failed"
-    return "Donna Task", f"Donna Task: {tool} {outcome}."
+    return "Dana Task", f"Dana Task: {tool} {outcome}."

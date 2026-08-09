@@ -565,15 +565,15 @@ def main() -> int:
     child_env = os.environ.copy()
     child_env["PYTHONIOENCODING"] = "utf-8"
     child_env["PYTHONUTF8"] = "1"
-    child_env["DONNA_HEADLESS"] = "1"
-    child_env["DONNA_DISABLE_TTS"] = "1"
-    child_env["DONNA_DISABLE_MIC"] = "1"
-    child_env["DONNA_DISABLE_IDLE_MONITOR"] = "1"
-    child_env["DONNA_DISABLE_TOAST"] = "1"
+    child_env["DANA_HEADLESS"] = "1"
+    child_env["DANA_DISABLE_TTS"] = "1"
+    child_env["DANA_DISABLE_MIC"] = "1"
+    child_env["DANA_DISABLE_IDLE_MONITOR"] = "1"
+    child_env["DANA_DISABLE_TOAST"] = "1"
     # Suite must exercise Cloud backoff even when host RAM is already elevated.
-    child_env["DONNA_SKIP_RAM_BREAKER"] = "1"
+    child_env["DANA_SKIP_RAM_BREAKER"] = "1"
     # Force early Worker Escalation so Gemini path + 429 backoff are observable.
-    child_env["DONNA_WORKER_ESCALATE_AFTER"] = "1"
+    child_env["DANA_WORKER_ESCALATE_AFTER"] = "1"
     proc = subprocess.Popen(
         [py, str(run_py), "--no-gui"],
         cwd=str(ROOT),

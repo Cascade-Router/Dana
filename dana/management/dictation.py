@@ -17,7 +17,7 @@ from dana.memory.blackboard import (
 )
 
 _DICTATE_RE = re.compile(
-    r"^\s*(?:hey\s+)?donna\b[\s,.\-!:]*",
+    r"^\s*(?:hey\s+)?dana\b[\s,.\-!:]*",
     re.IGNORECASE,
 )
 _DICTATE_KEYWORD_RE = re.compile(
@@ -25,7 +25,7 @@ _DICTATE_KEYWORD_RE = re.compile(
     re.IGNORECASE,
 )
 _STRIP_DICTATE_RE = re.compile(
-    r"^\s*(?:hey\s+)?donna\b[\s,.\-!:]*|"
+    r"^\s*(?:hey\s+)?dana\b[\s,.\-!:]*|"
     r"^\s*dictate\b[\s,.\-!:]*|"
     r"\bdictate\b[\s,.\-!:]*",
     re.IGNORECASE,

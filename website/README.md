@@ -48,7 +48,7 @@ npm run preview
 
 ## GitHub Pages
 
-Workflow: `.github/workflows/deploy_website.yml` — builds on `website/**` pushes to `main`, uploads `website/dist`. CI sets `BASE_PATH=/Donna` for project Pages; local keeps `base: "/"`. Enable **Settings → Pages → Source: GitHub Actions**.
+Workflow: `.github/workflows/deploy_website.yml` — builds on `website/**` pushes to `main`, uploads `website/dist`. CI sets `BASE_PATH=/Dana` for project Pages; local keeps `base: "/"`. Enable **Settings → Pages → Source: GitHub Actions**.
 
 ## Assets
 

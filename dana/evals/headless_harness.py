@@ -1,4 +1,4 @@
-"""Headless Eval Harness — CI/CD for Donna agents (no mic / VAD / TTS).
+"""Headless Eval Harness — CI/CD for Dana agents (no mic / VAD / TTS).
 
 Loads ``dana/evals/test_cases.json``, injects synthetic transcripts into the
 broker + ReAct orchestrator, and scores Pass@k (any of k attempts succeeds).
@@ -131,10 +131,10 @@ def _run_orchestrator_once(
     with patch("langchain_ollama.ChatOllama", lambda **_k: _StubLLM()), patch(
         "dana.cascade_router.resolve_chat_model",
         lambda **_k: _StubLLM(),
-    ), patch.dict(os.environ, {"DONNA_CURSOR_LAUNCH": "0", "DONNA_OS_DRY_RUN": "1"}):
+    ), patch.dict(os.environ, {"DANA_CURSOR_LAUNCH": "0", "DANA_OS_DRY_RUN": "1"}):
         result = run_react_loop(
             user_text=query,
-            system_prompt="You are Donna eval harness. Use tools when bound.",
+            system_prompt="You are Dana eval harness. Use tools when bound.",
             execute_fn=execute_fn,
             max_iters=3,
             broker=IntentBroker(),
@@ -261,7 +261,7 @@ def run_harness(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Donna headless agent eval harness")
+    parser = argparse.ArgumentParser(description="Dana headless agent eval harness")
     parser.add_argument(
         "--cases",
         type=Path,
@@ -283,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
         ensure_stdio()
     except Exception:
         pass
-    print("Donna headless eval harness")
+    print("Dana headless eval harness")
     print("=" * 60)
     report = run_harness(cases_path=args.cases, k=args.k)
     for row in report["results"]:

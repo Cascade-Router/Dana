@@ -64,10 +64,10 @@ def test_blackboard_sqlite_standing(tmp_path: Path) -> None:
 
 
 def test_tagged_telemetry_jsonl(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    out = tmp_path / "donna_telemetry.jsonl"
+    out = tmp_path / "dana_telemetry.jsonl"
     monkeypatch.setattr("dana.telemetry.TELEMETRY_JSONL_PATH", out)
 
-    log_voice_asr("hello donna", session_id="s1")
+    log_voice_asr("hello dana", session_id="s1")
     log_router("route=local", session_id="s1", current_agent="ReAct_Agent", active_intent="general")
     log_reasoning_trace("because reasons", session_id="s1")
     log_tool_execution("draft_cursor_prompt", session_id="s1", ok=True, latency_ms=12.5)
@@ -85,7 +85,7 @@ def test_tagged_telemetry_jsonl(tmp_path: Path, monkeypatch) -> None:  # noqa: A
     ]
     tool_rec = json.loads(lines[3])
     assert tool_rec["latency_ms"] == 12.5
-    assert TELEMETRY_JSONL_PATH.name == "donna_telemetry.jsonl"
+    assert TELEMETRY_JSONL_PATH.name == "dana_telemetry.jsonl"
 
 
 def test_emit_tagged_rejects_unknown() -> None:

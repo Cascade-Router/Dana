@@ -1,7 +1,7 @@
 """Diagnostic Suite 11 — Local Qwen Tkinter & Algorithmic TDD.
 
 Headless Meta-Broker stress with Hybrid OFF so Planner + Worker stay on the
-local Qwen2.5-Coder (or configured DONNA_OLLAMA_MODEL) stack.
+local Qwen2.5-Coder (or configured DANA_OLLAMA_MODEL) stack.
 
 Usage::
 
@@ -42,7 +42,7 @@ ARTIFACTS = (
     "tests/test_maze.py",
 )
 
-# Prefer a small-enough coder tag; override with DONNA_OLLAMA_MODEL if set.
+# Prefer a small-enough coder tag; override with DANA_OLLAMA_MODEL if set.
 DEFAULT_QWEN_MODEL = "qwen2.5-coder:7b"
 
 BOOT_DEADLINE_S = 120.0
@@ -231,7 +231,7 @@ def _restore_hybrid(previous: bool | None) -> None:
 
 
 def _resolve_qwen_model() -> str:
-    wanted = (os.environ.get("DONNA_OLLAMA_MODEL") or DEFAULT_QWEN_MODEL).strip()
+    wanted = (os.environ.get("DANA_OLLAMA_MODEL") or DEFAULT_QWEN_MODEL).strip()
     try:
         import requests
 
@@ -735,15 +735,15 @@ def main() -> int:
     child_env = os.environ.copy()
     child_env["PYTHONIOENCODING"] = "utf-8"
     child_env["PYTHONUTF8"] = "1"
-    child_env["DONNA_HEADLESS"] = "1"
-    child_env["DONNA_DISABLE_TTS"] = "1"
-    child_env["DONNA_DISABLE_MIC"] = "1"
-    child_env["DONNA_DISABLE_IDLE_MONITOR"] = "1"
-    child_env["DONNA_DISABLE_TOAST"] = "1"
-    child_env["DONNA_OLLAMA_MODEL"] = model_id
+    child_env["DANA_HEADLESS"] = "1"
+    child_env["DANA_DISABLE_TTS"] = "1"
+    child_env["DANA_DISABLE_MIC"] = "1"
+    child_env["DANA_DISABLE_IDLE_MONITOR"] = "1"
+    child_env["DANA_DISABLE_TOAST"] = "1"
+    child_env["DANA_OLLAMA_MODEL"] = model_id
     child_env["OLLAMA_MODEL"] = model_id
     # Host is often already >85%; suite still needs to exercise local rails.
-    child_env["DONNA_SKIP_RAM_BREAKER"] = "1"
+    child_env["DANA_SKIP_RAM_BREAKER"] = "1"
 
     proc = subprocess.Popen(
         [py, str(run_py), "--no-gui"],

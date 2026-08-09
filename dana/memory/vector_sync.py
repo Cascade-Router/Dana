@@ -21,7 +21,7 @@ from dana.memory.vault import (
     get_codebase_vault,
     normalize_vault_filepath,
 )
-from dana.paths import DONNA_WORKSPACE, PROJECT_ROOT
+from dana.paths import DANA_WORKSPACE, PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ def _log(msg: str) -> None:
 
 def default_watch_roots() -> list[Path]:
     """Active workspace directories eligible for vault sync."""
-    roots = [Path(DONNA_WORKSPACE).resolve(), Path(PROJECT_ROOT).resolve()]
+    roots = [Path(DANA_WORKSPACE).resolve(), Path(PROJECT_ROOT).resolve()]
     # Deduplicate while preserving order.
     out: list[Path] = []
     seen: set[str] = set()

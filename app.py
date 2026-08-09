@@ -11,9 +11,9 @@ import time
 from typing import Any, Generator
 
 # Headless flags before any Dānā imports.
-os.environ.setdefault("DONNA_NO_GUI", "1")
-os.environ.setdefault("DONNA_HEADLESS", "1")
-os.environ.setdefault("DONNA_SKIP_BOOT_READY", "1")
+os.environ.setdefault("DANA_NO_GUI", "1")
+os.environ.setdefault("DANA_HEADLESS", "1")
+os.environ.setdefault("DANA_SKIP_BOOT_READY", "1")
 
 import gradio as gr
 
@@ -395,7 +395,7 @@ def submit_command(
     hist = _chat_append_assistant(hist, note)
     yield _pack(clear_prompt=True, hist_out=hist)
 
-    deadline = time.time() + float(os.environ.get("DONNA_META_BROKER_TIMEOUT_S") or "600")
+    deadline = time.time() + float(os.environ.get("DANA_META_BROKER_TIMEOUT_S") or "600")
     while bridge.is_running and time.time() < deadline:
         yield _pack(clear_prompt=True, hist_out=hist)
         time.sleep(0.4)
@@ -645,14 +645,14 @@ with gr.Blocks(
             )
             with gr.Row():
                 force_local = gr.Checkbox(
-                    label="DONNA_FORCE_LOCAL",
+                    label="DANA_FORCE_LOCAL",
                     value=True,
                     info="Skip cloud / Gemini hops (local Ollama only)",
                 )
                 verbose = gr.Checkbox(
                     label="Verbose telemetry",
                     value=False,
-                    info="Set DONNA_DEBUG=1 for richer logs",
+                    info="Set DANA_DEBUG=1 for richer logs",
                 )
             with gr.Row():
                 submit_btn = gr.Button(

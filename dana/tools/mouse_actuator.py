@@ -5,10 +5,20 @@ a vision model or an OS accessibility tree) into a single validated on-screen
 click: inset off the dead-space border, take the centroid, optionally rescale
 for display-resolution mismatches, then move and click.
 
-No pyautogui/pynput — this reuses the existing hardware SendInput backend in
-``dana.tools.os_control`` (the same one ``execute_os_keystrokes`` and
-``dana.operators.nav_and_click`` already use) so every physical input in this
-codebase goes through one Windows-only, stealth-cadence code path.
+The box is generic — whatever coordinate space the caller supplies, rescaled
+via ``source_resolution``/``target_resolution`` before the centroid is used.
+In practice the caller is almost always ``dana.tools.vision``'s hybrid Win32
+UI-Automation + Florence-2 grounding pipeline
+(``dana.vision.hybrid_grounding.HybridVisionGrounding``), which returns boxes
+in Florence's normalized ``[0, 1000]`` coordinate space — this module never
+assumes that convention itself, it just rescales whatever box+resolution
+pair it's handed.
+
+No pyautogui/pynput — every physical action bottoms out in Win32
+``SendInput`` (ctypes) via ``dana.tools.os_control`` (the same backend
+``execute_os_keystrokes`` and ``dana.operators.nav_and_click`` already use),
+so every physical input in this codebase goes through one Windows-only,
+stealth-cadence code path.
 
 This module is intentionally the *foundational* primitive: a single
 validated move+click. ``dana.operators.nav_and_click.NavigationOperator``
@@ -18,7 +28,7 @@ kill-switch polling mid-path, human-yield checks) on top of the same
 this module when you just need "click this box, safely, once."
 
 Safety:
-  - ``DONNA_OS_DRY_RUN=1`` skips the real SendInput call but still runs every
+  - ``DANA_OS_DRY_RUN=1`` skips the real SendInput call but still runs every
     validation/rate-limit check, so dry-run exercises the full safety path.
   - Failsafe: aborts with no motion at all if the computed point falls
     outside the live screen bounds (``dana.tools.os_control.get_screen_size``)
@@ -48,7 +58,7 @@ _last_actuation_ts = 0.0
 
 
 def _dry_run() -> bool:
-    return os.environ.get("DONNA_OS_DRY_RUN", "").strip().lower() in {
+    return os.environ.get("DANA_OS_DRY_RUN", "").strip().lower() in {
         "1",
         "true",
         "yes",

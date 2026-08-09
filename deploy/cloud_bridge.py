@@ -41,7 +41,7 @@ def project_root() -> Path:
 
 
 def is_cloud_mode() -> bool:
-    return (os.environ.get("DONNA_CLOUD") or "").strip().lower() in {
+    return (os.environ.get("DANA_CLOUD") or "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -58,38 +58,38 @@ def apply_cloud_mode() -> None:
         if root not in sys.path:
             sys.path.insert(0, root)
 
-        os.environ.setdefault("DONNA_CLOUD", "1")
-        os.environ.setdefault("DONNA_HITL_AUTO_APPROVE", "1")
-        os.environ.setdefault("DONNA_HITL_REQUIRE_GUI", "0")
-        os.environ.setdefault("DONNA_OS_DRY_RUN", "1")
-        os.environ.setdefault("DONNA_GHOST_SKIP_HOTKEY", "1")
+        os.environ.setdefault("DANA_CLOUD", "1")
+        os.environ.setdefault("DANA_HITL_AUTO_APPROVE", "1")
+        os.environ.setdefault("DANA_HITL_REQUIRE_GUI", "0")
+        os.environ.setdefault("DANA_OS_DRY_RUN", "1")
+        os.environ.setdefault("DANA_GHOST_SKIP_HOTKEY", "1")
         # Avoid interactive vault prompts on Spaces.
-        if not (os.environ.get("DONNA_VAULT_KEY") or "").strip():
-            os.environ.setdefault("DONNA_VAULT_KEY", "hf-space-ephemeral")
+        if not (os.environ.get("DANA_VAULT_KEY") or "").strip():
+            os.environ.setdefault("DANA_VAULT_KEY", "hf-space-ephemeral")
 
         # Prefer OpenAI-compatible cloud LLM when keys are present.
         if (os.environ.get("OPENAI_API_KEY") or "").strip() or (
             os.environ.get("GROQ_API_KEY") or ""
         ).strip():
-            os.environ.setdefault("DONNA_CASCADE_EXTERNAL", "1")
-            os.environ.setdefault("DONNA_HF_CLOUD_LLM", "1")
+            os.environ.setdefault("DANA_CASCADE_EXTERNAL", "1")
+            os.environ.setdefault("DANA_HF_CLOUD_LLM", "1")
 
         if _BOOTSTRAPPED:
             return
         _BOOTSTRAPPED = True
 
         try:
-            from dana.agentic import set_donna_mode
+            from dana.agentic import set_dana_mode
             from dana.core_agent import set_engine_engaged
 
-            set_donna_mode("developer", as_voice=False)
+            set_dana_mode("developer", as_voice=False)
             set_engine_engaged(True)
         except Exception as exc:  # noqa: BLE001
             print(f"[cloud_bridge] WARNING: mode/engine bootstrap: {exc}", flush=True)
 
 
 def use_cloud_llm() -> bool:
-    flag = (os.environ.get("DONNA_HF_CLOUD_LLM") or "").strip().lower()
+    flag = (os.environ.get("DANA_HF_CLOUD_LLM") or "").strip().lower()
     if flag in {"1", "true", "yes", "on"}:
         return True
     if flag in {"0", "false", "no", "off"}:
@@ -107,15 +107,15 @@ def _build_cloud_chat_model(*, temperature: float = 0.2) -> Any:
     from langchain_openai import ChatOpenAI
 
     model = (
-        (os.environ.get("DONNA_CLOUD_MODEL") or "").strip()
-        or (os.environ.get("DONNA_CASCADE_MODEL") or "").strip()
+        (os.environ.get("DANA_CLOUD_MODEL") or "").strip()
+        or (os.environ.get("DANA_CASCADE_MODEL") or "").strip()
         or "gpt-4o-mini"
     )
     kwargs: dict[str, Any] = {"model": model, "temperature": temperature}
 
     base = (
         (os.environ.get("OPENAI_BASE_URL") or "").strip()
-        or (os.environ.get("DONNA_OPENAI_BASE_URL") or "").strip()
+        or (os.environ.get("DANA_OPENAI_BASE_URL") or "").strip()
     )
     # Groq OpenAI-compatible endpoint when only GROQ_API_KEY is set.
     if not base and (os.environ.get("GROQ_API_KEY") or "").strip():
@@ -124,7 +124,7 @@ def _build_cloud_chat_model(*, temperature: float = 0.2) -> Any:
             os.environ["OPENAI_API_KEY"] = os.environ["GROQ_API_KEY"]
         if model == "gpt-4o-mini":
             kwargs["model"] = (
-                (os.environ.get("DONNA_CLOUD_MODEL") or "").strip()
+                (os.environ.get("DANA_CLOUD_MODEL") or "").strip()
                 or "llama-3.3-70b-versatile"
             )
     # DeepSeek OpenAI-compatible endpoint.
@@ -134,7 +134,7 @@ def _build_cloud_chat_model(*, temperature: float = 0.2) -> Any:
             os.environ["OPENAI_API_KEY"] = os.environ["DEEPSEEK_API_KEY"]
         if model == "gpt-4o-mini":
             kwargs["model"] = (
-                (os.environ.get("DONNA_CLOUD_MODEL") or "").strip() or "deepseek-chat"
+                (os.environ.get("DANA_CLOUD_MODEL") or "").strip() or "deepseek-chat"
             )
 
     if base:
@@ -202,9 +202,9 @@ def _cloud_execute(tool_call: Any) -> str:
 
 def _system_prompt(user_text: str) -> str:
     try:
-        from dana.core_agent import build_donna_system_prompt
+        from dana.core_agent import build_dana_system_prompt
 
-        return build_donna_system_prompt([], user_text=user_text)
+        return build_dana_system_prompt([], user_text=user_text)
     except Exception:  # noqa: BLE001
         return (
             "You are Dānā, a local-first cybernetic copilot running in "
@@ -255,7 +255,7 @@ def run_text_command(message: str, *, history: list | None = None) -> str:
             prior_messages=prior,
             on_tool_start=None,
             visual_context="[CLOUD] No local vision frame.",
-            model=os.environ.get("DONNA_LOCAL_MODEL") or "qwen2.5-coder:7b",
+            model=os.environ.get("DANA_LOCAL_MODEL") or "qwen2.5-coder:7b",
             forced_tool=forced,
             tts_callback=None,
         )

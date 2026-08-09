@@ -45,7 +45,7 @@ def test_tts_manager_sequential_queue() -> None:
 
 
 def test_vision_overlay_gated_without_debug(monkeypatch) -> None:
-    monkeypatch.delenv("DONNA_DEBUG_VISION", raising=False)
+    monkeypatch.delenv("DANA_DEBUG_VISION", raising=False)
     from dana.vision.overlay import RoiOverlay, update_roi, vision_debug_enabled
 
     assert vision_debug_enabled() is False

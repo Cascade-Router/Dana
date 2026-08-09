@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_LEDGER_HEADER = "# Donna Patch Ledger\n"
+_LEDGER_HEADER = "# Dana Patch Ledger\n"
 _TICKET_SPLIT_RE = re.compile(r"(?=^### Ticket:)", re.MULTILINE)
 _STATUS_RE = re.compile(
     r"\*\*Status:\*\*\s*`\[(PENDING|RESOLVED|FAILED)\]`",
@@ -15,9 +15,9 @@ _STATUS_RE = re.compile(
 
 def _ledger_paths() -> tuple[Path, Path]:
     try:
-        from dana.paths import DONNA_SECURITY_DIR, PATCH_LEDGER_PATH
+        from dana.paths import DANA_SECURITY_DIR, PATCH_LEDGER_PATH
 
-        DONNA_SECURITY_DIR.mkdir(parents=True, exist_ok=True)
+        DANA_SECURITY_DIR.mkdir(parents=True, exist_ok=True)
         ledger = Path(PATCH_LEDGER_PATH)
         archive = ledger.with_name("patch_ledger_archive.md")
         return ledger, archive

@@ -2,7 +2,7 @@
 
 Flow (reuses Tool Forge security stages):
   1. Read open bugs from the Autonomous Bug Tracker ledger.
-  2. ``donna_coder`` analyzes the traceback and drafts a Python patch for the
+  2. ``dana_coder`` analyzes the traceback and drafts a Python patch for the
      crashed file (unified-diff style body embedded in JSON).
   3. AST Gatekeeper + Security Reviewer must APPROVE the patch body.
   4. Approved patches are written to CAMGRASPER/tracker/pending_patches/ for human review
@@ -38,7 +38,7 @@ from dana.swarm.tool_forge_graph import (
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.I)
 
 REPAIR_CODER_SYSTEM = """
-You are Donna's Titan Repair coder. Given a crash ledger entry (user query +
+You are Dana's Titan Repair coder. Given a crash ledger entry (user query +
 exception/traceback), draft a MINIMAL Python patch for the specific source file
 that crashed.
 
@@ -100,15 +100,15 @@ def _guess_target_from_traceback(tb: str) -> str:
         if not m:
             continue
         p = m.group(1).replace("\\", "/")
-        if "CAMGRASPER" in p or "/dana/" in p or p.startswith("dana/") or "/donna/" in p or p.startswith("donna/"):
+        if "CAMGRASPER" in p or "/dana/" in p or p.startswith("dana/") or "/dana/" in p or p.startswith("dana/"):
             # Prefer repo-relative tail.
             if "CAMGRASPER/" in p:
                 p = p.split("CAMGRASPER/", 1)[1]
             elif "dana/" in p:
                 p = "dana/" + p.split("dana/", 1)[1]
-            elif "donna/" in p:
+            elif "dana/" in p:
                 # Legacy package path in older tracebacks → current package.
-                p = "dana/" + p.split("donna/", 1)[1]
+                p = "dana/" + p.split("dana/", 1)[1]
             safe = _safe_rel_py(p)
             if safe:
                 hits.append(safe)

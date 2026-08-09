@@ -15,9 +15,9 @@ import time
 from typing import Any
 
 # Force headless before any optional Dana imports that might probe GUI flags.
-os.environ.setdefault("DONNA_NO_GUI", "1")
-os.environ.setdefault("DONNA_HEADLESS", "1")
-os.environ.setdefault("DONNA_SKIP_BOOT_READY", "1")
+os.environ.setdefault("DANA_NO_GUI", "1")
+os.environ.setdefault("DANA_HEADLESS", "1")
+os.environ.setdefault("DANA_SKIP_BOOT_READY", "1")
 
 _STATUS_IDLE = "idle"
 _STATUS_LISTENING = "listening"
@@ -37,19 +37,19 @@ _VALID_STATUS = frozenset(
 
 
 def _ensure_headless_env(*, force_local: bool = True, verbose: bool = False) -> None:
-    os.environ["DONNA_NO_GUI"] = "1"
-    os.environ["DONNA_HEADLESS"] = "1"
-    os.environ.setdefault("DONNA_OLLAMA_KEEP_ALIVE", "0")
-    os.environ.setdefault("DONNA_SKIP_RAM_BREAKER", "1")
-    os.environ.setdefault("DONNA_META_BROKER_TIMEOUT_S", "600")
+    os.environ["DANA_NO_GUI"] = "1"
+    os.environ["DANA_HEADLESS"] = "1"
+    os.environ.setdefault("DANA_OLLAMA_KEEP_ALIVE", "0")
+    os.environ.setdefault("DANA_SKIP_RAM_BREAKER", "1")
+    os.environ.setdefault("DANA_META_BROKER_TIMEOUT_S", "600")
     if force_local:
-        os.environ["DONNA_FORCE_LOCAL"] = "1"
+        os.environ["DANA_FORCE_LOCAL"] = "1"
     else:
-        os.environ.pop("DONNA_FORCE_LOCAL", None)
+        os.environ.pop("DANA_FORCE_LOCAL", None)
     if verbose:
-        os.environ["DONNA_DEBUG"] = "1"
-    if not (os.environ.get("DONNA_META_BROKER_LOG") or "").strip():
-        os.environ["DONNA_META_BROKER_LOG"] = "logs/hf_space_meta_broker.log"
+        os.environ["DANA_DEBUG"] = "1"
+    if not (os.environ.get("DANA_META_BROKER_LOG") or "").strip():
+        os.environ["DANA_META_BROKER_LOG"] = "logs/hf_space_meta_broker.log"
 
 
 def status_label(status: str) -> str:
@@ -497,7 +497,7 @@ class HeadlessBrokerBridge:
 
         try:
             start_headless_telemetry_drainer(
-                log_path=os.environ.get("DONNA_META_BROKER_LOG")
+                log_path=os.environ.get("DANA_META_BROKER_LOG")
             )
         except Exception:  # noqa: BLE001
             pass
@@ -557,7 +557,7 @@ class HeadlessBrokerBridge:
                 # Block until Approve / Cancel / Stop (or timeout).
                 try:
                     wait_s = float(
-                        os.environ.get("DONNA_HITL_APPROVAL_TIMEOUT_S") or "3600"
+                        os.environ.get("DANA_HITL_APPROVAL_TIMEOUT_S") or "3600"
                     )
                 except (TypeError, ValueError):
                     wait_s = 3600.0
@@ -627,7 +627,7 @@ class HeadlessBrokerBridge:
             }
         )
         try:
-            timeout_s = float(os.environ.get("DONNA_META_BROKER_TIMEOUT_S") or "600")
+            timeout_s = float(os.environ.get("DANA_META_BROKER_TIMEOUT_S") or "600")
         except (TypeError, ValueError):
             timeout_s = 600.0
         try:
@@ -793,7 +793,7 @@ class HeadlessBrokerBridge:
             key = rel.replace("\\", "/").lstrip("./")
             if not key or key in seen:
                 continue
-            if key.startswith(("dana/", "donna_security/", "website/")):
+            if key.startswith(("dana/", "dana_security/", "website/")):
                 continue
             seen.add(key)
             ordered.append(key)

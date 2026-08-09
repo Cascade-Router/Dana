@@ -23,7 +23,7 @@ from dana.paths import PROJECT_ROOT
 
 TIMEOUT_SEC = 15
 MAX_OUTPUT_CHARS = 2000
-SANDBOX_SCRIPT_NAME = ".donna_sandbox.py"
+SANDBOX_SCRIPT_NAME = ".dana_sandbox.py"
 
 _ROOT = Path(PROJECT_ROOT).resolve()
 _SANDBOX_PATH = _ROOT / SANDBOX_SCRIPT_NAME

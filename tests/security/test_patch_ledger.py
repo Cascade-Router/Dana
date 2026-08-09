@@ -41,7 +41,7 @@ def test_append_pending_uses_injectable_path(tmp_path: Path) -> None:
     dest = append_pending_ticket(ticket, ledger_path=ledger)
     assert dest == ledger
     body = ledger.read_text(encoding="utf-8")
-    assert body.startswith("# Donna Patch Ledger")
+    assert body.startswith("# Dana Patch Ledger")
     assert "[PENDING]" in body
     assert "OSError: boom" in body
 

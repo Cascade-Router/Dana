@@ -25,15 +25,15 @@ DEFAULT_SESSION_NAME = "session_state.json"
 
 
 def default_session_path() -> Path:
-    """``~/.dana/session_state.json`` (overridable via ``DONNA_SESSION_STATE``)."""
-    env = os.environ.get("DONNA_SESSION_STATE")
+    """``~/.dana/session_state.json`` (overridable via ``DANA_SESSION_STATE``)."""
+    env = os.environ.get("DANA_SESSION_STATE")
     if env:
         return Path(env).expanduser()
     return Path.home() / ".dana" / DEFAULT_SESSION_NAME
 
 
 def default_pid_path() -> Path:
-    env = os.environ.get("DONNA_ENGINE_PID_FILE")
+    env = os.environ.get("DANA_ENGINE_PID_FILE")
     if env:
         return Path(env).expanduser()
     return Path.home() / ".dana" / "engine.pid"

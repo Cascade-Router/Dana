@@ -7,12 +7,12 @@ High-complexity / visual turns escalate to a **local MoA**:
   2. Reasoner agent — DeepSeek (or local fallback) evaluates rules / returns final text
 
 Env overrides:
-  DONNA_LOCAL_MODEL       — fast chat model (default qwen2.5-coder:7b)
-  DONNA_VISION_MODEL      — preferred vision model (default auto-detect)
-  DONNA_REASONER_MODEL    — preferred reasoner (default auto-detect DeepSeek)
-  DONNA_CASCADE_EXTERNAL  — set 1 to optionally allow ChatOpenAI (off by default)
-  DONNA_CASCADE_MODEL     — external model id if EXTERNAL=1 (legacy)
-  DONNA_FORCE_LOCAL       — set 1 to hard-bypass all cloud / Gemini fallbacks
+  DANA_LOCAL_MODEL       — fast chat model (default qwen2.5-coder:7b)
+  DANA_VISION_MODEL      — preferred vision model (default auto-detect)
+  DANA_REASONER_MODEL    — preferred reasoner (default auto-detect DeepSeek)
+  DANA_CASCADE_EXTERNAL  — set 1 to optionally allow ChatOpenAI (off by default)
+  DANA_CASCADE_MODEL     — external model id if EXTERNAL=1 (legacy)
+  DANA_FORCE_LOCAL       — set 1 to hard-bypass all cloud / Gemini fallbacks
   OLLAMA_URL              — Ollama base URL (default http://127.0.0.1:11434)
 """
 
@@ -34,8 +34,8 @@ ComputeMode = Literal["lightweight", "react", "deep_research"]
 
 
 def force_local_mode() -> bool:
-    """True when ``DONNA_FORCE_LOCAL=1`` — skip all cloud / Gemini routing."""
-    return (os.environ.get("DONNA_FORCE_LOCAL") or "").strip().lower() in {
+    """True when ``DANA_FORCE_LOCAL=1`` — skip all cloud / Gemini routing."""
+    return (os.environ.get("DANA_FORCE_LOCAL") or "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -187,7 +187,7 @@ STATE_TOGGLE_TRIGGERS: dict[str, str] = {
     "status check": "status_check",
     "system status": "status_check",
     "check status": "status_check",
-    "donna status": "status_check",
+    "dana status": "status_check",
     "mute": "mute",
     "mute audio": "mute",
     "be quiet": "mute",
@@ -197,7 +197,7 @@ STATE_TOGGLE_TRIGGERS: dict[str, str] = {
 # Alias kept for Module 2 docs / tests — same mapping as STATE_TOGGLE_TRIGGERS.
 COMMAND_DICTIONARY: dict[str, str] = STATE_TOGGLE_TRIGGERS
 
-# Mode Manager targets (set_donna_mode). Other COMMAND_DICTIONARY values are actions.
+# Mode Manager targets (set_dana_mode). Other COMMAND_DICTIONARY values are actions.
 _MAILROOM_MODE_TARGETS = frozenset({"chat", "developer", "vision", "research"})
 
 # Levenshtein / RapidFuzz ratio threshold (0–100). ≥80% short-circuits the LLM.
@@ -206,7 +206,7 @@ FUZZY_MATCH_THRESHOLD = 80.0
 MAILROOM_MAX_WORDS = 8
 
 _STATE_TOGGLE_WAKE_RE = re.compile(
-    r"^(?:hey\s+)?donna\b[\s,.\-!:]*",
+    r"^(?:hey\s+)?dana\b[\s,.\-!:]*",
     re.IGNORECASE,
 )
 
@@ -365,14 +365,14 @@ class CascadeDecision:
 
 def is_cascade_enabled() -> bool:
     try:
-        from dana.settings import load_donna_settings
+        from dana.settings import load_dana_settings
 
-        cfg = load_donna_settings()
+        cfg = load_dana_settings()
         if "enable_cascade_router" in cfg:
             return bool(cfg.get("enable_cascade_router"))
     except Exception:
         pass
-    env = os.environ.get("DONNA_CASCADE_ROUTER", "").strip().lower()
+    env = os.environ.get("DANA_CASCADE_ROUTER", "").strip().lower()
     if env in ("1", "true", "yes", "on"):
         return True
     if env in ("0", "false", "no", "off"):
@@ -384,7 +384,7 @@ def allow_external_cascade() -> bool:
     """Legacy GPT/OpenAI path — off unless explicitly opted in."""
     if force_local_mode():
         return False
-    return os.environ.get("DONNA_CASCADE_EXTERNAL", "").strip().lower() in (
+    return os.environ.get("DANA_CASCADE_EXTERNAL", "").strip().lower() in (
         "1",
         "true",
         "yes",
@@ -398,7 +398,7 @@ def ollama_base_url() -> str:
 
 def local_model_name() -> str:
     return (
-        os.environ.get("DONNA_LOCAL_MODEL", "").strip()
+        os.environ.get("DANA_LOCAL_MODEL", "").strip()
         or os.environ.get("OLLAMA_MODEL", "").strip()
         or "qwen2.5-coder:7b"
     )
@@ -429,10 +429,10 @@ def _ollama_tag_available(candidate: str, tags: list[str]) -> bool:
 def lightweight_model_name() -> str:
     """Prefer ``llama3.2:1b`` for System-1 TTFT; fall back to ``qwen2.5-coder:7b``.
 
-    Override with ``DONNA_LIGHTWEIGHT_MODEL``. When the 1b tag is not installed,
+    Override with ``DANA_LIGHTWEIGHT_MODEL``. When the 1b tag is not installed,
     returns the standard local chat model so inference never hard-fails.
     """
-    override = (os.environ.get("DONNA_LIGHTWEIGHT_MODEL") or "").strip()
+    override = (os.environ.get("DANA_LIGHTWEIGHT_MODEL") or "").strip()
     if override:
         return override
     tags = _list_ollama_tags()
@@ -487,8 +487,8 @@ def resolve_compute_mode(
 
 
 def cascade_model_name() -> str:
-    """Legacy external model id (only used when DONNA_CASCADE_EXTERNAL=1)."""
-    return os.environ.get("DONNA_CASCADE_MODEL", "").strip() or "gpt-4o-mini"
+    """Legacy external model id (only used when DANA_CASCADE_EXTERNAL=1)."""
+    return os.environ.get("DANA_CASCADE_MODEL", "").strip() or "gpt-4o-mini"
 
 
 def _list_ollama_tags(*, force: bool = False) -> list[str]:
@@ -562,7 +562,7 @@ def _pick_installed(preferred: str, candidates: tuple[str, ...], *, fallback: st
 
 
 def vision_model_name() -> str:
-    preferred = os.environ.get("DONNA_VISION_MODEL", "").strip()
+    preferred = os.environ.get("DANA_VISION_MODEL", "").strip()
     # Empty preferred → walk candidates (llava first). Env can still force
     # llama3.2-vision when the local Ollama runner supports mllama.
     return _pick_installed(preferred, _VISION_CANDIDATES, fallback=preferred or "llava")
@@ -570,7 +570,7 @@ def vision_model_name() -> str:
 
 def reasoner_model_name() -> str:
     preferred = (
-        os.environ.get("DONNA_REASONER_MODEL", "").strip() or "deepseek-r1:8b"
+        os.environ.get("DANA_REASONER_MODEL", "").strip() or "deepseek-r1:8b"
     )
     return _pick_installed(
         preferred,
@@ -623,12 +623,12 @@ def classify_complexity(query: str, *, forced_tool: str | None = None) -> Comple
     return "low"
 
 
-def _donna_mode_is_chat() -> bool:
+def _dana_mode_is_chat() -> bool:
     """True when Mode Manager is in chat (bypass MoA / high-complexity escalate)."""
     try:
-        from dana.agentic import get_donna_mode
+        from dana.agentic import get_dana_mode
 
-        return get_donna_mode() == "chat"
+        return get_dana_mode() == "chat"
     except Exception:  # noqa: BLE001
         return False
 
@@ -639,7 +639,7 @@ def allows_react_task_jail() -> bool:
     ``vision`` / ``research`` modes remain scaffolded and still allow the jail
     until their dedicated graphs are wired.
     """
-    return not _donna_mode_is_chat()
+    return not _dana_mode_is_chat()
 
 
 def decide_route(
@@ -705,9 +705,9 @@ def decide_route(
         target = mailroom.target
         if target in _MAILROOM_MODE_TARGETS:
             try:
-                from dana.agentic import set_donna_mode
+                from dana.agentic import set_dana_mode
 
-                set_donna_mode(target)
+                set_dana_mode(target)
             except Exception:  # noqa: BLE001
                 pass
             # Stage 3.1: residual clause rides in Handoff.intent_context.
@@ -822,23 +822,23 @@ def decide_route(
     _deep_force = (forced_tool or "").strip() == "dispatch_research_swarm" or (
         query or ""
     ).lstrip().startswith("[BACKGROUND TASK]")
-    if _donna_mode_is_chat() and not tool_intent and not _deep_force:
+    if _dana_mode_is_chat() and not tool_intent and not _deep_force:
         return CascadeDecision(
             complexity="low",
             backend="local",
             model=local,
             reason="chat mode → local llama, tools/MoA bypassed",
         )
-    if _donna_mode_is_chat() and (tool_intent or _deep_force):
+    if _dana_mode_is_chat() and (tool_intent or _deep_force):
         _log_cascade(
             "CRITICAL: system/file/code/research intent in chat mode → tool-graph "
             "(MoA/ReAct); lightweight chat bypassed"
         )
     # Scaffolded modes: log intent; keep current MoA/local heuristics for now.
     try:
-        from dana.agentic import get_donna_mode
+        from dana.agentic import get_dana_mode
 
-        mode = get_donna_mode()
+        mode = get_dana_mode()
         if mode in {"vision", "research"}:
             _log_cascade(
                 f"mode={mode} (scaffolded) — using standard cascade heuristics"
@@ -1254,7 +1254,7 @@ def reason_over_context(
     """MoA stage 2 — local reasoner (DeepSeek) evaluates context vs rule/task."""
     reasoner = (model or reasoner_model_name()).strip()
     system = (
-        "You are Donna's local MoA reasoner. Be precise and concise. "
+        "You are Dana's local MoA reasoner. Be precise and concise. "
         "When given a RULE, decide PASS/FAIL and produce a short actionable COMMENT. "
         "Use this exact format when a RULE is present:\n"
         "VERDICT: PASS|FAIL|UNCLEAR\n"
@@ -1429,7 +1429,7 @@ def resolve_chat_model(
                 )
 
         # Opt-in escape hatch for experiments only (expect broken native tool_calls).
-        if (os.environ.get("DONNA_REACT_USE_REASONER") or "").strip().lower() in {
+        if (os.environ.get("DANA_REACT_USE_REASONER") or "").strip().lower() in {
             "1",
             "true",
             "yes",
@@ -1437,7 +1437,7 @@ def resolve_chat_model(
         }:
             model_id = reasoner_id or deep_research_model_name()
             _log_cascade(
-                f"WARNING: DONNA_REACT_USE_REASONER → ChatOllama={model_id}",
+                f"WARNING: DANA_REACT_USE_REASONER → ChatOllama={model_id}",
                 level="warning",
             )
 
@@ -1450,7 +1450,7 @@ def resolve_chat_model(
                 2048,
                 min(
                     4096,
-                    int(os.environ.get("DONNA_LIGHTWEIGHT_NUM_CTX", "4096") or "4096"),
+                    int(os.environ.get("DANA_LIGHTWEIGHT_NUM_CTX", "4096") or "4096"),
                 ),
             )
         except ValueError:
@@ -1460,7 +1460,7 @@ def resolve_chat_model(
         try:
             num_ctx = max(
                 4096,
-                int(os.environ.get("DONNA_REACT_NUM_CTX", "8192") or "8192"),
+                int(os.environ.get("DANA_REACT_NUM_CTX", "8192") or "8192"),
             )
         except ValueError:
             num_ctx = 8192
@@ -1471,7 +1471,7 @@ def resolve_chat_model(
     try:
         num_predict = max(
             512,
-            int(os.environ.get("DONNA_REACT_NUM_PREDICT", "4096") or "4096"),
+            int(os.environ.get("DANA_REACT_NUM_PREDICT", "4096") or "4096"),
         )
     except ValueError:
         num_predict = 4096

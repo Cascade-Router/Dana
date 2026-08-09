@@ -206,7 +206,7 @@ def run_forever(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Donna Stage 4.1 vision sensor daemon (blackboard publisher)."
+        description="Dana Stage 4.1 vision sensor daemon (blackboard publisher)."
     )
     parser.add_argument(
         "--interval",

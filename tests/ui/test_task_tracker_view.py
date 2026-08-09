@@ -80,12 +80,12 @@ def test_task_tracker_view_refresh_headless(tmp_path: Path) -> None:
 
 def test_gui_title_and_banner_are_dana() -> None:
     try:
-        from dana.core_agent import DonnaGUI
+        from dana.core_agent import DanaGUI
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"DonnaGUI unavailable: {exc}")
+        pytest.skip(f"DanaGUI unavailable: {exc}")
 
     try:
-        app = DonnaGUI()
+        app = DanaGUI()
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"Tk unavailable: {exc}")
     try:
@@ -95,7 +95,7 @@ def test_gui_title_and_banner_are_dana() -> None:
         raw = str(app.transcript_box.get("1.0", "end"))
         assert "[Dana]" in raw
         assert "[Donna]" not in raw
-        assert "STOP DANA" in str(app.stop_donna_btn.cget("text"))
+        assert "STOP DANA" in str(app.stop_dana_btn.cget("text"))
     finally:
         try:
             app.destroy()

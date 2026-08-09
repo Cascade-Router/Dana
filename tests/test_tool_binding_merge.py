@@ -14,7 +14,7 @@ _KNOWN = (
 
 def test_explicit_keyword_sweep_finds_named_tools() -> None:
     text = (
-        "Donna, check my screen but also use the draft_cursor_prompt "
+        "Dana, check my screen but also use the draft_cursor_prompt "
         "tool to write a test."
     )
     found = explicit_tool_ids_in_text(text, _KNOWN)
@@ -24,7 +24,7 @@ def test_explicit_keyword_sweep_finds_named_tools() -> None:
 
 def test_vision_mode_merges_explicit_draft_cursor() -> None:
     text = (
-        "Donna, check my screen but also use the draft_cursor_prompt "
+        "Dana, check my screen but also use the draft_cursor_prompt "
         "tool to write a test."
     )
     merged = merge_bound_tool_ids(

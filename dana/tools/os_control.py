@@ -2,14 +2,14 @@
 
 Tools:
   capture_and_analyze_screen — mss screenshot → Cascade MoA vision summary
-  execute_os_keystrokes      — hardware scan-code SendInput (no pyautogui/pynput)
+  execute_os_keystrokes      — hardware scan-code SendInput via ctypes (no pyautogui/pynput)
 
 Closed-loop upgrade (Stage 6.1):
   ``dana.operators.ghost_typist.GhostTypistOperator`` / ``type_stealth_text``
   wraps this SendInput backend with chunked Sense-Evaluate-Act visual guards.
 
 Safety:
-  - DONNA_OS_DRY_RUN=1 skips real input.
+  - DANA_OS_DRY_RUN=1 skips real input.
   - Keystroke bursts are rate-limited (chars/sec + cooldown).
   - Chord macros are allowlisted only.
   - Typing uses randomized 40–110 ms human cadence between press/release.
@@ -22,6 +22,7 @@ import ctypes
 import io
 import os
 import random
+import re
 import threading
 import time
 from ctypes import wintypes
@@ -75,6 +76,9 @@ MOUSEEVENTF_VIRTUALDESK = 0x4000
 # One "notch" of physical mouse-wheel rotation (Win32 WHEEL_DELTA).
 WHEEL_DELTA = 120
 
+# Window-management constants (EnumWindows / SetForegroundWindow).
+SW_RESTORE = 9
+
 # Virtual-key codes needed for MapVirtualKey → scan code.
 VK_SHIFT = 0x10
 VK_CONTROL = 0x11
@@ -84,6 +88,22 @@ VK_TAB = 0x09
 VK_ESCAPE = 0x1B
 VK_SPACE = 0x20
 VK_BACK = 0x08
+VK_LWIN = 0x5B
+VK_DELETE = 0x2E
+VK_INSERT = 0x2D
+VK_HOME = 0x24
+VK_END = 0x23
+VK_PRIOR = 0x21  # Page Up
+VK_NEXT = 0x22  # Page Down
+VK_UP = 0x26
+VK_DOWN = 0x28
+VK_LEFT = 0x25
+VK_RIGHT = 0x27
+VK_F1 = 0x70
+
+# Clipboard constants (OpenClipboard / GetClipboardData / SetClipboardData).
+CF_UNICODETEXT = 13
+GMEM_MOVEABLE = 0x0002
 
 _EXTENDED_VKS = frozenset(
     {
@@ -147,6 +167,10 @@ def _user32():
     return ctypes.windll.user32
 
 
+def _kernel32():
+    return ctypes.windll.kernel32
+
+
 def get_cursor_pos() -> tuple[int, int]:
     """Return current cursor position in screen pixels."""
     pt = wintypes.POINT()
@@ -158,6 +182,175 @@ def get_cursor_pos() -> tuple[int, int]:
 def get_screen_size() -> tuple[int, int]:
     user32 = _user32()
     return int(user32.GetSystemMetrics(0)), int(user32.GetSystemMetrics(1))
+
+
+def get_active_windows() -> list[dict[str, Any]]:
+    """Enumerate visible top-level desktop windows via ``EnumWindows``.
+
+    Filters to windows that are visible (``IsWindowVisible``) and have a
+    non-empty title bar — this drops invisible helper windows and
+    system-level background processes that never surface a title, without
+    needing a hardcoded process-name blocklist. Order matches Win32 Z-order
+    (topmost window first).
+
+    Returns a list of ``{"hwnd": int, "title": str, "pid": int}`` dicts.
+    """
+    if os.name != "nt":
+        raise OSError("EnumWindows window listing is Windows-only")
+    user32 = _user32()
+    windows: list[dict[str, Any]] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _enum_proc(hwnd: int, _lparam: int) -> bool:
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = int(user32.GetWindowTextLengthW(hwnd))
+        if length <= 0:
+            return True
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        title = (buf.value or "").strip()
+        if not title:
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        windows.append({"hwnd": int(hwnd), "title": title, "pid": int(pid.value)})
+        return True
+
+    if not user32.EnumWindows(_enum_proc, 0):
+        raise OSError(f"EnumWindows failed: {ctypes.GetLastError()}")
+    return windows
+
+
+def set_foreground_window(hwnd: int) -> bool:
+    """Bring ``hwnd`` to the foreground via ``SetForegroundWindow``.
+
+    Restores the window first (``ShowWindow``/``SW_RESTORE``) if it's
+    minimized, since a minimized window can't visibly come to the front.
+    Windows may still deny the focus-steal per its foreground-lock rules
+    (e.g. the requesting process isn't the current foreground process) —
+    that is a normal, expected outcome, not an error condition, so this
+    returns ``False`` rather than raising; callers decide how to report it.
+    """
+    if os.name != "nt":
+        raise OSError("SetForegroundWindow is Windows-only")
+    user32 = _user32()
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, SW_RESTORE)
+    return bool(user32.SetForegroundWindow(hwnd))
+
+
+def _configure_clipboard_signatures(user32: Any, kernel32: Any) -> None:
+    """Set explicit ctypes argtypes/restype for the clipboard APIs.
+
+    Without this, ctypes assumes a 32-bit ``c_int`` return for every
+    function, which silently truncates 64-bit handles on Win64 — this is
+    idempotent and cheap, so both clipboard functions call it defensively
+    rather than relying on shared import-time state.
+    """
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.CloseClipboard.restype = wintypes.BOOL
+    user32.EmptyClipboard.restype = wintypes.BOOL
+    user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
+    user32.IsClipboardFormatAvailable.restype = wintypes.BOOL
+    user32.GetClipboardData.argtypes = [wintypes.UINT]
+    user32.GetClipboardData.restype = wintypes.HANDLE
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wintypes.HANDLE
+    kernel32.GlobalLock.argtypes = [wintypes.HANDLE]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [wintypes.HANDLE]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
+    kernel32.GlobalFree.argtypes = [wintypes.HANDLE]
+    kernel32.GlobalFree.restype = wintypes.HANDLE
+
+
+def _open_clipboard_with_retry(user32: Any, *, attempts: int = 5) -> bool:
+    """Best-effort retry: another process (clipboard manager, AV) can hold
+    the clipboard for a few milliseconds at a time."""
+    for _attempt in range(attempts):
+        if user32.OpenClipboard(None):
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def read_clipboard_text() -> str | None:
+    """Read plaintext (``CF_UNICODETEXT``) off the system clipboard via raw
+    Win32 APIs (``OpenClipboard``/``GetClipboardData``/``CloseClipboard``).
+
+    Returns ``None`` if the clipboard is empty or holds no text format.
+    Raises ``OSError`` if the clipboard can't be opened at all or a handle
+    can't be locked — both unexpected failure modes, unlike "no text there".
+    """
+    if os.name != "nt":
+        raise OSError("Win32 clipboard access is Windows-only")
+    user32 = _user32()
+    kernel32 = _kernel32()
+    _configure_clipboard_signatures(user32, kernel32)
+
+    if not _open_clipboard_with_retry(user32):
+        raise OSError(f"OpenClipboard failed: {ctypes.GetLastError()}")
+    try:
+        if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+            return None
+        handle = user32.GetClipboardData(CF_UNICODETEXT)
+        if not handle:
+            return None
+        locked = kernel32.GlobalLock(handle)
+        if not locked:
+            raise OSError(f"GlobalLock failed: {ctypes.GetLastError()}")
+        try:
+            return ctypes.wstring_at(locked)
+        finally:
+            kernel32.GlobalUnlock(handle)
+    finally:
+        user32.CloseClipboard()
+
+
+def write_clipboard_text(text: str) -> None:
+    """Replace the system clipboard's contents with ``text`` via raw Win32
+    APIs (``SetClipboardData`` with ``CF_UNICODETEXT``).
+
+    Allocates a moveable global memory block, copies the UTF-16LE-encoded
+    text (plus a null terminator) into it, then hands ownership to the
+    clipboard. Per the Win32 contract, the system owns that memory once
+    ``SetClipboardData`` succeeds, so this only frees it on the failure
+    path, before ownership transfers.
+    """
+    if os.name != "nt":
+        raise OSError("Win32 clipboard access is Windows-only")
+    user32 = _user32()
+    kernel32 = _kernel32()
+    _configure_clipboard_signatures(user32, kernel32)
+
+    payload = str(text or "")
+    encoded = payload.encode("utf-16-le") + b"\x00\x00"
+
+    h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
+    if not h_mem:
+        raise OSError(f"GlobalAlloc failed: {ctypes.GetLastError()}")
+    locked = kernel32.GlobalLock(h_mem)
+    if not locked:
+        kernel32.GlobalFree(h_mem)
+        raise OSError(f"GlobalLock failed: {ctypes.GetLastError()}")
+    ctypes.memmove(locked, encoded, len(encoded))
+    kernel32.GlobalUnlock(h_mem)
+
+    if not _open_clipboard_with_retry(user32):
+        kernel32.GlobalFree(h_mem)
+        raise OSError(f"OpenClipboard failed: {ctypes.GetLastError()}")
+    try:
+        user32.EmptyClipboard()
+        if not user32.SetClipboardData(CF_UNICODETEXT, h_mem):
+            kernel32.GlobalFree(h_mem)
+            raise OSError(f"SetClipboardData failed: {ctypes.GetLastError()}")
+        # Clipboard now owns h_mem — do not free it ourselves on success.
+    finally:
+        user32.CloseClipboard()
 
 
 def move_cursor_absolute(x: int, y: int) -> None:
@@ -383,7 +576,30 @@ _HOTKEY_VK = {
     "s": 0x53,
     "v": 0x56,
     "z": 0x5A,
+    "win": VK_LWIN,
+    "windows": VK_LWIN,
+    "super": VK_LWIN,
+    "space": VK_SPACE,
+    "backspace": VK_BACK,
+    "back": VK_BACK,
+    "delete": VK_DELETE,
+    "del": VK_DELETE,
+    "insert": VK_INSERT,
+    "ins": VK_INSERT,
+    "home": VK_HOME,
+    "end": VK_END,
+    "pageup": VK_PRIOR,
+    "pgup": VK_PRIOR,
+    "pagedown": VK_NEXT,
+    "pgdn": VK_NEXT,
+    "up": VK_UP,
+    "down": VK_DOWN,
+    "left": VK_LEFT,
+    "right": VK_RIGHT,
 }
+
+# Matches "f1".."f24" (Win32 defines VK_F1..VK_F24 as a contiguous range).
+_FUNCTION_KEY_RE = re.compile(r"^f([1-9]|1[0-9]|2[0-4])$")
 
 
 def type_text_sendinput(text: str) -> dict[str, Any]:
@@ -449,8 +665,61 @@ def press_hotkey_sendinput(keys: tuple[str, ...]) -> None:
         _human_sleep()
 
 
+def resolve_key_name(name: str) -> int | None:
+    """Resolve a human-readable key name to its Win32 virtual-key code.
+
+    Recognizes everything in ``_HOTKEY_VK`` (modifiers + named/navigation
+    keys), function keys (``f1``..``f24``), single letters (``a``-``z``),
+    and single digits (``0``-``9``). Returns ``None`` for anything else —
+    callers should treat that as an unsupported key rather than guessing.
+    Unlike ``_HOTKEY_VK``/``press_hotkey_sendinput``'s narrow, exact-tuple
+    ``_ALLOWED_HOTKEYS`` allowlist, this backs the more general
+    ``press_key_combo``/``execute_shortcut`` path — safety there comes from
+    validating every key resolves before pressing anything, not from a
+    closed list of exact combos.
+    """
+    key = str(name or "").strip().lower()
+    if not key:
+        return None
+    if key in _HOTKEY_VK:
+        return _HOTKEY_VK[key]
+    m = _FUNCTION_KEY_RE.match(key)
+    if m:
+        return VK_F1 + (int(m.group(1)) - 1)
+    if len(key) == 1:
+        if "a" <= key <= "z":
+            return ord(key.upper())
+        if key.isdigit():
+            return ord(key)
+    return None
+
+
+def press_key_combo(keys: list[str]) -> None:
+    """Press ``keys`` down in order, then release them in reverse order.
+
+    Resolves every name via ``resolve_key_name`` and validates the whole
+    combo *before* pressing anything — fails closed with ``ValueError``
+    rather than risk pressing some keys and not others (e.g. a stuck
+    modifier) on a bad combo.
+    """
+    if not keys:
+        raise ValueError("press_key_combo requires at least one key")
+    resolved: list[int] = []
+    for name in keys:
+        vk = resolve_key_name(name)
+        if vk is None:
+            raise ValueError(f"unsupported key: {name!r}")
+        resolved.append(vk)
+    for vk in resolved:
+        _send_scan(vk, key_up=False)
+        _human_sleep()
+    for vk in reversed(resolved):
+        _send_scan(vk, key_up=True)
+        _human_sleep()
+
+
 def _dry_run() -> bool:
-    return os.environ.get("DONNA_OS_DRY_RUN", "").strip().lower() in ("1", "true", "yes")
+    return os.environ.get("DANA_OS_DRY_RUN", "").strip().lower() in ("1", "true", "yes")
 
 
 def _rate_limit_ok(n_chars: int) -> tuple[bool, str]:

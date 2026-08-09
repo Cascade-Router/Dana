@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Donna deep-research swarm — Planner → Search (WebSearchTool) → Writer.
+"""Dana deep-research swarm — Planner → Search (WebSearchTool) → Writer.
 
 Architecture:
   PlannerAgent  — decompose topic into discrete search objectives
@@ -47,7 +47,7 @@ _MAX_SEARCH_TOOL_ROUNDS = 3
 _MAX_PLAN_OBJECTIVES = 5
 
 PLANNER_SYSTEM = """
-You are the PlannerAgent for Donna's deep-research multi-agent layer.
+You are the PlannerAgent for Dana's deep-research multi-agent layer.
 Your only job is query decomposition:
 1. Break the user's complex research topic into 2–5 discrete search objectives.
 2. Each objective must be a concrete, self-contained web search query string
@@ -60,7 +60,7 @@ Example: ["objective one", "objective two", "objective three"]
 """.strip()
 
 SEARCH_SYSTEM = """
-You are the Search Agent for Donna's deep-research swarm.
+You are the Search Agent for Dana's deep-research swarm.
 Protocol (strict):
 1. You MUST use the bound `web_search` tool (WebSearchTool / web.run wrapper)
    to collect outside information. Never invent facts or URLs.
@@ -74,7 +74,7 @@ Protocol (strict):
 """.strip()
 
 WRITER_SYSTEM = """
-You are the WriterAgent for Donna's deep-research swarm.
+You are the WriterAgent for Dana's deep-research swarm.
 Protocol (strict):
 1. Compile a comprehensive multi-paragraph Markdown synthesis using ONLY the
    Scratchpad / cache findings provided below.
@@ -388,7 +388,7 @@ def write_node(state: SwarmState) -> dict[str, Any]:
     _DOCS_DIR.mkdir(parents=True, exist_ok=True)
     body = (state.get("report") or "").strip() or "(empty report)"
     header = (
-        f"<!-- Donna swarm report generated "
+        f"<!-- Dana swarm report generated "
         f"{datetime.now(timezone.utc).isoformat()} -->\n"
         f"<!-- query: {(state.get('query') or '').replace('--', '-')} -->\n"
         f"<!-- session: {state.get('session_id') or ''} -->\n\n"

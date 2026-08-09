@@ -16,7 +16,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_LEDGER_HEADER = "# Donna Patch Ledger\n"
+_LEDGER_HEADER = "# Dana Patch Ledger\n"
 
 # Injectable override for tests (``None`` → ``dana.paths.PATCH_LEDGER_PATH``).
 _LEDGER_PATH_OVERRIDE: Path | None = None
@@ -35,9 +35,9 @@ def resolve_ledger_path(ledger_path: Path | str | None = None) -> Path:
     if _LEDGER_PATH_OVERRIDE is not None:
         return Path(_LEDGER_PATH_OVERRIDE)
     try:
-        from dana.paths import DONNA_SECURITY_DIR, PATCH_LEDGER_PATH
+        from dana.paths import DANA_SECURITY_DIR, PATCH_LEDGER_PATH
 
-        DONNA_SECURITY_DIR.mkdir(parents=True, exist_ok=True)
+        DANA_SECURITY_DIR.mkdir(parents=True, exist_ok=True)
         return Path(PATCH_LEDGER_PATH)
     except Exception:  # noqa: BLE001
         return Path(__file__).resolve().parent / "patch_ledger.md"

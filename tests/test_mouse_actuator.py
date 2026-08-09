@@ -3,7 +3,7 @@
 Every test injects ``move_fn``/``click_fn``/``screen_size_fn`` stubs so the
 geometry + safety pipeline runs with no real SendInput calls, and resets the
 module-wide rate limiter between tests so cases don't interfere with each
-other. Also clears ``DONNA_OS_DRY_RUN`` from the ambient environment before
+other. Also clears ``DANA_OS_DRY_RUN`` from the ambient environment before
 each test: at least one other test module in this suite
 (``tests/test_e2e_lifecycle.py``) sets it at import time via a raw
 ``os.environ[...] = ...`` (not ``monkeypatch``), which leaks into every test
@@ -21,7 +21,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("DONNA_OS_DRY_RUN", raising=False)
+    monkeypatch.delenv("DANA_OS_DRY_RUN", raising=False)
     mouse_actuator._last_actuation_ts = 0.0
     yield
     mouse_actuator._last_actuation_ts = 0.0
@@ -122,7 +122,7 @@ def test_click_bbox_rate_limits_rapid_successive_calls() -> None:
 
 
 def test_click_bbox_dry_run_validates_but_never_moves(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
     actuator, calls = _stub_actuator()
     result = actuator.click_bbox([0, 0, 100, 100])
     assert result["ok"] is True
@@ -133,7 +133,7 @@ def test_click_bbox_dry_run_validates_but_never_moves(monkeypatch: pytest.Monkey
 
 
 def test_click_bbox_dry_run_still_enforces_failsafe(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
     actuator, calls = _stub_actuator(screen_size=(100, 100))
     result = actuator.click_bbox([500, 500, 600, 600])
     assert result["ok"] is False
@@ -156,7 +156,7 @@ def test_click_target_bbox_tool_wrapper_returns_ok_string(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Dry-run end-to-end: no dependency injection, real (read-only) screen size.
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
     out = click_target_bbox([0, 0, 100, 100])
     assert out.startswith("OK: click_target_bbox")
     assert "dry_run=True" in out
@@ -165,6 +165,6 @@ def test_click_target_bbox_tool_wrapper_returns_ok_string(
 def test_click_target_bbox_tool_wrapper_returns_error_string(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("DONNA_OS_DRY_RUN", "1")
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
     out = click_target_bbox([0, 0, 10])  # malformed bbox
     assert out.startswith("ERROR: click_target_bbox failed")

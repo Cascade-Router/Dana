@@ -5,15 +5,15 @@ from __future__ import annotations
 
 def test_engine_engage_standby_locks_behavior() -> None:
     from dana.core_agent import (
-        DonnaGUI,
+        DanaGUI,
         is_engine_engaged,
         set_engine_engaged,
     )
 
     set_engine_engaged(False)
-    app = DonnaGUI()
+    app = DanaGUI()
     try:
-        # DonnaGUI now auto-engages the engine during construction
+        # DanaGUI now auto-engages the engine during construction
         # (engage_engine() runs unconditionally from _build_unified_canvas),
         # so a fresh instance is never left in STANDBY — establish that
         # starting state explicitly before testing the toggle transitions.
@@ -52,12 +52,12 @@ def test_engine_engage_standby_locks_behavior() -> None:
 
 
 def test_standby_blocks_chat_and_dictation() -> None:
-    from dana.core_agent import DonnaGUI, set_engine_engaged
+    from dana.core_agent import DanaGUI, set_engine_engaged
 
     set_engine_engaged(False)
-    app = DonnaGUI()
+    app = DanaGUI()
     try:
-        # DonnaGUI auto-engages on construction — force STANDBY first so
+        # DanaGUI auto-engages on construction — force STANDBY first so
         # _require_engine() below has something to actually refuse.
         app.standby_engine()
         # _engine_warn_lbl is intentionally None now (see core_agent.py) and
@@ -83,21 +83,21 @@ def test_standby_blocks_chat_and_dictation() -> None:
             pass
 
 
-def test_stop_donna_still_independent() -> None:
+def test_stop_dana_still_independent() -> None:
     """Kill switch remains a separate hard-exit path."""
-    from dana.core_agent import DonnaGUI, set_engine_engaged
+    from dana.core_agent import DanaGUI, set_engine_engaged
 
     set_engine_engaged(False)
-    app = DonnaGUI()
+    app = DanaGUI()
     try:
-        assert hasattr(app, "kill_donna_processes")
-        assert hasattr(app, "_on_stop_donna_clicked")
-        assert app.stop_donna_btn is not None
-        assert "STOP" in str(app.stop_donna_btn.cget("text")).upper()
+        assert hasattr(app, "kill_dana_processes")
+        assert hasattr(app, "_on_stop_dana_clicked")
+        assert app.stop_dana_btn is not None
+        assert "STOP" in str(app.stop_dana_btn.cget("text")).upper()
         # Soft STANDBY must not clear the kill button.
         app.engage_engine()
         app.standby_engine()
-        assert app.stop_donna_btn.winfo_exists()
+        assert app.stop_dana_btn.winfo_exists()
     finally:
         set_engine_engaged(False)
         try:
@@ -109,7 +109,7 @@ def test_stop_donna_still_independent() -> None:
 def test_stop_callback_halts_engine(monkeypatch) -> None:
     """STOP DANA must deactivate the engine even when kill-script is stubbed."""
     from dana.core_agent import (
-        DonnaGUI,
+        DanaGUI,
         is_engine_engaged,
         set_engine_engaged,
         stop_event,
@@ -117,7 +117,7 @@ def test_stop_callback_halts_engine(monkeypatch) -> None:
 
     set_engine_engaged(False)
     stop_event.clear()
-    app = DonnaGUI()
+    app = DanaGUI()
     try:
         app.engage_engine()
         assert app.engine_active is True
@@ -125,13 +125,13 @@ def test_stop_callback_halts_engine(monkeypatch) -> None:
 
         monkeypatch.setattr(
             app,
-            "kill_donna_processes",
+            "kill_dana_processes",
             lambda: {"ok": True, "pid": 1, "path": "stub"},
         )
         # Avoid deferred Popen; halt must be synchronous in the click handler.
         monkeypatch.setattr(app, "after", lambda *_a, **_k: None)
 
-        app._on_stop_donna_clicked()
+        app._on_stop_dana_clicked()
 
         assert app.engine_active is False
         assert is_engine_engaged() is False

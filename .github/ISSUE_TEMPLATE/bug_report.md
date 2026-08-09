@@ -15,7 +15,7 @@ assignees: ""
 | **PyTorch version** | e.g. `2.13.0+cu126` (`python -c "import torch; print(torch.__version__)"`) |
 | **CUDA / driver** | e.g. CUDA 12.6 / driver 560.x (or N/A) |
 | **Python version** | e.g. 3.11.9 |
-| **Donna commit / tag** | e.g. `main` @ `abc1234` |
+| **Dana commit / tag** | e.g. `main` @ `abc1234` |
 
 ## Summary
 
@@ -40,8 +40,8 @@ What happened instead.
 Paste relevant excerpts from:
 
 - terminal / `run.py` stderr
-- `logs/donna_runtime.log` (if present)
-- Live Trace / `logs/donna_telemetry.jsonl` (if relevant)
+- `logs/dana_runtime.log` (if present)
+- Live Trace / `logs/dana_telemetry.jsonl` (if relevant)
 
 ```text
 (paste logs here — redact secrets, API keys, and personal paths if needed)

@@ -147,7 +147,7 @@ def execute_tool_payload(
 
     if name == "click_close_button":
         # Logical recovery step — dismiss blocking UI (Esc when live).
-        if os.environ.get("DONNA_OS_DRY_RUN", "").strip().lower() in {
+        if os.environ.get("DANA_OS_DRY_RUN", "").strip().lower() in {
             "1",
             "true",
             "yes",
@@ -438,7 +438,7 @@ def run_forever(
     except Exception:  # noqa: BLE001
         pass
     inflight: set[Future[Any]] = set()
-    with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="donna-act") as pool:
+    with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="dana-act") as pool:
         while True:
             try:
                 try:
@@ -469,7 +469,7 @@ def run_forever(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Donna Stage 4.2 actuator daemon (action_queue worker)."
+        description="Dana Stage 4.2 actuator daemon (action_queue worker)."
     )
     parser.add_argument(
         "--interval",

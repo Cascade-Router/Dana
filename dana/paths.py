@@ -1,10 +1,10 @@
 """Canonical project + runtime workspace paths (cwd-independent).
 
 Core source and runtime artifacts both live under ``PROJECT_ROOT`` (CAMGRASPER).
-``DONNA_WORKSPACE`` is the repo root — there is no separate Desktop/Donna tree.
+``DANA_WORKSPACE`` is the repo root — there is no separate Desktop/Dana tree.
 
 Layout:
-  CAMGRASPER/                 ← PROJECT_ROOT == DONNA_WORKSPACE
+  CAMGRASPER/                 ← PROJECT_ROOT == DANA_WORKSPACE
   CAMGRASPER/dana/           ← core package
   CAMGRASPER/custom_tools/    ← sole Tool Forge write/load root (ephemeral)
   CAMGRASPER/logs/            ← runtime + conversation logs
@@ -26,20 +26,20 @@ PROJECT_ROOT: Path = Path(
 ).resolve()
 
 # Runtime workspace is the canonical repository root.
-DONNA_WORKSPACE: Path = PROJECT_ROOT
+DANA_WORKSPACE: Path = PROJECT_ROOT
 
 # --- Runtime artifact trees (under CAMGRASPER) ---
 
-LOGS_DIR: Path = DONNA_WORKSPACE / "logs"
+LOGS_DIR: Path = DANA_WORKSPACE / "logs"
 
-TRACKER_DIR: Path = DONNA_WORKSPACE / "tracker"
+TRACKER_DIR: Path = DANA_WORKSPACE / "tracker"
 
 BUG_TRACKER_PATH: Path = TRACKER_DIR / "bug_tracker.json"
 
 PENDING_PATCHES_DIR: Path = TRACKER_DIR / "pending_patches"
 
 # Filesystem jail (Watchdog cwd, task queue, sandbox_read root).
-EXECUTION_JAIL_DIR: Path = DONNA_WORKSPACE / "execution_jail"
+EXECUTION_JAIL_DIR: Path = DANA_WORKSPACE / "execution_jail"
 
 EXECUTION_JAIL_LIBRARY_DIR: Path = EXECUTION_JAIL_DIR / "library"
 
@@ -50,7 +50,7 @@ TASK_QUEUE_PATH: Path = EXECUTION_JAIL_DIR / "task_queue.json"
 TEXT_INJECTION_PATH: Path = EXECUTION_JAIL_DIR / "input.txt"
 
 # Custom (ephemeral) forged tools — primary Tool Forge write target.
-CUSTOM_TOOLS_DIR: Path = DONNA_WORKSPACE / "custom_tools"
+CUSTOM_TOOLS_DIR: Path = DANA_WORKSPACE / "custom_tools"
 
 CUSTOM_TOOLS_ARCHIVE_DIR: Path = CUSTOM_TOOLS_DIR / "_archive"
 
@@ -59,31 +59,31 @@ GENERATED_TOOLS_DIR: Path = CUSTOM_TOOLS_DIR
 
 GENERATED_TOOLS_ARCHIVE_DIR: Path = CUSTOM_TOOLS_ARCHIVE_DIR
 
-LEGACY_DESKTOP_GENERATED_TOOLS_DIR: Path = DONNA_WORKSPACE / "generated_tools"
+LEGACY_DESKTOP_GENERATED_TOOLS_DIR: Path = DANA_WORKSPACE / "generated_tools"
 
 # Live telemetry surface overwritten every ~45s by the dashboard writer.
-DASHBOARD_PATH: Path = DONNA_WORKSPACE / "dashboard.md"
+DASHBOARD_PATH: Path = DANA_WORKSPACE / "dashboard.md"
 
-CURSOR_HANDOFF_DIR: Path = DONNA_WORKSPACE / "cursor_handoffs"
+CURSOR_HANDOFF_DIR: Path = DANA_WORKSPACE / "cursor_handoffs"
 
-CURSOR_HANDOFF_PATH: Path = CURSOR_HANDOFF_DIR / "donna_handoff.md"
+CURSOR_HANDOFF_PATH: Path = CURSOR_HANDOFF_DIR / "dana_handoff.md"
 
 # Mirror so Cursor IDE still discovers the plan under the project tree.
 CURSOR_HANDOFF_MIRROR_DIR: Path = PROJECT_ROOT / ".cursor" / "instructions"
 
-CURSOR_HANDOFF_MIRROR_PATH: Path = CURSOR_HANDOFF_MIRROR_DIR / "donna_handoff.md"
+CURSOR_HANDOFF_MIRROR_PATH: Path = CURSOR_HANDOFF_MIRROR_DIR / "dana_handoff.md"
 
-CAPTURES_DIR: Path = DONNA_WORKSPACE / "captures"
+CAPTURES_DIR: Path = DANA_WORKSPACE / "captures"
 
 # --- Repo-local (config / models / vault / async ledger) ---
 
 # Importable security package + unified patch ledger (async Cursor tickets).
-DONNA_SECURITY_DIR: Path = PROJECT_ROOT / "dana_security"
+DANA_SECURITY_DIR: Path = PROJECT_ROOT / "dana_security"
 
 # Alias: historical name; always points at dana_security/.
-REPO_SANDBOX_DIR: Path = DONNA_SECURITY_DIR
+REPO_SANDBOX_DIR: Path = DANA_SECURITY_DIR
 
-PATCH_LEDGER_PATH: Path = DONNA_SECURITY_DIR / "patch_ledger.md"
+PATCH_LEDGER_PATH: Path = DANA_SECURITY_DIR / "patch_ledger.md"
 
 DOCS_DIR: Path = PROJECT_ROOT / "docs"
 
@@ -91,7 +91,7 @@ TTS_MODELS_DIR: Path = PROJECT_ROOT / "tts_models"
 
 SETTINGS_PATH: Path = PROJECT_ROOT / "settings.json"
 
-VAULT_PATH: Path = PROJECT_ROOT / "donna_memory.enc"
+VAULT_PATH: Path = PROJECT_ROOT / "dana_memory.enc"
 
 ARCHITECTURE_MD: Path = PROJECT_ROOT / "ARCHITECTURE.md"
 
@@ -122,6 +122,8 @@ EVAL_CASES_PATH: Path = EVALS_DIR / "test_cases.json"
 # checks legacy repo-root locations for backward compatibility.
 MODELS_DIR: Path = PROJECT_ROOT / "assets" / "models"
 WAKEWORD_ONNX: Path = MODELS_DIR / "dana.onnx"
+# Legacy filename fallback — intentionally left as "donna.onnx" so installs
+# upgrading from the old "Donna" build still resolve their existing model file.
 WAKEWORD_ONNX_LEGACY: Path = MODELS_DIR / "donna.onnx"
 WAKEWORD_ONNX_ALT: Path = MODELS_DIR / "wake_word_model.onnx"
 
@@ -134,7 +136,7 @@ def resolve_wakeword_onnx() -> Path:
         WAKEWORD_ONNX_LEGACY,
         PROJECT_ROOT / "dana.onnx",
         PROJECT_ROOT / "wake_word_model.onnx",
-        PROJECT_ROOT / "donna.onnx",
+        PROJECT_ROOT / "donna.onnx",  # legacy repo-root fallback, kept intentionally
     ):
         if candidate.is_file():
             return candidate
@@ -148,7 +150,7 @@ TEMP_REPLY_WAV: Path = PROJECT_ROOT / "temp_reply.wav"
 
 YOLO_WEIGHTS_PATH: Path = MODELS_DIR / "yolov8n.pt"
 
-WORKSPACE_MIGRATION_MARKER: Path = DONNA_WORKSPACE / ".donna_workspace_migrated"
+WORKSPACE_MIGRATION_MARKER: Path = DANA_WORKSPACE / ".dana_workspace_migrated"
 
 WORKSPACE_SUBDIRS: tuple[Path, ...] = (
     LOGS_DIR,
@@ -179,13 +181,13 @@ def ensure_project_root_on_syspath() -> Path:
 
 
 def ensure_workspace_on_syspath() -> Path:
-    """Put ``DONNA_WORKSPACE`` on ``sys.path`` so ``custom_tools.*`` imports work."""
+    """Put ``DANA_WORKSPACE`` on ``sys.path`` so ``custom_tools.*`` imports work."""
     import sys
 
-    ws = str(DONNA_WORKSPACE)
+    ws = str(DANA_WORKSPACE)
     if ws not in sys.path:
         sys.path.insert(0, ws)
-    return DONNA_WORKSPACE
+    return DANA_WORKSPACE
 
 
 def chdir_project_root() -> Path:

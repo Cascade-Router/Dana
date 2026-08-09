@@ -1,4 +1,4 @@
-"""Donna bilingual tool-routing package."""
+"""Dana bilingual tool-routing package."""
 
 from dana.tools.broker import IntentBroker, ToolValidationError, get_broker, reload_broker_registry
 from dana.tools.ipc import VaultRequest, VaultResponse

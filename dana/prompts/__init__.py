@@ -1,8 +1,8 @@
-"""Donna prompt package."""
+"""Dana prompt package."""
 
 from dana.prompts.spatial_synthesis import (
     ANTI_DRIFT_EN_BLOCK,
-    DONNA_PERSONA,
+    DANA_PERSONA,
     REACT_PROTOCOL,
     SPATIAL_SYNTHESIS_GUIDE,
     build_agent_system_prompt,
@@ -11,7 +11,7 @@ from dana.prompts.spatial_synthesis import (
 
 __all__ = [
     "ANTI_DRIFT_EN_BLOCK",
-    "DONNA_PERSONA",
+    "DANA_PERSONA",
     "REACT_PROTOCOL",
     "SPATIAL_SYNTHESIS_GUIDE",
     "build_agent_system_prompt",

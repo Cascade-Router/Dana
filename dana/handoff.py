@@ -96,9 +96,9 @@ def execute_handoff(
     mode = mode_map.get(target)
     if mode:
         try:
-            from dana.agentic import set_donna_mode
+            from dana.agentic import set_dana_mode
 
-            set_donna_mode(mode)
+            set_dana_mode(mode)
         except Exception:  # noqa: BLE001
             pass
     try:

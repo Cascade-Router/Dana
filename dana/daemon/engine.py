@@ -33,9 +33,9 @@ StatusProvider = Callable[[], dict[str, Any] | Awaitable[dict[str, Any]]]
 def _daemon_system_prompt(user_text: str) -> str:
     """Build live agent system prompt; fall back if core_agent is unavailable."""
     try:
-        from dana.core_agent import build_donna_system_prompt
+        from dana.core_agent import build_dana_system_prompt
 
-        return build_donna_system_prompt([], user_text=user_text)
+        return build_dana_system_prompt([], user_text=user_text)
     except Exception as exc:  # noqa: BLE001
         log("Daemon", f"system prompt fallback ({type(exc).__name__}: {exc})")
         return (
@@ -84,7 +84,7 @@ async def _default_stream_chat(
         except Exception:  # noqa: BLE001
             pass
 
-    model = str(params.get("model") or os.environ.get("DONNA_OLLAMA_MODEL") or "qwen2.5-coder:7b")
+    model = str(params.get("model") or os.environ.get("DANA_OLLAMA_MODEL") or "qwen2.5-coder:7b")
     prior = params.get("prior_messages")
     if not isinstance(prior, list):
         prior = None
@@ -624,8 +624,8 @@ async def run_engine_daemon(
 def main(argv: list[str] | None = None) -> int:
     enable_runtime_file_logging()
     # Sidecar is always headless — drain Meta-Broker IPC so child puts never block.
-    os.environ.setdefault("DONNA_HEADLESS", "1")
-    os.environ.setdefault("DONNA_NO_GUI", "1")
+    os.environ.setdefault("DANA_HEADLESS", "1")
+    os.environ.setdefault("DANA_NO_GUI", "1")
     try:
         from dana.graph.meta_broker_process import start_headless_telemetry_drainer
 

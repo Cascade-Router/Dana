@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 
-from dana.agentic_react_graph import compile_donna_react_graph
+from dana.agentic_react_graph import compile_dana_react_graph
 from dana.graph.workers.os_worker import (
     OS_WORKER_NODE,
     OS_WORKER_SYSTEM_PROMPT,
@@ -151,7 +151,7 @@ def test_compile_routes_os_intent_to_worker_then_verifier() -> None:
         path.append("consolidate_memory")
         return {}
 
-    graph = compile_donna_react_graph(
+    graph = compile_dana_react_graph(
         agent,
         tools,
         planner_node_fn=planner,

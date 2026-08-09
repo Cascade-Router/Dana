@@ -194,7 +194,7 @@ def main() -> None:
     # Temporary Chroma idle_compressed collection + retrieval preference demo
     import chromadb
 
-    tmp = tempfile.mkdtemp(prefix="donna_idle_compressed_")
+    tmp = tempfile.mkdtemp(prefix="dana_idle_compressed_")
     try:
         client = chromadb.PersistentClient(path=tmp)
         col = client.get_or_create_collection(

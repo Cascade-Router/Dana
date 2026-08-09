@@ -34,7 +34,7 @@ _MOA_DEFER_FORCE_TOOLS = frozenset(
 )
 
 _REASONER_SYSTEM = """
-You are Donna's MoA reasoner (DeepSeek-R1). You do NOT call tools and you do NOT
+You are Dana's MoA reasoner (DeepSeek-R1). You do NOT call tools and you do NOT
 emit JSON tool-call envelopes.
 
 You must enclose your internal chain of thought in <think>...</think> tags before
@@ -74,8 +74,8 @@ planned this turn. You MUST:
 
 
 def moa_shim_enabled() -> bool:
-    """Feature flag — default ON. Set DONNA_MOA_TOOL_SHIM=0 to disable."""
-    raw = (os.environ.get("DONNA_MOA_TOOL_SHIM") or "1").strip().lower()
+    """Feature flag — default ON. Set DANA_MOA_TOOL_SHIM=0 to disable."""
+    raw = (os.environ.get("DANA_MOA_TOOL_SHIM") or "1").strip().lower()
     return raw not in {"0", "false", "no", "off"}
 
 
@@ -118,7 +118,7 @@ def _build_reasoner_llm(*, temperature: float = 0.2) -> Any:
     try:
         num_predict = max(
             512,
-            int(os.environ.get("DONNA_MOA_REASONER_NUM_PREDICT", "2048") or "2048"),
+            int(os.environ.get("DANA_MOA_REASONER_NUM_PREDICT", "2048") or "2048"),
         )
     except ValueError:
         num_predict = 2048
@@ -249,7 +249,7 @@ def format_blackboard_history_block(
 
     lines = ["[RECENT CONVERSATION HISTORY]", f"(session_id={sid}, read-only)"]
     for turn in turns:
-        label = "User" if turn["role"] == "user" else "Donna"
+        label = "User" if turn["role"] == "user" else "Dana"
         # Keep each turn bounded so hydration cannot drown the reasoner plan.
         body = turn["content"]
         if len(body) > 480:

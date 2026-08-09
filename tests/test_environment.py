@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-import run as donna_run
+import run as dana_run
 
 
 def _make_fake_torch(
@@ -33,7 +33,7 @@ def test_verify_environment_ok_with_matching_major_and_cuda(
     fake = _make_fake_torch(version="2.13.0+cu126", cuda_available=True)
     monkeypatch.setitem(sys.modules, "torch", fake)
 
-    donna_run.verify_environment()
+    dana_run.verify_environment()
 
     out = capsys.readouterr().out
     assert "CUDA available" in out
@@ -46,7 +46,7 @@ def test_verify_environment_cpu_fallback_warning(
     fake = _make_fake_torch(version="2.13.0+cu126", cuda_available=False)
     monkeypatch.setitem(sys.modules, "torch", fake)
 
-    donna_run.verify_environment()
+    dana_run.verify_environment()
 
     out = capsys.readouterr().out
     assert "WARNING: CUDA not available" in out
@@ -60,7 +60,7 @@ def test_verify_environment_fails_fast_on_major_drift(
     monkeypatch.setitem(sys.modules, "torch", fake)
 
     with pytest.raises(SystemExit) as excinfo:
-        donna_run.verify_environment()
+        dana_run.verify_environment()
     assert excinfo.value.code == 1
 
 
@@ -81,10 +81,10 @@ def test_verify_environment_fails_when_torch_missing(
     monkeypatch.delitem(sys.modules, "torch", raising=False)
 
     with pytest.raises(SystemExit) as excinfo:
-        donna_run.verify_environment()
+        dana_run.verify_environment()
     assert excinfo.value.code == 1
 
 
 def test_expected_torch_major_matches_requirements_pin() -> None:
     """Guard must stay aligned with the torch major in requirements-cuda.txt."""
-    assert donna_run._EXPECTED_TORCH_MAJOR == 2
+    assert dana_run._EXPECTED_TORCH_MAJOR == 2

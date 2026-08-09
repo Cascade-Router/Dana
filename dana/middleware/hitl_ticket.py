@@ -3,7 +3,7 @@
 LangGraph pauses inside the ``ticket_approval`` node via ``interrupt()``.
 The ReAct runner publishes the drafted ticket here; the Live Trace GUI
 calls ``submit_decision`` (Approve / Deny). Headless runs auto-approve
-unless ``DONNA_HITL_REQUIRE_GUI=1``.
+unless ``DANA_HITL_REQUIRE_GUI=1``.
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ def _log(msg: str) -> None:
 
 
 def hitl_enabled() -> bool:
-    """Master switch — ``DONNA_HITL_TICKET=0`` disables the gate entirely."""
-    raw = (os.environ.get("DONNA_HITL_TICKET") or "1").strip().lower()
+    """Master switch — ``DANA_HITL_TICKET=0`` disables the gate entirely."""
+    raw = (os.environ.get("DANA_HITL_TICKET") or "1").strip().lower()
     return raw not in {"0", "false", "off", "no"}
 
 
@@ -59,9 +59,9 @@ def _gui_listening() -> bool:
 
 def should_auto_resolve() -> bool:
     """True when Approve should not block (tests / headless / explicit env)."""
-    if _env_flag("DONNA_HITL_AUTO_APPROVE") or _env_flag("DONNA_HITL_AUTO_DENY"):
+    if _env_flag("DANA_HITL_AUTO_APPROVE") or _env_flag("DANA_HITL_AUTO_DENY"):
         return True
-    if _env_flag("DONNA_HITL_REQUIRE_GUI"):
+    if _env_flag("DANA_HITL_REQUIRE_GUI"):
         return False
     return not _gui_listening()
 
@@ -332,9 +332,9 @@ def submit_decision(
 
 def wait_for_decision(*, timeout_s: float | None = None) -> dict[str, Any]:
     """Block the LangGraph worker until Approve/Deny (or auto-resolve)."""
-    if _env_flag("DONNA_HITL_AUTO_DENY"):
+    if _env_flag("DANA_HITL_AUTO_DENY"):
         decision = {"approved": False, "action": "deny", "note": "auto_deny", "ts": time.time()}
-        _log("auto-deny (DONNA_HITL_AUTO_DENY)")
+        _log("auto-deny (DANA_HITL_AUTO_DENY)")
         clear_after = True
     elif should_auto_resolve():
         decision = {
@@ -343,7 +343,7 @@ def wait_for_decision(*, timeout_s: float | None = None) -> dict[str, Any]:
             "note": "auto_approve",
             "ts": time.time(),
         }
-        _log("auto-approve (headless / DONNA_HITL_AUTO_APPROVE)")
+        _log("auto-approve (headless / DANA_HITL_AUTO_APPROVE)")
         clear_after = True
     else:
         clear_after = False
