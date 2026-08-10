@@ -1,6 +1,6 @@
 """Foundational Mouse Actuator — safe, rate-limited clicks on vision bounding boxes.
 
-Pairs with ``vision_math`` to turn a raw ``[xmin, ymin, xmax, ymax]`` box (from
+Pairs with ``dana.vision.geometry`` to turn a raw ``[xmin, ymin, xmax, ymax]`` box (from
 a vision model or an OS accessibility tree) into a single validated on-screen
 click: inset off the dead-space border, take the centroid, optionally rescale
 for display-resolution mismatches, then move and click.
@@ -48,7 +48,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from vision_math import BBox, get_centroid, inset_bbox, normalize_coordinates
+from dana.vision.geometry import BBox, get_centroid, inset_bbox, normalize_coordinates
 
 # One physical actuation per this many seconds, module-wide.
 _MIN_ACTUATION_INTERVAL_S = 0.35

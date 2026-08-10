@@ -10,7 +10,7 @@ Two families of tools live in this module:
     first, coarse Florence-2 phrase grounding fallback, crop+2x-zoom
     re-ground if the box is small). Grounding returns a bounding box in
     Florence's normalized ``[0, 1000]`` coordinate space; this module
-    rescales it to real screen pixels (``vision_math.normalize_coordinates``,
+    rescales it to real screen pixels (``dana.vision.geometry.normalize_coordinates``,
     ``source_resolution=(1000.0, 1000.0)``) before handing it to
     ``dana.tools.mouse_actuator.MouseActuator`` /
     ``dana.tools.drag_actuator.DragActuator``. ``scroll_screen`` is pure

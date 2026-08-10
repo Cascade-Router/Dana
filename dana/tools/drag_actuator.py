@@ -32,7 +32,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from vision_math import BBox, get_centroid, inset_bbox, normalize_coordinates
+from dana.vision.geometry import BBox, get_centroid, inset_bbox, normalize_coordinates
 
 # One physical actuation (one whole drag) per this many seconds, module-wide.
 _MIN_ACTUATION_INTERVAL_S = 0.35
