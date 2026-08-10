@@ -28,7 +28,7 @@ _CONTROL_CHAR_RE = re.compile(
 )
 
 # Sequences that look like OS-level secure-attention / cancel chords when
-# expressed as text (pyautogui hotkey syntax or literal descriptions).
+# expressed as text (hotkey-chord syntax or literal descriptions).
 _FORBIDDEN_CHORD_RE = re.compile(
     r"(?ix)"
     r"("
@@ -117,7 +117,9 @@ def sanitize_keystroke_text(text: str, *, authenticated: bool | None = None) -> 
 
 
 def _dry_run_enabled() -> bool:
-    return os.environ.get(_DRY_RUN_ENV, "").strip().lower() in ("1", "true", "yes")
+    from dana.security.dry_run import is_dry_run_enabled
+
+    return is_dry_run_enabled(_DRY_RUN_ENV)
 
 
 def inject_keystrokes(
@@ -126,11 +128,16 @@ def inject_keystrokes(
     interval: float = 0.02,
     authenticated: bool | None = None,
 ) -> dict[str, Any]:
-    """Type sanitized plaintext into the focused window (pyautogui).
+    """Type sanitized plaintext into the focused window via raw Win32 SendInput.
 
-    Never sends hotkey chords — only printable / newline characters via typewrite.
-    Set DANA_OS_DRY_RUN=1 to validate without touching the OS input stack.
+    Never sends hotkey chords — only printable / newline characters.
+    ``interval`` is accepted for backward compatibility but ignored on the
+    real typing path: ``dana.tools.os_control.type_text_sendinput`` uses its
+    own randomized humanized cadence (matching every other actuator), the
+    same as ``execute_os_keystrokes``. Set DANA_OS_DRY_RUN=1 to validate
+    without touching the OS input stack.
     """
+    del interval  # humanized delays replace fixed interval (see docstring)
     result = sanitize_keystroke_text(text, authenticated=authenticated)
     if result.blocked:
         return {
@@ -149,30 +156,39 @@ def inject_keystrokes(
             "preview": result.text[:80],
         }
 
-    try:
-        import pyautogui
-    except ImportError as exc:
-        return {
-            "ok": False,
-            "error": f"pyautogui not installed: {exc}",
-            "chars_typed": 0,
-        }
+    from dana.tools.os_control import type_text_sendinput
 
-    # Fail-safe: moving mouse to a corner aborts; keep off for agent typing.
-    pyautogui.FAILSAFE = True
-    pyautogui.PAUSE = 0.0
-    # typewrite only emits key events for characters — no chord macros.
-    pyautogui.typewrite(result.text, interval=max(0.0, float(interval)))
+    sent = type_text_sendinput(result.text)
+    if not sent.get("ok"):
+        error = sent.get("error") or "SendInput typing failed"
+        out: dict[str, Any] = {
+            "ok": False,
+            "error": error,
+            "chars_typed": sent.get("chars_typed", 0),
+        }
+        if "GLOBAL_HALT_EVENT" in str(error):
+            out["halted"] = True
+        return out
+
     return {
         "ok": True,
         "dry_run": False,
-        "chars_typed": len(result.text),
-        "stripped_controls": result.stripped_controls,
+        "chars_typed": sent.get("chars_typed", 0),
+        "stripped_controls": result.stripped_controls + sent.get("stripped_controls", 0),
     }
 
 
 def read_clipboard_context(*, max_chars: int = MAX_CLIPBOARD_CHARS) -> dict[str, Any]:
-    """Fetch plaintext clipboard payload for immediate conversational context."""
+    """Fetch clipboard payload for immediate conversational context, sanitized.
+
+    The clipboard is attacker-controlled, so ``text`` is never the raw
+    payload: it is passed through
+    ``dana.security.sanitizers.sanitize_clipboard_content`` (XML-escaped,
+    injection phrasing redacted, wrapped in an ``<untrusted_clipboard_context>``
+    delimiter) before being handed to the LLM.
+    """
+    from dana.security.sanitizers import sanitize_clipboard_content
+
     max_chars = max(1, min(int(max_chars), MAX_CLIPBOARD_CHARS))
     try:
         text = _read_clipboard_text()
@@ -194,10 +210,12 @@ def read_clipboard_context(*, max_chars: int = MAX_CLIPBOARD_CHARS) -> dict[str,
         truncated = True
     # Strip NULs / other controls from clipboard before handing to the LLM.
     text = _CONTROL_CHAR_RE.sub("", text)
+    empty = not bool(text.strip())
+    sanitized = "" if empty else sanitize_clipboard_content(text)
     return {
         "ok": True,
-        "text": text,
-        "empty": not bool(text.strip()),
+        "text": sanitized,
+        "empty": empty,
         "truncated": truncated,
         "chars": len(text),
     }

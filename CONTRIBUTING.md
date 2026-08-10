@@ -38,10 +38,12 @@ pip install -r requirements-cuda.txt
 pip install -r requirements-dev.txt
 
 # Focused corridor / env guards (fast)
-pytest tests/test_router.py tests/test_environment.py -q
+# (pyproject.toml already sets addopts = "-q"; don't pass -q again here —
+# doubling it up suppresses the final "N passed" summary line.)
+pytest tests/test_router.py tests/test_environment.py
 
 # Broader suite (may need full local deps / GPU stack)
-pytest -q
+pytest
 ```
 
 Entry point for a normal desktop run:

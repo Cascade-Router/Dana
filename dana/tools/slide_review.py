@@ -14,6 +14,8 @@ import re
 import time
 from typing import Any
 
+from dana.security.dry_run import is_dry_run_enabled
+
 _DEFAULT_RULE = "The slide must have a clear title and fewer than 30 words of body text."
 _FOCUS_DELAY_DEFAULT = 1.5
 _MAX_COMMENT_CHARS = 280
@@ -123,10 +125,7 @@ def evaluate_slide_and_type(
     except Exception:
         pass
 
-    if dry_run is True or (
-        dry_run is None
-        and os.environ.get("DANA_OS_DRY_RUN", "").strip().lower() in ("1", "true", "yes")
-    ):
+    if dry_run is True or (dry_run is None and is_dry_run_enabled()):
         return (
             f"OK: evaluate_slide_and_type dry_run route={route}\n"
             f"VERDICT={parsed.get('verdict')}\n"

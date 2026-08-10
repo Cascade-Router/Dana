@@ -40,7 +40,7 @@ jobs:
       - name: Unit tests (router + environment)
         shell: bash
         run: |
-          python -m pytest tests/test_environment.py tests/test_router.py -q --tb=short
+          python -m pytest tests/test_environment.py tests/test_router.py --tb=short
 
   sync-to-hf:
     name: Sync to Hugging Face

@@ -87,13 +87,13 @@ Dev / unit tests:
 
 ```bash
 pip install -r requirements-dev.txt
-pytest tests/test_router.py tests/test_environment.py tests/web/test_headless_bridge.py -q
+pytest tests/test_router.py tests/test_environment.py tests/web/test_headless_bridge.py
 ```
 
 OSWorld adversarial bench (offline, seeded):
 
 ```bash
-pytest tests/evals/test_osworld_bench.py -q
+pytest tests/evals/test_osworld_bench.py
 ```
 
 Scores land in [`tests/evals/osworld_bench_summary.json`](tests/evals/osworld_bench_summary.json). Full architectural write-up: [`docs/WHITE_PAPER.md`](docs/WHITE_PAPER.md).

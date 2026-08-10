@@ -28,6 +28,7 @@ import time
 from ctypes import wintypes
 from typing import Any
 
+from dana.middleware.kill_switch import EmergencyKillSwitchTriggered
 from dana.paths import CAPTURES_DIR
 
 # Rate limits for physical typing.
@@ -353,8 +354,26 @@ def write_clipboard_text(text: str) -> None:
         user32.CloseClipboard()
 
 
+def _check_kill_switch() -> None:
+    """Refuse physical actuation while the F12 panic latch is set.
+
+    Every raw Win32 SendInput wrapper below calls this first, so keystrokes,
+    clicks, mouse-down/up, and wheel events all funnel through one gate
+    immediately before any hardware input API is touched — regardless of
+    which higher-level actuator (or a tool that calls straight into this
+    module, like ``execute_os_keystrokes``) invoked them.
+    """
+    try:
+        from dana.middleware.kill_switch import halt_if_requested
+    except Exception:  # noqa: BLE001
+        return
+    if halt_if_requested():
+        raise EmergencyKillSwitchTriggered("halted by GLOBAL_HALT_EVENT")
+
+
 def move_cursor_absolute(x: int, y: int) -> None:
     """Move cursor via SendInput absolute coordinates (0..65535 mapped)."""
+    _check_kill_switch()
     if os.name != "nt":
         raise OSError("SendInput mouse move is Windows-only")
     sw, sh = get_screen_size()
@@ -379,6 +398,7 @@ def move_cursor_absolute(x: int, y: int) -> None:
 
 def click_left_sendinput() -> None:
     """Left-click at the current cursor via SendInput."""
+    _check_kill_switch()
     if os.name != "nt":
         raise OSError("SendInput mouse click is Windows-only")
     for flags in (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP):
@@ -400,6 +420,7 @@ def click_left_sendinput() -> None:
 
 def mouse_down_sendinput() -> None:
     """Press and hold the left mouse button at the current cursor via SendInput."""
+    _check_kill_switch()
     if os.name != "nt":
         raise OSError("SendInput mouse down is Windows-only")
     inp = INPUT()
@@ -419,6 +440,7 @@ def mouse_down_sendinput() -> None:
 
 def mouse_up_sendinput() -> None:
     """Release the left mouse button at the current cursor via SendInput."""
+    _check_kill_switch()
     if os.name != "nt":
         raise OSError("SendInput mouse up is Windows-only")
     inp = INPUT()
@@ -447,6 +469,7 @@ def scroll_wheel_sendinput(*, dx: int = 0, dy: int = 0) -> None:
     Exactly one of ``dx``/``dy`` should be non-zero; ``dy`` wins if both are
     given, since vertical and horizontal wheel are distinct hardware events.
     """
+    _check_kill_switch()
     if os.name != "nt":
         raise OSError("SendInput mouse wheel is Windows-only")
     if dy != 0:
@@ -485,6 +508,7 @@ def _vk_to_scan(vk: int) -> int:
 
 def _send_scan(vk: int, *, key_up: bool = False) -> None:
     """Emit one key event via SendInput using hardware scan codes (no VK in packet)."""
+    _check_kill_switch()
     scan = _vk_to_scan(vk)
     if scan == 0 and vk not in (0,):
         # Still attempt — some keys map to 0 on exotic layouts.
@@ -719,7 +743,9 @@ def press_key_combo(keys: list[str]) -> None:
 
 
 def _dry_run() -> bool:
-    return os.environ.get("DANA_OS_DRY_RUN", "").strip().lower() in ("1", "true", "yes")
+    from dana.security.dry_run import is_dry_run_enabled
+
+    return is_dry_run_enabled()
 
 
 def _rate_limit_ok(n_chars: int) -> tuple[bool, str]:
@@ -868,6 +894,8 @@ def execute_os_keystrokes(
         try:
             press_hotkey_sendinput(keys)
             return f"OK: execute_os_keystrokes hotkey={'+'.join(keys)} engine=sendinput_scancode"
+        except EmergencyKillSwitchTriggered as exc:
+            return f"HALTED: execute_os_keystrokes — {exc}"
         except Exception as exc:  # noqa: BLE001
             return f"ERROR: execute_os_keystrokes hotkey failed: {exc}"
 
@@ -886,7 +914,10 @@ def execute_os_keystrokes(
 
     result = type_text_sendinput(str(text))
     if not result.get("ok"):
-        return f"ERROR: execute_os_keystrokes blocked/failed: {result.get('error')}"
+        error = result.get("error") or ""
+        if "GLOBAL_HALT_EVENT" in str(error):
+            return f"HALTED: execute_os_keystrokes — {error}"
+        return f"ERROR: execute_os_keystrokes blocked/failed: {error}"
     return (
         f"OK: execute_os_keystrokes typed chars={result.get('chars_typed', 0)} "
         f"stripped={result.get('stripped_controls', 0)} "

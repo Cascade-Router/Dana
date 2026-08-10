@@ -24,41 +24,29 @@ Safety:
 
 from __future__ import annotations
 
-import os
-import threading
-import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-# One physical clipboard-write actuation per this many seconds, module-wide.
-_MIN_ACTUATION_INTERVAL_S = 0.35
+from dana.tools.rate_limiter import get_limiter
+
 _MAX_READ_CHARS = 200_000
 _MAX_WRITE_CHARS = 200_000
 
-_rate_lock = threading.Lock()
-_last_actuation_ts = 0.0
+_limiter = get_limiter("clipboard")
 
 
 def _dry_run() -> bool:
-    return os.environ.get("DANA_OS_DRY_RUN", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    from dana.security.dry_run import is_dry_run_enabled
+
+    return is_dry_run_enabled()
 
 
 def _rate_limit_ok() -> tuple[bool, str]:
-    """Module-wide gate: refuse a second write actuation inside the cooldown window."""
-    global _last_actuation_ts
-    now = time.monotonic()
-    with _rate_lock:
-        elapsed = now - _last_actuation_ts
-        if elapsed < _MIN_ACTUATION_INTERVAL_S:
-            wait = _MIN_ACTUATION_INTERVAL_S - elapsed
-            return False, f"rate_limited: wait {wait:.2f}s between actuations"
-        _last_actuation_ts = now
-    return True, ""
+    """Module-wide gate: refuse a second write actuation inside the cooldown window.
+
+    Shared implementation: see ``dana.tools.rate_limiter``.
+    """
+    return _limiter.check_and_mark()
 
 
 @dataclass

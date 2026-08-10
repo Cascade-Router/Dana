@@ -55,4 +55,4 @@ jobs:
           PY
 
       - name: Startup registration unit tests
-        run: python -m pytest tests/test_startup_tray.py -q --tb=short -k "not tray_icon"
+        run: python -m pytest tests/test_startup_tray.py --tb=short -k "not tray_icon"

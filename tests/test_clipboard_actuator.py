@@ -17,6 +17,7 @@ other actuator test file in this suite.
 from __future__ import annotations
 
 import dana.tools.clipboard_actuator as clipboard_actuator
+from dana.tools import rate_limiter
 from dana.tools.clipboard_actuator import (
     ClipboardActuator,
     read_clipboard_text,
@@ -29,9 +30,9 @@ import pytest
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("DANA_OS_DRY_RUN", raising=False)
-    clipboard_actuator._last_actuation_ts = 0.0
+    rate_limiter.reset()
     yield
-    clipboard_actuator._last_actuation_ts = 0.0
+    rate_limiter.reset()
 
 
 def _stub_actuator(clipboard_text: str | None = "hello clipboard"):

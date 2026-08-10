@@ -16,20 +16,15 @@ import dana.tools.mouse_actuator as mouse_actuator
 import dana.tools.scroll_actuator as scroll_actuator
 import dana.tools.vision as vision_tool
 import pytest
+from dana.tools import rate_limiter
 
 
 @pytest.fixture(autouse=True)
 def _dry_run_and_reset_rate_limiter(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
-    mouse_actuator._last_actuation_ts = 0.0
-    keyboard_actuator._last_actuation_ts = 0.0
-    scroll_actuator._last_actuation_ts = 0.0
-    drag_actuator._last_actuation_ts = 0.0
+    rate_limiter.reset()
     yield
-    mouse_actuator._last_actuation_ts = 0.0
-    keyboard_actuator._last_actuation_ts = 0.0
-    scroll_actuator._last_actuation_ts = 0.0
-    drag_actuator._last_actuation_ts = 0.0
+    rate_limiter.reset()
 
 
 def _patch_vision_pipeline(

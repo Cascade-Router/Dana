@@ -258,7 +258,7 @@ Source: `tests/evals/osworld_bench_summary.json` — **read from disk; not inven
 Reproduce:
 
 ```bash
-pytest tests/evals/test_osworld_bench.py -q
+pytest tests/evals/test_osworld_bench.py
 ```
 
 ### 3.3 Golden dataset (supplementary)

@@ -123,7 +123,7 @@ def press_keyboard_shortcut(shortcut: str) -> str:
 
 
 def read_clipboard() -> str:
-    """Read the current plaintext system clipboard, verbatim.
+    """Read the current plaintext system clipboard, sanitized as untrusted data.
 
     Pipeline: ``dana.tools.clipboard_actuator.ClipboardActuator.read_text``
     (raw Win32 ``GetClipboardData``), capped to a safety size limit —
@@ -131,9 +131,16 @@ def read_clipboard() -> str:
     Always executes for real; reading has no OS side effects so it is not
     gated by ``DANA_OS_DRY_RUN``.
 
-    Returns ``"SUCCESS: ..."`` with the clipboard text (or an "empty"
-    notice) on success, or ``"ERROR: ..."`` if the clipboard couldn't be
-    read.
+    The clipboard is attacker-controlled (any process on the machine can
+    write to it), so the raw text is never handed to the LLM directly: it
+    passes through ``dana.security.sanitizers.sanitize_clipboard_content``,
+    which escapes XML control characters, redacts known prompt-injection
+    phrasing, and wraps the result in an ``<untrusted_clipboard_context>``
+    delimiter the model is told to treat as inert data only.
+
+    Returns ``"SUCCESS: ..."`` with the sanitized clipboard text (or an
+    "empty" notice) on success, or ``"ERROR: ..."`` if the clipboard
+    couldn't be read.
     """
     try:
         from dana.ui.status_bus import emit_state_change
@@ -142,6 +149,7 @@ def read_clipboard() -> str:
     except Exception:  # noqa: BLE001
         pass
 
+    from dana.security.sanitizers import sanitize_clipboard_content
     from dana.tools.clipboard_actuator import ClipboardActuator
 
     result = ClipboardActuator().read_text()
@@ -152,7 +160,8 @@ def read_clipboard() -> str:
 
     trunc_note = " (truncated)" if result.get("truncated") else ""
     text = result.get("text") or ""
-    return f"SUCCESS: Clipboard text{trunc_note}:\n{text}"
+    sanitized = sanitize_clipboard_content(text)
+    return f"SUCCESS: Clipboard text{trunc_note}:\n{sanitized}"
 
 
 def write_clipboard(text: str) -> str:

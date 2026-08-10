@@ -44,7 +44,7 @@ jobs:
           pip install "Pillow>=10,<13"
 
       - name: Run full test suite
-        run: python -m pytest tests/ -q --tb=short
+        run: python -m pytest tests/ --tb=short
 
       - name: Derive version metadata
         id: meta

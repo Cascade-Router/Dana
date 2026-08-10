@@ -13,6 +13,7 @@ other test module in this suite sets it at import time via a raw
 from __future__ import annotations
 
 import dana.tools.window_actuator as window_actuator
+from dana.tools import rate_limiter
 from dana.tools.window_actuator import WindowActuator, focus_by_title
 
 import pytest
@@ -27,9 +28,9 @@ _WINDOWS = [
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("DANA_OS_DRY_RUN", raising=False)
-    window_actuator._last_actuation_ts = 0.0
+    rate_limiter.reset()
     yield
-    window_actuator._last_actuation_ts = 0.0
+    rate_limiter.reset()
 
 
 def _stub_actuator(windows=None, focus_result: bool = True):

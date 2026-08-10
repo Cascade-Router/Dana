@@ -14,6 +14,19 @@ from typing import Any
 # Latched until ``clear_global_halt()`` — in-flight operators must stop immediately.
 GLOBAL_HALT_EVENT = threading.Event()
 
+
+class EmergencyKillSwitchTriggered(OSError):
+    """Raised by the lowest-level Win32 SendInput wrappers when the panic
+    latch (``GLOBAL_HALT_EVENT``) is set, so physical actuation is refused
+    before any hardware input API is touched.
+
+    Subclasses ``OSError`` rather than a bespoke base so it is caught for
+    free by every existing ``except OSError`` / ``except Exception`` handler
+    already wrapping Win32 SendInput calls throughout ``dana.tools`` —
+    callers that want to distinguish a halt from an ordinary hardware
+    failure can still do so via ``isinstance``.
+    """
+
 _LISTENER_STARTED = False
 _LISTENER_LOCK = threading.Lock()
 _DEFAULT_HOTKEY = "f12"

@@ -14,6 +14,7 @@ when the full suite runs in an order where that file is collected first.
 from __future__ import annotations
 
 import dana.tools.mouse_actuator as mouse_actuator
+from dana.tools import rate_limiter
 from dana.tools.mouse_actuator import MouseActuator, click_target_bbox
 
 import pytest
@@ -22,9 +23,9 @@ import pytest
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("DANA_OS_DRY_RUN", raising=False)
-    mouse_actuator._last_actuation_ts = 0.0
+    rate_limiter.reset()
     yield
-    mouse_actuator._last_actuation_ts = 0.0
+    rate_limiter.reset()
 
 
 def _stub_actuator(screen_size=(1920, 1080)):

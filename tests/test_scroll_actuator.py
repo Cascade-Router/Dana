@@ -11,6 +11,7 @@ in an order where that file is collected first.
 from __future__ import annotations
 
 import dana.tools.scroll_actuator as scroll_actuator
+from dana.tools import rate_limiter
 from dana.tools.os_control import WHEEL_DELTA
 from dana.tools.scroll_actuator import ScrollActuator, scroll
 
@@ -20,9 +21,9 @@ import pytest
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("DANA_OS_DRY_RUN", raising=False)
-    scroll_actuator._last_actuation_ts = 0.0
+    rate_limiter.reset()
     yield
-    scroll_actuator._last_actuation_ts = 0.0
+    rate_limiter.reset()
 
 
 def _stub_actuator():
