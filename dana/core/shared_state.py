@@ -34,11 +34,13 @@ from __future__ import annotations
 import queue
 import re
 import threading
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 import numpy as np
+from spatial_context import SPATIAL_AGGREGATOR
 
 from dana.audio.audio_pipeline import AudioRouter
+from dana.logging import log_debug
 from dana.audio.noise_floor import (  # noqa: F401  (re-exported for callers)
     ABSOLUTE_MIN_SPEECH_FLOOR,
     NOISE_FLOOR_MULTIPLIER,
@@ -307,3 +309,118 @@ _CODE_FENCE_TTS_RE = re.compile(r"```[\w+-]*\n?[\s\S]*?```", re.MULTILINE)
 _CODE_FENCE_TTS_UNCLOSED_RE = re.compile(r"```[\w+-]*\n?[\s\S]*$", re.MULTILINE)
 _TTS_MD_MARKERS_RE = re.compile(r"`+|\*{1,3}|_{2,}")
 _PUNCT_OR_SPACE_ONLY_RE = re.compile(r"^[\s\W_]+$", re.UNICODE)
+
+# ---------------------------------------------------------------------------
+# UI-state / transcript event hooks
+# ---------------------------------------------------------------------------
+#
+# Audio, agent-loop, and vision code all need to announce state changes (the
+# GUI dashboard, the tray icon, live transcript panes) — but must never import
+# DanaGUI or tray functions directly, since those still live in core_agent.py
+# (and later move to dana/ui/*). Emitters call notify_*() below; whoever owns
+# the actual GUI/tray widget registers a listener at its own init time. This
+# decouples "something changed state" from "here is how the GUI shows it",
+# so neither side needs to import the other.
+
+_ui_state_listeners: list[Callable[[str], None]] = []
+_ui_state_listeners_lock = threading.Lock()
+
+_transcript_listeners: list[Callable[[str, str, Optional[str]], None]] = []
+_transcript_listeners_lock = threading.Lock()
+
+
+def register_ui_state_listener(fn: Callable[[str], None]) -> None:
+    """Called by the GUI/tray owner (currently core_agent.py) at init time."""
+    with _ui_state_listeners_lock:
+        if fn not in _ui_state_listeners:
+            _ui_state_listeners.append(fn)
+
+
+def unregister_ui_state_listener(fn: Callable[[str], None]) -> None:
+    with _ui_state_listeners_lock:
+        try:
+            _ui_state_listeners.remove(fn)
+        except ValueError:
+            pass
+
+
+def _notify_ui_state_listeners(state: str) -> None:
+    with _ui_state_listeners_lock:
+        listeners = list(_ui_state_listeners)
+    for fn in listeners:
+        try:
+            fn(state)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def register_transcript_listener(fn: Callable[[str, str, Optional[str]], None]) -> None:
+    """Called by the GUI dashboard owner at init time (unregister on teardown)."""
+    with _transcript_listeners_lock:
+        if fn not in _transcript_listeners:
+            _transcript_listeners.append(fn)
+
+
+def unregister_transcript_listener(fn: Callable[[str, str, Optional[str]], None]) -> None:
+    with _transcript_listeners_lock:
+        try:
+            _transcript_listeners.remove(fn)
+        except ValueError:
+            pass
+
+
+def _notify_transcript_listeners(speaker: str, text: str, agent_id: Optional[str]) -> None:
+    with _transcript_listeners_lock:
+        listeners = list(_transcript_listeners)
+    for fn in listeners:
+        try:
+            fn(speaker, text, agent_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def emit_live_transcript(
+    speaker: str,
+    text: str,
+    *,
+    agent_id: str | None = None,
+) -> None:
+    """Thread-safe bridge from audio/LLM workers into the Dashboard transcript."""
+    _notify_transcript_listeners(speaker, text, agent_id)
+
+
+def set_ui_state(state: str) -> None:
+    """Conversation phase: idle | listening | followup | transcribing | thinking."""
+    global ui_state
+    with ui_state_lock:
+        ui_state = state
+    SPATIAL_AGGREGATOR.set_ui_state(state)
+    log_debug("UI", f"State -> {state}")
+    # Visual cue: tray icon turns green while VAD is actively listening.
+    _notify_ui_state_listeners(state)
+    # Dashboard STATE_CHANGE (mic / system status); headless-safe.
+    try:
+        from dana.ui.status_bus import emit_state_change
+
+        if state in ("listening", "followup"):
+            emit_state_change("listening")
+        elif state in ("transcribing", "thinking"):
+            emit_state_change("processing")
+        elif state == "idle":
+            emit_state_change("idle")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def get_ui_state() -> str:
+    with ui_state_lock:
+        return ui_state
+
+
+def set_subtitle(text: str) -> None:
+    """Latest Whisper transcript (logged for headless debugging)."""
+    global subtitle_text
+    with subtitle_lock:
+        subtitle_text = text
+    if text:
+        log_debug("UI", f"Subtitle -> {text}")
