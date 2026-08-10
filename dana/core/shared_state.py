@@ -424,3 +424,90 @@ def set_subtitle(text: str) -> None:
         subtitle_text = text
     if text:
         log_debug("UI", f"Subtitle -> {text}")
+
+
+# ---------------------------------------------------------------------------
+# Vault unlock prompt (background AgentLoop thread <-> GUI main thread)
+# ---------------------------------------------------------------------------
+#
+# unlock_dana_memory() (core_agent.py) runs on the background "AgentLoop"
+# thread. When no env var / OS keyring credential unlocks the vault, it must
+# not just SystemExit the thread silently while a Dashboard is attached — the
+# GUI owner registers a listener here, shows its own modal (on the Tk main
+# thread, via its own after()/thread-safe scheduling), and calls
+# supply_vault_unlock_response() once the user submits or cancels. This mirrors
+# the ui_state/transcript listener pattern above: shared_state never imports
+# GUI code, it just brokers the request/response handoff.
+
+_vault_prompt_listeners: list[Callable[[str], None]] = []
+_vault_prompt_listeners_lock = threading.Lock()
+
+# One outstanding unlock request at a time (vault unlock is a startup-sequence,
+# single-threaded gate — no concurrent unlock attempts are possible).
+vault_unlock_response_event = threading.Event()
+vault_unlock_response: Optional[str] = None  # reassigned; None = cancelled/timeout
+
+
+def register_vault_prompt_listener(fn: Callable[[str], None]) -> None:
+    """Called by the GUI owner (currently core_agent.py) at init time."""
+    with _vault_prompt_listeners_lock:
+        if fn not in _vault_prompt_listeners:
+            _vault_prompt_listeners.append(fn)
+
+
+def unregister_vault_prompt_listener(fn: Callable[[str], None]) -> None:
+    with _vault_prompt_listeners_lock:
+        try:
+            _vault_prompt_listeners.remove(fn)
+        except ValueError:
+            pass
+
+
+def has_vault_prompt_listener() -> bool:
+    """True when a GUI (or other owner) has registered to handle unlock prompts."""
+    with _vault_prompt_listeners_lock:
+        return bool(_vault_prompt_listeners)
+
+
+def _notify_vault_prompt_listeners(reason: str) -> None:
+    with _vault_prompt_listeners_lock:
+        listeners = list(_vault_prompt_listeners)
+    for fn in listeners:
+        try:
+            fn(reason)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def request_vault_unlock(reason: str, *, timeout: float = 300.0) -> Optional[str]:
+    """Block the calling (background) thread until the GUI supplies a passcode.
+
+    Notifies registered listeners with ``reason`` (why the prompt is needed),
+    then waits up to ``timeout`` seconds for ``supply_vault_unlock_response()``.
+    Returns the passcode, or ``None`` on timeout / cancel / no listener.
+    """
+    global vault_unlock_response
+    if not has_vault_prompt_listener():
+        return None
+    vault_unlock_response = None
+    vault_unlock_response_event.clear()
+    _notify_vault_prompt_listeners(reason)
+    got = vault_unlock_response_event.wait(timeout=timeout)
+    return vault_unlock_response if got else None
+
+
+def supply_vault_unlock_response(password: Optional[str]) -> None:
+    """Called by the GUI (main thread) once its modal is submitted or cancelled."""
+    global vault_unlock_response
+    vault_unlock_response = password
+    vault_unlock_response_event.set()
+
+
+def notify_vault_unlocked() -> None:
+    """Fire-and-forget: tell the GUI owner to clear its 'Vault Locked' banner.
+
+    Distinct from ``request_vault_unlock`` — this never blocks the caller and
+    expects no response; listeners receive ``""`` as the reason to mean
+    "unlocked, clear/close whatever you showed for the last request".
+    """
+    _notify_vault_prompt_listeners("")

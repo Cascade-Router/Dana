@@ -42,7 +42,7 @@ def _get_master_key(*, prompt: str | None = None) -> str:
     except Exception as exc:  # noqa: BLE001
         _log.warning("OS keyring unavailable while reading vault master key: %s", exc)
 
-    if sys.stdin.isatty():
+    if sys.stdin is not None and sys.stdin.isatty():
         password = getpass.getpass(prompt or DEFAULT_PROMPT)
         if not password:
             raise VaultCredentialsMissing("Password cannot be empty.")

@@ -58,3 +58,22 @@ def test_headless_missing_credentials_raises(
         with pytest.raises(vault.VaultCredentialsMissing):
             vault._get_master_key()
     gp.assert_not_called()
+
+
+def test_none_stdin_treated_as_non_interactive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GUI-launched processes (e.g. pythonw) can have ``sys.stdin is None`` —
+    must fail fast with VaultCredentialsMissing, not crash on ``.isatty()``.
+    """
+    monkeypatch.delenv(vault.ENV_VAR, raising=False)
+    fake = MagicMock()
+    fake.get_password.return_value = None
+    with (
+        patch.dict(sys.modules, {"keyring": fake}),
+        patch.object(vault.sys, "stdin", None),
+        patch.object(vault.getpass, "getpass") as gp,
+    ):
+        with pytest.raises(vault.VaultCredentialsMissing):
+            vault._get_master_key()
+    gp.assert_not_called()

@@ -668,12 +668,18 @@ def compile_and_append_voice_prompt(raw_transcript: str) -> str:
 from dana.core.shared_state import (  # noqa: E402,F401
     emit_live_transcript,
     get_ui_state,
+    has_vault_prompt_listener,
+    notify_vault_unlocked,
     register_transcript_listener,
     register_ui_state_listener,
+    register_vault_prompt_listener,
+    request_vault_unlock,
     set_subtitle,
     set_ui_state,
+    supply_vault_unlock_response,
     unregister_transcript_listener,
     unregister_ui_state_listener,
+    unregister_vault_prompt_listener,
 )
 
 
@@ -1477,16 +1483,34 @@ def unlock_dana_memory() -> SecureMemory:
             "[Memory] Vault unlocked via daemon session (keys cached in RAM).",
             flush=True,
         )
+        notify_vault_unlocked()
         return vault
 
-    # else: daemon locked → resolve credential (env → keyring → TTY prompt)
+    # else: daemon locked → resolve credential (env → keyring → TTY prompt →
+    # GUI modal, when a Dashboard has registered to handle vault prompts).
     from dana.tools.vault import VaultCredentialsMissing, _get_master_key
 
     prompt = "Enter Master Password (or pasted Recovery Key) to unlock Dānā: "
     vault_exists = os.path.isfile(MEMORY_FILE)
 
+    def _resolve_password(gui_reason: str) -> str:
+        try:
+            return _get_master_key(prompt=prompt)
+        except VaultCredentialsMissing:
+            if not has_vault_prompt_listener():
+                raise
+            gui_password = request_vault_unlock(gui_reason)
+            if not gui_password:
+                raise VaultCredentialsMissing(
+                    "Vault unlock cancelled from the Dashboard prompt."
+                ) from None
+            return gui_password
+
     try:
-        password = _get_master_key(prompt=prompt)
+        password = _resolve_password(
+            "Dana's memory vault needs your Master Password (or Recovery Key) "
+            "to unlock — no credential found in the environment or OS keyring."
+        )
     except VaultCredentialsMissing as exc:
         print(f"[Memory Error] {exc}", flush=True)
         log("Memory", f"ERROR: {exc}")
@@ -1504,12 +1528,27 @@ def unlock_dana_memory() -> SecureMemory:
             raise SystemExit(1) from exc
         email_recovery_key(recovery_key)
     else:
-        try:
-            dana_profile = vault_client.unlock(password, create=False)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[Memory Error] {exc}", flush=True)
-            log("Memory", f"ERROR: {exc}")
-            raise SystemExit(1) from exc
+        # Wrong password from the GUI modal gets a few retries (a mistyped
+        # passcode should not tear down the whole AgentLoop thread); CLI/TTY
+        # callers with no listener registered keep the original fail-fast.
+        max_attempts = 3
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                dana_profile = vault_client.unlock(password, create=False)
+                break
+            except Exception as exc:  # noqa: BLE001
+                print(f"[Memory Error] {exc}", flush=True)
+                log("Memory", f"ERROR: {exc} (attempt {attempt}/{max_attempts})")
+                if not has_vault_prompt_listener() or attempt >= max_attempts:
+                    raise SystemExit(1) from exc
+                password = request_vault_unlock(
+                    f"Wrong Master Password / Recovery Key ({exc}). "
+                    "Try again to unlock Dana's memory vault."
+                )
+                if not password:
+                    raise SystemExit(1) from exc
 
     vault = SecureMemory(path=MEMORY_FILE)
     try:
@@ -1537,6 +1576,7 @@ def unlock_dana_memory() -> SecureMemory:
         f"Vault unlocked via daemon session "
         f"(keys={len(dana_profile)}; token cached in RAM daemon).",
     )
+    notify_vault_unlocked()
     return vault
 
 
@@ -5484,6 +5524,7 @@ class DanaGUI(ctk.CTk):
         global _gui_instance
         _gui_instance = self
         register_transcript_listener(self._on_transcript_event)
+        register_vault_prompt_listener(self._on_vault_unlock_request)
         self.title("Dana — Control Dashboard")
         self.geometry("1440x900")
         self.minsize(1280, 800)
@@ -5504,6 +5545,8 @@ class DanaGUI(ctk.CTk):
         self.dictation_status: ctk.CTkLabel | None = None
         self._engine_status_lbl: ctk.CTkLabel | None = None
         self._engine_warn_lbl: ctk.CTkLabel | None = None
+        self._vault_warn_lbl: ctk.CTkLabel | None = None
+        self._vault_unlock_win: ctk.CTkToplevel | None = None
         self._engage_btn: ctk.CTkButton | None = None
         self._standby_btn: ctk.CTkButton | None = None  # legacy; merged into toggle
         self._engage_toggle_btn: ctk.CTkButton | None = None
@@ -6200,6 +6243,7 @@ class DanaGUI(ctk.CTk):
         self.wake_value = None
         self._engine_status_lbl = None
         self._engine_warn_lbl = None
+        self._vault_warn_lbl = None
         # Keep header-created mic / system labels — do not null them here.
 
         # Ensure monitor bus exists so background graph streams can publish.
@@ -6310,6 +6354,17 @@ class DanaGUI(ctk.CTk):
             anchor="w",
         )
         self._engine_warn_lbl.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        # Persistent banner (not a toast — stays until unlocked) so a locked
+        # vault at startup is visible instead of the wake-word thread just
+        # never starting with no explanation.
+        self._vault_warn_lbl = ctk.CTkLabel(
+            input_row,
+            text="",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#EF4444",
+            anchor="w",
+        )
+        self._vault_warn_lbl.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         # DAG monitor — collapsible overlay drawer above the input row.
         self._build_dag_monitor_section(left)
@@ -8174,6 +8229,126 @@ class DanaGUI(ctk.CTk):
         self._select_tab("Assistant & Tasks")
         self._flash_engine_warning("Please Engage Engine First.")
         return False
+
+    def _set_vault_status(self, message: str) -> None:
+        """Persistent banner (empty clears it) — see ``_vault_warn_lbl``."""
+        lbl = self._vault_warn_lbl
+        if lbl is None:
+            return
+        try:
+            lbl.configure(text=str(message))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_vault_unlock_request(self, reason: str) -> None:
+        """shared_state listener callback — runs on the AgentLoop thread.
+
+        Hands off to the Tk main thread via ``after()`` since CTk widgets may
+        only be created/touched there. ``reason == ""`` means "unlocked" —
+        clear the banner / close any open prompt instead of showing one.
+        """
+        try:
+            if reason:
+                self.after(0, lambda: self._show_vault_unlock_dialog(reason))
+            else:
+                self.after(0, self._clear_vault_unlock_prompt)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _clear_vault_unlock_prompt(self) -> None:
+        self._set_vault_status("")
+        win = self._vault_unlock_win
+        self._vault_unlock_win = None
+        if win is not None:
+            try:
+                win.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _show_vault_unlock_dialog(self, reason: str) -> None:
+        """Modal passcode prompt; unblocks ``unlock_dana_memory()`` on submit/cancel.
+
+        Runs on the Tk main thread (scheduled by ``_on_vault_unlock_request``).
+        """
+        self._set_vault_status("Vault Locked — Enter Passcode to Unlock")
+        try:
+            self.show_window()
+        except Exception:  # noqa: BLE001
+            pass
+
+        existing = self._vault_unlock_win
+        if existing is not None:
+            try:
+                existing.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+            self._vault_unlock_win = None
+
+        def _submit(password: Optional[str]) -> None:
+            win = self._vault_unlock_win
+            self._vault_unlock_win = None
+            if win is not None:
+                try:
+                    win.destroy()
+                except Exception:  # noqa: BLE001
+                    pass
+            if password:
+                self._set_vault_status("Vault Locked — Unlocking...")
+            supply_vault_unlock_response(password)
+
+        try:
+            win = ctk.CTkToplevel(self)
+            self._vault_unlock_win = win
+            win.title("Vault Locked")
+            win.geometry("460x220")
+            win.resizable(False, False)
+            ctk.CTkLabel(
+                win,
+                text="Vault Locked — Enter Passcode to Unlock",
+                font=ctk.CTkFont(size=15, weight="bold"),
+                text_color="#EF4444",
+            ).pack(padx=16, pady=(16, 4), anchor="w")
+            ctk.CTkLabel(
+                win,
+                text=str(reason),
+                wraplength=420,
+                justify="left",
+                anchor="w",
+                text_color=_UI_MUTED,
+            ).pack(padx=16, pady=(0, 10), anchor="w", fill="x")
+            entry = ctk.CTkEntry(
+                win,
+                show="*",
+                placeholder_text="Master Password / Recovery Key",
+                width=420,
+            )
+            entry.pack(padx=16, pady=(0, 12))
+            entry.focus_set()
+
+            btn_row = ctk.CTkFrame(win, fg_color="transparent")
+            btn_row.pack(padx=16, pady=(0, 12), fill="x")
+            ctk.CTkButton(
+                btn_row,
+                text="Cancel",
+                fg_color="transparent",
+                border_width=1,
+                command=lambda: _submit(None),
+            ).pack(side="left")
+            ctk.CTkButton(
+                btn_row,
+                text="Unlock",
+                command=lambda: _submit(entry.get().strip() or None),
+            ).pack(side="right")
+            entry.bind("<Return>", lambda _e: _submit(entry.get().strip() or None))
+            win.protocol("WM_DELETE_WINDOW", lambda: _submit(None))
+            win.transient(self)
+            win.grab_set()
+            win.lift()
+            win.focus_force()
+        except Exception as exc:  # noqa: BLE001
+            log("UI", f"WARNING: vault unlock dialog failed to open ({exc})")
+            self._vault_unlock_win = None
+            supply_vault_unlock_response(None)
 
     def _apply_behavior_mixer_payload(self) -> dict[str, int]:
         """Push current Behavior sliders into Blackboard persona_mixer."""
@@ -10376,6 +10551,10 @@ def main() -> int:
                 pass
         try:
             unregister_transcript_listener(gui._on_transcript_event)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            unregister_vault_prompt_listener(gui._on_vault_unlock_request)
         except Exception:  # noqa: BLE001
             pass
         _gui_instance = None
