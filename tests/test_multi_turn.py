@@ -8,6 +8,7 @@ TTS, or live network I/O.
 from __future__ import annotations
 
 import dana.core_agent as agent
+import dana.core.command_classifiers as classifiers
 from test_support_react import patch_scripted_llm
 from dana.agentic import REACT_MAX_ITERS, run_react_loop
 from dana.tools.broker import IntentBroker
@@ -118,9 +119,9 @@ def test_multi_turn_context_memory_and_flush(monkeypatch) -> None:
 
     # --- Turn 3: clear context → flush_conversation_memory --------------
     turn3 = "Clear context."
-    assert agent.is_clear_context_command(turn3), "voice path must detect clear command"
-    cleared = agent.flush_conversation_memory(reason="voice_command")
-    reply3 = agent.clear_context_spoken_reply(turn3)
+    assert classifiers.is_clear_context_command(turn3), "voice path must detect clear command"
+    cleared = classifiers.flush_conversation_memory(reason="voice_command")
+    reply3 = classifiers.clear_context_spoken_reply(turn3)
     ok3 = cleared >= 2 and len(_prior_from_history()) == 0
     assert ok3, f"Turn 3 flush failed (cleared={cleared}, hist={_prior_from_history()})"
     assert "clear" in reply3.lower() or "fresh" in reply3.lower()

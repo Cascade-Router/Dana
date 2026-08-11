@@ -65,6 +65,7 @@ from dana.core.shared_state import (
     _tts_manager,
     audio_hardware_fault,
     camera_tool,
+    emit_trace,
     get_ui_state,
     has_vault_prompt_listener,
     is_recording,
@@ -988,11 +989,6 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
 
 def main() -> int:
     """GUI owns the main thread; agent_loop + tray run in background daemons."""
-    # Same lazy-import precedent as agent_loop() above: emit_trace is shared
-    # with dana.core.agent_loop and dana.middleware.hitl_ticket, so it stays
-    # defined in dana.core_agent rather than moving here.
-    from dana.core_agent import emit_trace
-
     try:
         from dana.stdio_boot import ensure_stdio
 

@@ -34,6 +34,7 @@ from dana.audio.mic_input import (
 )
 from dana.core.agent_loop import execute_tool_call
 from dana.core.constants import WAKEWORD_MODELS
+from dana.ingestion.text_injection import set_injected_question
 from dana.core.shared_state import (
     _TRACE_STATUS_ICONS,
     gui_telemetry_queue,
@@ -1552,13 +1553,6 @@ class DanaGUI(ctk.CTk):
         except Exception:  # noqa: BLE001
             pass
         try:
-            # Deliberate exception to the "no in-function core_agent imports"
-            # rule: set_injected_question owns core_agent.py's text-injection
-            # lock/globals (shared_state.injected_question et al. are bare-
-            # imported there under a `global` rebind, so this must call the
-            # owning function rather than touch shared_state directly).
-            from dana.core_agent import set_injected_question
-
             set_injected_question(text, source="text", already_logged=True)
             is_recording.set()
         except Exception as exc:  # noqa: BLE001

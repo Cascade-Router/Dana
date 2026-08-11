@@ -198,7 +198,6 @@ _boot_ready_audio_lock = threading.Lock()
 _boot_ready_audio_played = False  # reassigned
 # Shared OpenWakeWord model for stream-barge during TTS (set by wakeword_worker).
 _shared_wakeword_model: Any = None  # reassigned
-_shared_wakeword_token: str = "dana"  # reassigned
 _dual_wake_router: Optional[AudioRouter] = None  # reassigned
 _dual_wake_poller: Optional[WakePoller] = None  # reassigned
 # Set when the TTS spooler is drained and nothing is playing.
@@ -426,6 +425,19 @@ def set_subtitle(text: str) -> None:
         log_debug("UI", f"Subtitle -> {text}")
 
 
+def is_engine_engaged() -> bool:
+    """Stage 8.9.7 — True when Dashboard ENGAGE has armed the LangGraph engine."""
+    return bool(engine_engaged.is_set())
+
+
+def set_engine_engaged(active: bool) -> None:
+    """Arm (True) or soft-standby (False) the conversational engine."""
+    if active:
+        engine_engaged.set()
+    else:
+        engine_engaged.clear()
+
+
 # ---------------------------------------------------------------------------
 # Vault unlock prompt (background AgentLoop thread <-> GUI main thread)
 # ---------------------------------------------------------------------------
@@ -581,10 +593,10 @@ def notify_dictation_sessions_changed() -> None:
 # ---------------------------------------------------------------------------
 # Live Trace telemetry (background threads -> Tk main thread via Queue only)
 # ---------------------------------------------------------------------------
-# Shared between dana.core_agent.emit_trace() (producer, any thread) and
-# dana.ui.app_gui's DanaGUI/TraceCell (consumer, Tk main thread). A
-# queue.Queue and a read-only dict are both mutate-in-place objects (see
-# this module's docstring) -- safe to import by bare name from either side.
+# Producer (emit_trace, any thread) and consumer (dana.ui.app_gui's
+# DanaGUI/TraceCell, Tk main thread) both live in this module's callers now;
+# emit_trace itself moved here in Phase 7 since its only dependencies
+# (the queue and the icon table below) already lived here.
 
 gui_telemetry_queue: queue.Queue = queue.Queue()
 
@@ -594,6 +606,42 @@ _TRACE_STATUS_ICONS: dict[str, str] = {
     "completed": "[OK]",
     "bypassed": "[--]",
 }
+
+
+def emit_trace(
+    stage: str,
+    status: str,
+    message: str,
+    mode: str | None = None,
+) -> None:
+    """Push one Live Trace event (thread-safe; UI drains on Tk main thread)."""
+    payload = {
+        "stage": str(stage or "").strip() or "stage",
+        "status": str(status or "active").strip().lower(),
+        "message": str(message or "").strip(),
+        "mode": (str(mode).strip().lower() if mode else None),
+    }
+    if payload["status"] not in _TRACE_STATUS_ICONS:
+        payload["status"] = "active"
+    try:
+        gui_telemetry_queue.put_nowait(payload)
+    except Exception:  # noqa: BLE001
+        pass
+    # Canonical bus for LiveTracePanel (never touches Tk from worker threads).
+    try:
+        from dana.ui.trace_bus import emit_trace_event
+
+        status_l = payload["status"]
+        et = "node_enter" if status_l == "active" else "node_exit"
+        emit_trace_event(
+            et,
+            node=payload["stage"],
+            message=payload["message"],
+            mode=payload["mode"] or "",
+            payload=payload["message"],
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ---------------------------------------------------------------------------

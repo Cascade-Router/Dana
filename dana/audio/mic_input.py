@@ -42,6 +42,7 @@ from dana.core.constants import (
     VAD_SILENCE_MS,
 )
 from dana.logging import log, log_debug
+from dana.paths import _nt_hide_console_if_mp_child
 
 # ---------------------------------------------------------------------------
 # Dynamic audio configuration (settings.json)
@@ -823,10 +824,6 @@ def ensure_mic_ingest_thread() -> None:
 
 def mic_ingest_worker() -> None:
     """Continuous producer: open InputStream once, push 16 kHz VAD frames to queue."""
-    # Not yet migrated (CLI/process-lifecycle bucket, Phase 7) — trivial,
-    # side-effect-only, no shared state; safe as a temporary bridge import.
-    from dana.core_agent import _nt_hide_console_if_mp_child
-
     _nt_hide_console_if_mp_child()
     stream: Any = None
     stream_channels = 1

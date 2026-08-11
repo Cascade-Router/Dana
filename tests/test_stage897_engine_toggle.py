@@ -4,11 +4,8 @@ from __future__ import annotations
 
 
 def test_engine_engage_standby_locks_behavior() -> None:
-    from dana.core_agent import (
-        DanaGUI,
-        is_engine_engaged,
-        set_engine_engaged,
-    )
+    from dana.core_agent import DanaGUI
+    from dana.core.shared_state import is_engine_engaged, set_engine_engaged
 
     set_engine_engaged(False)
     app = DanaGUI()
@@ -52,7 +49,8 @@ def test_engine_engage_standby_locks_behavior() -> None:
 
 
 def test_standby_blocks_chat_and_dictation() -> None:
-    from dana.core_agent import DanaGUI, set_engine_engaged
+    from dana.core_agent import DanaGUI
+    from dana.core.shared_state import set_engine_engaged
 
     set_engine_engaged(False)
     app = DanaGUI()
@@ -85,7 +83,8 @@ def test_standby_blocks_chat_and_dictation() -> None:
 
 def test_stop_dana_still_independent() -> None:
     """Kill switch remains a separate hard-exit path."""
-    from dana.core_agent import DanaGUI, set_engine_engaged
+    from dana.core_agent import DanaGUI
+    from dana.core.shared_state import set_engine_engaged
 
     set_engine_engaged(False)
     app = DanaGUI()
@@ -108,12 +107,8 @@ def test_stop_dana_still_independent() -> None:
 
 def test_stop_callback_halts_engine(monkeypatch) -> None:
     """STOP DANA must deactivate the engine even when kill-script is stubbed."""
-    from dana.core_agent import (
-        DanaGUI,
-        is_engine_engaged,
-        set_engine_engaged,
-        stop_event,
-    )
+    from dana.core_agent import DanaGUI, stop_event
+    from dana.core.shared_state import is_engine_engaged, set_engine_engaged
 
     set_engine_engaged(False)
     stop_event.clear()

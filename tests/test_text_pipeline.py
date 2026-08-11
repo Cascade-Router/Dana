@@ -103,7 +103,7 @@ def turn1_titan_watchdog() -> None:
     # Mirror production fast-path: tool_router must agree after STT middleware.
     from dana.core_agent import tool_router
 
-    with patch("dana.core_agent.speak_tool_working_ack", lambda *_a, **_k: None), patch(
+    with patch("dana.core.agent_loop.speak_tool_working_ack", lambda *_a, **_k: None), patch(
         "dana.core_agent.SPATIAL_AGGREGATOR"
     ) as _agg:
         _agg.update_transcript = MagicMock()
@@ -320,7 +320,7 @@ def turn3_over_strict_broker_fallback() -> None:
     # Production entry: tool_router should leave this as chat (no deferred file tool).
     from dana.core_agent import tool_router
 
-    with patch("dana.core_agent.speak_tool_working_ack", lambda *_a, **_k: None), patch(
+    with patch("dana.core.agent_loop.speak_tool_working_ack", lambda *_a, **_k: None), patch(
         "dana.core_agent.SPATIAL_AGGREGATOR"
     ) as _agg:
         _agg.update_transcript = MagicMock()

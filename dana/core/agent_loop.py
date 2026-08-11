@@ -11,16 +11,22 @@ plus small mid-task-drop helpers used only by ``conversation_worker``.
 Reassigned shared_state names touched by this bucket (``active_vision_tool``,
 ``latest_frame``, ``latest_dets``, ``dana_profile``, ``VAULT_HOT_CACHE``,
 ``vault_client``, ``_shared_wakeword_model``, ``_active_mid_task_prompt``) are
-also written/read by functions that stay in ``core_agent.py`` (``tracker_worker``,
-``wakeword_worker``, ``unlock_dana_memory``, ``execute_lockdown_shutdown``,
-``populate_vault_hot_cache``) -- every site on both sides goes through
-``dana.core.shared_state`` (``state.X``), never a bare name, so neither module
-sees a stale cross-module snapshot.
+also written/read by ``dana.vision.tracker_worker.tracker_worker``,
+``dana.audio.wakeword_worker.wakeword_worker``, and
+``dana.core.app_runtime.unlock_dana_memory``/``populate_vault_hot_cache`` --
+every site on both sides goes through ``dana.core.shared_state`` (``state.X``),
+never a bare name, so neither module sees a stale cross-module snapshot.
 
-Functions still owned by ``core_agent.py`` (GUI, tray, tracker, wake-word,
-CLI/process-lifecycle -- later phases) are reached via a lazy bridge import,
-matching the sanctioned temporary-bridge pattern already used elsewhere in
-this decomposition (e.g. ``_nt_hide_console_if_mp_child``).
+As of Phase 7 of the core_agent.py decomposition, this module's dependency on
+``dana.core_agent`` is down to one name: ``execute_lockdown_shutdown``
+(``dana.core.app_runtime``), kept as a lazy bridge import inside
+``conversation_worker`` specifically because ``dana.core.app_runtime`` imports
+``conversation_worker`` from here -- a top-level import in both directions
+would be a real cycle. Every other function this bucket used to reach via
+``dana.core_agent`` now has a real home (``dana.core.command_classifiers``,
+``dana.core.shared_state``, ``dana.ingestion.text_injection``,
+``dana.vision.tracker_worker``, ``dana.paths``) and is imported at the top of
+this file like any other dependency.
 """
 
 from __future__ import annotations
@@ -82,6 +88,16 @@ from dana.core.constants import (
     YOLO_CONF,
     YOLO_WEIGHTS,
 )
+from dana.core.command_classifiers import (
+    clear_context_spoken_reply,
+    flush_conversation_memory,
+    is_clear_context_command,
+    is_lockdown_command,
+    is_standby_command,
+    is_time_command,
+    speak_tool_working_ack,
+    wall_clock_spoken_reply,
+)
 from dana.core.shared_state import (  # noqa: F401
     _active_mid_task_lock,
     _tool_working_ack_sent,
@@ -90,8 +106,10 @@ from dana.core.shared_state import (  # noqa: F401
     conversation_history,
     conversation_history_lock,
     emit_live_transcript,
+    emit_trace,
     engine_engaged,
     HISTORY_MAX_MESSAGES,
+    is_engine_engaged,
     is_recording,
     latest_dets_lock,
     latest_frame_lock,
@@ -117,10 +135,23 @@ from dana.core.shared_state import (  # noqa: F401
     whisper_bundle_lock,
     whisper_ready,
 )
+from dana.ingestion.text_injection import (
+    compile_and_append_voice_prompt,
+    pop_injected_question_ex,
+)
 from dana.logging import log, log_conversation, log_debug
+from dana.paths import _nt_hide_console_if_mp_child
 from dana.prompts.spatial_synthesis import build_agent_system_prompt, spatial_focus_hint
 from dana.sanitize import sanitize_tool_trace
 from dana.tools import ToolCall, ToolValidationError, get_broker
+from dana.vision.tracker_worker import (
+    format_class_list,
+    format_vision_context_for_llm,
+    get_spatial_memory_labels,
+    parse_yolo_results,
+    remember_spatial_labels,
+    yolo_device_arg,
+)
 from dana.vision_tools import ScreenAgent, VideoAgent
 
 def build_dana_system_prompt(
@@ -129,10 +160,6 @@ def build_dana_system_prompt(
     user_text: str = "",
 ) -> str:
     """System prompt: SpatialIR synthesis guide + ReAct protocol + language lock."""
-    # Not yet migrated (GUI/tray/vision buckets, later phases) -- sanctioned
-    # temporary bridge import (same pattern as _nt_hide_console_if_mp_child).
-    from dana.core_agent import format_class_list
-
     if profile is None:
         profile = state.dana_profile
     if profile:
@@ -185,10 +212,6 @@ def build_dana_system_prompt(
 
 def execute_tool_call(tc: ToolCall) -> str:
     """Dispatch a validated ToolCall IR; returns an Observation string for ReAct."""
-    # Not yet migrated (GUI/tray/vision buckets, later phases) -- sanctioned
-    # temporary bridge import (same pattern as _nt_hide_console_if_mp_child).
-    from dana.core_agent import flush_conversation_memory
-
     broker = get_broker()
     # architect_new_tool: recover empty args from the live utterance before validate.
     if tc.tool_id == "architect_new_tool":
@@ -1301,10 +1324,6 @@ def tool_router(whisper_text: str) -> tuple[str, Optional[ToolCall]]:
     Soft alias hits below ``HIGH_CONFIDENCE_TOOL_THRESHOLD`` are ignored unless
     ``requires_tool_graph`` already demands ReAct — keeps System-1 strict.
     """
-    # Not yet migrated (GUI/tray/vision buckets, later phases) -- sanctioned
-    # temporary bridge import (same pattern as _nt_hide_console_if_mp_child).
-    from dana.core_agent import speak_tool_working_ack
-
     # STT vocabulary middleware (Notepad phonetic repairs, name fixes, …).
     whisper_text = correct_known_stt_names(whisper_text or "")
     broker = get_broker()
@@ -1601,31 +1620,10 @@ def conversation_worker(
     device,
     dtype,
 ) -> None:
-    # Not yet migrated (GUI/tray/vision/CLI buckets, later phases) --
-    # sanctioned temporary bridge import (same pattern used in
-    # dana.audio.mic_input/tts_worker for _nt_hide_console_if_mp_child).
-    from dana.core_agent import (
-        _nt_hide_console_if_mp_child,
-        clear_context_spoken_reply,
-        compile_and_append_voice_prompt,
-        emit_trace,
-        execute_lockdown_shutdown,
-        flush_conversation_memory,
-        format_class_list,
-        format_vision_context_for_llm,
-        get_spatial_memory_labels,
-        is_clear_context_command,
-        is_engine_engaged,
-        is_lockdown_command,
-        is_standby_command,
-        is_time_command,
-        parse_yolo_results,
-        pop_injected_question_ex,
-        remember_spatial_labels,
-        speak_tool_working_ack,
-        wall_clock_spoken_reply,
-        yolo_device_arg,
-    )
+    # dana.core.app_runtime imports conversation_worker from this module, so
+    # this one stays a lazy bridge import to avoid a real module-level cycle
+    # (everything else this function needs is now a top-level import above).
+    from dana.core.app_runtime import execute_lockdown_shutdown
 
     _nt_hide_console_if_mp_child()
     # Dual-engine: skip SmolVLM to free VRAM; Ollama is the conversational brain.

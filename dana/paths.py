@@ -194,3 +194,21 @@ def chdir_project_root() -> Path:
     """``os.chdir`` into the repo root so any leftover relative paths resolve."""
     os.chdir(PROJECT_ROOT)
     return PROJECT_ROOT
+
+
+def _nt_hide_console_if_mp_child() -> None:
+    """Hide console only inside multiprocessing children — never the main agent terminal."""
+    if os.name != "nt":
+        return
+    try:
+        import multiprocessing
+
+        if multiprocessing.current_process().name == "MainProcess":
+            return
+        import ctypes
+
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)
+    except Exception:  # noqa: BLE001
+        pass

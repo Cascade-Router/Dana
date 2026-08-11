@@ -229,7 +229,11 @@ def publish_pending(
     except Exception:  # noqa: BLE001
         pass
     try:
-        from dana.core_agent import emit_trace
+        # Lazy: importing dana.core.shared_state as the first thing touched
+        # in a fresh process trips a pre-existing shared_state <-> dana.audio
+        # circular import (see dana.ui.tray_icon / Phase 5 notes) -- this
+        # module has no other reason to force that chain to resolve early.
+        from dana.core.shared_state import emit_trace
 
         emit_trace(
             "ticket_approval",
