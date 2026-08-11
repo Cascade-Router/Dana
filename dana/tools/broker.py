@@ -912,6 +912,43 @@ def initialize_tool_registry() -> list:
     initialized.append(
         ("draft_cursor_prompt", "plugin", _handle_draft_cursor_prompt)
     )
+
+    # AutoCAD Co-Pilot — deterministic COM/AutoLISP geometry + VLM visual QA.
+    def _handle_draw_autocad_geometry(call: ToolCall) -> str:
+        from dana.operators import autocad_engine
+
+        args = dict(call.arguments or {})
+        shape = str(args.get("shape") or "").strip().lower()
+        if shape == "line":
+            return autocad_engine.add_line(
+                args.get("start_pt") or [], args.get("end_pt") or []
+            )
+        if shape == "circle":
+            return autocad_engine.add_circle(
+                args.get("center_pt") or [], float(args.get("radius") or 0)
+            )
+        if shape == "polyline":
+            return autocad_engine.add_polyline(args.get("points_list") or [])
+        if shape in {"extrude", "extruded_solid", "solid"}:
+            return autocad_engine.add_extruded_solid(
+                args.get("profile_polyline") or [], float(args.get("height") or 0)
+            )
+        return (
+            f"ERROR: draw_autocad_geometry unknown shape={shape!r} "
+            "(expected line|circle|polyline|extrude)"
+        )
+
+    initialized.append(
+        ("draw_autocad_geometry", "plugin", _handle_draw_autocad_geometry)
+    )
+
+    def _handle_execute_autolisp(call: ToolCall) -> str:
+        from dana.operators import autocad_engine
+
+        args = dict(call.arguments or {})
+        return autocad_engine.run_autolisp_command(str(args.get("lisp_string") or ""))
+
+    initialized.append(("execute_autolisp", "plugin", _handle_execute_autolisp))
     return initialized
 
 

@@ -1968,6 +1968,99 @@
       "aliases_fa": {
         "_intent": []
       }
+    },
+    {
+      "id": "draw_autocad_geometry",
+      "description_en": "Draw exact deterministic geometry in the active AutoCAD document via native COM automation (never mouse clicks or pixel coordinates). shape=line needs start_pt/end_pt, shape=circle needs center_pt/radius, shape=polyline needs points_list, shape=extrude needs profile_polyline/height. Use this instead of execute_autolisp whenever a direct COM primitive covers the shape — it is more robust than command-line text.",
+      "parameters": [
+        {
+          "name": "shape",
+          "type": "string",
+          "required": true,
+          "enum": ["line", "circle", "polyline", "extrude"],
+          "description_en": "Which COM drawing primitive to invoke.",
+          "description_fa": "  COM   ."
+        },
+        {
+          "name": "start_pt",
+          "type": "array",
+          "required": false,
+          "description_en": "[x, y] or [x, y, z] line start point (shape=line)."
+        },
+        {
+          "name": "end_pt",
+          "type": "array",
+          "required": false,
+          "description_en": "[x, y] or [x, y, z] line end point (shape=line)."
+        },
+        {
+          "name": "center_pt",
+          "type": "array",
+          "required": false,
+          "description_en": "[x, y] or [x, y, z] circle center point (shape=circle)."
+        },
+        {
+          "name": "radius",
+          "type": "number",
+          "required": false,
+          "description_en": "Circle radius in drawing units (shape=circle)."
+        },
+        {
+          "name": "points_list",
+          "type": "array",
+          "required": false,
+          "description_en": "List of [x, y] points for the polyline (shape=polyline)."
+        },
+        {
+          "name": "profile_polyline",
+          "type": "array",
+          "required": false,
+          "description_en": "List of at least 3 [x, y] points forming a closed profile to extrude (shape=extrude)."
+        },
+        {
+          "name": "height",
+          "type": "number",
+          "required": false,
+          "description_en": "Extrusion height in drawing units (shape=extrude)."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "draw a line in autocad",
+          "draw a circle in autocad",
+          "draw polyline",
+          "extrude solid",
+          "draw_autocad_geometry"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
+      "id": "execute_autolisp",
+      "description_en": "Dispatch a raw AutoLISP or native command-line string into the active AutoCAD document via ActiveDocument.SendCommand — for operations draw_autocad_geometry's COM primitives don't cover (layers, dimensioning, blocks, layouts). SendCommand is fire-and-forget: it queues keystrokes exactly as if typed and cannot report the command's own success or failure — follow up with verify_cad_rendering to confirm the result visually.",
+      "parameters": [
+        {
+          "name": "lisp_string",
+          "type": "string",
+          "required": true,
+          "description_en": "Raw AutoLISP expression or native command-line string, e.g. '(command \"LAYER\" \"M\" \"Dim\" \"\")' or '_ZOOM _E '.",
+          "description_fa": "AutoLISP    ."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "run autolisp",
+          "execute autocad command",
+          "send command to autocad",
+          "execute_autolisp"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
     }
   ]
 }
+
