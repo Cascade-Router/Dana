@@ -44,9 +44,9 @@ def _env_flag(name: str) -> bool:
 
 def _gui_listening() -> bool:
     try:
-        from dana import core_agent as ca
+        from dana.core import shared_state
 
-        gui = getattr(ca, "_gui_instance", None)
+        gui = shared_state.get_gui_instance()
         if gui is None:
             return False
         try:

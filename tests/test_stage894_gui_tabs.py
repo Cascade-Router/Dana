@@ -73,7 +73,7 @@ def test_gui_source_declares_three_tabs() -> None:
     """Headless: assert tab consolidation without requiring a live Tk display."""
     from pathlib import Path
 
-    src = (Path(__file__).resolve().parents[1] / "dana" / "core_agent.py").read_text(
+    src = (Path(__file__).resolve().parents[1] / "dana" / "ui" / "app_gui.py").read_text(
         encoding="utf-8"
     )
     assert 'tabs.add("Assistant & Tasks")' in src

@@ -576,3 +576,64 @@ def notify_dictation_sessions_changed() -> None:
             fn()
         except Exception:  # noqa: BLE001
             pass
+
+
+# ---------------------------------------------------------------------------
+# Live Trace telemetry (background threads -> Tk main thread via Queue only)
+# ---------------------------------------------------------------------------
+# Shared between dana.core_agent.emit_trace() (producer, any thread) and
+# dana.ui.app_gui's DanaGUI/TraceCell (consumer, Tk main thread). A
+# queue.Queue and a read-only dict are both mutate-in-place objects (see
+# this module's docstring) -- safe to import by bare name from either side.
+
+gui_telemetry_queue: queue.Queue = queue.Queue()
+
+# ASCII-only -- emoji tofu glyphs rendered as broken purple boxes on Win fonts.
+_TRACE_STATUS_ICONS: dict[str, str] = {
+    "active": "[~]",
+    "completed": "[OK]",
+    "bypassed": "[--]",
+}
+
+
+# ---------------------------------------------------------------------------
+# GUI/tray process ownership (Phase 5 core_agent.py decomposition)
+# ---------------------------------------------------------------------------
+# ``_gui_instance`` / ``_tray_icon`` / ``_agent_loop_thread`` are reassigned
+# from several modules (dana.ui.app_gui, dana.ui.tray_icon, dana.core_agent,
+# dana.middleware.hitl_ticket). Per this module's docstring, a bare
+# ``from ... import _gui_instance`` would silently diverge from this
+# module's copy the moment any owner reassigns it. Accessor functions
+# (mirroring set_ui_state/get_ui_state above) are the safe pattern for a
+# reassigned singleton reference shared across modules.
+
+_gui_instance: Optional[Any] = None  # reassigned; the live DanaGUI, if any
+_tray_icon: Optional[Any] = None  # reassigned; the live pystray.Icon, if any
+_agent_loop_thread: Optional[threading.Thread] = None  # reassigned
+
+
+def set_gui_instance(gui: Optional[Any]) -> None:
+    global _gui_instance
+    _gui_instance = gui
+
+
+def get_gui_instance() -> Optional[Any]:
+    return _gui_instance
+
+
+def set_tray_icon(icon: Optional[Any]) -> None:
+    global _tray_icon
+    _tray_icon = icon
+
+
+def get_tray_icon() -> Optional[Any]:
+    return _tray_icon
+
+
+def set_agent_loop_thread(thread: Optional[threading.Thread]) -> None:
+    global _agent_loop_thread
+    _agent_loop_thread = thread
+
+
+def get_agent_loop_thread() -> Optional[threading.Thread]:
+    return _agent_loop_thread
