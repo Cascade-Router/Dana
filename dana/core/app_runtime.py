@@ -8,16 +8,13 @@ CustomTkinter dashboard (dana.ui.app_gui.DanaGUI) or the headless background
 loop, spawn the Tracker/WakeWord/Conversation/InputIngest daemon threads,
 and tear them down again on shutdown.
 
-A handful of business-logic functions that ``agent_loop()`` spawns as thread
-targets (``tracker_worker``, ``wakeword_worker``, ``input_txt_ingest_worker``)
-stay in ``dana.core_agent`` because they are also relied on elsewhere
-(directly or via ``dana.core.agent_loop``'s existing lazy-import pattern for
-the vision/wake-word helpers they share). Importing them here happens inside
-``agent_loop()`` itself, mirroring the same lazy-import precedent
-``dana.core.agent_loop`` already uses for its own reverse dependency on
-``dana.core_agent`` -- not a new workaround, just the existing one applied
-consistently to avoid a real module-level cycle between this file and
-``dana.core_agent``.
+The daemon-thread targets ``agent_loop()`` spawns (``tracker_worker``,
+``wakeword_worker``, ``input_txt_ingest_worker``) moved to their own domain
+modules in Phase 7 of the core_agent.py decomposition
+(``dana.vision.tracker_worker``, ``dana.audio.wakeword_worker``,
+``dana.ingestion.text_injection``) and are imported at the top of this file
+like any other dependency -- no bridge import back to ``dana.core_agent``
+remains here.
 """
 
 from __future__ import annotations
@@ -91,6 +88,13 @@ from dana.secure_memory import SecureMemory
 from dana.vault_service import VaultClient
 from dana.ui.app_gui import DanaGUI
 from dana.ui.tray_icon import run_system_tray
+from dana.ingestion.text_injection import (
+    clear_injected_question,
+    input_txt_ingest_worker,
+    set_injected_question,
+)
+from dana.vision.tracker_worker import tracker_worker
+from dana.audio.wakeword_worker import wakeword_worker
 
 import requests
 
@@ -683,17 +687,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
-    # Lazy, same precedent dana.core.agent_loop already uses for its own
-    # reverse dependency on dana.core_agent (see module docstring) -- these
-    # stay in core_agent.py because they're shared with that module too.
-    from dana.core_agent import (
-        clear_injected_question,
-        input_txt_ingest_worker,
-        set_injected_question,
-        tracker_worker,
-        wakeword_worker,
-    )
-
     if args is None:
         args = parse_args()
     local_files_only = not args.download

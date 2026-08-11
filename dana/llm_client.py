@@ -231,7 +231,8 @@ def ask_ollama_structured(
     Passes the Pydantic JSON Schema via Ollama ``format`` and validates each
     attempt with ``parse_with_schema_retry``.
     """
-    from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
+    from dana.core.constants import OLLAMA_MODEL
+    from dana.core.agent_loop import ask_ollama_messages
     from dana.middleware.json_schema_retry import parse_with_schema_retry
 
     model_id = (model or "").strip() or OLLAMA_MODEL

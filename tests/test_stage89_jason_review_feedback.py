@@ -41,7 +41,7 @@ def test_generate_critique_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(*_a, **_k):  # noqa: ANN001
         raise ConnectionError("offline")
 
-    monkeypatch.setattr("dana.core_agent.ask_ollama_messages", _boom)
+    monkeypatch.setattr("dana.core.agent_loop.ask_ollama_messages", _boom)
     c = generate_jason_ticket_critique(
         "Fix the API schema validation",
         objective="Harden draft_cursor_prompt against empty objective",
@@ -63,7 +63,7 @@ def test_jason_review_node_speaks_and_stores(
     def _speak(text: str, *, agent_id: str | None = None, **_kw) -> None:  # noqa: ANN001
         spoken.append((text, str(agent_id or "")))
 
-    monkeypatch.setattr("dana.core_agent.enqueue_speech", _speak)
+    monkeypatch.setattr("dana.audio.tts_manager.enqueue_speech_impl", _speak)
 
     from langchain_core.messages import AIMessage, HumanMessage
 

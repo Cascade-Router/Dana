@@ -41,7 +41,7 @@ def test_broker_never_vault_on_create_tool() -> None:
 
 
 def test_architect_empty_args_pulls_raw_text() -> None:
-    from dana.core_agent import execute_tool_call
+    from dana.core.agent_loop import execute_tool_call
 
     call = ToolCall(
         tool_id="architect_new_tool",

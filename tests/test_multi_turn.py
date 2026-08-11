@@ -7,7 +7,8 @@ TTS, or live network I/O.
 
 from __future__ import annotations
 
-import dana.core_agent as agent
+import dana.core.shared_state as shared_state
+import dana.core.agent_loop as agent_loop_module
 import dana.core.command_classifiers as classifiers
 from test_support_react import patch_scripted_llm
 from dana.agentic import REACT_MAX_ITERS, run_react_loop
@@ -29,10 +30,10 @@ def _system_prompt() -> str:
 
 def _prior_from_history() -> list[dict[str, str]]:
     """Mirror ``run_brain_turn``: pass user/assistant turns into ReAct."""
-    with agent.conversation_history_lock:
+    with shared_state.conversation_history_lock:
         return [
             {"role": m["role"], "content": m["content"]}
-            for m in agent.conversation_history
+            for m in shared_state.conversation_history
             if m.get("role") in ("user", "assistant") and m.get("content")
         ]
 
@@ -53,8 +54,8 @@ def test_multi_turn_context_memory_and_flush(monkeypatch) -> None:
     system = _system_prompt()
 
     # Isolate from any leftover live-agent history.
-    with agent.conversation_history_lock:
-        agent.conversation_history.clear()
+    with shared_state.conversation_history_lock:
+        shared_state.conversation_history.clear()
 
     # --- Turn 1: store favorite color ---------------------------------
     turn1 = f"My favorite color is {FAVORITE_COLOR}."
@@ -73,7 +74,7 @@ def test_multi_turn_context_memory_and_flush(monkeypatch) -> None:
     )
     ok1 = bool(result1.final_text) and "error" not in result1.final_text.lower()
     assert ok1, f"Turn 1 failed: {result1.final_text!r}"
-    agent.commit_agentic_turn(system, turn1, result1.final_text)
+    agent_loop_module.commit_agentic_turn(system, turn1, result1.final_text)
     _report(1, "acknowledge favorite color", ok1, result1.final_text[:80])
 
     # Memory window must now hold the user statement.
@@ -114,7 +115,7 @@ def test_multi_turn_context_memory_and_flush(monkeypatch) -> None:
         f"Turn 2 failed to recall {FAVORITE_COLOR!r} "
         f"(history_seen={history_seen['v']}, reply={result2.final_text!r})"
     )
-    agent.commit_agentic_turn(system, turn2, result2.final_text)
+    agent_loop_module.commit_agentic_turn(system, turn2, result2.final_text)
     _report(2, "recall neon green from memory", ok2, result2.final_text[:80])
 
     # --- Turn 3: clear context → flush_conversation_memory --------------

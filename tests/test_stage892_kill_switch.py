@@ -27,7 +27,7 @@ def test_kill_dana_processes_launches_bat(monkeypatch: pytest.MonkeyPatch, tmp_p
         launched.append({"args": args, "kwargs": kwargs})
         return SimpleNamespace(pid=4242)
 
-    monkeypatch.setattr("dana.core_agent.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("dana.ui.app_gui.subprocess.Popen", _fake_popen)
 
     app = DanaGUI()
     app.update_idletasks()
@@ -57,7 +57,7 @@ def test_kill_dana_processes_prefers_vbs(monkeypatch: pytest.MonkeyPatch, tmp_pa
         launched.append({"args": args, "kwargs": kwargs})
         return SimpleNamespace(pid=99)
 
-    monkeypatch.setattr("dana.core_agent.subprocess.Popen", _fake_popen)
+    monkeypatch.setattr("dana.ui.app_gui.subprocess.Popen", _fake_popen)
 
     app = DanaGUI()
     result = app.kill_dana_processes()
@@ -85,7 +85,7 @@ def test_stop_button_shows_terminating(monkeypatch: pytest.MonkeyPatch, tmp_path
     monkeypatch.setattr("dana.paths.PROJECT_ROOT", tmp_path)
     calls: list[int] = []
     monkeypatch.setattr(
-        "dana.core_agent.subprocess.Popen",
+        "dana.ui.app_gui.subprocess.Popen",
         lambda *a, **k: calls.append(1) or SimpleNamespace(pid=1),
     )
 

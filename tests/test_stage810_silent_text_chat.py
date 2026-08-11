@@ -56,7 +56,8 @@ def test_chat_bar_widgets_and_standby_guard() -> None:
 
 
 def test_submit_text_command_injects_when_engaged() -> None:
-    from dana.core_agent import DanaGUI, is_recording
+    from dana.core_agent import DanaGUI
+    from dana.core.shared_state import is_recording
     from dana.core.shared_state import set_engine_engaged
     from dana.ingestion.text_injection import (
         clear_injected_question,

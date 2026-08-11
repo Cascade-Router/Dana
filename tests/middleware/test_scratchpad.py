@@ -27,7 +27,7 @@ def test_compress_keeps_head_and_tail() -> None:
 
 
 def test_execute_tool_call_applies_scratchpad() -> None:
-    from dana.core_agent import execute_tool_call
+    from dana.core.agent_loop import execute_tool_call
     from dana.tools.schema import ToolCall
 
     # Force a large observation via read_local_file on a known large module.

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dana.agentic import looks_like_confidential_fixture_leak, sanitize_spoken_reply
-from dana.core_agent import is_whisper_hallucination, is_whisper_prompt_echo
+from dana.audio.stt import is_whisper_hallucination, is_whisper_prompt_echo
 from dana.tools.broker import IntentBroker
 
 

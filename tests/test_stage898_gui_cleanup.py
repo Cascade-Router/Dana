@@ -4,11 +4,9 @@ from __future__ import annotations
 
 
 def test_header_pill_only_and_accent() -> None:
-    from dana.core_agent import (
-        DanaGUI,
-        _UI_ACCENT,
-        _TRACE_STATUS_ICONS,
-    )
+    from dana.core_agent import DanaGUI
+    from dana.ui.app_gui import _UI_ACCENT
+    from dana.core.shared_state import _TRACE_STATUS_ICONS
 
     app = DanaGUI()
     try:

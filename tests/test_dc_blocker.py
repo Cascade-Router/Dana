@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from dana.core_agent import DC_BLOCKER_R, DcBlocker, remove_dc_offset
+from dana.core.constants import DC_BLOCKER_R
+from dana.audio.dc_blocker import DcBlocker, remove_dc_offset
 
 
 def test_dc_blocker_kills_constant_offset() -> None:

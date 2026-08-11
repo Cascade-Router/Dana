@@ -543,7 +543,7 @@ def generate_jason_ticket_critique(
         f"DRAFTED CONTEXT:\n{(context or '').strip() or '(empty)'}\n"
     )
     try:
-        from dana.core_agent import ask_ollama_messages
+        from dana.core.agent_loop import ask_ollama_messages
 
         raw = ask_ollama_messages(
             [
@@ -587,7 +587,7 @@ def jason_ticket_review_node(state: ReactGraphState) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
     try:
-        from dana.core_agent import enqueue_speech
+        from dana.audio.tts_manager import enqueue_speech_impl as enqueue_speech
 
         enqueue_speech(critique, agent_id="jason")
     except Exception:  # noqa: BLE001

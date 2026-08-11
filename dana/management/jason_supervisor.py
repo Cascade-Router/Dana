@@ -262,7 +262,7 @@ def reason_slide_evaluation(
 
     try:
         from dana.cascade_router import reasoner_model_name
-        from dana.core_agent import ask_ollama_messages
+        from dana.core.agent_loop import ask_ollama_messages
 
         raw = ask_ollama_messages(
             [

@@ -33,7 +33,7 @@ def check_spatial_synthesis():
 
 
 def check_core_agent_wrapper():
-    from dana.core_agent import build_dana_system_prompt
+    from dana.core.agent_loop import build_dana_system_prompt
 
     prompt = build_dana_system_prompt(yolo_labels=[], profile=None, user_text="hello")
     assert isinstance(prompt, str) and prompt.strip(), "empty/non-str prompt from wrapper"

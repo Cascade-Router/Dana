@@ -130,9 +130,9 @@ def test_audio_switcher_imports_cleanly() -> None:
 def test_tray_icon_listening_vs_idle() -> None:
     pytest.importorskip("PIL")
     try:
-        from dana.core_agent import create_tray_image
+        from dana.ui.tray_icon import create_tray_image
     except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"core_agent unavailable in this environment: {exc}")
+        pytest.skip(f"tray_icon unavailable in this environment: {exc}")
 
     idle = create_tray_image("idle")
     listening = create_tray_image("listening")
@@ -166,11 +166,16 @@ def test_appusermodelid_helper_present_in_entrypoints() -> None:
     root = Path(__file__).resolve().parents[1]
     run_txt = (root / "run.py").read_text(encoding="utf-8")
     core_txt = (root / "dana" / "core_agent.py").read_text(encoding="utf-8", errors="replace")
+    paths_txt = (root / "dana" / "paths.py").read_text(encoding="utf-8", errors="replace")
     needle = "SetCurrentProcessExplicitAppUserModelID"
     assert needle in run_txt
-    assert needle in core_txt
+    # dana/core_agent.py delegates to dana.paths.apply_windows_process_hardening()
+    # (Phase 8 of the core_agent.py decomposition) -- the needle now lives there,
+    # and core_agent.py must actually call it rather than just re-export it.
+    assert needle in paths_txt
+    assert "apply_windows_process_hardening" in core_txt
     assert "dana.assistant.desktop.v1" in run_txt
-    assert "dana.assistant.desktop.v1" in core_txt
+    assert "dana.assistant.desktop.v1" in paths_txt
     from dana.ui import logo as logo_mod
 
     assert hasattr(logo_mod, "apply_window_icon")

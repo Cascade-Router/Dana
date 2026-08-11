@@ -655,7 +655,7 @@ def repl_executor(
                     phrase = line[len(_TTS_MARKER) :].strip()
                     if phrase:
                         try:
-                            from dana.core_agent import enqueue_speech as _live_enqueue
+                            from dana.audio.tts_manager import enqueue_speech_impl as _live_enqueue
 
                             _live_enqueue(phrase)
                         except Exception:
@@ -761,7 +761,7 @@ def terminal_failure(state: WatchdogState) -> dict[str, Any]:
         "I encountered an error trying to write that monitor script and had to abort."
     )
     try:
-        from dana.core_agent import enqueue_speech
+        from dana.audio.tts_manager import enqueue_speech_impl as enqueue_speech
 
         enqueue_speech(phrase)
     except Exception:

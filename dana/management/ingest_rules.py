@@ -233,7 +233,8 @@ def clean_ocr_with_llm(
 
     # Patch 8.3.2 — use Chat Node Llama (instruct), not DeepSeek-R1 reasoner.
     from dana.cascade_router import local_model_name
-    from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
+    from dana.core.constants import OLLAMA_MODEL
+    from dana.core.agent_loop import ask_ollama_messages
 
     model = (local_model_name() or "").strip() or OLLAMA_MODEL
 

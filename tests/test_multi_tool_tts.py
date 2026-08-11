@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dana.core_agent import TTS_UTTERANCE_MAX_SECONDS, chunk_text_for_tts
+from dana.core.constants import TTS_UTTERANCE_MAX_SECONDS
+from dana.audio.tts_manager import chunk_text_for_tts
 from dana.tools.broker import get_broker, merge_bound_tool_ids, repl_suite_tool_ids
 
 

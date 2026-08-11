@@ -101,10 +101,10 @@ def turn1_titan_watchdog() -> None:
             _fail("watchdog task lost Notepad / Titan context")
 
     # Mirror production fast-path: tool_router must agree after STT middleware.
-    from dana.core_agent import tool_router
+    from dana.core.agent_loop import tool_router
 
     with patch("dana.core.agent_loop.speak_tool_working_ack", lambda *_a, **_k: None), patch(
-        "dana.core_agent.SPATIAL_AGGREGATOR"
+        "dana.core.agent_loop.SPATIAL_AGGREGATOR"
     ) as _agg:
         _agg.update_transcript = MagicMock()
         text_out, deferred = tool_router(raw)
@@ -318,10 +318,10 @@ def turn3_over_strict_broker_fallback() -> None:
         _fail("broker invented relationship_reflection.txt filepath")
 
     # Production entry: tool_router should leave this as chat (no deferred file tool).
-    from dana.core_agent import tool_router
+    from dana.core.agent_loop import tool_router
 
     with patch("dana.core.agent_loop.speak_tool_working_ack", lambda *_a, **_k: None), patch(
-        "dana.core_agent.SPATIAL_AGGREGATOR"
+        "dana.core.agent_loop.SPATIAL_AGGREGATOR"
     ) as _agg:
         _agg.update_transcript = MagicMock()
         _text, deferred = tool_router(raw)

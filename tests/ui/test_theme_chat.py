@@ -107,7 +107,8 @@ def test_chat_bubble_view_headless() -> None:
 
 def test_gui_uses_theme_and_chat_view() -> None:
     try:
-        from dana.core_agent import DanaGUI, _UI_CANVAS, _UI_ACCENT
+        from dana.core_agent import DanaGUI
+        from dana.ui.app_gui import _UI_CANVAS, _UI_ACCENT
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"DanaGUI unavailable: {exc}")
 

@@ -152,7 +152,7 @@ def test_invalid_never_hits_hitl_interrupt(monkeypatch: pytest.MonkeyPatch) -> N
         return {"halt": True, "final_raw": "should-not-run"}
 
     monkeypatch.setattr(
-        "dana.core_agent.enqueue_speech",
+        "dana.audio.tts_manager.enqueue_speech_impl",
         lambda *_a, **_k: None,
     )
 
@@ -228,7 +228,7 @@ def test_valid_hits_hitl_with_full_payload(monkeypatch: pytest.MonkeyPatch) -> N
         lambda *_a, **_k: "Looks solid — approve if you agree.",
     )
     monkeypatch.setattr(
-        "dana.core_agent.enqueue_speech",
+        "dana.audio.tts_manager.enqueue_speech_impl",
         lambda *_a, **_k: None,
     )
 

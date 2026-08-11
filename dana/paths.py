@@ -212,3 +212,94 @@ def _nt_hide_console_if_mp_child() -> None:
             ctypes.windll.user32.ShowWindow(hwnd, 0)
     except Exception:  # noqa: BLE001
         pass
+
+
+_windows_process_hardening_applied = False
+
+
+def apply_windows_process_hardening() -> None:
+    """Idempotent Windows setup: taskbar identity + console-hiding subprocess spawn.
+
+    Moved verbatim out of ``dana.core_agent`` (Phase 8 of the core_agent.py
+    decomposition) -- ``run.py`` claims the taskbar AppUserModelID
+    independently, but the ``subprocess.Popen`` console-hiding patch and the
+    ``multiprocessing`` pythonw.exe redirect have no other caller, so this
+    stays load-bearing for every entry point (``run.py``, ``python -m
+    dana.core_agent``, ``python -m dana.ui.main``) rather than something
+    safe to simply drop.
+    """
+    global _windows_process_hardening_applied
+    if _windows_process_hardening_applied:
+        return
+    _windows_process_hardening_applied = True
+
+    import subprocess
+    import sys
+
+    # Windows taskbar identity — must run before CustomTkinter/Tk root creation.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "dana.assistant.desktop.v1"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Absolute Windows console kill-switch: CREATE_NO_WINDOW + STARTUPINFO hide +
+    # mutate python.exe → pythonw.exe (class patch so asyncio can still subclass).
+    if os.name == "nt":
+        _original_popen = subprocess.Popen
+        _pythonw_path = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+
+        def _coerce_pythonw_cmd(cmd0):
+            if not os.path.isfile(_pythonw_path):
+                return cmd0
+            if isinstance(cmd0, (list, tuple)) and cmd0:
+                cmd = list(cmd0)
+                head = str(cmd[0])
+                if (
+                    head == sys.executable
+                    or os.path.normcase(head) == os.path.normcase(sys.executable)
+                    or os.path.basename(head).lower() == "python.exe"
+                ):
+                    cmd[0] = _pythonw_path
+                return cmd
+            if isinstance(cmd0, str):
+                if cmd0 == sys.executable or cmd0.startswith(sys.executable):
+                    return cmd0.replace(sys.executable, _pythonw_path, 1)
+                if os.path.basename(cmd0.split(" ", 1)[0]).lower() == "python.exe":
+                    return cmd0.replace(cmd0.split(" ", 1)[0], _pythonw_path, 1)
+            return cmd0
+
+        class _PatchedPopen(_original_popen):  # type: ignore[valid-type,misc]
+            def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                # 1. Force CREATE_NO_WINDOW
+                kwargs["creationflags"] = int(kwargs.get("creationflags") or 0) | 0x08000000
+
+                # 2. Force STARTUPINFO invisibility cloak
+                if "startupinfo" not in kwargs or kwargs.get("startupinfo") is None:
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = int(getattr(subprocess, "SW_HIDE", 0))
+                    kwargs["startupinfo"] = startupinfo
+
+                # 3. Intercept sys.executable / python.exe and mutate to pythonw.exe
+                if args:
+                    first = _coerce_pythonw_cmd(args[0])
+                    args = (first,) + args[1:]
+                if "args" in kwargs and kwargs["args"] is not None:
+                    kwargs["args"] = _coerce_pythonw_cmd(kwargs["args"])
+
+                super().__init__(*args, **kwargs)
+
+        subprocess.Popen = _PatchedPopen  # type: ignore[misc, assignment]
+
+    # Force multiprocessing workers onto windowless pythonw.exe (CreateProcess bypasses Popen).
+    import multiprocessing
+
+    if os.name == "nt":
+        _pythonw_path = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if os.path.isfile(_pythonw_path):
+            multiprocessing.set_executable(_pythonw_path)

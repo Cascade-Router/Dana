@@ -34,7 +34,7 @@ def _default_on_complete(topic: str, summary: str) -> None:
     except Exception:
         pass
     try:
-        from dana.core_agent import enqueue_speech
+        from dana.audio.tts_manager import enqueue_speech_impl as enqueue_speech
 
         text = f"My research is complete. Here is what I found: {summary}"
         enqueue_speech(text)
@@ -95,7 +95,7 @@ def _titan_repair_worker(query: str, on_complete: OnComplete | None) -> None:
 
 def _default_titan_repair_complete(topic: str, summary: str) -> None:
     try:
-        from dana.core_agent import enqueue_speech
+        from dana.audio.tts_manager import enqueue_speech_impl as enqueue_speech
 
         text = (summary or "").strip() or (
             "Titan Repair finished. Drafts are in CAMGRASPER/tracker/pending_patches/ "

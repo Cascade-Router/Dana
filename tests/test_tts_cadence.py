@@ -8,15 +8,15 @@ from unittest.mock import patch
 
 import numpy as np
 
-from dana.core_agent import (
+from dana.audio.tts_worker import (
     DEFAULT_PIPER_ONNX,
     PIPER_EN_ONNX,
     PIPER_LENGTH_SCALE,
     PIPER_VOICE_ID,
     _resample_pcm,
     download_piper_models,
-    sanitize_text_for_tts,
 )
+from dana.audio.tts_manager import sanitize_text_for_tts
 
 
 def test_piper_length_scale_faster_than_realtime_default() -> None:

@@ -58,7 +58,7 @@ class TurnResult:
 
 def _silence_tts() -> None:
     try:
-        import dana.core_agent as ca
+        import dana.core.agent_loop as ca
 
         ca.enqueue_speech = lambda *a, **k: None  # type: ignore[assignment]
         ca.wait_for_speech_idle = lambda *a, **k: True  # type: ignore[assignment]
@@ -212,7 +212,8 @@ def turn1_memory_ingest() -> TurnResult:
     set_dana_mode("chat")
     _bb_append("user", TURN1, agent="Chat_Node", intent="memory_ingest")
     try:
-        from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
+        from dana.core.constants import OLLAMA_MODEL
+        from dana.core.agent_loop import ask_ollama_messages
 
         result = run_lightweight_chat(
             user_text=TURN1,
@@ -397,7 +398,7 @@ def turn4_moa_cross_agent() -> TurnResult:
     rapidfuzz_in_plan = False
 
     def execute_fn(tc: ToolCall) -> str:
-        from dana.core_agent import execute_tool_call
+        from dana.core.agent_loop import execute_tool_call
 
         return execute_tool_call(tc)
 
@@ -610,7 +611,8 @@ def turn5_chat_verify() -> TurnResult:
 
     answer = ""
     try:
-        from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
+        from dana.core.constants import OLLAMA_MODEL
+        from dana.core.agent_loop import ask_ollama_messages
 
         result = run_lightweight_chat(
             user_text=residual + "\n\n" + context_block,

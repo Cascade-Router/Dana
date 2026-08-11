@@ -7,7 +7,7 @@ from dana.tools.broker import _TOOL_FORGE_HINT_RE, get_broker
 from dana.telemetry import note_tool_event, write_dashboard
 from dana.paths import DASHBOARD_PATH
 from dana.audio.vad_consumer import SILERO_SPEECH_THRESHOLD, SILERO_WINDOW_SAMPLES
-from dana.core_agent import VAD_FRAME_SAMPLES, VAD_SILENCE_MS
+from dana.core.constants import VAD_FRAME_SAMPLES, VAD_SILENCE_MS
 
 
 MASS = (

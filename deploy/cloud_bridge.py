@@ -80,7 +80,7 @@ def apply_cloud_mode() -> None:
 
         try:
             from dana.agentic import set_dana_mode
-            from dana.core_agent import set_engine_engaged
+            from dana.core.shared_state import set_engine_engaged
 
             set_dana_mode("developer", as_voice=False)
             set_engine_engaged(True)
@@ -193,7 +193,7 @@ def _cloud_execute(tool_call: Any) -> str:
 
     # Prefer production tool executor when importable; else soft stub.
     try:
-        from dana.core_agent import execute_tool_call
+        from dana.core.agent_loop import execute_tool_call
 
         return str(execute_tool_call(tool_call))
     except Exception as exc:  # noqa: BLE001
@@ -202,7 +202,7 @@ def _cloud_execute(tool_call: Any) -> str:
 
 def _system_prompt(user_text: str) -> str:
     try:
-        from dana.core_agent import build_dana_system_prompt
+        from dana.core.agent_loop import build_dana_system_prompt
 
         return build_dana_system_prompt([], user_text=user_text)
     except Exception:  # noqa: BLE001

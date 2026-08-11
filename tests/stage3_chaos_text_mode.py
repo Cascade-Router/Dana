@@ -49,7 +49,7 @@ class TurnResult:
 def _silence_tts() -> None:
     """No-op speech so soak never blocks on Piper / audio."""
     try:
-        import dana.core_agent as ca
+        import dana.core.agent_loop as ca
 
         ca.enqueue_speech = lambda *a, **k: None  # type: ignore[assignment]
         ca.wait_for_speech_idle = lambda *a, **k: True  # type: ignore[assignment]
@@ -277,7 +277,8 @@ def turn2_chat_memory() -> TurnResult:
                 "note=dual_write_blackboard (prod run_brain_turn would drop residual)"
             )
             try:
-                from dana.core_agent import ask_ollama_messages, OLLAMA_MODEL
+                from dana.core.agent_loop import ask_ollama_messages
+                from dana.core.constants import OLLAMA_MODEL
                 from dana.agentic import build_lightweight_chat_system_prompt
 
                 result = run_lightweight_chat(
@@ -330,7 +331,8 @@ def turn3_recall() -> TurnResult:
     bb_msgs = load_messages("chaos-stage3", limit=20)
     r.details.append(f"bb_message_count={len(bb_msgs)}")
     try:
-        from dana.core_agent import ask_ollama_messages, OLLAMA_MODEL
+        from dana.core.agent_loop import ask_ollama_messages
+        from dana.core.constants import OLLAMA_MODEL
 
         result = run_lightweight_chat(
             user_text=TURN3,
@@ -382,7 +384,7 @@ def turn4_moa_guard() -> TurnResult:
     def execute_fn(tc: ToolCall) -> str:
         nonlocal validation_bounces
         try:
-            from dana.core_agent import execute_tool_call
+            from dana.core.agent_loop import execute_tool_call
 
             return execute_tool_call(tc)
         except Exception as exc:  # noqa: BLE001

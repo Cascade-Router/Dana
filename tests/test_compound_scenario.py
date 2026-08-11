@@ -75,7 +75,7 @@ class StepResult:
 
 def _silence_tts() -> None:
     try:
-        import dana.core_agent as ca
+        import dana.core.agent_loop as ca
 
         ca.enqueue_speech = lambda *a, **k: None  # type: ignore[assignment]
         ca.wait_for_speech_idle = lambda *a, **k: True  # type: ignore[assignment]
@@ -308,7 +308,7 @@ def step2_visual_awareness() -> StepResult:
     visual = read_visual_state()
     answer = ""
     try:
-        from dana.core_agent import OLLAMA_MODEL
+        from dana.core.constants import OLLAMA_MODEL
 
         def _ask_fn(messages, **_kwargs):  # noqa: ANN001
             blob = " ".join(str(m.get("content") or "") for m in (messages or []))
@@ -390,7 +390,7 @@ def step3_research_enqueue() -> StepResult:
     tool_trace: list[dict[str, Any]] = []
 
     def execute_fn(tc: ToolCall) -> str:
-        from dana.core_agent import execute_tool_call
+        from dana.core.agent_loop import execute_tool_call
 
         return execute_tool_call(tc)
 
@@ -565,7 +565,7 @@ def step5_synthesis_draft(search_result: str) -> StepResult:
     args_blob = ""
 
     def execute_fn(tc: ToolCall) -> str:
-        from dana.core_agent import execute_tool_call
+        from dana.core.agent_loop import execute_tool_call
 
         return execute_tool_call(tc)
 
@@ -701,7 +701,7 @@ def step6_piggyback(actuator: _ActuatorDaemon, draft_action_id: int | None) -> S
                 "in the background. Ready when you are."
             )
         try:
-            from dana.core_agent import ask_ollama_messages
+            from dana.core.agent_loop import ask_ollama_messages
 
             return ask_ollama_messages(messages, model=model)
         except Exception:  # noqa: BLE001

@@ -73,7 +73,7 @@ def _run_orchestrator_once(
         executed.append(tc.tool_id)
         if dry_execute:
             return f"OK: dry-run {tc.tool_id} args={dict(tc.arguments)}"
-        from dana.core_agent import execute_tool_call
+        from dana.core.agent_loop import execute_tool_call
 
         return execute_tool_call(tc)
 

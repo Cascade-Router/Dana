@@ -174,7 +174,7 @@ def _deliver_proactive_briefing() -> int:
     except Exception as exc:  # noqa: BLE001
         _log(f"WARNING: proactive StatusEventBus emit failed ({exc})")
     try:
-        from dana.core_agent import enqueue_speech
+        from dana.audio.tts_manager import enqueue_speech_impl as enqueue_speech
 
         enqueue_speech(spoken)
     except Exception:  # noqa: BLE001

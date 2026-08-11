@@ -107,7 +107,8 @@ def test_stop_dana_still_independent() -> None:
 
 def test_stop_callback_halts_engine(monkeypatch) -> None:
     """STOP DANA must deactivate the engine even when kill-script is stubbed."""
-    from dana.core_agent import DanaGUI, stop_event
+    from dana.core_agent import DanaGUI
+    from dana.core.shared_state import stop_event
     from dana.core.shared_state import is_engine_engaged, set_engine_engaged
 
     set_engine_engaged(False)

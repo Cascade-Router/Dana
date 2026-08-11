@@ -436,7 +436,8 @@ def generate_worker_code(
     repair_attempts: int = 0,
 ) -> str:
     """Plain string LLM call — no tools, no JSON schema, no ReAct loop."""
-    from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
+    from dana.core.constants import OLLAMA_MODEL
+    from dana.core.agent_loop import ask_ollama_messages
 
     path = (target_filepath or "").strip()
     stem = path.replace("\\", "/").rsplit("/", 1)[-1]

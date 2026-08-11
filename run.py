@@ -290,7 +290,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         # Closing the GUI / Ctrl+C should exit quietly (workers log "Stopped.").
         try:
-            from dana.core_agent import _shutdown_agent_threads
+            from dana.core.app_runtime import _shutdown_agent_threads
 
             _shutdown_agent_threads(join_timeout=5.0)
         except Exception:

@@ -451,7 +451,7 @@ class AssistiveTouchOrb:
         if self._hitl_pending:
             return True
         try:
-            from dana.core_agent import tts_busy
+            from dana.core.shared_state import tts_busy
 
             if bool(tts_busy.is_set()):
                 return True

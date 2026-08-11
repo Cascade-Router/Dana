@@ -250,7 +250,7 @@ def test_retry_parser_fails_after_max_retries() -> None:
 
 def test_ask_ollama_messages_accepts_format_kwarg(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensure response_format is forwarded into the Ollama payload."""
-    import dana.core_agent as ca
+    import dana.core.agent_loop as ca
 
     captured: dict = {}
 

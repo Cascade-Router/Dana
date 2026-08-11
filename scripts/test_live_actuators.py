@@ -154,7 +154,7 @@ def live_execute_tool(tc: Any) -> str:
         return f"ERROR: {tool_id} failed: {exc}"
 
     # Everything else (e.g. inject_keystrokes) -> real production dispatcher.
-    from dana.core_agent import execute_tool_call
+    from dana.core.agent_loop import execute_tool_call
 
     return execute_tool_call(tc)
 

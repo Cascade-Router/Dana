@@ -1302,7 +1302,7 @@ def _enqueue_tts_nonblocking(
 
     def _run() -> None:
         try:
-            from dana.core_agent import enqueue_speech
+            from dana.audio.tts_manager import enqueue_speech_impl as enqueue_speech
 
             enqueue_speech(text, agent_id=aid)
         except Exception:  # noqa: BLE001
@@ -2073,7 +2073,7 @@ def sanitize_spoken_reply(
     spoken = strip_simulated_dialog_leaks(text or "")
     # Strip markdown fences early so Piper never reads generated Python aloud.
     try:
-        from dana.core_agent import sanitize_text_for_tts
+        from dana.audio.tts_manager import sanitize_text_for_tts
 
         spoken = sanitize_text_for_tts(spoken)
     except Exception:  # noqa: BLE001

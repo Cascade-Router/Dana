@@ -272,7 +272,8 @@ def triage_bidirectional_repair(
     )
     raw = ""
     try:
-        from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
+        from dana.core.constants import OLLAMA_MODEL
+        from dana.core.agent_loop import ask_ollama_messages
 
         raw = ask_ollama_messages(
             [

@@ -505,8 +505,8 @@ def _run_one_query(
         run_lightweight_chat,
         run_react_loop,
     )
-    from dana.core_agent import (
-        OLLAMA_MODEL,
+    from dana.core.constants import OLLAMA_MODEL
+    from dana.core.agent_loop import (
         ask_ollama_messages,
         build_dana_system_prompt,
         commit_agentic_turn,
@@ -1107,7 +1107,8 @@ def _llm_psol_synthesis(
     ground: dict[str, Any],
 ) -> str:
     try:
-        from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
+        from dana.core.constants import OLLAMA_MODEL
+        from dana.core.agent_loop import ask_ollama_messages
     except Exception:
         return ""
 

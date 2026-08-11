@@ -19,7 +19,11 @@ from dana.audio.multi_voice_tts import (
     uses_receptionist_piper,
     VOICE_PROFILE_LABELS,
 )
-from dana.core_agent import _parse_tts_spool_item, chunk_text_for_tts, enqueue_speech
+from dana.audio.tts_manager import (
+    _parse_tts_spool_item,
+    chunk_text_for_tts,
+    enqueue_speech_impl as enqueue_speech,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -63,14 +67,15 @@ def test_synthesize_speech_by_agent_id(tmp_path, monkeypatch) -> None:  # noqa: 
 
 
 def test_enqueue_speech_carries_agent_id(monkeypatch) -> None:  # noqa: ANN001
-    from dana import core_agent as ca
+    from dana.audio import tts_manager
+    from dana.core.shared_state import tts_queue
     from dana.agentic import StreamSentenceTtsBuffer, feed_stream_tts, reset_stream_sentence_tts
 
     # Drain any leftovers.
-    ca.flush_tts_queue()
+    tts_manager.flush_tts_queue()
     enqueue_speech("Short line one.", agent_id="moa")
     assert get_active_tts_agent() == "moa"
-    item = ca.tts_queue.get_nowait()
+    item = tts_queue.get_nowait()
     text, flag, agent = _parse_tts_spool_item(item)
     assert "Short" in text
     assert isinstance(flag, bool)

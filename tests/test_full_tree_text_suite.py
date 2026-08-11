@@ -83,7 +83,7 @@ class BranchResult:
 
 def _silence_tts() -> None:
     try:
-        import dana.core_agent as ca
+        import dana.core.agent_loop as ca
 
         ca.enqueue_speech = lambda *a, **k: None  # type: ignore[assignment]
         ca.wait_for_speech_idle = lambda *a, **k: True  # type: ignore[assignment]
@@ -356,7 +356,7 @@ def branch2_vision_sensor_read() -> BranchResult:
 
     answer = ""
     try:
-        from dana.core_agent import OLLAMA_MODEL
+        from dana.core.constants import OLLAMA_MODEL
 
         def _ask_fn(messages, **_kwargs):  # noqa: ANN001
             blob = " ".join(str(m.get("content") or "") for m in (messages or []))
@@ -467,7 +467,8 @@ def branch3_chat_ingest() -> BranchResult:
     _bb_append("user", fact, agent="Chat_Node", intent="memory_ingest")
 
     try:
-        from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
+        from dana.core.constants import OLLAMA_MODEL
+        from dana.core.agent_loop import ask_ollama_messages
 
         result = run_lightweight_chat(
             user_text=fact,
@@ -520,7 +521,8 @@ def branch4_chat_recall() -> BranchResult:
 
     answer = ""
     try:
-        from dana.core_agent import OLLAMA_MODEL, ask_ollama_messages
+        from dana.core.constants import OLLAMA_MODEL
+        from dana.core.agent_loop import ask_ollama_messages
 
         # Hydrate with Blackboard history (session_id path).
         from dana.memory import load_messages
@@ -608,7 +610,7 @@ def branch5_research_moa() -> BranchResult:
     executed = False
 
     def execute_fn(tc: ToolCall) -> str:
-        from dana.core_agent import execute_tool_call
+        from dana.core.agent_loop import execute_tool_call
 
         return execute_tool_call(tc)
 
@@ -729,7 +731,7 @@ def branch6_async_queue_callback(actuator: _ActuatorDaemon) -> BranchResult:
     tool_trace: list[dict[str, Any]] = []
 
     def execute_fn(tc: ToolCall) -> str:
-        from dana.core_agent import execute_tool_call
+        from dana.core.agent_loop import execute_tool_call
 
         return execute_tool_call(tc)
 
@@ -841,7 +843,7 @@ def branch6_async_queue_callback(actuator: _ActuatorDaemon) -> BranchResult:
                 "I'm ready for the next task."
             )
         try:
-            from dana.core_agent import ask_ollama_messages
+            from dana.core.agent_loop import ask_ollama_messages
 
             return ask_ollama_messages(messages, model=model)
         except Exception:  # noqa: BLE001

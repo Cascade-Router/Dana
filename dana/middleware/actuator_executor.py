@@ -168,7 +168,7 @@ def execute_tool_payload(
 
     # Prefer the core IR dispatcher for the rest of the registry.
     try:
-        from dana.core_agent import execute_tool_call
+        from dana.core.agent_loop import execute_tool_call
         from dana.tools.schema import ToolCall
 
         return str(

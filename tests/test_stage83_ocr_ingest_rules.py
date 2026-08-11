@@ -110,7 +110,7 @@ def test_clean_ocr_uses_local_llama_not_reasoner(monkeypatch) -> None:  # noqa: 
         lambda: "llama3.2:latest",
     )
     monkeypatch.setattr(
-        "dana.core_agent.ask_ollama_messages",
+        "dana.core.agent_loop.ask_ollama_messages",
         _fake_ask,
     )
     monkeypatch.setattr(

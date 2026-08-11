@@ -203,18 +203,12 @@ def test_route_after_ast_and_titan() -> None:
 
 
 def test_repl_executor_runs_safe_script_and_forwards_tts(monkeypatch) -> None:
-    import sys
-    import types
-
     spoken: list[str] = []
-
-    fake_agent = types.ModuleType("dana.core_agent")
 
     def _capture(phrase: str) -> None:
         spoken.append(phrase)
 
-    fake_agent.enqueue_speech = _capture  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "dana.core_agent", fake_agent)
+    monkeypatch.setattr("dana.audio.tts_manager.enqueue_speech_impl", _capture)
 
     code = assemble_watchdog_script(
         run_self_test="assert True\nprint('self-test ok')",
@@ -336,9 +330,7 @@ def test_terminal_failure_logs_root_cause(monkeypatch) -> None:
     spoken: list[str] = []
     logged: list[tuple[str, str]] = []
 
-    fake_agent = types.ModuleType("dana.core_agent")
-    fake_agent.enqueue_speech = lambda p: spoken.append(p)  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "dana.core_agent", fake_agent)
+    monkeypatch.setattr("dana.audio.tts_manager.enqueue_speech_impl", lambda p: spoken.append(p))
 
     fake_log = types.ModuleType("dana.logging")
 

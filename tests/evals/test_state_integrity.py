@@ -157,7 +157,7 @@ def test_hitl_ticket_node_halts_pending_approval(monkeypatch: pytest.MonkeyPatch
         "dana.agentic_react_graph.generate_jason_ticket_critique",
         lambda *_a, **_k: "Critique ok — HITL pending approval eval.",
     )
-    monkeypatch.setattr("dana.core_agent.enqueue_speech", lambda *_a, **_k: None)
+    monkeypatch.setattr("dana.audio.tts_manager.enqueue_speech_impl", lambda *_a, **_k: None)
 
     graph = compile_dana_react_graph(
         agent,

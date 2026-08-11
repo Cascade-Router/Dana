@@ -4,13 +4,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from dana.core_agent import (
-    DEAD_MIC_RMS_FLOOR,
-    audio_buffer_rms,
-    should_skip_wake_predict,
-    vad_abort_event,
-    vad_capture_active,
-)
+from dana.core.constants import DEAD_MIC_RMS_FLOOR
+from dana.audio.noise_floor import audio_buffer_rms, should_skip_wake_predict
+from dana.core.shared_state import vad_abort_event, vad_capture_active
 from dana.ingestion.text_injection import prioritize_text_input
 
 

@@ -141,7 +141,7 @@ def test_langgraph_interrupt_approve_runs_tools(monkeypatch: pytest.MonkeyPatch)
         lambda *_a, **_k: "This ticket accurately captures the API constraints.",
     )
     monkeypatch.setattr(
-        "dana.core_agent.enqueue_speech",
+        "dana.audio.tts_manager.enqueue_speech_impl",
         lambda *_a, **_k: None,
     )
 
@@ -184,7 +184,7 @@ def test_langgraph_interrupt_deny_skips_tools(monkeypatch: pytest.MonkeyPatch) -
         lambda *_a, **_k: "Missing visual bounds — deny.",
     )
     monkeypatch.setattr(
-        "dana.core_agent.enqueue_speech",
+        "dana.audio.tts_manager.enqueue_speech_impl",
         lambda *_a, **_k: None,
     )
 

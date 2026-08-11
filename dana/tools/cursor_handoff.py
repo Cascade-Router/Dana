@@ -205,7 +205,7 @@ def delegate_to_cursor(
     )
     if speak:
         try:
-            from dana.core_agent import enqueue_speech
+            from dana.audio.tts_manager import enqueue_speech_impl as enqueue_speech
 
             enqueue_speech(tts)
         except Exception:

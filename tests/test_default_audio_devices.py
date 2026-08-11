@@ -127,7 +127,8 @@ def test_system_default_label_constant() -> None:
 
 def test_gui_audio_is_autonomous_system_default() -> None:
     """Mic/Speaker menus removed; streams always use System Default."""
-    from dana.core_agent import DanaGUI, load_audio_settings
+    from dana.core_agent import DanaGUI
+    from dana.audio.mic_input import load_audio_settings
     from dana.core.shared_state import set_engine_engaged
 
     mic_id, speaker_id, _rate = load_audio_settings()

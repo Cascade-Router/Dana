@@ -143,7 +143,7 @@ def test_compile_graph_planner_executor_before_hitl(monkeypatch) -> None:
         "dana.agentic_react_graph.generate_jason_ticket_critique",
         lambda *_a, **_k: "Critique ok for planning corridor.",
     )
-    monkeypatch.setattr("dana.core_agent.enqueue_speech", lambda *_a, **_k: None)
+    monkeypatch.setattr("dana.audio.tts_manager.enqueue_speech_impl", lambda *_a, **_k: None)
 
     graph = compile_dana_react_graph(
         agent,

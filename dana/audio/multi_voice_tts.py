@@ -82,7 +82,7 @@ PERSONA_COLORS: dict[str, str] = {
 # Patch 8.3.1 — Piper is optional; ImportError → silent pyttsx3 fallback.
 PIPER_AVAILABLE = True
 try:
-    from dana.core_agent import DEFAULT_PIPER_ONNX as _DEFAULT_PIPER_ONNX
+    from dana.audio.tts_worker import DEFAULT_PIPER_ONNX as _DEFAULT_PIPER_ONNX
 except ImportError:
     PIPER_AVAILABLE = False
     _DEFAULT_PIPER_ONNX = None  # type: ignore[assignment]
@@ -230,7 +230,7 @@ def _synthesize_piper(text: str, dest: Path) -> bool:
     if not PIPER_AVAILABLE or _DEFAULT_PIPER_ONNX is None:
         return False
     try:
-        from dana.core_agent import get_piper_voice, synthesize_to_file
+        from dana.audio.tts_worker import get_piper_voice, synthesize_to_file
     except ImportError:
         return False
     try:

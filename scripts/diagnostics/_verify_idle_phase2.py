@@ -24,7 +24,7 @@ def main() -> None:
         print(f"{tool}\t{topic[:72]}...")
 
     import dana.cascade_router as cr
-    import dana.core_agent as ca
+    import dana.core.agent_loop as ca
 
     src = inspect.getsource(cr.resolve_chat_model)
     assert 'keep_alive="-1"' not in src
