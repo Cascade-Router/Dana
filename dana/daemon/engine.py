@@ -33,7 +33,7 @@ StatusProvider = Callable[[], dict[str, Any] | Awaitable[dict[str, Any]]]
 def _daemon_system_prompt(user_text: str) -> str:
     """Build live agent system prompt; fall back if core_agent is unavailable."""
     try:
-        from dana.core_agent import build_dana_system_prompt
+        from dana.core.agent_loop import build_dana_system_prompt
 
         return build_dana_system_prompt([], user_text=user_text)
     except Exception as exc:  # noqa: BLE001
@@ -46,7 +46,7 @@ def _daemon_system_prompt(user_text: str) -> str:
 
 def _daemon_execute_tool(tc: Any) -> str:
     """Dispatch through the live tool executor (lazy import)."""
-    from dana.core_agent import execute_tool_call
+    from dana.core.agent_loop import execute_tool_call
 
     return execute_tool_call(tc)
 
@@ -103,7 +103,7 @@ async def _default_stream_chat(
     )
 
     def _run_lightweight() -> Any:
-        from dana.core_agent import ask_ollama_messages
+        from dana.core.agent_loop import ask_ollama_messages
 
         return run_lightweight_chat(
             user_text=message,
@@ -596,7 +596,7 @@ async def run_engine_daemon(
             pass
         log("Daemon", "LLM warm-up start (background ping)")
         try:
-            from dana.core_agent import ask_ollama_messages
+            from dana.core.agent_loop import ask_ollama_messages
 
             ask_ollama_messages(
                 [{"role": "user", "content": "ping"}],

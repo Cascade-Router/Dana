@@ -104,7 +104,7 @@ def test_empty_vault_partner_name_unknown(monkeypatch) -> None:
     mock_vault.profile = {}
     mock_vault.read_memory.side_effect = KeyError(KEY_NOT_FOUND)
 
-    with patch("dana.core_agent.vault_client", mock_vault):
+    with patch("dana.core.shared_state.vault_client", mock_vault):
 
         def execute_fn(tc: ToolCall) -> str:
             if tc.tool_id != "read_vault_memory":

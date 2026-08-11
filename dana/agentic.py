@@ -2660,9 +2660,9 @@ def _chat_situational_context() -> str:
     time_line = now.strftime("%A, %B %d, %Y %I:%M %p %Z").strip()
     user_name = ""
     try:
-        from dana.core_agent import VAULT_HOT_CACHE
+        from dana.core import shared_state as _state
 
-        user_name = str((VAULT_HOT_CACHE or {}).get("user_name") or "").strip()
+        user_name = str((_state.VAULT_HOT_CACHE or {}).get("user_name") or "").strip()
     except Exception:  # noqa: BLE001
         user_name = ""
     try:

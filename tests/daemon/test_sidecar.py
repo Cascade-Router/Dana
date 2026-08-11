@@ -133,7 +133,7 @@ def test_ui_client_connects_and_streams(session_path: Path) -> None:
         with patch(
             "dana.agentic.run_react_loop", side_effect=_fast_react_loop
         ), patch(
-            "dana.core_agent.ask_ollama_messages",
+            "dana.core.agent_loop.ask_ollama_messages",
             side_effect=_fast_ask_ollama_messages,
         ):
             frames = list(client.stream_chat("hello sidecar"))

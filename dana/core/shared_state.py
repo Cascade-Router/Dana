@@ -511,3 +511,68 @@ def notify_vault_unlocked() -> None:
     "unlocked, clear/close whatever you showed for the last request".
     """
     _notify_vault_prompt_listeners("")
+
+
+# ---------------------------------------------------------------------------
+# One-off GUI actions from agent-loop code (HITL approval card, dictation
+# session refresh) — same decoupling as ui_state/transcript above: the
+# agent-loop bucket must not import DanaGUI / touch ``_gui_instance``
+# directly, and the listener (registered by whoever owns the GUI) is
+# responsible for its own thread-safe ``.after()`` hand-off to Tk.
+# ---------------------------------------------------------------------------
+
+_spec_approval_listeners: list[Callable[[dict], None]] = []
+_spec_approval_listeners_lock = threading.Lock()
+
+_dictation_sessions_listeners: list[Callable[[], None]] = []
+_dictation_sessions_listeners_lock = threading.Lock()
+
+
+def register_spec_approval_listener(fn: Callable[[dict], None]) -> None:
+    with _spec_approval_listeners_lock:
+        if fn not in _spec_approval_listeners:
+            _spec_approval_listeners.append(fn)
+
+
+def unregister_spec_approval_listener(fn: Callable[[dict], None]) -> None:
+    with _spec_approval_listeners_lock:
+        try:
+            _spec_approval_listeners.remove(fn)
+        except ValueError:
+            pass
+
+
+def notify_spec_approval_requested(payload: dict) -> None:
+    """Fire-and-forget: ask the GUI owner to show its Approve & Run card."""
+    with _spec_approval_listeners_lock:
+        listeners = list(_spec_approval_listeners)
+    for fn in listeners:
+        try:
+            fn(payload)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def register_dictation_sessions_listener(fn: Callable[[], None]) -> None:
+    with _dictation_sessions_listeners_lock:
+        if fn not in _dictation_sessions_listeners:
+            _dictation_sessions_listeners.append(fn)
+
+
+def unregister_dictation_sessions_listener(fn: Callable[[], None]) -> None:
+    with _dictation_sessions_listeners_lock:
+        try:
+            _dictation_sessions_listeners.remove(fn)
+        except ValueError:
+            pass
+
+
+def notify_dictation_sessions_changed() -> None:
+    """Fire-and-forget: ask the GUI owner to refresh its dictation session list."""
+    with _dictation_sessions_listeners_lock:
+        listeners = list(_dictation_sessions_listeners)
+    for fn in listeners:
+        try:
+            fn()
+        except Exception:  # noqa: BLE001
+            pass

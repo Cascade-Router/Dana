@@ -186,7 +186,7 @@ class ModelProvider:
         num_predict: int,
         temperature: float,
     ) -> str:
-        from dana.core_agent import ask_ollama_messages
+        from dana.core.agent_loop import ask_ollama_messages
         from dana.system_health import llm_lock
 
         with llm_lock:
