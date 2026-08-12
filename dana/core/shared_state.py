@@ -591,6 +591,42 @@ def notify_dictation_sessions_changed() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Feature/plugin toggles (dana.features.feature_manager -> GUI owner) — same
+# decoupling as above: this module never imports feature_manager or GUI code,
+# it only brokers the fire-and-forget notification; the listener is
+# responsible for its own thread-safe ``.after()`` hand-off to Tk.
+# ---------------------------------------------------------------------------
+
+_feature_flags_listeners: list[Callable[[dict], None]] = []
+_feature_flags_listeners_lock = threading.Lock()
+
+
+def register_feature_flags_listener(fn: Callable[[dict], None]) -> None:
+    with _feature_flags_listeners_lock:
+        if fn not in _feature_flags_listeners:
+            _feature_flags_listeners.append(fn)
+
+
+def unregister_feature_flags_listener(fn: Callable[[dict], None]) -> None:
+    with _feature_flags_listeners_lock:
+        try:
+            _feature_flags_listeners.remove(fn)
+        except ValueError:
+            pass
+
+
+def notify_feature_flags_changed(flags: dict) -> None:
+    """Fire-and-forget: ask the GUI owner to refresh its feature-toggle panel."""
+    with _feature_flags_listeners_lock:
+        listeners = list(_feature_flags_listeners)
+    for fn in listeners:
+        try:
+            fn(flags)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Live Trace telemetry (background threads -> Tk main thread via Queue only)
 # ---------------------------------------------------------------------------
 # Producer (emit_trace, any thread) and consumer (dana.ui.app_gui's

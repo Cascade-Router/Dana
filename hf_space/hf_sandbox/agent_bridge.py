@@ -237,12 +237,39 @@ class IntentBroker:
 _broker = IntentBroker()
 
 
-def run_turn(user_text: str) -> dict[str, Any]:
+def run_turn(
+    user_text: str, *, enabled_features: dict[str, bool] | None = None
+) -> dict[str, Any]:
     """Runs one ReAct-style micro-loop turn: parse -> dispatch -> summarize.
+
+    ``enabled_features`` is the live state of the Plugin & Feature Manager
+    checkboxes (``None`` behaves exactly as if every feature were enabled —
+    the pre-Feature-Manager default). Feature-access questions ("do you have
+    access to FreeCAD?") are answered deterministically without dispatching
+    any tool; a dispatch matched to a *disabled* feature's tool is refused
+    before it ever reaches `_broker.dispatch()`.
 
     Returns a dict with `reasoning_steps` (list[str]), `tool_call`, `tool_result`
     (or None if no structured intent matched), and `assistant_text`.
     """
+    from . import feature_flags
+
+    features_state = (
+        dict(enabled_features) if enabled_features is not None else dict(feature_flags.DEFAULT_ENABLED)
+    )
+
+    access_answer = feature_flags.describe_feature_access(user_text, features_state)
+    if access_answer is not None:
+        return {
+            "reasoning_steps": [
+                "Matched a feature-access question — answering from live "
+                "Plugin & Feature Manager state, no tool dispatched."
+            ],
+            "tool_call": None,
+            "tool_result": None,
+            "assistant_text": access_answer,
+        }
+
     steps = [f"Parsing utterance via IntentBroker.parse_utterance() — bilingual EN/FA alias matcher"]
     call = _broker.parse_utterance(user_text)
 
@@ -260,6 +287,25 @@ def run_turn(user_text: str) -> dict[str, Any]:
         f"Matched intent -> tool_id='{call.tool_id}' confidence={call.confidence:.2f} "
         f"({'high-confidence force-route' if call.confidence >= HIGH_CONFIDENCE_TOOL_THRESHOLD else 'alias hit'})"
     )
+
+    owner_feature = feature_flags.tool_id_to_feature(call.tool_id)
+    if owner_feature is not None and not features_state.get(owner_feature, True):
+        label = feature_flags.FEATURES[owner_feature].label
+        steps.append(
+            f"Feature '{owner_feature}' ({label}) is disabled — refusing dispatch "
+            "before calling the tool."
+        )
+        reply = (
+            f"No, the {label} is currently disabled. Enable it in the Plugin & "
+            "Feature Manager panel to use this tool."
+        )
+        return {
+            "reasoning_steps": steps,
+            "tool_call": call,
+            "tool_result": None,
+            "assistant_text": reply,
+        }
+
     steps.append(f"Dispatching ToolCall(id={call.call_id}, tool_id='{call.tool_id}') via broker.dispatch() ...")
     result = _broker.dispatch(call)
     focus_note = " [zero-focus: no window activated]" if result.zero_focus else ""

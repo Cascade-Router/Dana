@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import time
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
@@ -468,6 +467,21 @@ _SANDBOX_JOB_STATUS_HINT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+# CAD Co-Pilot (AutoCAD COM + FreeCAD subprocess) — gates the micro-loop
+# system-prompt policy in IntentBroker.augment_system_prompt below.
+_CAD_HINT_RE = re.compile(
+    r"("
+    r"\b(?:draw_autocad_geometry|execute_autolisp|analyze_cad_blueprint|"
+    r"verify_cad_rendering)\b|"
+    r"\b(?:create_freecad_box|create_freecad_cylinder|create_freecad_extrusion|"
+    r"modify_existing_freecad_document|execute_freecad_script)\b|"
+    r"\b(?:autocad|freecad)\b|"
+    r"\bcad\s+(?:model|drawing|blueprint|geometry|primitive)\b|"
+    r"\b(?:draw|create|extrude)\s+(?:a\s+)?(?:box|cylinder|line|circle|polyline|solid)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 # Headless Playwright fetch — bind when the user names the tool or asks to
 # open/fetch a concrete webpage URL (do not steal generic "search the web").
 _BROWSER_HINT_RE = re.compile(
@@ -524,11 +538,39 @@ _FILE_WRITE_HINT_RE = re.compile(
 )
 
 
+def _plugin_tool_specs() -> dict[str, ToolSpec]:
+    """ToolSpecs from every auto-discovered plugin (dana/plugins/*/manifest.json).
+
+    A plugin tool id lives only here and in ``dana.tools.registry``'s
+    ``ToolRegistry`` — never in ``tools.json`` — so anything that treats
+    ``tools.json`` as the sole source of "known" tool ids (validation,
+    fuzzy-correction, alias sweeps) needs this merged in too, or a plugin
+    tool call fails ``validate_and_correct`` before it ever reaches
+    ``IntentBroker.dispatch``'s registry-lookup fallback.
+    """
+    try:
+        from dana.plugins.plugin_manager import load_all_plugins
+
+        return {spec.id: spec for spec, _func in load_all_plugins()}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _all_known_specs() -> dict[str, ToolSpec]:
+    """Static ``tools.json`` ToolSpecs merged with auto-discovered plugin ToolSpecs."""
+    try:
+        merged = dict(load_tool_registry())
+    except Exception:  # noqa: BLE001
+        merged = {}
+    merged.update(_plugin_tool_specs())
+    return merged
+
+
 def _bindable_registry(registry: dict[str, ToolSpec] | None = None) -> dict[str, ToolSpec]:
     """Drop phantom ``dynamic: true`` tools that have no executable source."""
     from dana.tools.registry import _dynamic_source_available
 
-    raw = registry if registry is not None else load_tool_registry()
+    raw = registry if registry is not None else _all_known_specs()
     out: dict[str, ToolSpec] = {}
     for tid, spec in raw.items():
         if getattr(spec, "dynamic", False) and not _dynamic_source_available(tid):
@@ -680,7 +722,7 @@ def explicit_tool_ids_in_text(
         return []
     if known_ids is None:
         try:
-            known_ids = list(load_tool_registry().keys())
+            known_ids = list(_all_known_specs().keys())
         except Exception:  # noqa: BLE001
             known_ids = []
     found: list[str] = []
@@ -699,7 +741,7 @@ def repl_suite_tool_ids(user_text: str) -> list[str]:
     if not _REPL_SUITE_HINT_RE.search(user_text or ""):
         return []
     try:
-        known = set(load_tool_registry().keys())
+        known = set(_all_known_specs().keys())
     except Exception:  # noqa: BLE001
         known = set(_REPL_SUITE_TOOL_IDS)
     return [tid for tid in _REPL_SUITE_TOOL_IDS if tid in known]
@@ -768,7 +810,7 @@ def merge_bound_tool_ids(
     """
     if known_ids is None:
         try:
-            known_ids = list(load_tool_registry().keys())
+            known_ids = list(_all_known_specs().keys())
         except Exception:  # noqa: BLE001
             known_ids = []
     known = {str(x) for x in known_ids}
@@ -843,6 +885,10 @@ def merge_bound_tool_ids(
         if jason_sup and tid != "dispatch_jason_supervisor":
             continue
         _add(tid)
+    from dana.features.feature_manager import get_pinned_tool_ids
+
+    for tid in get_pinned_tool_ids():
+        _add(tid)
     # Stage 4.1 — lightweight Chat never binds live vision; it SELECTs the BB topic.
     if mode_norm == "chat" or blindfold:
         return [
@@ -862,7 +908,6 @@ def initialize_tool_registry() -> list:
     """
     from dana.tools.plugins import list_plugin_ids, resolve_plugin_handler
     from dana.tools.registry import get_tool_registry
-    from dana.tools.schema import ToolCall
 
     initialized: list[Any] = []
     for tool_id in list_plugin_ids():
@@ -871,6 +916,13 @@ def initialize_tool_registry() -> list:
             initialized.append((str(tool_id), "plugin", plugin))
     try:
         reg = get_tool_registry()
+        # Zero-touch external-application plugins (dana/plugins/*/manifest.json)
+        # — auto-discovered and registered here, so a new plugin never needs an
+        # edit to this file. See dana.plugins.plugin_manager.
+        from dana.plugins.plugin_manager import load_all_plugins
+
+        for spec, func in load_all_plugins():
+            reg.register(spec, callable=func, source="plugin")
         for name, entry in list(reg.tools.items()):
             if (
                 entry is not None
@@ -912,6 +964,40 @@ def initialize_tool_registry() -> list:
     initialized.append(
         ("draft_cursor_prompt", "plugin", _handle_draft_cursor_prompt)
     )
+
+    # CAD Visual QA — screenshot + VLM verification, engine-agnostic (used by
+    # both the AutoCAD and FreeCAD Co-Pilot paths; lives in dana.tools.cad_vision).
+    def _handle_analyze_cad_blueprint(call: ToolCall) -> str:
+        from dana.tools.cad_vision import analyze_cad_blueprint
+
+        args = dict(call.arguments or {})
+        return analyze_cad_blueprint(str(args.get("image_path_or_base64") or ""))
+
+    initialized.append(
+        ("analyze_cad_blueprint", "plugin", _handle_analyze_cad_blueprint)
+    )
+
+    def _handle_verify_cad_rendering(call: ToolCall) -> str:
+        from dana.tools.cad_vision import verify_cad_rendering
+
+        args = dict(call.arguments or {})
+        return verify_cad_rendering(str(args.get("expected_spec_json") or "{}"))
+
+    initialized.append(
+        ("verify_cad_rendering", "plugin", _handle_verify_cad_rendering)
+    )
+
+    # Runtime feature/plugin toggle awareness — see dana.features.feature_manager.
+    def _handle_check_feature_access(call: ToolCall) -> str:
+        from dana.features.feature_manager import describe_feature_access
+
+        args = dict(call.arguments or {})
+        return describe_feature_access(str(args.get("feature_name") or ""))
+
+    initialized.append(
+        ("check_feature_access", "plugin", _handle_check_feature_access)
+    )
+
     return initialized
 
 
@@ -925,6 +1011,9 @@ class IntentBroker:
         self.registry = _bindable_registry(registry)
         self._lessons_provider: Callable[[], list[Any]] | None = None
         self._initialized_tools: list[Any] = initialize_tool_registry()
+        from dana.features.feature_manager import apply_feature_gating
+
+        apply_feature_gating(self)
 
     def set_lessons_provider(self, provider: Callable[[], list[Any]] | None) -> None:
         """Optional callback returning Lesson-like objects from the vault."""
@@ -934,6 +1023,9 @@ class IntentBroker:
         """Hot-reload tools.json (including dynamically registered tools)."""
         self.registry = _bindable_registry(load_tool_registry(path))
         self._initialized_tools = initialize_tool_registry()
+        from dana.features.feature_manager import apply_feature_gating
+
+        apply_feature_gating(self)
         return self.registry
 
     def public_schema(self) -> list[dict[str, Any]]:
@@ -1055,6 +1147,31 @@ class IntentBroker:
             prompt = f"{prompt}\n\n{tpm}"
         if termination not in prompt:
             prompt = f"{prompt}\n\n{termination}"
+        from dana.features.feature_manager import active_feature_manifest_text
+
+        feature_manifest = (
+            "ACTIVE_FEATURE_MANIFEST: The following lists Dana's current runtime "
+            "feature access. Answer truthfully from this list when asked "
+            "'do you have access to X' — do not guess.\n"
+            + active_feature_manifest_text()
+        )
+        if feature_manifest not in prompt:
+            prompt = f"{prompt}\n\n{feature_manifest}"
+        if _CAD_HINT_RE.search(user_text or ""):
+            cad_micro_loop = (
+                "CAD_MICRO_LOOP_RULE: When constructing or editing CAD models, "
+                "execute exactly ONE CAD primitive per turn. Once an active "
+                "project file already exists, maintain and modify that SAME "
+                "file via `modify_existing_freecad_document` rather than "
+                "creating a new one — only call `create_freecad_box` / "
+                "`create_freecad_cylinder` / `create_freecad_extrusion` again "
+                "if the user explicitly asks for a new, separate design. After "
+                "execution, you MUST ensure the file is opened in the FreeCAD "
+                "GUI for the user to see, then use `verify_cad_rendering` to "
+                "take a screenshot and validate your work before proceeding."
+            )
+            if cad_micro_loop not in prompt:
+                prompt = f"{prompt}\n\n{cad_micro_loop}"
         lessons = self.lessons_for_utterance(user_text)
         if not lessons:
             return prompt
@@ -1964,6 +2081,9 @@ class IntentBroker:
                 return (kind, payload)
         # Late-loaded general/plugin tools — rebuild once, then retry.
         self._initialized_tools = initialize_tool_registry()
+        from dana.features.feature_manager import apply_feature_gating
+
+        apply_feature_gating(self)
         for name, kind, payload in self._initialized_tools:
             if name == tid:
                 return (kind, payload)

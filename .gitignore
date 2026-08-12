@@ -17,6 +17,7 @@ credentials.json
 
 # Local Dana runtime secrets / machine config
 settings.json
+feature_flags.json
 dana_memory.enc
 dana_memory.enc.tmp
 .trigger_ask

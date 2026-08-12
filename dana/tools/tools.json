@@ -1968,6 +1968,81 @@
       "aliases_fa": {
         "_intent": []
       }
+    },
+    {
+      "id": "analyze_cad_blueprint",
+      "description_en": "Read an AutoCAD blueprint image (file path or base64 PNG/JPEG) with a Vision-Language Model and extract visible entities, layers, and dimensions as structured JSON. Tries the local vision model first, falling back to a cloud VLM only if cloud fallback is enabled. Use before verify_cad_rendering or when asked to describe/audit an existing drawing image.",
+      "parameters": [
+        {
+          "name": "image_path_or_base64",
+          "type": "string",
+          "required": true,
+          "description_en": "Absolute path to a blueprint image file, or the raw base64-encoded image data.",
+          "description_fa": "     base64 ."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "read this blueprint",
+          "analyze cad drawing",
+          "what does this drawing show",
+          "analyze_cad_blueprint"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
+      "id": "verify_cad_rendering",
+      "description_en": "Capture the live AutoCAD viewport and visually verify it against an expected entity spec (same JSON shape analyze_cad_blueprint returns). Use this right after draw_autocad_geometry/execute_autolisp calls to confirm the drawing actually rendered as intended — COM alone cannot tell you what a human would see on screen.",
+      "parameters": [
+        {
+          "name": "expected_spec_json",
+          "type": "string",
+          "required": true,
+          "description_en": "JSON string of the expected drawing spec, e.g. {\"entities\": [{\"type\": \"line\"}, {\"type\": \"circle\"}]}.",
+          "description_fa": "     JSON ."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "verify the drawing",
+          "check the autocad rendering",
+          "did it draw correctly",
+          "verify_cad_rendering"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
+      "id": "check_feature_access",
+      "description_en": "Report whether a named runtime feature/plugin (FreeCAD, AutoCAD COM, Vision & VLM Analysis, Piper TTS, Whisper STT, OS Actuator Hardware Control) is currently enabled or disabled, per the user's Plugin & Feature Manager toggles.",
+      "parameters": [
+        {
+          "name": "feature_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Free-text name of the feature/plugin being asked about, e.g. 'FreeCAD' or 'vision'.",
+          "description_fa": "  /   ."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "do you have access to",
+          "is freecad enabled",
+          "is vision enabled",
+          "check feature access",
+          "which plugins are active",
+          "what features are enabled"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
     }
   ]
 }
+

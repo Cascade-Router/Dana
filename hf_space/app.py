@@ -12,7 +12,7 @@ from functools import partial
 
 import gradio as gr
 
-from hf_sandbox import agent_bridge, architecture_docs, cad_visualizer
+from hf_sandbox import agent_bridge, architecture_docs, cad_visualizer, feature_flags
 
 QUICK_PROMPTS = [
     "Build a mounting plate in FreeCAD",
@@ -30,12 +30,34 @@ def _side_panel_plugins() -> dict:
     return agent_bridge.TOOL_REGISTRY["check_plugin_registry"]({})
 
 
-def chat_fn(user_text: str, history: list):
+def _active_tools_view(enabled: dict, pinned: list | None = None) -> dict:
+    active = feature_flags.filter_active_tools(enabled, agent_bridge.TOOL_REGISTRY)
+    for tool_id in pinned or []:
+        owner = feature_flags.tool_id_to_feature(tool_id)
+        if owner is None or enabled.get(owner, True):
+            active[tool_id] = agent_bridge.TOOL_REGISTRY.get(tool_id)
+    return {"active_tool_ids": sorted(active.keys())}
+
+
+def _on_feature_toggle(feature_id: str, value: bool, state: dict) -> tuple[dict, dict]:
+    state = dict(state)
+    state[feature_id] = bool(value)
+    return state, _active_tools_view(state)
+
+
+def _on_pin_tool(tool_id: str | None, pinned: list, enabled: dict) -> tuple[list, dict]:
+    pinned = list(pinned or [])
+    if tool_id and tool_id not in pinned:
+        pinned.append(tool_id)
+    return pinned, _active_tools_view(enabled, pinned)
+
+
+def chat_fn(user_text: str, history: list, feature_state: dict):
     history = history or []
     if not user_text or not user_text.strip():
         return history, "", "", _side_panel_state(), _side_panel_plugins()
 
-    turn = agent_bridge.run_turn(user_text)
+    turn = agent_bridge.run_turn(user_text, enabled_features=feature_state)
     history = history + [
         {"role": "user", "content": user_text},
         {"role": "assistant", "content": turn["assistant_text"]},
@@ -69,6 +91,9 @@ with gr.Blocks(title="Dana AI Copilot Sandbox") as demo:
         "(no Windows/Win32 in this container) — see [README](README.md) for what's real."
     )
 
+    feature_state = gr.State(value=dict(feature_flags.DEFAULT_ENABLED))
+    pinned_tools_state = gr.State(value=[])
+
     with gr.Tabs():
         with gr.Tab("ReAct Co-Pilot Chat"):
             with gr.Row():
@@ -82,6 +107,30 @@ with gr.Blocks(title="Dana AI Copilot Sandbox") as demo:
                         quick_buttons = [gr.Button(p, size="sm") for p in QUICK_PROMPTS]
 
                 with gr.Column(scale=2):
+                    with gr.Accordion("Plugin & Feature Manager", open=False):
+                        gr.Markdown(
+                            "Toggle a feature off and Dana will refuse to dispatch its "
+                            "tools and tell you it's disabled — try unchecking FreeCAD "
+                            "then asking to build a box."
+                        )
+                        feature_checkboxes = {
+                            feature.id: gr.Checkbox(
+                                label=feature.label
+                                + ("" if feature.implemented else " (not implemented)"),
+                                value=feature_flags.DEFAULT_ENABLED[feature.id],
+                                interactive=feature.implemented,
+                            )
+                            for feature in feature_flags.FEATURES.values()
+                        }
+                        add_tool_dropdown = gr.Dropdown(
+                            choices=list(agent_bridge.TOOL_REGISTRY.keys()),
+                            value=None,
+                            label="+ Add Existing Feature (pin a tool for this session)",
+                        )
+                        active_tools_box = gr.JSON(
+                            label="Active Tool Registry",
+                            value=_active_tools_view(feature_flags.DEFAULT_ENABLED),
+                        )
                     gr.Markdown("### Tool Dispatch Log")
                     tool_log = gr.Textbox(lines=10, interactive=False, show_label=False)
                     gr.Markdown("### System State")
@@ -89,10 +138,22 @@ with gr.Blocks(title="Dana AI Copilot Sandbox") as demo:
                     gr.Markdown("### Active Plugin Registrations")
                     plugins_box = gr.JSON(value=_side_panel_plugins())
 
+            for feature_id, checkbox in feature_checkboxes.items():
+                checkbox.change(
+                    partial(_on_feature_toggle, feature_id),
+                    [checkbox, feature_state],
+                    [feature_state, active_tools_box],
+                )
+            add_tool_dropdown.change(
+                _on_pin_tool,
+                [add_tool_dropdown, pinned_tools_state, feature_state],
+                [pinned_tools_state, active_tools_box],
+            )
+
             chat_outputs = [chatbot, msg, tool_log, state_box, plugins_box]
-            msg.submit(chat_fn, [msg, chatbot], chat_outputs)
+            msg.submit(chat_fn, [msg, chatbot, feature_state], chat_outputs)
             for button, prompt in zip(quick_buttons, QUICK_PROMPTS):
-                button.click(partial(chat_fn, prompt), [chatbot], chat_outputs)
+                button.click(partial(chat_fn, prompt), [chatbot, feature_state], chat_outputs)
 
         with gr.Tab("CAD Blueprint Vision & 3D Viewer"):
             gr.Markdown(

@@ -774,6 +774,9 @@ class DanaGUI(ctk.CTk):
         self._build_memory_appearance_row(mem_scroll)
         self._build_updates_dictation_row(mem_scroll)
         self._build_developer_diagnostics(mem_scroll)
+        from dana.ui.plugin_manager_panel import build_plugin_manager_card
+
+        build_plugin_manager_card(self, mem_scroll)
 
         try:
             tabs.set("Assistant & Tasks")
