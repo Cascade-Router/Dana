@@ -197,4 +197,4 @@ with gr.Blocks(title="Dana AI Copilot Sandbox") as demo:
 
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(ssr_mode=False)
