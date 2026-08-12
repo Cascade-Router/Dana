@@ -11,6 +11,7 @@ from __future__ import annotations
 from functools import partial
 
 import gradio as gr
+import spaces
 
 from hf_sandbox import agent_bridge, architecture_docs, cad_visualizer, feature_flags
 
@@ -71,6 +72,7 @@ def chat_fn(user_text: str, history: list, feature_state: dict):
     return history, "", log_text, _side_panel_state(), _side_panel_plugins()
 
 
+@spaces.GPU
 def analyze_and_preview(image):
     spec = cad_visualizer.parse_blueprint(image)
     stl_path = cad_visualizer.spec_to_stl(spec)
