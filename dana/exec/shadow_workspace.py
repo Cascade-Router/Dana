@@ -13,7 +13,6 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
 
 from dana.paths import PROJECT_ROOT
 
@@ -21,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 SCRATCH_DIRNAME = ".dana_scratch"
 
-_active_shadow: ContextVar["ShadowWorkspace | None"] = ContextVar(
+_active_shadow: ContextVar[ShadowWorkspace | None] = ContextVar(
     "dana_active_shadow",
     default=None,
 )

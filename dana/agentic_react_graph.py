@@ -14,13 +14,12 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
-from dana.schema import AgenticResult, ReactGraphState
-from dana.tools.broker import IntentBroker, ToolValidationError, get_broker
-from dana.tools.schema import ToolCall
-
 # Re-export for callers that import ReactGraphState from this module.
 # route_after_verifier is the closed-loop post-verifier router.
 from dana.graph.nodes.verifier import route_after_verifier  # noqa: F401
+from dana.schema import AgenticResult, ReactGraphState
+from dana.tools.broker import IntentBroker, ToolValidationError, get_broker
+from dana.tools.schema import ToolCall
 
 __all__ = (
     "ReactGraphState",
@@ -868,8 +867,10 @@ def compile_dana_react_graph(
     from dana.graph.nodes.verifier import verifier_node as _default_verifier
     from dana.graph.workers.os_worker import (
         OS_WORKER_NODE,
-        os_worker_node as _default_os_worker,
         route_after_executor,
+    )
+    from dana.graph.workers.os_worker import (
+        os_worker_node as _default_os_worker,
     )
 
     workflow = StateGraph(ReactGraphState)
@@ -998,13 +999,13 @@ async def run_react_langgraph(
     tts_callback: Callable[[str], None] | None = None,
 ) -> Any:
     """Compile + stream a MemorySaver-backed agent↔tools graph."""
-    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+    from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 
     from dana import agentic as ag
     from dana.cascade_router import resolve_chat_model
+    from dana.settings import resolve_reply_lang
     from dana.tools.langchain_tools import _UNBOUND_TOOL_IDS, build_langchain_tools
     from dana.tools.registry import get_tool_registry
-    from dana.settings import resolve_reply_lang
 
     broker = broker or get_broker()
     reply_lang = resolve_reply_lang(user_text)
@@ -1176,6 +1177,8 @@ async def run_react_langgraph(
     if _vision_blindfold:
         visual_context = None
         try:
+            from dana.logging import log as _agentic_log
+
             _agentic_log(
                 "Agentic",
                 "Vision blindfold active — analyze_visual_context unbound; "
@@ -2375,7 +2378,6 @@ async def run_react_langgraph(
         dump_text = raw_stripped or raw_content
         if not tool_calls and _looks_like_unsaved_code_dump(dump_text):
             from langchain_core.messages import AIMessage as _AIMessage
-            from langchain_core.messages import SystemMessage
             from langchain_core.messages import ToolMessage
 
             target_path = None
@@ -2773,6 +2775,8 @@ async def run_react_langgraph(
             try:
                 from dana.memory.blackboard import (
                     enqueue_action as _enqueue_action,
+                )
+                from dana.memory.blackboard import (
                     is_heavy_actuator_tool as _is_heavy_actuator_tool,
                 )
 

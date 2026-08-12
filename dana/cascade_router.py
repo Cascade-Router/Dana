@@ -1197,8 +1197,8 @@ def extract_vision_context(
     try:
         text = _try_model(vision)
         if text:
-            # Drop b64 from local scope ASAP (reasoner never sees it).
-            del b64
+            # Drop the b64 reference ASAP (reasoner never sees it).
+            b64 = None
             return text
     except Exception as exc:  # noqa: BLE001
         detail = _http_error_detail(exc) if not str(exc) else str(exc)
@@ -1209,23 +1209,17 @@ def extract_vision_context(
             _blacklist_vision(vision, reason=detail[:160])
         text = _fallback_chain(skip_mllama=skip_mllama)
         if text:
-            del b64
+            b64 = None
             return text
 
     # If preferred model returned empty, still try LLaVA chain.
     if not errors:
         text = _fallback_chain(skip_mllama=True)
         if text:
-            try:
-                del b64
-            except Exception:
-                pass
+            b64 = None
             return text
 
-    try:
-        del b64
-    except Exception:
-        pass
+    b64 = None
 
     # Structural fallback when no vision model is available.
     try:

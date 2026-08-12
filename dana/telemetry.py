@@ -13,13 +13,12 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from dana.paths import DASHBOARD_PATH, DANA_WORKSPACE, LOGS_DIR
+from dana.paths import DANA_WORKSPACE, DASHBOARD_PATH, LOGS_DIR
 
 _LOCK = threading.Lock()
 _STATUS = "Healthy"
@@ -129,7 +128,6 @@ def _resolve_dana_pid(explicit: int | None = None) -> int:
     # Prefer the live singleton listener on :47474 over this process (monitor scripts
     # may call write_dashboard from a short-lived Python and must not overwrite PID).
     try:
-        import socket
 
         # Windows: query via PowerShell-less netstat parse is heavy; use psutil if present.
         try:
@@ -174,7 +172,7 @@ def write_dashboard(
         flag = " OVER THRESHOLD" if cascade_over else ""
         model_bit = f" `{cascade_model}`" if cascade_model else ""
         cascade_cell = f"{cascade_ms:.0f} ms{model_bit} (threshold {thr:.0f} ms){flag}"
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
     body = (
         "# Dana Live Telemetry\n\n"
         f"_Updated: {stamp}_\n\n"
@@ -263,7 +261,7 @@ def emit_tagged(
     """
     tag_norm = _normalize_tag(tag)
     record: dict[str, Any] = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(UTC).isoformat(),
         "tag": f"[{tag_norm}]",
         "message": (message or "").strip(),
         "session_id": (session_id or "").strip(),

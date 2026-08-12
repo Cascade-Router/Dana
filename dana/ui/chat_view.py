@@ -9,7 +9,6 @@ import customtkinter as ctk
 
 from dana.ui import theme as T
 
-_SYSTEM_TAG_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$", re.DOTALL)
 _MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _MD_CODE_RE = re.compile(r"`([^`]+)`")
 
@@ -167,7 +166,6 @@ class ChatBubbleView(ctk.CTkFrame):
         # System tags like [Vision Output] → muted badge + remainder.
         badge = ""
         display = body
-        m = _SYSTEM_TAG_RE.match(f"[{speaker}] {body}" if speaker else body)
         if role_key == "system" or (
             speaker and speaker.strip().startswith("[") is False
             and any(

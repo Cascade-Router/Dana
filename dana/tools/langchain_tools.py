@@ -7,13 +7,12 @@ import os
 import re
 import threading
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any, Literal, Optional
 
 from langchain_core.tools import StructuredTool, tool
 from pydantic import Field, create_model
 
-from dana.paths import PROJECT_ROOT, EXECUTION_JAIL_LIBRARY_DIR
+from dana.paths import EXECUTION_JAIL_LIBRARY_DIR, PROJECT_ROOT
 from dana.tools.schema import ToolCall, ToolSpec, load_tool_registry
 
 _WATCHDOG_TOOL_DESCRIPTION = (

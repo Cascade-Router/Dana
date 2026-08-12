@@ -9,9 +9,10 @@ import threading
 import urllib.error
 import urllib.request
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 from packaging.version import InvalidVersion, Version
 
@@ -48,7 +49,7 @@ def get_local_version() -> str:
         pass
 
     try:
-        from importlib.metadata import PackageNotFoundError, version
+        from importlib.metadata import version
 
         return str(version("dana")).strip()
     except Exception:  # noqa: BLE001 — PackageNotFoundError or others

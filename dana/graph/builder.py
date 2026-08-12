@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -574,10 +573,10 @@ def _cli_main(argv: list[str] | None = None) -> int:
     kwargs: dict[str, Any] = {"monitor": bool(args.monitor), "tool_fn": tool_fn}
     if outline_fn is not None:
         # Workers node accepts outline via make_workers_node — wrap compile path.
-        from dana.graph.nodes.worker import make_workers_node
         from langgraph.graph import END, START, StateGraph
 
         from dana.graph.nodes.supervisor import make_supervisor_node
+        from dana.graph.nodes.worker import make_workers_node
 
         g = StateGraph(SupervisorState)
         g.add_node(SUPERVISOR_NODE, make_supervisor_node())

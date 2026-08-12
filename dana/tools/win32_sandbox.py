@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from types import TracebackType
-from typing import Any, Optional, Type
+from typing import Any
 
 __all__ = [
     "JOB_APIS_AVAILABLE",
@@ -123,7 +123,7 @@ class WindowsJob:
         self._handle: Any = None
         self._active = False
 
-    def __enter__(self) -> "WindowsJob":
+    def __enter__(self) -> WindowsJob:
         if os.name != "nt" or not JOB_APIS_AVAILABLE:
             return self
 
@@ -160,9 +160,9 @@ class WindowsJob:
 
     def __exit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc: Optional[BaseException],
-        tb: Optional[TracebackType],
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
     ) -> None:
         handle = self._handle
         self._handle = None
@@ -204,7 +204,6 @@ class WindowsJob:
             finally:
                 win32api.CloseHandle(h_proc)
 
-        import ctypes
         from ctypes import wintypes
 
         k32 = _ctypes_kernel32()

@@ -6,7 +6,6 @@ import os
 import re
 import shlex
 import subprocess
-import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -272,8 +271,8 @@ def triage_bidirectional_repair(
     )
     raw = ""
     try:
-        from dana.core.constants import OLLAMA_MODEL
         from dana.core.agent_loop import ask_ollama_messages
+        from dana.core.constants import OLLAMA_MODEL
 
         raw = ask_ollama_messages(
             [

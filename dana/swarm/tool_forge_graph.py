@@ -18,17 +18,18 @@ import os
 import re
 import textwrap
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from dana.paths import CUSTOM_TOOLS_DIR, SECURITY_POLICY_PATH
+from dana.paths import CUSTOM_TOOLS_DIR
 from dana.swarm.tool_forge_template import (
     JSON_SCHEMA_FAILURE,
     assemble_forged_tool,
     extract_coder_json,
     normalize_coder_payload,
+)
+from dana.swarm.tool_forge_template import (
     safe_tool_name as _template_safe_tool_name,
 )
 from dana.tools.registry import (
@@ -788,7 +789,7 @@ def hot_load_forged_tool(state: ToolForgeState) -> dict[str, Any]:
     if entry_name and hasattr(module, entry_name):
         callable_obj = getattr(module, entry_name)
         # LangChain @tool wraps StructuredTool — prefer .func / invoke.
-        if hasattr(callable_obj, "func") and callable(getattr(callable_obj, "func")):
+        if hasattr(callable_obj, "func") and callable(callable_obj.func):
             callable_obj = callable_obj.func  # type: ignore[assignment]
         elif hasattr(callable_obj, "invoke") and not callable(callable_obj):
             inv = callable_obj.invoke
@@ -831,8 +832,8 @@ def hot_load_forged_tool(state: ToolForgeState) -> dict[str, Any]:
 
     # Keep tools.json + broker in sync when possible.
     try:
-        from dana_security import register_tool_schema
         from dana.tools.broker import reload_broker_registry
+        from dana_security import register_tool_schema
 
         register_tool_schema(
             tool_name,

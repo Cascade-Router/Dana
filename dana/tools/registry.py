@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
@@ -262,7 +262,7 @@ def hash_embed(text: str, *, dim: int = _EMBED_DIM) -> np.ndarray:
         vec[idx] += sign * weight
     # Bigrams for phrase sensitivity.
     for a, b in zip(tokens, tokens[1:]):
-        digest = hashlib.sha256(f"{a}_{b}".encode("utf-8")).digest()
+        digest = hashlib.sha256(f"{a}_{b}".encode()).digest()
         idx = int.from_bytes(digest[:4], "little") % dim
         sign = 1.0 if digest[4] % 2 == 0 else -1.0
         vec[idx] += sign * 0.5

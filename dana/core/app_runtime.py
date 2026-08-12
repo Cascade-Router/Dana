@@ -29,36 +29,42 @@ import socket
 import sys
 import threading
 import time
-from typing import Any, Optional
+from typing import Any
+
+import requests
 
 import dana.core.shared_state as state
 from dana.agentic import get_dana_mode, set_dana_mode
 from dana.audio.audio_pipeline import AudioRouter
-from dana.audio.wake_poller import WakePoller
 from dana.audio.mic_input import (
+    _validate_mic_id,
+    _validate_speaker_id,
     ensure_live_mic,
     ensure_mic_ingest_thread,
     list_input_devices,
     list_output_devices,
     load_audio_settings,
-    _validate_mic_id,
-    _validate_speaker_id,
 )
 from dana.audio.noise_floor import calibrate_noise_floor
-from dana.audio.tts_manager import enqueue_speech_impl as enqueue_speech, flush_tts_queue
+from dana.audio.tts_manager import enqueue_speech_impl as enqueue_speech
+from dana.audio.tts_manager import flush_tts_queue
 from dana.audio.tts_worker import (
+    _synthesize_and_play,
     consume_audio_hardware_fault,
     soft_recover_audio_hardware,
     tts_worker,
     wait_for_speech_idle,
-    _synthesize_and_play,
 )
+from dana.audio.wake_poller import WakePoller
+from dana.audio.wakeword_worker import wakeword_worker
 from dana.core.agent_loop import conversation_worker
-from dana.core.constants import SENDGRID_MAIL_URL, WAKE_COOLDOWN_SEC
+from dana.core.constants import SENDGRID_MAIL_URL
 from dana.core.shared_state import (
     MEMORY_FILE,
     SETTINGS_FILE,
     TRIGGER_FILE,
+    _dual_wake_poller,
+    _dual_wake_router,
     _tts_manager,
     audio_hardware_fault,
     camera_tool,
@@ -79,31 +85,26 @@ from dana.core.shared_state import (
     unregister_transcript_listener,
     unregister_vault_prompt_listener,
     wakeword_armed,
-    _dual_wake_poller,
-    _dual_wake_router,
 )
-from dana.logging import CONVERSATION_LOG_PATH, enable_runtime_file_logging, log
-from dana.paths import PROJECT_ROOT, chdir_project_root, resolve_wakeword_onnx
-from dana.secure_memory import SecureMemory
-from dana.vault_service import VaultClient
-from dana.ui.app_gui import DanaGUI
-from dana.ui.tray_icon import run_system_tray
 from dana.ingestion.text_injection import (
     clear_injected_question,
     input_txt_ingest_worker,
     set_injected_question,
 )
+from dana.logging import CONVERSATION_LOG_PATH, enable_runtime_file_logging, log
+from dana.paths import PROJECT_ROOT, chdir_project_root, resolve_wakeword_onnx
+from dana.secure_memory import SecureMemory
+from dana.ui.app_gui import DanaGUI
+from dana.ui.tray_icon import run_system_tray
+from dana.vault_service import VaultClient
 from dana.vision.tracker_worker import tracker_worker
-from dana.audio.wakeword_worker import wakeword_worker
-
-import requests
 
 # ---------------------------------------------------------------------------
 # Singleton lock (keep socket open for process lifetime)
 # ---------------------------------------------------------------------------
 
 _SINGLETON_PORT = 47474
-_singleton_socket: Optional[socket.socket] = None
+_singleton_socket: socket.socket | None = None
 
 # ``dana_vault`` mirrors the exact pre-existing pattern from core_agent.py:
 # a bare-imported-looking module global reassigned via ``global dana_vault``
@@ -112,7 +113,7 @@ _singleton_socket: Optional[socket.socket] = None
 # canonical copy) -- that mismatch predates this move; relocating both
 # reader and writer together here preserves the exact existing behavior
 # rather than silently changing it.
-dana_vault: Optional[SecureMemory] = None
+dana_vault: SecureMemory | None = None
 
 
 def enforce_singleton() -> None:
@@ -131,7 +132,7 @@ def enforce_singleton() -> None:
             pass
         sys.exit(0)
     _singleton_socket = sock
-def populate_vault_hot_cache(client: Optional["VaultClient"] = None) -> None:
+def populate_vault_hot_cache(client: VaultClient | None = None) -> None:
     """Prefetch core identity keys into VAULT_HOT_CACHE after a successful unlock."""
     client = client if client is not None else state.vault_client
     user_name = "Amirhosein"
@@ -370,8 +371,9 @@ def unlock_dana_memory() -> SecureMemory:
         state.dana_profile = dict(state.vault_client.profile)
         vault = SecureMemory(path=MEMORY_FILE)
         try:
-            from dana.vault_service import _rpc
             import base64 as _b64
+
+            from dana.vault_service import _rpc
 
             resp = _rpc(
                 {
@@ -466,8 +468,9 @@ def unlock_dana_memory() -> SecureMemory:
 
     vault = SecureMemory(path=MEMORY_FILE)
     try:
-        from dana.vault_service import _rpc
         import base64 as _b64
+
+        from dana.vault_service import _rpc
 
         resp = _rpc(
             {
@@ -516,14 +519,14 @@ def reset_dana_vault() -> None:
     vault = SecureMemory()
     try:
         vault.unlock(password)
-    except ValueError:
+    except ValueError as exc:
         print("[Security] ACCESS DENIED. Incorrect password.", flush=True)
         log("Memory", "ACCESS DENIED on --reset-vault (bad credential).")
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
     except Exception as exc:  # noqa: BLE001
         print("[Security] ACCESS DENIED. Incorrect password.", flush=True)
         log("Memory", f"ACCESS DENIED on --reset-vault ({exc}).")
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
 
     # Credential verified — safe to wipe.
     for path in (MEMORY_FILE, MEMORY_FILE + ".tmp"):
@@ -557,7 +560,6 @@ def _trigger_dual_wake_event() -> None:
         return
     log("WakeWord", "Dual-threshold wake trigger fired")
     is_recording.set()
-    cooldown_until = time.monotonic() + WAKE_COOLDOWN_SEC
     try:
         if state._shared_wakeword_model is not None:
             state._shared_wakeword_model.reset()
@@ -600,7 +602,7 @@ def _shutdown_agent_threads(*, join_timeout: float = 8.0) -> None:
             log("Main", "WARNING: AgentLoop did not exit within join timeout.")
 
 
-def _install_signal_handlers(gui: "DanaGUI") -> None:
+def _install_signal_handlers(gui: DanaGUI) -> None:
     """Ctrl+C / SIGTERM → destroy GUI on the Tk thread (avoids hanging workers)."""
 
     def _handler(signum: int, _frame: Any) -> None:
@@ -686,7 +688,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
+def agent_loop(args: argparse.Namespace | None = None) -> int:
     if args is None:
         args = parse_args()
     local_files_only = not args.download
@@ -931,7 +933,7 @@ def agent_loop(args: Optional[argparse.Namespace] = None) -> int:
             # Non-empty file => inject that text as the user transcript (skip mic).
             if os.path.isfile(TRIGGER_FILE):
                 try:
-                    with open(TRIGGER_FILE, "r", encoding="utf-8-sig") as fh:
+                    with open(TRIGGER_FILE, encoding="utf-8-sig") as fh:
                         injected = fh.read().strip()
                 except OSError:
                     injected = ""

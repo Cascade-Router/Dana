@@ -14,7 +14,6 @@ Or let ``core_agent.agent_loop`` start it as a daemon thread.
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
 import threading

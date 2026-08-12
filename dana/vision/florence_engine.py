@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
@@ -118,7 +118,6 @@ def load_florence(*, local_files_only: bool = True) -> tuple[Any, Any, Any, Any]
         if _model is not None and _processor is not None:
             return _processor, _model, _device, _dtype
 
-        import torch
 
         # Stage 7.1 — immediately after importing torch, lock VRAM to 50%.
         try:
@@ -239,8 +238,8 @@ def reset_florence() -> None:
 
 
 def _bgr_to_pil(frame: np.ndarray):
-    from PIL import Image
     import cv2
+    from PIL import Image
 
     arr = np.asarray(frame)
     if arr.ndim == 2:

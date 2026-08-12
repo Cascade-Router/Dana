@@ -18,7 +18,7 @@ from typing import Any, Literal
 VoiceId = Literal["dana", "jason", "moa", "vision", "typist"]
 
 JASON_ANDON_LINE = (
-    "Operator failure detected. Taking control of the visual state."
+    "Operator failure detected. Resyncing workspace in background."
 )
 
 # Stage 8.8 — agent_id → voice profile (pitch/rate stand-ins for distinct personas).

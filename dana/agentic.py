@@ -10,7 +10,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -1111,10 +1111,10 @@ _REACT_THREAD_ID = "dana-react-session"
 def _react_checkpointer() -> Any:
     global _REACT_CHECKPOINTER
     if _REACT_CHECKPOINTER is None:
+        import langgraph.checkpoint.serde.jsonplus as _jp_serde
         from langchain_core.load.load import Reviver
         from langgraph.checkpoint.memory import MemorySaver
         from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-        import langgraph.checkpoint.serde.jsonplus as _jp_serde
 
         # Explicit allowlist suppresses LangChainPendingDeprecationWarning on load().
         _jp_serde.LC_REVIVER = Reviver(allowed_objects="all")
@@ -1954,7 +1954,6 @@ def _maybe_record_bug_tracker(
         return
     # Prefer ERROR observations from the trace as the exception payload.
     error = ""
-    tb = ""
     for row in reversed(tool_trace or []):
         if row.get("error"):
             error = str(row.get("error"))
@@ -3092,7 +3091,6 @@ def _tool_call_from_lc(tc: Any, *, raw_text: str = "") -> ToolCall:
             or tc.get("input")
             or {}
         )
-        call_id = str(tc.get("id") or "")
     else:
         name = str(getattr(tc, "name", "") or "")
         args = (
@@ -3101,7 +3099,6 @@ def _tool_call_from_lc(tc: Any, *, raw_text: str = "") -> ToolCall:
             or getattr(tc, "parameters", None)
             or {}
         )
-        call_id = str(getattr(tc, "id", "") or "")
     if isinstance(args, str):
         try:
             args = json.loads(args)

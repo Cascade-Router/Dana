@@ -172,3 +172,139 @@ Headless E2E and Startup-registered `pythonw` launches make multi-instance races
 | System tray (`pystray`) | Open Settings / Quit |
 
 Telemetry contracts: Live Trace UI + structured JSONL — [`telemetry_and_ui.md`](telemetry_and_ui.md).
+
+---
+
+## 6. Zero-Touch Dynamic Plugin Architecture
+
+Dānā loads optional capabilities (FreeCAD CAD control, future DLC plugins) from
+`dana/plugins/` without any edits to `broker.py` or `agent_loop.py` — see
+[`plugins.md`](plugins.md) for the developer guide. This section covers the
+loader mechanics; `plugins.md` covers how to author a new plugin.
+
+**Discovery & load** (`dana/plugins/plugin_manager.py`):
+
+1. `discover_plugin_dirs()` globs `dana/plugins/*/manifest.json` and returns
+   the sorted parent directories — a folder is a plugin iff it has a manifest.
+2. `load_plugin(plugin_dir)` reads `manifest.json`, resolves `entry_point`
+   (defaults to `engine.py`), and dynamically imports it via
+   `importlib.util.spec_from_file_location`, registering the module into
+   `sys.modules` as `dana.plugins.<name>.<stem>`.
+3. For each `manifest["tools"]` entry, `getattr(module, tool_def["function"])`
+   is resolved and paired with a `ToolSpec` built by `_manifest_to_tool_spec`.
+4. `load_all_plugins()` iterates every discovered directory, catches
+   `PluginLoadError` (or any exception) **per plugin** so one broken plugin
+   never blocks the others, and caches the result (`_cached_plugins`) until
+   `force_refresh=True` is requested.
+
+**Manifest shape** (`manifest.json`): `name`, `version`, `entry_point`, and a
+`tools[]` array. Each tool entry has `id`, `function` (the callable name in
+the entry-point module), `description_en`/`description_fa`, a `parameters[]`
+list (`name`/`type`/`required`/description), and `aliases_en`/`aliases_fa`
+(with an `_intent` key) for fuzzy voice-command matching. The bundled
+reference implementation is `dana/plugins/freecad/` (`manifest.json` +
+`engine.py`), which registers 5 tools — box/cylinder/extrusion creation,
+document modification, and raw script execution.
+
+**Feature-gated unbinding** ties the plugin layer to the Feature Manager
+(§8): `dana/features/feature_manager.py` declares a `Feature` per plugin
+(e.g. `freecad` owns the 5 FreeCAD tool ids) and `_detect_default_state()`
+auto-detects availability (for `freecad`, via `detect_freecadcmd()`). When a
+feature is disabled — at startup or live via the toggle UI —
+`apply_feature_gating(broker)` removes the owned tool ids from three surfaces
+at once: `broker.registry`, the process-wide `ToolRegistry` singleton
+(`get_tool_registry().unregister(tid)`), and the broker's
+`_initialized_tools` dispatch cache. `IntentBroker.__init__` and
+`IntentBroker.reload_registry()` (`dana/tools/broker.py`) both call
+`apply_feature_gating(self)` immediately after rebuilding the registry, so a
+flag flip is reflected in the **live broker instance** on the next turn —
+no restart required. `set_feature_enabled()` (`feature_manager.py`) persists
+the toggle to `feature_flags.json` and calls `reload_registry()`, so
+re-enabling a feature restores its tools the same way.
+
+---
+
+## 7. Zero-Focus Multi-Monitor Workspace
+
+Dānā never steals the foreground while it works — CAD documents and other
+visual artifacts are rendered and inspected on a **secondary monitor** without
+activating a window or moving the user's cursor/focus away from whatever they
+are doing on the primary display.
+
+**Primitives** (`dana/tools/os_control.py`):
+
+- `move_window_no_activate(hwnd, x, y, w, h)` calls
+  `SetWindowPos(..., SWP_NOACTIVATE | SWP_NOZORDER)` followed by
+  `ShowWindow(hwnd, SW_SHOWNOACTIVATE)` — the window is repositioned and shown
+  without becoming the active window.
+- `get_secondary_monitor()` uses `mss.mss().monitors[1:]` (skipping index 0,
+  the virtual bounding box across all displays) and returns the first monitor
+  not flagged `is_primary`.
+- `get_active_windows()` enumerates windows/titles via `EnumWindows` for
+  read-only inspection. `set_foreground_window()` — the activating,
+  focus-stealing counterpart — exists for cases that explicitly need it, but
+  is **not** called by the background workspace path below.
+
+**Orchestration** (`dana/plugins/freecad/engine.py`, `show_in_freecad_gui`):
+
+1. `_is_freecad_gui_running()` checks for a live FreeCAD process via `psutil`.
+2. `_find_freecad_window()` locates the window by a **title-contains-"freecad"
+   heuristic** over `get_active_windows()`.
+3. `_title_matches_file()` confirms the found window is showing the *right*
+   document (`path.stem.lower() in title.lower()`) before touching it.
+4. On a match, `_send_to_secondary_monitor()` calls `get_secondary_monitor()`
+   + `move_window_no_activate()`, sizing the window to
+   `min(1280, width) × min(800, height)` on that display.
+5. If the title doesn't match, or the move fails, `_notify_cad_update_ready()`
+   falls back to a **silent toast** instead of forcing a window switch.
+
+**Silent toast fallback** (`dana/middleware/toast_notify.py`):
+`show_silent_toast()` prefers `win11toast` with `audio={'silent': 'true'}`,
+falling back to `_powershell_silent_toast()` (a WinRT toast raised via
+PowerShell) when the package isn't available; the whole path is gated off by
+`DANA_DISABLE_TOAST`. `show_silent_toast_async()` fires it on a daemon thread
+so the caller never blocks on notification delivery.
+
+This is also why Dānā's spoken status lines were revised — e.g. the Jason
+Andon-override voice line (`dana/audio/multi_voice_tts.py`) now says
+*"Resyncing workspace in background"* rather than language implying it is
+seizing the screen, matching what the code actually does.
+
+---
+
+## 8. Feature Manager & Env-Key Toggles
+
+`dana/features/feature_manager.py` is the single source of truth for which
+tools are reachable at runtime, independent of whether they're built into
+`dana/tools/` or supplied by a plugin (§6).
+
+- **`FEATURES`** declares one `Feature(id, label, tool_ids, implemented)` per
+  capability — e.g. `freecad` owns its 5 plugin tool ids, `vision_vlm` owns 2,
+  `os_actuator` owns 2.
+- **`_detect_default_state()`** auto-detects a sane default per feature
+  (`freecad` → `detect_freecadcmd()`; `vision_vlm` → presence of the relevant
+  API key env vars; everything else defaults enabled).
+- **Persistence**: toggles and pins live in `feature_flags.json` at the
+  project root as `{"enabled": {...}, "pinned_tools": [...]}`, merged with
+  the detected defaults on load (`load_feature_flags()`).
+- **`set_feature_enabled()`** writes the flag, and for `os_actuator`
+  specifically also flips the `DANA_OS_DRY_RUN` env var — turning the
+  actuator feature off puts OS automation into dry-run mode (§ safety docs),
+  not just out of the tool list. It then triggers a live `reload_registry()`
+  so the change is gated in immediately (§6).
+- **Consumption**: `disabled_tool_ids()` feeds `apply_feature_gating()`;
+  `active_feature_manifest_text()` renders a human-readable capability block
+  injected into the LLM system prompt, so the model always knows what it
+  currently does and doesn't have access to; `describe_feature_access(query)`
+  answers direct "do you have access to X" questions deterministically
+  without a model round-trip. Tool **pinning** (`pin_tool`/`unpin_tool`) is a
+  separate, always-on list in the same JSON file — unrelated to enable/disable.
+
+---
+
+Deeper, narrower design notes live under [`architecture/`](architecture/)
+(`dana_architecture.md` — LangGraph topology; `LLM_SYSTEM_MAP.md` — system
+data-flow map; `system_overview_unified_canvas.md` — component/telemetry
+canvas). See [`plugins.md`](plugins.md) for writing a new plugin and
+[`safety_and_hitl.md`](safety_and_hitl.md) for the dry-run/HITL/kill-switch
+safety stack referenced above.

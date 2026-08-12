@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
 
 LATEX_NOCITE_DIRECTIVE = (
     "When generating LaTeX, you must output clean code. Absolutely no "

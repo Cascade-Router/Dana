@@ -9,12 +9,11 @@ from __future__ import annotations
 import os
 import queue
 import threading
-import time
 import tkinter as tk
-from typing import Any, Optional
+from typing import Any
 
 _OVERLAY_LOCK = threading.Lock()
-_OVERLAY: Optional[RoiOverlay] = None
+_OVERLAY: RoiOverlay | None = None
 
 
 def vision_debug_enabled() -> bool:

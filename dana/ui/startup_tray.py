@@ -69,7 +69,7 @@ def _load_tray_asset_pil(size: tuple[int, int]) -> Any | None:
 def build_tray_image(mode: str = "idle", size: int = 64) -> Any | None:
     """Branded pystray image with optional listening pip; RGBA transparent bg."""
     try:
-        from PIL import Image, ImageDraw
+        from PIL import ImageDraw
 
         from dana.ui.logo import get_tray_icon
     except Exception:  # noqa: BLE001
