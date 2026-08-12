@@ -62,7 +62,7 @@ def _safe_collect_all(package: str) -> None:
     try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)
     except Exception as exc:  # noqa: BLE001
-        print(f"[donna_build.spec] collect_all({package!r}) skipped: {exc}")
+        print(f"[dana_build.spec] collect_all({package!r}) skipped: {exc}")
         return
     datas += pkg_datas
     binaries += pkg_binaries
@@ -74,14 +74,14 @@ def _safe_collect_submodules(package: str) -> None:
     try:
         hiddenimports += collect_submodules(package)
     except Exception as exc:  # noqa: BLE001
-        print(f"[donna_build.spec] collect_submodules({package!r}) skipped: {exc}")
+        print(f"[dana_build.spec] collect_submodules({package!r}) skipped: {exc}")
 
 
 def _add_tree(src: Path, dest: str) -> None:
     """Add a directory tree as --add-data equivalent (src exists)."""
     global datas
     if not src.exists():
-        print(f"[donna_build.spec] WARNING: missing data path {src} (skipped)")
+        print(f"[dana_build.spec] WARNING: missing data path {src} (skipped)")
         # Ensure destination exists in the bundle for runtime mkdir expectations.
         return
     datas.append((str(src), dest))
@@ -106,7 +106,7 @@ for _pkg in ("dana", "dana.tools", "pycaw", "comtypes"):
 try:
     datas += collect_data_files("customtkinter")
 except Exception as exc:  # noqa: BLE001
-    print(f"[donna_build.spec] customtkinter data skipped: {exc}")
+    print(f"[dana_build.spec] customtkinter data skipped: {exc}")
 
 _add_tree(ROOT / "dana" / "tools", os.path.join("dana", "tools"))
 _add_tree(ROOT / "tts_models", "tts_models")
@@ -120,7 +120,7 @@ for _stop in ("stop_dana.bat", "stop_dana.vbs"):
     if _sp.is_file():
         datas.append((str(_sp), "."))
     else:
-        print(f"[donna_build.spec] WARNING: missing {_stop}")
+        print(f"[dana_build.spec] WARNING: missing {_stop}")
 
 # GUI launcher (generated on install; ship if present in tree).
 _start_bat = _launchers / "start_dana.bat"
@@ -129,14 +129,14 @@ if not _start_bat.is_file():
 if _start_bat.is_file():
     datas.append((str(_start_bat), "."))
 else:
-    print(f"[donna_build.spec] WARNING: missing {_start_bat}")
+    print(f"[dana_build.spec] WARNING: missing {_start_bat}")
 
 # Desktop / taskbar / shortcut branding (required for IconLocation + EXE icon).
 _ico = ROOT / "assets" / "dana_logo.ico"
 if not _ico.is_file():
     _ico = ROOT / "dana" / "assets" / "dana_icon.ico"
 if not _ico.is_file():
-    print(f"[donna_build.spec] WARNING: missing {_ico} — EXE/shortcut icon unavailable")
+    print(f"[dana_build.spec] WARNING: missing {_ico} — EXE/shortcut icon unavailable")
 _add_tree(ROOT / "assets", "assets")
 _add_tree(ROOT / "dana" / "ui" / "assets", os.path.join("dana", "ui", "assets"))
 _add_tree(ROOT / "dana" / "assets", os.path.join("dana", "assets"))

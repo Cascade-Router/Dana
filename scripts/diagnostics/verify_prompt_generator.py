@@ -2,7 +2,7 @@
 
 Exercises dana.prompts.spatial_synthesis.build_agent_system_prompt (the pure
 string-assembly layer) and, if importable without side effects, the runtime
-wrapper dana.core_agent.build_donna_system_prompt.
+wrapper dana.core_agent.build_dana_system_prompt.
 
 Run: python scripts/diagnostics/verify_prompt_generator.py
 """

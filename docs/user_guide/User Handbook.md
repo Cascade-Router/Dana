@@ -12,24 +12,24 @@
 
 ### 🗣️ Wake & Interaction
 
-- **"Donna"**: Wakes the system from standby. Donna replies with *"Yes?"* using prioritized zero-latency audio and opens the microphone.
+- **"Dana"**: Wakes the system from standby. Dana replies with *"Yes?"* using prioritized zero-latency audio and opens the microphone.
 - **Implicit Standby**: Waking the system without speaking (or just generating background noise) causes the microphone to silently time out and return to standby without announcing itself.
 
 ### 🔄 Mode Switching (Fast-Path Triggers)
 
-- **"Donna, switch to chat mode"** ➔ *"Chat mode active."*
-- **"Donna, switch to developer mode"** ➔ *"Developer mode active."*
-- **"Donna, switch to vision mode"** ➔ *"Vision mode active."*
-- **"Donna, switch to research mode"** ➔ *"Research mode active."*
+- **"Dana, switch to chat mode"** ➔ *"Chat mode active."*
+- **"Dana, switch to developer mode"** ➔ *"Developer mode active."*
+- **"Dana, switch to vision mode"** ➔ *"Vision mode active."*
+- **"Dana, switch to research mode"** ➔ *"Research mode active."*
 
 ### 🧠 Memory Management
 
-- **"Donna, clear chat memory"** (or **"Donna, reset conversation"**): Instantly flushes the Chat Mode rolling buffer to prevent context-window overflow and plays *"Memory cleared."*
+- **"Dana, clear chat memory"** (or **"Dana, reset conversation"**): Instantly flushes the Chat Mode rolling buffer to prevent context-window overflow and plays *"Memory cleared."*
 
 ## ⚙️ Automated System Behaviors
 
-- 🛑 **Barge-In Interruptions**: You can interrupt Donna while she is speaking. Her TTS Output Spooler instantly flushes the queue, stopping playback so you can seamlessly issue new commands.
+- 🛑 **Barge-In Interruptions**: You can interrupt Dana while she is speaking. Her TTS Output Spooler instantly flushes the queue, stopping playback so you can seamlessly issue new commands.
 - 🛡️ **Hardware Protections**: The wake-word listener is physically locked out during heavy LLM model loads (like Ollama warm-ups) to prevent CPU starvation and audio stuttering.
 - 🗄️ **Ledger Auto-Archiving**: On boot, any tickets marked `[RESOLVED]` or `[FAILED]` are automatically swept from `patch_ledger.md` to `patch_ledger_archive.md` to keep the active workspace lean.
-- 📊 **Telemetry Awareness**: While in Chat Mode, you can ask Donna how the system is running, and she accurately reports the live physical hardware load of your machine.
+- 📊 **Telemetry Awareness**: While in Chat Mode, you can ask Dana how the system is running, and she accurately reports the live physical hardware load of your machine.
 
