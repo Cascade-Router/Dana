@@ -154,19 +154,49 @@ def describe_tool_call(call: ToolCall) -> str:
 # (regex, tool_id, arg_names) — first match wins, same shape as the
 # simplified broker sibling this replaces in hf_space/hf_sandbox/agent_bridge.py.
 _NUM = r"(\d+(?:\.\d+)?)"
+# A unit suffix is optional and non-capturing, so a group like "50mm" still
+# captures the clean numeric string "50" — no separate stripping step needed
+# before float() at the tool-handler level.
+_UNIT = r"(?:\s*(?:mm|cm|in|inch(?:es)?))?"
+_DIM_SEP = r"\s*(?:x|by|,)\s*"
+_DIM = rf"{_NUM}{_UNIT}"
+_DIMS3 = rf"{_DIM}{_DIM_SEP}{_DIM}{_DIM_SEP}{_DIM}"
+_DIMS2 = rf"{_DIM}{_DIM_SEP}{_DIM}"
+_BOX_WORD = r"\b(?:box|mounting plate|cube|cuboid|block)\b"
+_CYLINDER_WORD = r"\bcylinder\b"
+
 INTENT_PATTERNS: tuple[tuple[re.Pattern[str], str, tuple[str, ...]], ...] = (
+    # Dimensions may land either after the object noun ("box 60x40x20") or
+    # before it ("60x40x20mm box") — matched as two separate patterns (each
+    # with its own 3 capturing groups) rather than one alternation, so the
+    # arg_names zip below always lines up with exactly 3 groups either way.
     (
-        re.compile(rf"\bbox\b.*?{_NUM}\s*(?:x|by|,)\s*{_NUM}\s*(?:x|by|,)\s*{_NUM}", re.I),
+        re.compile(rf"{_BOX_WORD}.*?{_DIMS3}", re.I),
         "create_freecad_box",
         ("length", "width", "height"),
     ),
-    (re.compile(r"\b(box|mounting plate|cube|cuboid)\b", re.I), "create_freecad_box", ()),
     (
-        re.compile(rf"\bcylinder\b.*?radius\s*{_NUM}.*?height\s*{_NUM}", re.I),
+        re.compile(rf"{_DIMS3}.*?{_BOX_WORD}", re.I),
+        "create_freecad_box",
+        ("length", "width", "height"),
+    ),
+    (re.compile(_BOX_WORD, re.I), "create_freecad_box", ()),
+    (
+        re.compile(rf"{_CYLINDER_WORD}.*?radius\s*{_NUM}{_UNIT}.*?height\s*{_NUM}{_UNIT}", re.I),
         "create_freecad_cylinder",
         ("radius", "height"),
     ),
-    (re.compile(r"\bcylinder\b", re.I), "create_freecad_cylinder", ()),
+    (
+        re.compile(rf"{_CYLINDER_WORD}.*?{_DIMS2}", re.I),
+        "create_freecad_cylinder",
+        ("radius", "height"),
+    ),
+    (
+        re.compile(rf"{_DIMS2}.*?{_CYLINDER_WORD}", re.I),
+        "create_freecad_cylinder",
+        ("radius", "height"),
+    ),
+    (re.compile(_CYLINDER_WORD, re.I), "create_freecad_cylinder", ()),
     (
         re.compile(r"\b(look at|see|check|analyze|what'?s on)\b.*\b(screen|window|freecad|blueprint|cad)\b", re.I),
         "execute_vision_analysis",

@@ -77,3 +77,75 @@ def test_dispatch_manipulate_camera_via_registry() -> None:
     result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
     assert result.ok is True
     assert result.payload["position"] == list(rd._CAMERA_PRESETS["side"])
+
+
+def test_parse_utterance_box_dims_prefix_order_with_units() -> None:
+    call = rd.parse_utterance("Create a parametric 50x50x20mm box")
+    assert call is not None
+    assert call.tool_id == "create_freecad_box"
+    assert float(call.arguments["length"]) == 50.0
+    assert float(call.arguments["width"]) == 50.0
+    assert float(call.arguments["height"]) == 20.0
+
+
+def test_parse_utterance_box_dims_suffix_order_unchanged() -> None:
+    call = rd.parse_utterance("Build a box 40x30x10")
+    assert call is not None
+    assert call.tool_id == "create_freecad_box"
+    assert float(call.arguments["length"]) == 40.0
+    assert float(call.arguments["width"]) == 30.0
+    assert float(call.arguments["height"]) == 10.0
+
+
+def test_parse_utterance_box_dims_all_word_order_and_unit_variants() -> None:
+    variants = [
+        "50x50x20 box",
+        "50 x 50 x 20 mm box",
+        "box 50x50x20",
+        "box 50x50x20mm",
+        "box 50 x 50 x 20 mm",
+    ]
+    for text in variants:
+        call = rd.parse_utterance(text)
+        assert call is not None, text
+        assert call.tool_id == "create_freecad_box", text
+        assert float(call.arguments["length"]) == 50.0, text
+        assert float(call.arguments["width"]) == 50.0, text
+        assert float(call.arguments["height"]) == 20.0, text
+
+
+def test_parse_utterance_cylinder_bare_dims_either_word_order() -> None:
+    call = rd.parse_utterance("Create a 10x30 cylinder")
+    assert call is not None
+    assert call.tool_id == "create_freecad_cylinder"
+    assert float(call.arguments["radius"]) == 10.0
+    assert float(call.arguments["height"]) == 30.0
+
+    call = rd.parse_utterance("cylinder 10x30mm")
+    assert call is not None
+    assert call.tool_id == "create_freecad_cylinder"
+    assert float(call.arguments["radius"]) == 10.0
+    assert float(call.arguments["height"]) == 30.0
+
+
+def test_parse_utterance_cylinder_radius_height_keywords_unchanged() -> None:
+    call = rd.parse_utterance("Create a cylinder radius 10 height 30")
+    assert call is not None
+    assert call.tool_id == "create_freecad_cylinder"
+    assert float(call.arguments["radius"]) == 10.0
+    assert float(call.arguments["height"]) == 30.0
+
+
+def test_parse_utterance_prefix_dims_no_longer_falls_back_to_defaults() -> None:
+    """Regression test for the exact bug found live-testing the WS dispatch
+    endpoint: "<dims> box" word order silently fell through to the
+    dims-less generic box pattern, creating a 40x25x15mm default box
+    instead of the requested 50x50x20mm one."""
+    call = rd.parse_utterance(
+        "Create a parametric 50x50x20mm box in FreeCAD, then add a 10mm radius cylinder directly on top of it."
+    )
+    assert call is not None
+    assert call.tool_id == "create_freecad_box"
+    assert float(call.arguments["length"]) == 50.0
+    assert float(call.arguments["width"]) == 50.0
+    assert float(call.arguments["height"]) == 20.0
