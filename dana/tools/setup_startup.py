@@ -20,7 +20,6 @@ import sys
 from pathlib import Path
 
 VALUE_NAME = "DanaAssistant"
-LEGACY_VALUE_NAME = "DonnaAssistant"
 MACOS_LABEL = "com.dana.agent"
 MACOS_PLIST_NAME = f"{MACOS_LABEL}.plist"
 LINUX_DESKTOP_NAME = "dana.desktop"
@@ -81,10 +80,7 @@ def app_icon_path() -> Path:
     preferred = Path(os.path.abspath(str(root / "assets" / "dana_logo.ico")))
     if preferred.is_file():
         return preferred
-    legacy = Path(os.path.abspath(str(root / "dana" / "assets" / "dana_icon.ico")))
-    if legacy.is_file():
-        return legacy
-    return Path(os.path.abspath(str(root / "dana" / "assets" / "donna.ico")))
+    return Path(os.path.abspath(str(root / "dana" / "assets" / "dana_icon.ico")))
 
 
 def packaged_exe_path() -> Path:
@@ -168,50 +164,6 @@ def startup_folder_shortcut_path() -> Path:
     )
 
 
-def _legacy_desktop_shortcut_path() -> Path:
-    return Path.home() / "Desktop" / "Donna.lnk"
-
-
-def _legacy_startup_folder_shortcut_path() -> Path:
-    appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-    return (
-        Path(appdata)
-        / "Microsoft"
-        / "Windows"
-        / "Start Menu"
-        / "Programs"
-        / "Startup"
-        / "Donna.lnk"
-    )
-
-
-def _remove_path_quiet(path: Path) -> None:
-    try:
-        if path.is_file():
-            path.unlink()
-    except OSError:
-        pass
-
-
-def _migrate_legacy_windows_artifacts() -> None:
-    """Drop pre-rename Run key / shortcuts / launcher bat so Dana names win."""
-    _remove_path_quiet(project_root() / "start_donna.bat")
-    _remove_path_quiet(_legacy_desktop_shortcut_path())
-    _remove_path_quiet(_legacy_startup_folder_shortcut_path())
-    try:
-        import winreg
-
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE
-        ) as key:
-            try:
-                winreg.DeleteValue(key, LEGACY_VALUE_NAME)
-            except FileNotFoundError:
-                pass
-    except Exception:  # noqa: BLE001
-        pass
-
-
 def _write_windows_shortcut(
     *,
     lnk: Path,
@@ -273,7 +225,6 @@ def write_desktop_shortcut() -> Path | None:
     target = shortcut_launch_target()
     workdir = absolute_workdir()
 
-    _remove_path_quiet(_legacy_desktop_shortcut_path())
     lnk = _write_windows_shortcut(
         lnk=desktop_shortcut_path(),
         target=target,
@@ -291,7 +242,6 @@ def write_startup_folder_shortcut() -> Path | None:
     target = shortcut_launch_target()
     workdir = absolute_workdir()
 
-    _remove_path_quiet(_legacy_startup_folder_shortcut_path())
     return _write_windows_shortcut(
         lnk=startup_folder_shortcut_path(),
         target=target,
@@ -331,7 +281,6 @@ def write_start_bat() -> Path:
         encoding="utf-8",
         newline="\r\n",
     )
-    _remove_path_quiet(project_root() / "start_donna.bat")
     return path
 
 
@@ -410,7 +359,6 @@ def _write_linux_desktop() -> Path:
 def _enable_windows() -> int:
     import winreg
 
-    _migrate_legacy_windows_artifacts()
     bat = write_start_bat()
     command = f'"{bat}"'
     with winreg.OpenKey(
@@ -437,7 +385,6 @@ def _enable_windows() -> int:
 def _disable_windows() -> int:
     import winreg
 
-    _migrate_legacy_windows_artifacts()
     try:
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE
@@ -461,18 +408,6 @@ def _status_windows() -> int:
         print(f"[ON] {VALUE_NAME} = {value} (type={regtype})")
         return 0
     except FileNotFoundError:
-        pass
-    try:
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_READ
-        ) as key:
-            value, regtype = winreg.QueryValueEx(key, LEGACY_VALUE_NAME)
-        print(
-            f"[ON] legacy {LEGACY_VALUE_NAME} = {value} (type={regtype}); "
-            "re-run install to migrate to DanaAssistant"
-        )
-        return 0
-    except FileNotFoundError:
         print(f"[OFF] {VALUE_NAME} is not in HKCU Run")
         return 1
 
@@ -489,11 +424,6 @@ def is_startup_enabled() -> bool:
             ) as key:
                 try:
                     winreg.QueryValueEx(key, VALUE_NAME)
-                    return True
-                except FileNotFoundError:
-                    pass
-                try:
-                    winreg.QueryValueEx(key, LEGACY_VALUE_NAME)
                     return True
                 except FileNotFoundError:
                     return False

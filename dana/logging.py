@@ -30,9 +30,6 @@ RUNTIME_LOG_DIR = str(LOGS_DIR)
 RUNTIME_LOG_PATH = str(LOGS_DIR / "dana_runtime.log")
 CONVERSATION_LOG_PATH = str(LOGS_DIR / "dana_conversation.log")
 FATAL_CRASH_LOG_PATH = str(LOGS_DIR / "fatal_crash.log")
-# Legacy filenames (pre-rename) — migrated on first enable when still present.
-_LEGACY_RUNTIME_LOG = str(LOGS_DIR / "donna_runtime.log")
-_LEGACY_CONVERSATION_LOG = str(LOGS_DIR / "donna_conversation.log")
 # Keep enough headroom for multi-line ``log_exception`` stack traces.
 RUNTIME_LOG_MAX_LINES = 250
 _fatal_hooks_installed = False
@@ -51,17 +48,6 @@ def debug_logging_enabled() -> bool:
 
 def _stamp() -> str:
     return time.strftime("%H:%M:%S")
-
-
-def _migrate_legacy_log(legacy: str, modern: str) -> None:
-    """Rename legacy dana_*.log → dana_*.log when the modern file is absent."""
-    try:
-        if os.path.isfile(modern) or not os.path.isfile(legacy):
-            return
-        os.makedirs(os.path.dirname(modern) or ".", exist_ok=True)
-        os.replace(legacy, modern)
-    except OSError:
-        pass
 
 
 def append_runtime_log(text: str) -> None:
@@ -403,8 +389,6 @@ def enable_runtime_file_logging() -> str:
     global _runtime_log_tee_installed
     ensure_stdio()
     os.makedirs(RUNTIME_LOG_DIR, exist_ok=True)
-    _migrate_legacy_log(_LEGACY_RUNTIME_LOG, RUNTIME_LOG_PATH)
-    _migrate_legacy_log(_LEGACY_CONVERSATION_LOG, CONVERSATION_LOG_PATH)
     with _runtime_log_lock:
         _trim_runtime_log_to_last_lines(RUNTIME_LOG_PATH)
     reset_conversation_log()

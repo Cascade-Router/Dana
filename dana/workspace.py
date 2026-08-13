@@ -239,7 +239,6 @@ Promoted tools: `dana/tools/general/` (Git-tracked). Do not merge `execution_jai
             if (
                 ("generated_tools/" in existing and "custom_tools/" not in existing)
                 or ("sandbox/" in existing and "execution_jail/" not in existing)
-                or ("donna_sandbox/" in existing and "dana_security/" not in existing)
             ):
 
                 readme.write_text(body, encoding="utf-8")
@@ -618,10 +617,7 @@ def migrate_legacy_artifacts() -> dict[str, Any]:
 
 def _migrate_renamed_workspace_roots() -> None:
     """Rename pre-collision roots if they still exist on disk."""
-    pairs = (
-        (PROJECT_ROOT / "sandbox", EXECUTION_JAIL_DIR),
-        (PROJECT_ROOT / "donna_sandbox", DANA_SECURITY_DIR),  # legacy source dir name kept intentionally
-    )
+    pairs = ((PROJECT_ROOT / "sandbox", EXECUTION_JAIL_DIR),)
     for src, dst in pairs:
         try:
             if not src.is_dir() or src.resolve() == dst.resolve():

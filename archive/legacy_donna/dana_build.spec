@@ -143,7 +143,7 @@ _add_tree(ROOT / "dana" / "assets", os.path.join("dana", "assets"))
 
 # Optional runtime assets (present when not gitignored / downloaded).
 _models = ROOT / "assets" / "models"
-for _name in ("donna.onnx", "yolov8n.pt"):
+for _name in ("yolov8n.pt",):
     _p = _models / _name
     if not _p.is_file():
         _p = ROOT / _name

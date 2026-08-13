@@ -112,17 +112,21 @@ def test_runtime_log_paths_are_dana_branded() -> None:
     assert "donna_conversation" not in CONVERSATION_LOG_PATH
 
 
-def test_wakeword_onnx_prefers_dana_with_legacy_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wakeword_onnx_prefers_dana_over_alt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import dana.paths as paths
 
     monkeypatch.setattr(paths, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(paths, "WAKEWORD_ONNX", tmp_path / "dana.onnx")
     monkeypatch.setattr(paths, "WAKEWORD_ONNX_ALT", tmp_path / "wake_word_model.onnx")
-    monkeypatch.setattr(paths, "WAKEWORD_ONNX_LEGACY", tmp_path / "donna.onnx")
 
+    # Neither file exists yet — falls back to the default WAKEWORD_ONNX path.
     assert paths.resolve_wakeword_onnx() == tmp_path / "dana.onnx"
-    (tmp_path / "donna.onnx").write_bytes(b"legacy")
-    assert paths.resolve_wakeword_onnx() == tmp_path / "donna.onnx"
+
+    # Only the alt exists — resolves to it.
+    (tmp_path / "wake_word_model.onnx").write_bytes(b"alt")
+    assert paths.resolve_wakeword_onnx() == tmp_path / "wake_word_model.onnx"
+
+    # Both exist — dana.onnx wins.
     (tmp_path / "dana.onnx").write_bytes(b"modern")
     assert paths.resolve_wakeword_onnx() == tmp_path / "dana.onnx"
 
@@ -143,8 +147,4 @@ def test_key_modules_ui_strings_not_donna() -> None:
         assert "Donna conversation session" not in text
 
     assert WAKEWORD_ONNX.name == "dana.onnx"
-    assert resolve_wakeword_onnx().name in {
-        "dana.onnx",
-        "wake_word_model.onnx",
-        "donna.onnx",
-    }
+    assert resolve_wakeword_onnx().name in {"dana.onnx", "wake_word_model.onnx"}

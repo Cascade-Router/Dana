@@ -118,25 +118,19 @@ EVALS_DIR: Path = PROJECT_ROOT / "dana" / "evals"
 
 EVAL_CASES_PATH: Path = EVALS_DIR / "test_cases.json"
 
-# Preferred wake-word ONNX under assets/models; ``resolve_wakeword_onnx`` also
-# checks legacy repo-root locations for backward compatibility.
+# Preferred wake-word ONNX under assets/models.
 MODELS_DIR: Path = PROJECT_ROOT / "assets" / "models"
 WAKEWORD_ONNX: Path = MODELS_DIR / "dana.onnx"
-# Legacy filename fallback — intentionally left as "donna.onnx" so installs
-# upgrading from the old "Donna" build still resolve their existing model file.
-WAKEWORD_ONNX_LEGACY: Path = MODELS_DIR / "donna.onnx"
 WAKEWORD_ONNX_ALT: Path = MODELS_DIR / "wake_word_model.onnx"
 
 
 def resolve_wakeword_onnx() -> Path:
-    """Return the first existing wake-word model path (dana → alt → legacy)."""
+    """Return the first existing wake-word model path (dana → alt)."""
     for candidate in (
         WAKEWORD_ONNX,
         WAKEWORD_ONNX_ALT,
-        WAKEWORD_ONNX_LEGACY,
         PROJECT_ROOT / "dana.onnx",
         PROJECT_ROOT / "wake_word_model.onnx",
-        PROJECT_ROOT / "donna.onnx",  # legacy repo-root fallback, kept intentionally
     ):
         if candidate.is_file():
             return candidate

@@ -49,7 +49,6 @@ def test_enable_disable_windows_mocked() -> None:
     with (
         patch.object(setup_startup, "_system", return_value="Windows"),
         patch.object(setup_startup, "write_start_bat", return_value=fake_bat),
-        patch.object(setup_startup, "_migrate_legacy_windows_artifacts", lambda: None),
         patch.dict("sys.modules", {"winreg": fake_winreg}),
     ):
         assert setup_startup.enable_startup() == 0
