@@ -149,3 +149,74 @@ def test_parse_utterance_prefix_dims_no_longer_falls_back_to_defaults() -> None:
     assert float(call.arguments["length"]) == 50.0
     assert float(call.arguments["width"]) == 50.0
     assert float(call.arguments["height"]) == 20.0
+
+
+def test_parse_utterance_extrude_routes_to_extrusion_tool() -> None:
+    call = rd.parse_utterance("Extrude this by 25mm")
+    assert call is not None
+    assert call.tool_id == "create_freecad_extrusion"
+    assert float(call.arguments["height"]) == 25.0
+
+
+def test_parse_utterance_extrude_injects_selection_as_anchor() -> None:
+    selection = {"centroid": [0, 0, 50], "normal": [0, 0, 1]}
+    call = rd.parse_utterance("Extrude this by 25mm", selection)
+    assert call is not None
+    assert call.tool_id == "create_freecad_extrusion"
+    assert call.arguments["target_position"] == [0, 0, 50]
+    assert call.arguments["target_normal"] == [0, 0, 1]
+
+
+def test_is_mutating_tool_includes_extrusion() -> None:
+    assert rd.is_mutating_tool("create_freecad_extrusion") is True
+
+
+def test_dispatch_extrusion_without_profile_or_selection_fails_cleanly() -> None:
+    call = rd.parse_utterance("Extrude this by 25mm")
+    assert call is not None
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "profile points" in result.message or "selected face" in result.message
+
+
+def test_dispatch_extrusion_rejects_non_z_normal() -> None:
+    selection = {"centroid": [0, 0, 50], "normal": [1, 0, 0]}
+    call = rd.parse_utterance("Extrude this by 25mm", selection)
+    assert call is not None
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "Z axis" in result.message
+
+
+def test_dispatch_extrusion_with_selection_builds_default_footprint() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    selection = {"centroid": [0, 0, 50], "normal": [0, 0, 1]}
+    call = rd.parse_utterance("Extrude this by 25mm", selection)
+    assert call is not None
+    result = rd.dispatch_tool_call(call, MockFreeCADEngine(), MockControlPlane())
+    assert result.ok is True
+    assert result.payload["dimensions"]["height"] == 25.0
+    assert result.payload["dimensions"]["profile_points"] == 4
+
+
+def test_parse_utterance_camera_preset_first_word_order() -> None:
+    """Regression test for the word-order bug found live-testing the WS
+    dispatch endpoint: "Show me the isometric view" (preset word before
+    the trigger word "view") didn't match any INTENT_PATTERNS entry."""
+    call = rd.parse_utterance("Show me the isometric view")
+    assert call is not None
+    assert call.tool_id == "manipulate_camera"
+    assert call.arguments["position"] == list(rd._CAMERA_PRESETS["iso"])
+
+    call = rd.parse_utterance("top view")
+    assert call is not None
+    assert call.tool_id == "manipulate_camera"
+    assert call.arguments["position"] == list(rd._CAMERA_PRESETS["top"])
+
+
+def test_parse_utterance_camera_preset_trigger_first_word_order_unchanged() -> None:
+    call = rd.parse_utterance("orbit to the iso view")
+    assert call is not None
+    assert call.tool_id == "manipulate_camera"
+    assert call.arguments["position"] == list(rd._CAMERA_PRESETS["iso"])

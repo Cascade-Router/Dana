@@ -146,6 +146,50 @@ class MockFreeCADEngine(BaseCADEngine):
             "note": engine_note,
         }
 
+    def create_extrusion(
+        self, profile_points: list[list[float]], height: float, name: str = "Extrusion"
+    ) -> dict[str, Any]:
+        if len(profile_points) < 3:
+            return {"ok": False, "error": "create_extrusion requires at least 3 profile points"}
+
+        import numpy as np
+        import trimesh
+
+        pts = [(float(x), float(y)) for x, y in profile_points]
+        if pts[0] == pts[-1]:
+            pts = pts[:-1]
+        n = len(pts)
+        # Fan triangulation from vertex 0 — exact for convex/star-shaped
+        # profiles (covers the default square footprint this mock exists
+        # to unblock); no shapely/triangle dependency needed for that case.
+        bottom = np.array([[x, y, 0.0] for x, y in pts])
+        top = np.array([[x, y, float(height)] for x, y in pts])
+        vertices = np.vstack([bottom, top])
+        faces = []
+        for i in range(1, n - 1):
+            faces.append([0, i + 1, i])
+            faces.append([n, n + i, n + i + 1])
+        for i in range(n):
+            j = (i + 1) % n
+            faces.append([i, j, n + j])
+            faces.append([i, n + j, n + i])
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
+
+        dims = {"height": float(height), "profile_points": n}
+        out_path = _mesh_output_path(name)
+        mesh.export(out_path)
+        return {
+            "ok": True,
+            "name": name,
+            "type": "Part::Feature",
+            "bounding_box": _bbox(mesh),
+            "dimensions": dims,
+            "path": str(out_path),
+            "gui_shown": False,
+            "driver": "mock",
+            "note": _MOCK_NOTE_CAD,
+        }
+
     def export_mesh_stl(self, source_path: str, name: str | None = None) -> dict[str, Any]:
         import trimesh
 

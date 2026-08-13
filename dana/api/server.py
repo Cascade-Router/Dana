@@ -152,7 +152,7 @@ def get_mesh(token: str) -> FileResponse:
 def _node_type_for(tool_id: str) -> str:
     if tool_id == "execute_vision_analysis":
         return "vision"
-    if tool_id in ("create_freecad_box", "create_freecad_cylinder"):
+    if tool_id in ("create_freecad_box", "create_freecad_cylinder", "create_freecad_extrusion"):
         return "tool"
     return "agent"
 
@@ -183,7 +183,7 @@ async def _dispatch_and_emit(websocket: WebSocket, call: Any) -> None:
     result = dispatch_tool_call(call, engine, control_plane)
 
     mesh_url = None
-    if result.ok and call.tool_id in ("create_freecad_box", "create_freecad_cylinder"):
+    if result.ok and call.tool_id in ("create_freecad_box", "create_freecad_cylinder", "create_freecad_extrusion"):
         mesh = engine.export_mesh_stl(result.payload["path"], name=result.payload.get("name"))
         if mesh.get("ok"):
             token = _register_mesh(mesh["path"])

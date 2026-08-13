@@ -110,9 +110,52 @@ def _tool_manipulate_camera(args: dict[str, Any], _engine: Any, _cp: Any) -> dic
     return {"ok": True, "position": [float(v) for v in position], "target": [float(v) for v in target]}
 
 
+# Half-width (mm) of the square footprint synthesized when "extrude this/
+# here" gives us only a clicked point+normal, not real profile geometry —
+# a raycast hit alone can never recover a face's true boundary.
+_EXTRUSION_DEFAULT_HALF_WIDTH = 10.0
+
+
+def _tool_create_freecad_extrusion(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    height = float(args.get("height", args.get("distance", 25)))
+    profile_points = args.get("profile_points")
+
+    if not profile_points:
+        target_position = args.get("target_position")
+        target_normal = args.get("target_normal")
+        if not target_position or not target_normal:
+            return {
+                "ok": False,
+                "error": (
+                    "create_freecad_extrusion needs either explicit 2D profile points or a "
+                    "selected face — click a face in the viewer and say 'extrude this' so its "
+                    "position can anchor the profile"
+                ),
+            }
+        # The underlying engine only extrudes straight up along Z (see
+        # dana.plugins.freecad.engine.create_extruded_polyline) — it has no
+        # arbitrary extrusion-axis support, so a face whose normal isn't
+        # close to Z can't be extruded meaningfully here yet.
+        if abs(float(target_normal[2])) < 0.5:
+            return {
+                "ok": False,
+                "error": (
+                    "the selected face's normal isn't close enough to the Z axis for a "
+                    "straight-up extrusion — FreeCAD extrusion here only extrudes along Z, "
+                    "so a steep side face can't be extruded correctly yet"
+                ),
+            }
+        x, y = float(target_position[0]), float(target_position[1])
+        half = _EXTRUSION_DEFAULT_HALF_WIDTH
+        profile_points = [[x - half, y - half], [x + half, y - half], [x + half, y + half], [x - half, y + half]]
+
+    return engine.create_extrusion(profile_points, height, name=str(args.get("name") or "Extrusion"))
+
+
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] = {
     "create_freecad_box": _tool_create_box,
     "create_freecad_cylinder": _tool_create_cylinder,
+    "create_freecad_extrusion": _tool_create_freecad_extrusion,
     "resync_workspace": _tool_resync_workspace,
     "get_active_display": _tool_get_active_display,
     "prevent_focus_steal": _tool_prevent_focus_steal,
@@ -126,7 +169,13 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
 # human-in-the-loop approval before dispatch; everything else (status reads,
 # vision, camera framing) is safe to run immediately.
 MUTATING_TOOLS: frozenset[str] = frozenset(
-    {"create_freecad_box", "create_freecad_cylinder", "resync_workspace", "prevent_focus_steal"}
+    {
+        "create_freecad_box",
+        "create_freecad_cylinder",
+        "create_freecad_extrusion",
+        "resync_workspace",
+        "prevent_focus_steal",
+    }
 )
 
 
@@ -144,6 +193,15 @@ def describe_tool_call(call: ToolCall) -> str:
         radius = call.arguments.get("radius", 10)
         height = call.arguments.get("height", 30)
         return f"Create a cylinder (radius {radius}mm, height {height}mm) in FreeCAD."
+    if call.tool_id == "create_freecad_extrusion":
+        height = call.arguments.get("height", 25)
+        if call.arguments.get("profile_points"):
+            return f"Extrude the given 2D profile by {height}mm in FreeCAD."
+        return (
+            f"Extrude a default {2 * _EXTRUSION_DEFAULT_HALF_WIDTH:g}x"
+            f"{2 * _EXTRUSION_DEFAULT_HALF_WIDTH:g}mm footprint at the selected point by {height}mm "
+            "(approximate — exact face bounds aren't available from a single click)."
+        )
     if call.tool_id == "resync_workspace":
         return "Reposition managed FreeCAD windows onto their target monitor."
     if call.tool_id == "prevent_focus_steal":
@@ -198,6 +256,11 @@ INTENT_PATTERNS: tuple[tuple[re.Pattern[str], str, tuple[str, ...]], ...] = (
     ),
     (re.compile(_CYLINDER_WORD, re.I), "create_freecad_cylinder", ()),
     (
+        re.compile(rf"\bextrude\b.*?(?:by\s+)?{_NUM}{_UNIT}", re.I),
+        "create_freecad_extrusion",
+        ("height",),
+    ),
+    (
         re.compile(r"\b(look at|see|check|analyze|what'?s on)\b.*\b(screen|window|freecad|blueprint|cad)\b", re.I),
         "execute_vision_analysis",
         (),
@@ -217,14 +280,19 @@ _CAMERA_PRESETS: dict[str, tuple[float, float, float]] = {
     "side": (200, 0, 0),
     "iso": (120, 120, 120),
 }
-_CAMERA_PRESET_PATTERN = re.compile(
-    r"\b(?:look at|view|orbit to|camera)\b.*?\b(top|front|side|iso(?:metric)?)\b", re.I
-)
+_CAMERA_TRIGGER = r"(?:look at|view|orbit to|camera)"
+_CAMERA_PRESET_WORD = r"(top|front|side|iso(?:metric)?)"
+# Two directional patterns rather than one alternation, so whichever
+# matches, group(1) is always the preset word — "orbit to the iso view"
+# (trigger-then-preset) and "show me the isometric view" (preset-then-
+# trigger) both resolve the same way downstream.
+_CAMERA_PRESET_PATTERN = re.compile(rf"\b{_CAMERA_TRIGGER}\b.*?\b{_CAMERA_PRESET_WORD}\b", re.I)
+_CAMERA_PRESET_PATTERN_REVERSED = re.compile(rf"\b{_CAMERA_PRESET_WORD}\b.*?\b{_CAMERA_TRIGGER}\b", re.I)
 _SELECTION_REFERENCE_PATTERN = re.compile(r"\b(this|here|that spot|selected)\b", re.I)
 
 
 def parse_utterance(text: str, active_selection: dict[str, Any] | None = None) -> ToolCall | None:
-    camera_match = _CAMERA_PRESET_PATTERN.search(text)
+    camera_match = _CAMERA_PRESET_PATTERN.search(text) or _CAMERA_PRESET_PATTERN_REVERSED.search(text)
     if camera_match:
         preset = camera_match.group(1).lower()
         preset = "iso" if preset.startswith("iso") else preset
@@ -248,7 +316,7 @@ def parse_utterance(text: str, active_selection: dict[str, Any] | None = None) -
                     arguments[name] = value
         if (
             active_selection
-            and tool_id in ("create_freecad_box", "create_freecad_cylinder")
+            and tool_id in ("create_freecad_box", "create_freecad_cylinder", "create_freecad_extrusion")
             and _SELECTION_REFERENCE_PATTERN.search(text)
         ):
             arguments["target_position"] = active_selection.get("centroid")
@@ -276,7 +344,7 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
     if not result.ok:
         return f"`{call.tool_id}` failed: {result.message}"
     payload = result.payload
-    if call.tool_id in ("create_freecad_box", "create_freecad_cylinder"):
+    if call.tool_id in ("create_freecad_box", "create_freecad_cylinder", "create_freecad_extrusion"):
         driver = payload.get("driver", "win32/freecad")
         return (
             f"Created `{payload.get('type')}` named `{payload.get('name')}` via the "

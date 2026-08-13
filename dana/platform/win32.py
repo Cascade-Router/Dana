@@ -78,6 +78,16 @@ class RealFreeCADEngine(BaseCADEngine):
 
         return json.loads(engine.apply_boolean_cut(base_path, tool_path, name))
 
+    def create_extrusion(
+        self, profile_points: list[list[float]], height: float, name: str = "Extrusion"
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        # create_extruded_polyline names its own Part::Feature internally —
+        # `name` isn't threaded through to the underlying script (matches
+        # its existing behavior; not something to silently change here).
+        return json.loads(engine.create_extruded_polyline(profile_points, height))
+
     def export_mesh_stl(self, source_path: str, name: str | None = None) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 

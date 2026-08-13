@@ -71,6 +71,16 @@ class BaseCADEngine(ABC):
         including ``{"ok": bool, "path": str}``."""
 
     @abstractmethod
+    def create_extrusion(
+        self, profile_points: list[list[float]], height: float, name: str = "Extrusion"
+    ) -> dict[str, Any]:
+        """Extrude a closed 2D (XY) polyline ``profile_points`` ``height``
+        units along Z into a solid — no arbitrary extrusion axis; a caller
+        anchoring this to a clicked face's normal must itself confirm that
+        normal is close enough to Z for a straight-up extrusion to be
+        geometrically meaningful. Same result shape as ``create_box``."""
+
+    @abstractmethod
     def export_mesh_stl(self, source_path: str, name: str | None = None) -> dict[str, Any]:
         """Tessellate/export the solid at ``source_path`` to a standalone
         ``.stl`` mesh file. Returns ``{"ok": bool, "path": str}``."""
