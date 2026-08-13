@@ -1027,6 +1027,6 @@ def route_tool_not_found(
     _forge_log(
         "ToolForge",
         f"ToolNotFound trigger missing_tool={missing_tool!r} "
-        f"query={ (query or '')[:100]!r } — entering tool_forge_node",
+        f"query={(query or '')[:100]!r} - entering tool_forge_node",
     )
     return run_tool_forge(query, tool_name=missing_tool, model=model)
