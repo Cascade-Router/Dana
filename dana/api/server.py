@@ -31,6 +31,7 @@ from dana.core.react_dispatch import (
     plugin_registry_view,
     summarize_result,
 )
+from dana.paths import CAPTURES_DIR
 from dana.platform import get_cad_engine, get_control_plane
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -76,6 +77,10 @@ def health() -> dict[str, Any]:
 @app.get("/api/plugins")
 def plugins() -> dict[str, Any]:
     return {"ok": True, **plugin_registry_view()}
+
+
+CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/api/vision", StaticFiles(directory=str(CAPTURES_DIR)), name="vision")
 
 
 @app.get("/api/mesh/{token}.stl")

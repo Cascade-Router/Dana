@@ -22,7 +22,11 @@ export const API_HTTP_BASE = resolveHttpBase();
 
 export const API_WS_BASE = API_HTTP_BASE.replace(/^http/, "ws");
 
+export function resolveApiUrl(path: string): string {
+  if (/^https?:\/\//.test(path)) return path;
+  return `${API_HTTP_BASE}${path}`;
+}
+
 export function resolveMeshUrl(meshUrl: string): string {
-  if (/^https?:\/\//.test(meshUrl)) return meshUrl;
-  return `${API_HTTP_BASE}${meshUrl}`;
+  return resolveApiUrl(meshUrl);
 }

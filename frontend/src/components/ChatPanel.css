@@ -66,6 +66,13 @@
   background: #262626;
 }
 
+.chat-panel__thumbnail {
+  display: block;
+  max-width: 100%;
+  border-radius: 8px;
+  margin-bottom: 0.5rem;
+}
+
 .chat-panel__quick-prompts {
   display: flex;
   flex-wrap: wrap;

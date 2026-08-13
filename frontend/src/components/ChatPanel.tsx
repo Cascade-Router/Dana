@@ -39,6 +39,9 @@ export function ChatPanel({ connection, messages, onSend }: Props) {
         )}
         {messages.map((m, i) => (
           <div key={i} className={`chat-panel__bubble chat-panel__bubble--${m.role}`}>
+            {m.imageUrl && (
+              <img className="chat-panel__thumbnail" src={m.imageUrl} alt="CAD viewport capture" />
+            )}
             {m.content}
           </div>
         ))}

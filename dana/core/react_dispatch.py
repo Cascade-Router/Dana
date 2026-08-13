@@ -11,6 +11,7 @@ FreeCADCmd directly.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from collections.abc import Callable
@@ -20,6 +21,7 @@ from dana.platform import factory as platform_factory
 from dana.platform import get_cad_engine, get_control_plane
 from dana.plugins.plugin_manager import discover_plugin_dirs, load_all_plugins
 from dana.security.dry_run import is_dry_run_enabled
+from dana.tools.cad_vision import analyze_cad_blueprint, capture_cad_viewport
 from dana.tools.schema import ToolCall
 
 
@@ -81,6 +83,23 @@ def _tool_check_plugin_registry(_args: dict[str, Any], _engine: Any, _cp: Any) -
     return {"ok": True, **plugin_registry_view()}
 
 
+def _tool_execute_vision_analysis(_args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    capture = capture_cad_viewport(save_copy=True)
+    if not capture.get("ok"):
+        return {"ok": False, "error": capture.get("error") or "capture failed"}
+    if not capture.get("window_found"):
+        return {"ok": False, "error": "no AutoCAD/FreeCAD window found on screen"}
+
+    try:
+        analysis = json.loads(analyze_cad_blueprint(capture["path"]))
+    except (json.JSONDecodeError, ValueError):
+        return {"ok": False, "error": "vision analysis returned non-JSON"}
+    if not analysis.get("ok"):
+        return {"ok": False, "error": analysis.get("error") or "vision analysis failed"}
+
+    return {**analysis, "image_url": "/api/vision/last_cad_viewport.png"}
+
+
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] = {
     "create_freecad_box": _tool_create_box,
     "create_freecad_cylinder": _tool_create_cylinder,
@@ -89,6 +108,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "prevent_focus_steal": _tool_prevent_focus_steal,
     "system_state": _tool_system_state,
     "check_plugin_registry": _tool_check_plugin_registry,
+    "execute_vision_analysis": _tool_execute_vision_analysis,
 }
 
 # (regex, tool_id, arg_names) — first match wins, same shape as the
@@ -107,6 +127,11 @@ INTENT_PATTERNS: tuple[tuple[re.Pattern[str], str, tuple[str, ...]], ...] = (
         ("radius", "height"),
     ),
     (re.compile(r"\bcylinder\b", re.I), "create_freecad_cylinder", ()),
+    (
+        re.compile(r"\b(look at|see|check|analyze|what'?s on)\b.*\b(screen|window|freecad|blueprint|cad)\b", re.I),
+        "execute_vision_analysis",
+        (),
+    ),
     (re.compile(r"\bresync\b.*\bworkspace\b", re.I), "resync_workspace", ()),
     (re.compile(r"\b(active|open)\s+(windows?|display)\b", re.I), "get_active_display", ()),
     (re.compile(r"\bfocus\b", re.I), "prevent_focus_steal", ()),
@@ -163,6 +188,8 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         )
     if call.tool_id == "check_plugin_registry":
         return "Active plugins: " + ", ".join(payload.get("plugins", [])) + "."
+    if call.tool_id == "execute_vision_analysis":
+        return str(payload.get("summary") or "Analyzed the CAD viewport.")
     if call.tool_id == "system_state":
         return (
             f"control_plane={payload.get('control_plane')}, cad_engine={payload.get('cad_engine')}, "

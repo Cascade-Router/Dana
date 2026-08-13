@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API_WS_BASE, resolveMeshUrl } from "./apiBase";
+import { API_WS_BASE, resolveApiUrl, resolveMeshUrl } from "./apiBase";
 
 // Mirrors the JSON shapes dana/api/server.py's `/ws/chat` sends —
 // keep these two in sync by hand (no shared schema generation yet).
@@ -18,7 +18,7 @@ export type ServerEvent =
     }
   | { type: "assistant_message"; content: string };
 
-export type ChatMessage = { role: "user" | "assistant"; content: string };
+export type ChatMessage = { role: "user" | "assistant"; content: string; imageUrl?: string };
 
 export type ConnectionState = "connecting" | "open" | "closed";
 
@@ -29,6 +29,7 @@ export function useChatSocket() {
   const [log, setLog] = useState<ServerEvent[]>([]);
   const [driverState, setDriverState] = useState<Record<string, unknown> | null>(null);
   const [meshUrl, setMeshUrl] = useState<string | null>(null);
+  const pendingImageUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
     const socket = new WebSocket(`${API_WS_BASE}/ws/chat`);
@@ -45,12 +46,18 @@ export function useChatSocket() {
         case "ready":
           setDriverState(data.driver_state);
           break;
-        case "assistant_message":
-          setMessages((prev) => [...prev, { role: "assistant", content: data.content }]);
+        case "assistant_message": {
+          const imageUrl = pendingImageUrlRef.current ?? undefined;
+          pendingImageUrlRef.current = null;
+          setMessages((prev) => [...prev, { role: "assistant", content: data.content, imageUrl }]);
           break;
-        case "tool_result":
+        }
+        case "tool_result": {
           if (data.mesh_url) setMeshUrl(resolveMeshUrl(data.mesh_url));
+          const imageUrl = data.payload?.image_url;
+          if (typeof imageUrl === "string") pendingImageUrlRef.current = resolveApiUrl(imageUrl);
           break;
+        }
       }
     };
 
