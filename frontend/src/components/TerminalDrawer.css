@@ -1,0 +1,45 @@
+.terminal-drawer {
+  border-top: 1px solid #2a2a2a;
+  background: #0d0d0d;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  flex-shrink: 0;
+}
+
+.terminal-drawer__toggle {
+  width: 100%;
+  text-align: left;
+  padding: 0.4rem 1rem;
+  background: none;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+}
+
+.terminal-drawer--open .terminal-drawer__body {
+  max-height: 220px;
+}
+
+.terminal-drawer__body {
+  overflow-y: auto;
+  max-height: 220px;
+  padding: 0 1rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.terminal-drawer__empty {
+  opacity: 0.4;
+}
+
+.terminal-drawer__line {
+  color: #d1d5db;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.terminal-drawer__line--tool_call { color: #93c5fd; }
+.terminal-drawer__line--tool_result { color: #86efac; }
+.terminal-drawer__line--assistant_message { color: #d1d5db; }
+.terminal-drawer__line--ready { color: #fbbf24; }

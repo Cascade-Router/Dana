@@ -4,8 +4,11 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'hf_space/**'
       - 'dana/**'
+      - 'frontend/**'
+      - 'deploy/**'
+      - 'Dockerfile'
+      - '.dockerignore'
       - '.github/workflows/deploy_hf.yml'
   workflow_dispatch:
 
@@ -18,16 +21,29 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Stage unified Space payload (hf_space/ + dana/)
+      - name: Stage Docker Space payload (Dockerfile + dana/ + frontend/ source)
         run: |
           set -e
           rm -rf _hf_deploy_stage
           mkdir -p _hf_deploy_stage
-          cp hf_space/app.py _hf_deploy_stage/app.py
-          cp hf_space/README.md _hf_deploy_stage/README.md
-          cp hf_space/requirements.txt _hf_deploy_stage/requirements.txt
+          cp Dockerfile _hf_deploy_stage/Dockerfile
+          cp .dockerignore _hf_deploy_stage/.dockerignore
+          mkdir -p _hf_deploy_stage/deploy
+          cp deploy/requirements-space.txt _hf_deploy_stage/deploy/requirements-space.txt
+          cp deploy/space_README.md _hf_deploy_stage/README.md
+
           cp -r dana _hf_deploy_stage/dana
           find _hf_deploy_stage/dana -name "__pycache__" -type d -prune -exec rm -rf {} +
+
+          mkdir -p _hf_deploy_stage/frontend
+          cp -r frontend/src _hf_deploy_stage/frontend/src
+          cp -r frontend/public _hf_deploy_stage/frontend/public 2>/dev/null || true
+          cp frontend/package.json frontend/package-lock.json frontend/index.html \
+             frontend/vite.config.ts frontend/tsconfig.json frontend/tsconfig.node.json \
+             _hf_deploy_stage/frontend/ 2>/dev/null || true
+          # Docker builds the frontend itself (see Dockerfile's frontend-build
+          # stage) — src-tauri/node_modules/dist are desktop/build artifacts
+          # the Space's Docker build never needs.
 
       - name: Deploy staged payload to Hugging Face
         env:
@@ -40,5 +56,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -q -m "Deploy unified Dana Space (hf_space/ + dana/) from ${{ github.sha }}"
+          git commit -q -m "Deploy Dana Docker Space (dana/ + frontend/) from ${{ github.sha }}"
           git push -f "https://oauth2:$HF_TOKEN@huggingface.co/spaces/$HF_SPACE_NAME" HEAD:main

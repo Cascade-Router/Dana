@@ -1,0 +1,21 @@
+.viewer3d {
+  position: relative;
+  height: 100%;
+  min-width: 0;
+  background: #111;
+}
+
+.viewer3d canvas {
+  display: block;
+}
+
+.viewer3d__placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6b7280;
+  font-size: 0.9rem;
+  pointer-events: none;
+}
