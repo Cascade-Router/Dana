@@ -12,11 +12,26 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Dana",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
         "minHeight": 600
+      },
+      {
+        "label": "orb",
+        "url": "/#/orb",
+        "title": "Dana Orb",
+        "width": 140,
+        "height": 140,
+        "resizable": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false
       }
     ],
     "security": {

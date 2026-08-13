@@ -123,3 +123,92 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.chat-panel__bubble--hitl {
+  background: transparent;
+  padding: 0;
+  align-self: stretch;
+}
+
+.hitl-card {
+  border: 1px solid #b45309;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  background: #241a0a;
+  font-size: 0.85rem;
+}
+
+.hitl-card--approved {
+  border-color: #15803d;
+  background: #0f2418;
+}
+
+.hitl-card--cancelled {
+  border-color: #3a3a3a;
+  background: #1a1a1a;
+  opacity: 0.7;
+}
+
+.hitl-card__title {
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+
+.hitl-card__description {
+  opacity: 0.85;
+  margin-bottom: 0.5rem;
+}
+
+.hitl-card__params,
+.hitl-card__params-editor {
+  background: #111;
+  border: 1px solid #3a3a3a;
+  border-radius: 0.4rem;
+  padding: 0.5rem;
+  font-size: 0.78rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.hitl-card__params-editor {
+  width: 100%;
+  resize: vertical;
+  color: inherit;
+}
+
+.hitl-card__error {
+  color: #f87171;
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+}
+
+.hitl-card__actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.hitl-card__actions button {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.4rem;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.hitl-card__proceed {
+  background: #16a34a;
+  color: white;
+}
+
+.hitl-card__modify {
+  background: #3a3a3a;
+  color: inherit;
+}
+
+.hitl-card__cancel {
+  background: #dc2626;
+  color: white;
+}

@@ -32,5 +32,13 @@ body {
 }
 
 .app__right {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
+}
+
+.app__right > .viewer3d {
+  flex: 1;
+  min-height: 0;
 }

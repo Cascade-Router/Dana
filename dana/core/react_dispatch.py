@@ -100,6 +100,16 @@ def _tool_execute_vision_analysis(_args: dict[str, Any], _engine: Any, _cp: Any)
     return {**analysis, "image_url": "/api/vision/last_cad_viewport.png"}
 
 
+def _tool_manipulate_camera(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    position = args.get("position")
+    target = args.get("target")
+    if not (isinstance(position, (list, tuple)) and len(position) == 3):
+        return {"ok": False, "error": "manipulate_camera requires a 3-element 'position'"}
+    if not (isinstance(target, (list, tuple)) and len(target) == 3):
+        return {"ok": False, "error": "manipulate_camera requires a 3-element 'target'"}
+    return {"ok": True, "position": [float(v) for v in position], "target": [float(v) for v in target]}
+
+
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] = {
     "create_freecad_box": _tool_create_box,
     "create_freecad_cylinder": _tool_create_cylinder,
@@ -109,7 +119,37 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "system_state": _tool_system_state,
     "check_plugin_registry": _tool_check_plugin_registry,
     "execute_vision_analysis": _tool_execute_vision_analysis,
+    "manipulate_camera": _tool_manipulate_camera,
 }
+
+# Tools that mutate on-disk geometry or actuate the OS/CAD host pause for
+# human-in-the-loop approval before dispatch; everything else (status reads,
+# vision, camera framing) is safe to run immediately.
+MUTATING_TOOLS: frozenset[str] = frozenset(
+    {"create_freecad_box", "create_freecad_cylinder", "resync_workspace", "prevent_focus_steal"}
+)
+
+
+def is_mutating_tool(tool_id: str) -> bool:
+    return tool_id in MUTATING_TOOLS
+
+
+def describe_tool_call(call: ToolCall) -> str:
+    if call.tool_id == "create_freecad_box":
+        length = call.arguments.get("length", 40)
+        width = call.arguments.get("width", 25)
+        height = call.arguments.get("height", 15)
+        return f"Create a {length}x{width}x{height}mm box in FreeCAD."
+    if call.tool_id == "create_freecad_cylinder":
+        radius = call.arguments.get("radius", 10)
+        height = call.arguments.get("height", 30)
+        return f"Create a cylinder (radius {radius}mm, height {height}mm) in FreeCAD."
+    if call.tool_id == "resync_workspace":
+        return "Reposition managed FreeCAD windows onto their target monitor."
+    if call.tool_id == "prevent_focus_steal":
+        return "Read the foreground window without changing OS focus."
+    return f"Run `{call.tool_id}`."
+
 
 # (regex, tool_id, arg_names) — first match wins, same shape as the
 # simplified broker sibling this replaces in hf_space/hf_sandbox/agent_bridge.py.
@@ -139,8 +179,34 @@ INTENT_PATTERNS: tuple[tuple[re.Pattern[str], str, tuple[str, ...]], ...] = (
     (re.compile(r"\bplugins?\b", re.I), "check_plugin_registry", ()),
 )
 
+# Preset camera poses for "look at it from the top/front/side" phrasing —
+# distances are tuned for the ~40-100mm primitives create_freecad_* produces.
+_CAMERA_PRESETS: dict[str, tuple[float, float, float]] = {
+    "top": (0, 200, 0.001),
+    "front": (0, 0, 200),
+    "side": (200, 0, 0),
+    "iso": (120, 120, 120),
+}
+_CAMERA_PRESET_PATTERN = re.compile(
+    r"\b(?:look at|view|orbit to|camera)\b.*?\b(top|front|side|iso(?:metric)?)\b", re.I
+)
+_SELECTION_REFERENCE_PATTERN = re.compile(r"\b(this|here|that spot|selected)\b", re.I)
 
-def parse_utterance(text: str) -> ToolCall | None:
+
+def parse_utterance(text: str, active_selection: dict[str, Any] | None = None) -> ToolCall | None:
+    camera_match = _CAMERA_PRESET_PATTERN.search(text)
+    if camera_match:
+        preset = camera_match.group(1).lower()
+        preset = "iso" if preset.startswith("iso") else preset
+        target = active_selection.get("centroid") if active_selection else None
+        target = target if isinstance(target, list) and len(target) == 3 else [0.0, 0.0, 0.0]
+        position = list(_CAMERA_PRESETS[preset])
+        return ToolCall(
+            tool_id="manipulate_camera",
+            arguments={"position": position, "target": target},
+            raw_text=text,
+        )
+
     for pattern, tool_id, arg_names in INTENT_PATTERNS:
         m = pattern.search(text)
         if not m:
@@ -150,6 +216,13 @@ def parse_utterance(text: str) -> ToolCall | None:
             for name, value in zip(arg_names, m.groups(), strict=True):
                 if value is not None:
                     arguments[name] = value
+        if (
+            active_selection
+            and tool_id in ("create_freecad_box", "create_freecad_cylinder")
+            and _SELECTION_REFERENCE_PATTERN.search(text)
+        ):
+            arguments["target_position"] = active_selection.get("centroid")
+            arguments["target_normal"] = active_selection.get("normal")
         return ToolCall(tool_id=tool_id, arguments=arguments, raw_text=text)
     return None
 
@@ -190,6 +263,8 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         return "Active plugins: " + ", ".join(payload.get("plugins", [])) + "."
     if call.tool_id == "execute_vision_analysis":
         return str(payload.get("summary") or "Analyzed the CAD viewport.")
+    if call.tool_id == "manipulate_camera":
+        return f"Moved the camera to {payload.get('position')}, looking at {payload.get('target')}."
     if call.tool_id == "system_state":
         return (
             f"control_plane={payload.get('control_plane')}, cad_engine={payload.get('cad_engine')}, "
@@ -219,10 +294,13 @@ def plugin_registry_view() -> dict[str, Any]:
 
 __all__ = (
     "INTENT_PATTERNS",
+    "MUTATING_TOOLS",
     "TOOL_HANDLERS",
     "ToolResult",
+    "describe_tool_call",
     "dispatch_tool_call",
     "driver_state",
+    "is_mutating_tool",
     "parse_utterance",
     "plugin_registry_view",
     "summarize_result",
