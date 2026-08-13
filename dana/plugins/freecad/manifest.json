@@ -1,0 +1,167 @@
+{
+  "name": "freecad",
+  "version": "1.0",
+  "entry_point": "engine.py",
+  "tools": [
+    {
+      "id": "create_freecad_box",
+      "function": "create_box",
+      "description_en": "Create a parametric Part::Box solid in FreeCAD (native Python via subprocess FreeCADCmd, no COM, no mouse/pixel actuation) and save it as a .FCStd document. Use for rectangular/cuboid solids when working with FreeCAD instead of AutoCAD.",
+      "parameters": [
+        {
+          "name": "length",
+          "type": "number",
+          "required": true,
+          "description_en": "Box length (X dimension) in model units."
+        },
+        {
+          "name": "width",
+          "type": "number",
+          "required": true,
+          "description_en": "Box width (Y dimension) in model units."
+        },
+        {
+          "name": "height",
+          "type": "number",
+          "required": true,
+          "description_en": "Box height (Z dimension) in model units."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Object/document name. Defaults to 'Box'."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "create a box in freecad",
+          "make a cuboid in freecad",
+          "create_freecad_box"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
+      "id": "create_freecad_cylinder",
+      "function": "create_cylinder",
+      "description_en": "Create a parametric Part::Cylinder solid in FreeCAD (native Python via subprocess FreeCADCmd, no COM) and save it as a .FCStd document.",
+      "parameters": [
+        {
+          "name": "radius",
+          "type": "number",
+          "required": true,
+          "description_en": "Cylinder radius in model units."
+        },
+        {
+          "name": "height",
+          "type": "number",
+          "required": true,
+          "description_en": "Cylinder height in model units."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Object/document name. Defaults to 'Cylinder'."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "create a cylinder in freecad",
+          "make a cylinder in freecad",
+          "create_freecad_cylinder"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
+      "id": "create_freecad_extrusion",
+      "function": "create_extruded_polyline",
+      "description_en": "Extrude a closed 2D polyline profile into a solid Part::Feature in FreeCAD (native Python via subprocess FreeCADCmd, no COM) and save it as a .FCStd document. Requires at least 3 [x, y] profile points; auto-closes the profile if the first and last points differ.",
+      "parameters": [
+        {
+          "name": "points_list",
+          "type": "array",
+          "required": true,
+          "description_en": "List of at least 3 [x, y] points forming the profile to extrude."
+        },
+        {
+          "name": "height",
+          "type": "number",
+          "required": true,
+          "description_en": "Extrusion height in model units."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "extrude a polyline in freecad",
+          "extrude solid freecad",
+          "create_freecad_extrusion"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
+      "id": "modify_existing_freecad_document",
+      "function": "modify_existing_document",
+      "description_en": "Open an EXISTING .FCStd document, run a modification script against it (bound to the local name 'doc'), and save back to the SAME path. This is the preferred 'Modify Existing' revision path for iterative CAD design — use this instead of create_freecad_box/create_freecad_cylinder/create_freecad_extrusion once a project file already exists, so edits (a new boolean cut, a changed parameter, an added feature) accumulate in one evolving document instead of scattering a new .FCStd per operation.",
+      "parameters": [
+        {
+          "name": "filepath",
+          "type": "string",
+          "required": true,
+          "description_en": "Absolute path to the existing .FCStd document to open and modify."
+        },
+        {
+          "name": "modification_script",
+          "type": "string",
+          "required": true,
+          "description_en": "Python source that edits the already-opened document (available as 'doc'), e.g. adding a Part::Cylinder and a Part::Cut against an existing object, or changing an existing object's parameter.",
+          "description_fa": "         (doc)   ."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "modify the existing model",
+          "update the current freecad file",
+          "add a cut to the existing box",
+          "modify_existing_freecad_document"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    },
+    {
+      "id": "execute_freecad_script",
+      "function": "execute_freecad_script",
+      "description_en": "Run an arbitrary Python script inside FreeCAD via subprocess FreeCADCmd (the FreeCAD/Part/Sketcher APIs are available) — for geometry or operations the create_freecad_* primitives don't cover. Unlike those, success is judged only by the subprocess exit code (no marker check), since the script defines its own notion of success. Prefer create_freecad_box/create_freecad_cylinder/create_freecad_extrusion when they cover the need.",
+      "parameters": [
+        {
+          "name": "python_script_str",
+          "type": "string",
+          "required": true,
+          "description_en": "Full Python source to execute inside FreeCADCmd's bundled interpreter.",
+          "description_fa": "FreeCADCmd  Python ."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "run a freecad script",
+          "execute freecad python",
+          "execute_freecad_script"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
+    }
+  ]
+}

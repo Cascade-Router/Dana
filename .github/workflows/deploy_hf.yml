@@ -5,6 +5,7 @@ on:
     branches: [ main ]
     paths:
       - 'hf_space/**'
+      - 'dana/**'
       - '.github/workflows/deploy_hf.yml'
   workflow_dispatch:
 
@@ -17,16 +18,27 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Deploy hf_space to Hugging Face
+      - name: Stage unified Space payload (hf_space/ + dana/)
+        run: |
+          set -e
+          rm -rf _hf_deploy_stage
+          mkdir -p _hf_deploy_stage
+          cp hf_space/app.py _hf_deploy_stage/app.py
+          cp hf_space/README.md _hf_deploy_stage/README.md
+          cp hf_space/requirements.txt _hf_deploy_stage/requirements.txt
+          cp -r dana _hf_deploy_stage/dana
+          find _hf_deploy_stage/dana -name "__pycache__" -type d -prune -exec rm -rf {} +
+
+      - name: Deploy staged payload to Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_SPACE_NAME: ${{ secrets.HF_SPACE_NAME }}
+        working-directory: _hf_deploy_stage
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Isolate hf_space/ into a standalone deploy branch
-          git subtree split --prefix hf_space -b hf-deploy
-
-          # Push directly to the Hugging Face Space repository
-          git push https://oauth2:$HF_TOKEN@huggingface.co/spaces/$HF_SPACE_NAME hf-deploy:main --force
+          set -e
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Deploy unified Dana Space (hf_space/ + dana/) from ${{ github.sha }}"
+          git push -f "https://oauth2:$HF_TOKEN@huggingface.co/spaces/$HF_SPACE_NAME" HEAD:main

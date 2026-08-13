@@ -141,3 +141,44 @@ def openai_tools_schema(
             continue
         out.append(to_openai_function_schema(spec))
     return out
+
+
+def openai_tool_calls_to_ir(
+    raw_tool_calls: list[dict[str, Any]] | None,
+    *,
+    raw_text: str = "",
+    source_lang: str = "en",
+) -> list[ToolCall]:
+    """Map an OpenAI ``message.tool_calls`` array onto Dana's ``ToolCall`` IR.
+
+    Malformed ``function.arguments`` JSON degrades to an empty-args
+    ``ToolCall`` rather than raising — a broken cloud tool call should fail
+    that tool's own argument validation downstream, not crash the turn.
+    """
+    calls: list[ToolCall] = []
+    for raw in raw_tool_calls or []:
+        fn = (raw or {}).get("function") or {}
+        name = str(fn.get("name") or "").strip()
+        if not name:
+            continue
+        raw_args = fn.get("arguments")
+        args: dict[str, Any] = {}
+        if isinstance(raw_args, dict):
+            args = raw_args
+        elif isinstance(raw_args, str) and raw_args.strip():
+            try:
+                parsed = json.loads(raw_args)
+                if isinstance(parsed, dict):
+                    args = parsed
+            except (json.JSONDecodeError, ValueError):
+                args = {}
+        calls.append(
+            ToolCall(
+                tool_id=name,
+                arguments=args,
+                source_lang=source_lang,
+                raw_text=raw_text,
+                confidence=1.0,
+            )
+        )
+    return calls

@@ -79,6 +79,10 @@ WHEEL_DELTA = 120
 
 # Window-management constants (EnumWindows / SetForegroundWindow).
 SW_RESTORE = 9
+# Zero-focus workspace: show/reposition a window WITHOUT activating it.
+SW_SHOWNOACTIVATE = 4
+SWP_NOACTIVATE = 0x0010
+SWP_NOZORDER = 0x0004
 
 # Virtual-key codes needed for MapVirtualKey → scan code.
 VK_SHIFT = 0x10
@@ -239,6 +243,56 @@ def set_foreground_window(hwnd: int) -> bool:
     if user32.IsIconic(hwnd):
         user32.ShowWindow(hwnd, SW_RESTORE)
     return bool(user32.SetForegroundWindow(hwnd))
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = (
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    )
+
+
+def get_window_rect(hwnd: int) -> tuple[int, int, int, int]:
+    """Return ``(left, top, right, bottom)`` screen coordinates of ``hwnd``.
+
+    Works regardless of focus/foreground state or which monitor the window
+    is on — ``GetWindowRect`` reports a window's on-screen position whether
+    or not it's active, which is what makes window-targeted screenshotting
+    (``capture_window_png_bytes``) possible without ever focusing anything.
+    """
+    if os.name != "nt":
+        raise OSError("GetWindowRect is Windows-only")
+    rect = _RECT()
+    if not _user32().GetWindowRect(int(hwnd), ctypes.byref(rect)):
+        raise OSError(f"GetWindowRect failed: {ctypes.GetLastError()}")
+    return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
+
+
+def move_window_no_activate(hwnd: int, x: int, y: int, width: int, height: int) -> bool:
+    """Reposition/resize ``hwnd`` without activating it or changing its z-order.
+
+    Zero-focus workspace primitive: ``SWP_NOACTIVATE`` is the whole point —
+    the window visibly moves (e.g. onto a second monitor) but never steals
+    the foreground lock. ``ShowWindow(SW_SHOWNOACTIVATE)`` afterward covers
+    the case where the window started minimized, without the activation
+    that ``SW_RESTORE`` would otherwise cause.
+    """
+    if os.name != "nt":
+        raise OSError("SetWindowPos is Windows-only")
+    user32 = _user32()
+    ok = user32.SetWindowPos(
+        int(hwnd),
+        0,
+        int(x),
+        int(y),
+        int(width),
+        int(height),
+        SWP_NOACTIVATE | SWP_NOZORDER,
+    )
+    user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+    return bool(ok)
 
 
 def _configure_clipboard_signatures(user32: Any, kernel32: Any) -> None:
@@ -786,6 +840,51 @@ def capture_screen_png_bytes() -> bytes:
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return buf.getvalue()
+
+
+def capture_window_png_bytes(hwnd: int) -> bytes:
+    """Grab only ``hwnd``'s on-screen region as PNG bytes via mss + Pillow.
+
+    Uses ``get_window_rect`` rather than a full-monitor capture — this is
+    what lets a zero-focus workflow verify a window's contents regardless
+    of whether it's focused, in the background, or on a secondary monitor,
+    as long as nothing else is drawn on top of it.
+    """
+    import mss
+    from PIL import Image
+
+    left, top, right, bottom = get_window_rect(hwnd)
+    region = {"left": left, "top": top, "width": max(1, right - left), "height": max(1, bottom - top)}
+    with mss.mss() as sct:
+        shot = sct.grab(region)
+        img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+        img.thumbnail((1280, 720))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+
+def get_secondary_monitor() -> dict[str, int] | None:
+    """Return the first non-primary monitor's geometry via ``mss``, or ``None``.
+
+    ``mss().monitors[0]`` is the combined virtual-desktop bounding box, not
+    a real monitor — skipped here. Returns ``None`` on a single-monitor
+    setup so callers can fall back rather than move a window somewhere
+    unreachable.
+    """
+    import mss
+
+    with mss.mss() as sct:
+        monitors = list(sct.monitors[1:])
+    for mon in monitors:
+        if not mon.get("is_primary"):
+            return {
+                "left": int(mon["left"]),
+                "top": int(mon["top"]),
+                "width": int(mon["width"]),
+                "height": int(mon["height"]),
+            }
+    return None
 
 
 def _vision_describe(png: bytes, *, prompt: str = "") -> str:

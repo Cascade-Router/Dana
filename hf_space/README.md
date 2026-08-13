@@ -1,5 +1,5 @@
 ---
-title: Dana AI Copilot Sandbox
+title: Dana AI Copilot
 emoji: 🤖
 colorFrom: blue
 colorTo: indigo
@@ -10,45 +10,54 @@ pinned: false
 license: mit
 ---
 
-# Dānā — AI Co-Pilot Sandbox
+# Dānā — AI Co-Pilot
 
 **Dānā** is a modular, multimodal AI co-pilot for CAD/engineering workstations: a
 ReAct-style tool broker, a zero-touch dynamic plugin system, and a "zero-focus"
 actuation layer that lets it drive CAD tools, screenshots, and OS input devices
 in the background without stealing window focus.
 
-This Space is a **portfolio sandbox**, not the production agent. Dānā's real
-runtime is a Windows desktop application (PySide6 tray app, FreeCAD/AutoCAD
-COM bridges, Win32 SendInput actuators, a LangGraph watchdog compiler). None
-of that runs inside a Linux HF container, so this sandbox reproduces the
-*architecture and decision logic* — the intent broker, the tool-call schema,
-the plugin manifest system, the safety gates — against high-fidelity mocks,
-while running real geometry generation (via `trimesh`) and, when an API key
-is configured as a Space secret, real multimodal blueprint analysis.
+This Space runs the exact same Gradio UI (`dana/ui/unified_app.py`) as the local
+Windows desktop build — there is no separate mock reimplementation anymore.
+What differs is which concrete driver `dana.platform.factory` resolves:
 
-## What's real vs. mocked here
+| Driver | Local Windows desktop | This Space |
+|---|---|---|
+| `BaseControlPlane` | `Win32ControlPlane` — real `ctypes` Win32 window actuation | `MockControlPlane` — structured telemetry, no Win32 in this container |
+| `BaseCADEngine` | `RealFreeCADEngine` — real `FreeCADCmd` subprocess IPC, `.FCStd` documents | `MockFreeCADEngine` — headless `trimesh` geometry, `.stl` files |
 
-| Feature | In this Space |
-|---|---|
-| Intent parsing → `ToolCall` dispatch | Real logic, simplified from `dana/tools/broker.py` |
-| Tool broker / dispatch log | Real, running against a small demo tool registry |
-| 3D mesh generation for `gr.Model3D` | Real (`trimesh`-generated STL) |
-| Blueprint → geometry JSON (VLM) | Real multimodal call if `ANTHROPIC_API_KEY` is set as a secret; deterministic heuristic mock otherwise |
-| FreeCAD / AutoCAD COM actuation | Mocked — no Windows/FreeCAD binary in this container |
-| Win32 SendInput, window focus, clipboard | Mocked |
-| Plugin manifest scanning | Real scan of the bundled `hf_sandbox/plugins/` demo manifests |
-| Kill-switch (F12), dry-run, HITL gates | Explained + simulated, not wired to real hotkeys |
+`SPACE_ID` (set automatically on every HF Space) is what selects the mock
+drivers — see `dana/platform/factory.py`.
+
+## What's real here
+
+- Tool-call parsing → dispatch → `BaseCADEngine`/`BaseControlPlane` — the same
+  code as the desktop build, not a simplified reimplementation.
+- 3D mesh generation for `gr.Model3D` — real (`trimesh`-generated STL via
+  `MockFreeCADEngine`).
+- Blueprint → geometry JSON — real call to `dana.tools.cad_vision.analyze_cad_blueprint`
+  (local Ollama VLM first, optional cloud fallback if `DANA_ALLOW_CLOUD_FALLBACK`
+  and a provider key are set as Space secrets). Returns an error, not a fake
+  result, if neither is reachable.
+- Plugin manifest scanning — real scan of `dana/plugins/*/manifest.json`.
+
+## What's mocked here (and why)
+
+- FreeCAD document actuation and Win32 window management — this container has
+  no Windows APIs and no `FreeCADCmd` binary, so `dana.platform.mock` stands in
+  with clearly-labeled (`"driver": "mock"`) simulated telemetry.
 
 ## Layout
 
 ```
 hf_space/
-├── app.py                    # Gradio entry point (3 tabs)
-└── hf_sandbox/
-    ├── agent_bridge.py       # ToolCall schema + broker/dispatch simulation
-    ├── cad_visualizer.py     # STL mesh generation + blueprint→geometry parsing
-    └── architecture_docs.py  # Static content for the architecture explorer tab
+├── app.py              # thin launcher — imports dana.ui.unified_app
+├── requirements.txt     # lean Space deps (no desktop GUI/audio/ML stacks)
+└── README.md
 ```
 
-Full source: [github.com](https://github.com) — see the main Dānā repository for
-the production agent this sandbox is derived from.
+`dana/` is staged alongside `app.py` by `.github/workflows/deploy_hf.yml` when
+this Space is deployed — it is the same package that ships in the main repo,
+not a copy maintained separately.
+
+Full source: see the main Dānā repository this Space is deployed from.

@@ -21,6 +21,8 @@ Pillow>=10.2.0
 # gradio is installed by the Hugging Face Space SDK (see README.md sdk_version).
 # Do not pin it here — duplicate pins collide with the Space container build.
 numpy>=1.26.0
+# dana/platform/mock.py — headless CAD geometry for non-Windows/HF Space execution
+trimesh>=4.0.0
 # Python 3.10 CI: typing.NotRequired needs typing_extensions
 typing_extensions>=4.8.0
 sounddevice==0.5.5
