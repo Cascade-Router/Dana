@@ -85,6 +85,22 @@ class BaseCADEngine(ABC):
         a result dict including ``{"ok": bool, "path": str, "name": str}``."""
 
     @abstractmethod
+    def apply_edge_operation(
+        self,
+        operation: str,
+        target_path: str,
+        value: float,
+        face_centroid: tuple[float, float, float] | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        """Round (``"fillet"``) or bevel (``"chamfer"``) the edges of a
+        previously-created solid by ``value`` mm. Without ``face_centroid``,
+        every edge of the object is targeted (a global fillet/chamfer);
+        with it, only the edges bounding the object's face nearest that
+        point are targeted. Returns a result dict including
+        ``{"ok": bool, "path": str, "name": str}``."""
+
+    @abstractmethod
     def create_extrusion(
         self, profile_points: list[list[float]], height: float, name: str = "Extrusion"
     ) -> dict[str, Any]:

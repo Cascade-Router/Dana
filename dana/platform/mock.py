@@ -223,6 +223,50 @@ class MockFreeCADEngine(BaseCADEngine):
             "note": engine_note,
         }
 
+    def apply_edge_operation(
+        self,
+        operation: str,
+        target_path: str,
+        value: float,
+        face_centroid: tuple[float, float, float] | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        import trimesh
+
+        op = (operation or "").strip().lower()
+        feature_types = {"fillet": "Part::Fillet", "chamfer": "Part::Chamfer"}
+        default_names = {"fillet": "Fillet", "chamfer": "Chamfer"}
+        if op not in feature_types:
+            return {"ok": False, "error": f"apply_edge_operation: unknown operation '{operation}' — must be fillet or chamfer"}
+
+        target = Path(target_path)
+        if not target.is_file():
+            return {"ok": False, "error": f"apply_edge_operation: target_path not found: {target_path}"}
+
+        resolved_name = name or default_names[op]
+        face_targeted = face_centroid is not None
+        # Safe stub: trimesh has no generic edge-rounding/beveling operation,
+        # so this returns the target's own mesh unmodified under the new
+        # name/type rather than attempting to simulate real fillet/chamfer
+        # geometry — callers relying on the ok/path/name/type/bounding_box
+        # contract (mesh export, the object registry, HITL summaries) still
+        # get a consistent result end-to-end in this headless container.
+        mesh = trimesh.load(target, force="mesh")
+        out_path = _mesh_output_path(resolved_name)
+        mesh.export(out_path)
+        return {
+            "ok": True,
+            "name": resolved_name,
+            "type": feature_types[op],
+            "operation": op,
+            "face_targeted": face_targeted,
+            "bounding_box": _bbox(mesh),
+            "path": str(out_path),
+            "gui_shown": False,
+            "driver": "mock",
+            "note": f"{_MOCK_NOTE_CAD}; edge {op} not geometrically simulated, returned target unmodified",
+        }
+
     def create_extrusion(
         self, profile_points: list[list[float]], height: float, name: str = "Extrusion"
     ) -> dict[str, Any]:

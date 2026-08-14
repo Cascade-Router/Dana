@@ -842,6 +842,144 @@ def apply_boolean(operation: str, base_path: str, tool_path: str, name: str | No
     )
 
 
+_EDGE_FEATURE_TYPE: dict[str, str] = {"fillet": "Part::Fillet", "chamfer": "Part::Chamfer"}
+_DEFAULT_EDGE_NAME: dict[str, str] = {"fillet": "Fillet", "chamfer": "Chamfer"}
+
+# Targets every edge of the copied object — a global fillet/chamfer.
+_EDGE_OP_WHOLE_SCRIPT = """\
+import FreeCAD as App
+
+base_doc = App.openDocument({target_path!r})
+base_obj = base_doc.Objects[0]
+
+doc = App.newDocument("DanaModel")
+copied = doc.copyObject(base_obj, False)
+target_indices = list(range(1, len(copied.Shape.Edges) + 1))
+if not target_indices:
+    raise RuntimeError("target object has no edges")
+
+obj = doc.addObject({feature_type!r}, {name!r})
+obj.Base = copied
+obj.Edges = [(i, {value}, {value}) for i in target_indices]
+doc.recompute()
+doc.saveAs({out_path!r})
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {out_path!r})
+"""
+
+# No raycasting against the tessellated STL used for display — the nearest
+# BRep face (by CenterOfMass) to the clicked-point centroid is found directly
+# against FreeCAD's own exact geometry, then only that face's bounding edges
+# are targeted.
+_EDGE_OP_FACE_SCRIPT = """\
+import FreeCAD as App
+
+base_doc = App.openDocument({target_path!r})
+base_obj = base_doc.Objects[0]
+
+doc = App.newDocument("DanaModel")
+copied = doc.copyObject(base_obj, False)
+
+target_point = App.Vector({cx}, {cy}, {cz})
+faces = copied.Shape.Faces
+if not faces:
+    raise RuntimeError("target object has no faces")
+nearest_face = min(faces, key=lambda f: f.CenterOfMass.distanceToPoint(target_point))
+target_indices = [
+    i for i, edge in enumerate(copied.Shape.Edges, start=1)
+    if any(edge.isSame(face_edge) for face_edge in nearest_face.Edges)
+]
+if not target_indices:
+    raise RuntimeError("no edges found on the nearest face")
+
+obj = doc.addObject({feature_type!r}, {name!r})
+obj.Base = copied
+obj.Edges = [(i, {value}, {value}) for i in target_indices]
+doc.recompute()
+doc.saveAs({out_path!r})
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {out_path!r})
+"""
+
+
+def apply_edge_operation(
+    operation: str,
+    target_path: str,
+    value: float,
+    face_centroid: tuple[float, float, float] | None = None,
+    name: str | None = None,
+) -> str:
+    """Round (``"fillet"``) or bevel (``"chamfer"``) the edges of a
+    previously-created solid.
+
+    Without ``face_centroid``, every edge of the object gets the operation
+    (a global fillet/chamfer, ``value`` mm). With ``face_centroid`` —
+    typically the active canvas selection's clicked-face centroid — only
+    the edges bounding the face nearest that point are targeted, found
+    against FreeCAD's exact BRep geometry (no raycasting against the
+    tessellated display mesh).
+    """
+    op = (operation or "").strip().lower()
+    if op not in _EDGE_FEATURE_TYPE:
+        return _error(f"apply_edge_operation: unknown operation '{operation}' — must be fillet or chamfer")
+    target = Path(target_path)
+    if not target.is_file():
+        return _error(f"apply_edge_operation: target_path not found: {target_path}")
+    try:
+        value_f = float(value)
+    except (TypeError, ValueError):
+        return _error(f"apply_edge_operation: value must be a number, got {value!r}")
+    if value_f <= 0:
+        return _error("apply_edge_operation: value must be a positive number")
+
+    feature_type = _EDGE_FEATURE_TYPE[op]
+    resolved_name = name or _DEFAULT_EDGE_NAME[op]
+    face_targeted = face_centroid is not None
+    if is_dry_run_enabled():
+        return _dry_run_result(
+            "apply_edge_operation",
+            operation=op,
+            name=resolved_name,
+            type=feature_type,
+            face_targeted=face_targeted,
+        )
+    out_path = _output_path(resolved_name, ext="FCStd")
+    if face_targeted:
+        cx, cy, cz = (float(face_centroid[0]), float(face_centroid[1]), float(face_centroid[2]))
+        script = _EDGE_OP_FACE_SCRIPT.format(
+            target_path=str(target),
+            feature_type=feature_type,
+            name=resolved_name,
+            value=value_f,
+            cx=cx,
+            cy=cy,
+            cz=cz,
+            out_path=str(out_path),
+            marker=_OK_MARKER,
+        )
+    else:
+        script = _EDGE_OP_WHOLE_SCRIPT.format(
+            target_path=str(target),
+            feature_type=feature_type,
+            name=resolved_name,
+            value=value_f,
+            out_path=str(out_path),
+            marker=_OK_MARKER,
+        )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"apply_edge_operation failed: {result['error']}")
+    return _ok(
+        name=resolved_name,
+        type=feature_type,
+        operation=op,
+        face_targeted=face_targeted,
+        bounding_box=result.get("bounding_box"),
+        path=str(out_path),
+        gui_shown=_auto_show(out_path),
+    )
+
+
 def export_mesh_stl(source_path: str, name: str | None = None) -> str:
     """Tessellate every object in ``source_path`` (a ``.FCStd`` document)
     into a standalone ``.stl`` mesh file — the hand-off format for
@@ -926,6 +1064,7 @@ def execute_freecad_script(python_script_str: str) -> str:
 __all__ = (
     "FreeCADNotFoundError",
     "apply_boolean",
+    "apply_edge_operation",
     "create_box",
     "create_cylinder",
     "create_extruded_polyline",

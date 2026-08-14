@@ -225,6 +225,44 @@ def _tool_perform_freecad_boolean(args: dict[str, Any], engine: Any, _cp: Any) -
     return engine.apply_boolean(operation, base_path, tool_path, name=str(args.get("name") or "").strip() or None)
 
 
+_EDGE_OPERATIONS = frozenset({"fillet", "chamfer"})
+
+
+def _tool_perform_freecad_edge_operation(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    operation = str(args.get("operation") or "").strip().lower()
+    if operation not in _EDGE_OPERATIONS:
+        return {
+            "ok": False,
+            "error": "perform_freecad_edge_operation requires operation to be one of fillet, chamfer",
+        }
+    target_name = str(args.get("target_object") or "").strip()
+    if not target_name:
+        return {"ok": False, "error": "perform_freecad_edge_operation requires target_object"}
+    target_path = _OBJECT_PATH_REGISTRY.get(target_name)
+    if not target_path:
+        return {
+            "ok": False,
+            "error": f"unknown target_object '{target_name}' — create it first with a create_freecad_* tool",
+        }
+    try:
+        value = float(args.get("value"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "perform_freecad_edge_operation requires a numeric value"}
+
+    # face_centroid is never LLM-supplied (not in this tool's tools.json
+    # schema) — it's injected by _finalize_call_arguments from the active
+    # canvas selection before dispatch ever sees this call.
+    face_centroid = args.get("face_centroid")
+    if isinstance(face_centroid, (list, tuple)) and len(face_centroid) == 3:
+        face_centroid = tuple(float(v) for v in face_centroid)
+    else:
+        face_centroid = None
+
+    return engine.apply_edge_operation(
+        operation, target_path, value, face_centroid=face_centroid, name=str(args.get("name") or "").strip() or None
+    )
+
+
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] = {
     "create_freecad_box": _tool_create_box,
     "create_freecad_cylinder": _tool_create_cylinder,
@@ -232,6 +270,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "create_freecad_star_prism": _tool_create_freecad_star_prism,
     "create_freecad_extrusion": _tool_create_freecad_extrusion,
     "perform_freecad_boolean": _tool_perform_freecad_boolean,
+    "perform_freecad_edge_operation": _tool_perform_freecad_edge_operation,
     "resync_workspace": _tool_resync_workspace,
     "get_active_display": _tool_get_active_display,
     "prevent_focus_steal": _tool_prevent_focus_steal,
@@ -252,6 +291,7 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         "create_freecad_pyramid",
         "create_freecad_star_prism",
         "perform_freecad_boolean",
+        "perform_freecad_edge_operation",
         "resync_workspace",
         "prevent_focus_steal",
     }
@@ -302,6 +342,13 @@ def describe_tool_call(call: ToolCall) -> str:
         verbs = {"cut": f"Cut `{tool}` out of `{base}`", "union": f"Fuse `{base}` and `{tool}` together",
                  "intersect": f"Keep only the overlap of `{base}` and `{tool}`"}
         return f"{verbs.get(operation, f'Combine {base} and {tool}')} in FreeCAD."
+    if call.tool_id == "perform_freecad_edge_operation":
+        operation = str(call.arguments.get("operation") or "?")
+        target = call.arguments.get("target_object", "?")
+        value = call.arguments.get("value", "?")
+        verb = "Fillet" if operation == "fillet" else "Chamfer"
+        scope = "the selected face's edges of" if call.arguments.get("face_centroid") else "every edge of"
+        return f"{verb} {scope} `{target}` by {value}mm in FreeCAD."
     if call.tool_id == "resync_workspace":
         return "Reposition managed FreeCAD windows onto their target monitor."
     if call.tool_id == "prevent_focus_steal":
@@ -339,6 +386,7 @@ _LLM_TOOL_IDS = frozenset(
         "create_freecad_pyramid",
         "create_freecad_star_prism",
         "perform_freecad_boolean",
+        "perform_freecad_edge_operation",
         "manipulate_camera",
         "resync_workspace",
         "get_active_display",
@@ -391,6 +439,14 @@ def _resolve_camera_call(call: ToolCall, active_selection: dict[str, Any] | None
 def _finalize_call_arguments(call: ToolCall, active_selection: dict[str, Any] | None) -> None:
     if call.tool_id == "manipulate_camera":
         _resolve_camera_call(call, active_selection)
+        return
+    if call.tool_id == "perform_freecad_edge_operation":
+        # face_centroid isn't in this tool's LLM-facing schema at all (see
+        # tools.json) — whether an edge op is face-targeted or whole-object
+        # is decided here, by whether a canvas selection is currently
+        # active, not by anything the LLM can express in its arguments.
+        if "face_centroid" not in call.arguments and active_selection and active_selection.get("centroid"):
+            call.arguments["face_centroid"] = active_selection.get("centroid")
         return
     if call.tool_id not in ("create_freecad_box", "create_freecad_cylinder", "create_freecad_extrusion"):
         return
@@ -464,6 +520,7 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         "create_freecad_pyramid",
         "create_freecad_star_prism",
         "perform_freecad_boolean",
+        "perform_freecad_edge_operation",
     ):
         driver = payload.get("driver", "win32/freecad")
         return (

@@ -215,6 +215,7 @@ def test_is_mutating_tool_classification() -> None:
     assert rd.is_mutating_tool("create_freecad_pyramid") is True
     assert rd.is_mutating_tool("create_freecad_star_prism") is True
     assert rd.is_mutating_tool("perform_freecad_boolean") is True
+    assert rd.is_mutating_tool("perform_freecad_edge_operation") is True
     assert rd.is_mutating_tool("resync_workspace") is True
     assert rd.is_mutating_tool("system_state") is False
     assert rd.is_mutating_tool("execute_vision_analysis") is False
@@ -554,6 +555,175 @@ def test_parse_utterance_boolean_pass_through(monkeypatch: pytest.MonkeyPatch) -
     assert call is not None
     assert call.tool_id == "perform_freecad_boolean"
     assert call.arguments["operation"] == "cut"
+
+
+# --------------------------------------------------------------------------
+# Edge manipulation: perform_freecad_edge_operation
+# --------------------------------------------------------------------------
+
+
+def test_describe_tool_call_edge_operation_whole_object() -> None:
+    call = ToolCall(
+        tool_id="perform_freecad_edge_operation",
+        arguments={"operation": "fillet", "target_object": "Box", "value": 5},
+    )
+    description = rd.describe_tool_call(call)
+    assert "Fillet" in description and "Box" in description and "every edge" in description
+
+
+def test_describe_tool_call_edge_operation_face_targeted() -> None:
+    call = ToolCall(
+        tool_id="perform_freecad_edge_operation",
+        arguments={"operation": "chamfer", "target_object": "Box", "value": 3, "face_centroid": [25, 25, 50]},
+    )
+    description = rd.describe_tool_call(call)
+    assert "Chamfer" in description and "selected face" in description
+
+
+def test_dispatch_edge_operation_rejects_unknown_operation() -> None:
+    call = ToolCall(
+        tool_id="perform_freecad_edge_operation",
+        arguments={"operation": "bogus", "target_object": "Box", "value": 5},
+    )
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "fillet, chamfer" in result.message
+
+
+def test_dispatch_edge_operation_requires_target_object() -> None:
+    call = ToolCall(tool_id="perform_freecad_edge_operation", arguments={"operation": "fillet", "value": 5})
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "target_object" in result.message
+
+
+def test_dispatch_edge_operation_requires_numeric_value() -> None:
+    call = ToolCall(
+        tool_id="perform_freecad_edge_operation",
+        arguments={"operation": "fillet", "target_object": "Box", "value": "not-a-number"},
+    )
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "numeric value" in result.message
+
+
+def test_dispatch_edge_operation_rejects_unknown_object_name() -> None:
+    call = ToolCall(
+        tool_id="perform_freecad_edge_operation",
+        arguments={"operation": "fillet", "target_object": "NeverCreated", "value": 5},
+    )
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "NeverCreated" in result.message
+
+
+def test_dispatch_edge_operation_whole_object_via_registry() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"length": 20, "width": 20, "height": 20, "name": "EdgeBoxA"}),
+        engine,
+        control_plane,
+    )
+
+    result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="perform_freecad_edge_operation",
+            arguments={"operation": "fillet", "target_object": "EdgeBoxA", "value": 3},
+        ),
+        engine,
+        control_plane,
+    )
+    assert result.ok is True
+    assert result.payload["type"] == "Part::Fillet"
+    assert result.payload["face_targeted"] is False
+    # The edge-op result itself registers too, so it can chain further.
+    assert rd._OBJECT_PATH_REGISTRY["Fillet"] == result.payload["path"]
+
+
+def test_dispatch_edge_operation_face_targeted_via_explicit_centroid() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"length": 20, "width": 20, "height": 20, "name": "EdgeBoxB"}),
+        engine,
+        control_plane,
+    )
+
+    result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="perform_freecad_edge_operation",
+            arguments={
+                "operation": "chamfer",
+                "target_object": "EdgeBoxB",
+                "value": 2,
+                "face_centroid": [10, 10, 20],
+            },
+        ),
+        engine,
+        control_plane,
+    )
+    assert result.ok is True
+    assert result.payload["type"] == "Part::Chamfer"
+    assert result.payload["face_targeted"] is True
+
+
+def test_finalize_call_arguments_injects_face_centroid_for_edge_operation() -> None:
+    call = ToolCall(
+        tool_id="perform_freecad_edge_operation",
+        arguments={"operation": "fillet", "target_object": "Box", "value": 5},
+        raw_text="Fillet the edges of this face by 5mm.",
+    )
+    selection = {"centroid": [25.0, 25.0, 50.0], "normal": [0.0, 0.0, 1.0]}
+    rd._finalize_call_arguments(call, selection)
+    assert call.arguments["face_centroid"] == [25.0, 25.0, 50.0]
+
+
+def test_finalize_call_arguments_edge_operation_no_selection_leaves_whole_object() -> None:
+    call = ToolCall(
+        tool_id="perform_freecad_edge_operation",
+        arguments={"operation": "fillet", "target_object": "Box", "value": 5},
+    )
+    rd._finalize_call_arguments(call, None)
+    assert "face_centroid" not in call.arguments
+
+
+def test_finalize_call_arguments_edge_operation_respects_llm_provided_centroid() -> None:
+    call = ToolCall(
+        tool_id="perform_freecad_edge_operation",
+        arguments={
+            "operation": "fillet",
+            "target_object": "Box",
+            "value": 5,
+            "face_centroid": [1.0, 2.0, 3.0],
+        },
+    )
+    selection = {"centroid": [9.0, 9.0, 9.0], "normal": [0.0, 0.0, 1.0]}
+    rd._finalize_call_arguments(call, selection)
+    assert call.arguments["face_centroid"] == [1.0, 2.0, 3.0]
+
+
+def test_parse_utterance_edge_operation_pass_through_with_active_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_llm(
+        monkeypatch,
+        tool_calls=[
+            ToolCall(
+                tool_id="perform_freecad_edge_operation",
+                arguments={"operation": "fillet", "target_object": "Box", "value": 5},
+            )
+        ],
+    )
+    selection = {"centroid": [25.0, 25.0, 50.0], "normal": [0.0, 0.0, 1.0]}
+    call = _parse("Fillet the edges of this face by 5mm.", selection)
+    assert call is not None
+    assert call.tool_id == "perform_freecad_edge_operation"
+    assert call.arguments["face_centroid"] == [25.0, 25.0, 50.0]
 
 
 # --------------------------------------------------------------------------

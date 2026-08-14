@@ -2175,6 +2175,19 @@
         {"name": "tool_object", "type": "string", "required": true, "description_en": "Name of the solid acting as the tool (e.g. the cylinder drilling the hole)."},
         {"name": "name", "type": "string", "required": false, "description_en": "Name for the resulting object. Defaults to 'Cut'/'Fusion'/'Common' depending on operation."}
       ]
+    },
+    {
+      "id": "perform_freecad_edge_operation",
+      "description_en": "Applies a fillet (rounded edge) or chamfer (beveled edge) to an object. If the user clicked a face in the viewer, it modifies only the edges of that specific face. Otherwise, it attempts to modify every edge of the entire object.",
+      "parameters": [
+        {
+          "name": "operation", "type": "string", "required": true,
+          "enum": ["fillet", "chamfer"],
+          "description_en": "'fillet' rounds the target edges; 'chamfer' bevels them."
+        },
+        {"name": "target_object", "type": "string", "required": true, "description_en": "Name of the object to modify (e.g. 'Box')."},
+        {"name": "value", "type": "number", "required": true, "description_en": "Fillet radius or chamfer distance in mm."}
+      ]
     }
   ]
 }

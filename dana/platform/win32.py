@@ -91,6 +91,20 @@ class RealFreeCADEngine(BaseCADEngine):
 
         return json.loads(engine.apply_boolean(operation, base_path, tool_path, name))
 
+    def apply_edge_operation(
+        self,
+        operation: str,
+        target_path: str,
+        value: float,
+        face_centroid: tuple[float, float, float] | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(
+            engine.apply_edge_operation(operation, target_path, value, face_centroid=face_centroid, name=name)
+        )
+
     def create_extrusion(
         self, profile_points: list[list[float]], height: float, name: str = "Extrusion"
     ) -> dict[str, Any]:
