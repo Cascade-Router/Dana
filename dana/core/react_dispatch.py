@@ -188,12 +188,50 @@ def _tool_create_freecad_star_prism(args: dict[str, Any], engine: Any, _cp: Any)
     )
 
 
+# Maps a FreeCAD object's LLM-visible label (e.g. "Box") to the on-disk
+# .FCStd/.stl path it was last saved to — every create_*/perform_freecad_boolean
+# call spawns a brand-new document/subprocess (see dana.plugins.freecad.engine's
+# module docstring), so there's no persistent ActiveDocument to fetch objects
+# from by name across calls; this is that continuity, entirely dispatch-side so
+# neither CAD engine driver needs to know about LLM-facing object names.
+_OBJECT_PATH_REGISTRY: dict[str, str] = {}
+
+_BOOLEAN_OPERATIONS = frozenset({"cut", "union", "intersect"})
+
+
+def _tool_perform_freecad_boolean(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    operation = str(args.get("operation") or "").strip().lower()
+    if operation not in _BOOLEAN_OPERATIONS:
+        return {
+            "ok": False,
+            "error": "perform_freecad_boolean requires operation to be one of cut, union, intersect",
+        }
+    base_name = str(args.get("base_object") or "").strip()
+    tool_name = str(args.get("tool_object") or "").strip()
+    if not base_name or not tool_name:
+        return {"ok": False, "error": "perform_freecad_boolean requires base_object and tool_object"}
+    base_path = _OBJECT_PATH_REGISTRY.get(base_name)
+    tool_path = _OBJECT_PATH_REGISTRY.get(tool_name)
+    if not base_path:
+        return {
+            "ok": False,
+            "error": f"unknown base_object '{base_name}' — create it first with a create_freecad_* tool",
+        }
+    if not tool_path:
+        return {
+            "ok": False,
+            "error": f"unknown tool_object '{tool_name}' — create it first with a create_freecad_* tool",
+        }
+    return engine.apply_boolean(operation, base_path, tool_path, name=str(args.get("name") or "").strip() or None)
+
+
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] = {
     "create_freecad_box": _tool_create_box,
     "create_freecad_cylinder": _tool_create_cylinder,
     "create_freecad_pyramid": _tool_create_freecad_pyramid,
     "create_freecad_star_prism": _tool_create_freecad_star_prism,
     "create_freecad_extrusion": _tool_create_freecad_extrusion,
+    "perform_freecad_boolean": _tool_perform_freecad_boolean,
     "resync_workspace": _tool_resync_workspace,
     "get_active_display": _tool_get_active_display,
     "prevent_focus_steal": _tool_prevent_focus_steal,
@@ -213,6 +251,7 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         "create_freecad_extrusion",
         "create_freecad_pyramid",
         "create_freecad_star_prism",
+        "perform_freecad_boolean",
         "resync_workspace",
         "prevent_focus_steal",
     }
@@ -256,6 +295,13 @@ def describe_tool_call(call: ToolCall) -> str:
             f"Create a sharp-edged {points}-point star prism (outer radius {outer}mm, "
             f"inner radius {inner}mm, thickness {height}mm) in FreeCAD."
         )
+    if call.tool_id == "perform_freecad_boolean":
+        operation = str(call.arguments.get("operation") or "?")
+        base = call.arguments.get("base_object", "?")
+        tool = call.arguments.get("tool_object", "?")
+        verbs = {"cut": f"Cut `{tool}` out of `{base}`", "union": f"Fuse `{base}` and `{tool}` together",
+                 "intersect": f"Keep only the overlap of `{base}` and `{tool}`"}
+        return f"{verbs.get(operation, f'Combine {base} and {tool}')} in FreeCAD."
     if call.tool_id == "resync_workspace":
         return "Reposition managed FreeCAD windows onto their target monitor."
     if call.tool_id == "prevent_focus_steal":
@@ -292,6 +338,7 @@ _LLM_TOOL_IDS = frozenset(
         "create_freecad_extrusion",
         "create_freecad_pyramid",
         "create_freecad_star_prism",
+        "perform_freecad_boolean",
         "manipulate_camera",
         "resync_workspace",
         "get_active_display",
@@ -401,6 +448,8 @@ def dispatch_tool_call(call: ToolCall, engine: Any, control_plane: Any) -> ToolR
     except Exception as exc:  # noqa: BLE001 — surface as a failed ToolResult, not a crashed caller
         payload, ok, message = {}, False, str(exc)
     duration_ms = int((time.perf_counter() - start) * 1000)
+    if ok and isinstance(payload, dict) and payload.get("name") and payload.get("path"):
+        _OBJECT_PATH_REGISTRY[str(payload["name"])] = str(payload["path"])
     return ToolResult(call.tool_id, ok, payload, message, duration_ms)
 
 
@@ -414,6 +463,7 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         "create_freecad_extrusion",
         "create_freecad_pyramid",
         "create_freecad_star_prism",
+        "perform_freecad_boolean",
     ):
         driver = payload.get("driver", "win32/freecad")
         return (

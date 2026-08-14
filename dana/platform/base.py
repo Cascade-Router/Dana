@@ -74,13 +74,15 @@ class BaseCADEngine(ABC):
         ``create_box``."""
 
     @abstractmethod
-    def apply_boolean_cut(
-        self, base_path: str, tool_path: str, name: str = "Cut"
+    def apply_boolean(
+        self, operation: str, base_path: str, tool_path: str, name: str | None = None
     ) -> dict[str, Any]:
-        """Subtract the ``tool_path`` solid from the ``base_path`` solid —
-        both previously returned by ``create_box``/``create_cylinder`` (or
-        another cut) on the SAME engine instance. Returns a result dict
-        including ``{"ok": bool, "path": str}``."""
+        """Combine two previously-created solids with a Boolean operation:
+        ``"cut"`` subtracts the tool from the base, ``"union"`` fuses them,
+        ``"intersect"`` keeps only their overlapping volume. Both paths must
+        have been previously returned by ``create_box``/``create_cylinder``
+        (or another ``apply_boolean``) on the SAME engine instance. Returns
+        a result dict including ``{"ok": bool, "path": str, "name": str}``."""
 
     @abstractmethod
     def create_extrusion(

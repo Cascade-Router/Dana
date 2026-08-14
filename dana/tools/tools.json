@@ -2161,6 +2161,20 @@
         {"name": "placement_y", "type": "number", "required": false, "description_en": "Global Y-axis offset in mm. Defaults to 0."},
         {"name": "placement_z", "type": "number", "required": false, "description_en": "Global Z-axis offset in mm. Defaults to 0."}
       ]
+    },
+    {
+      "id": "perform_freecad_boolean",
+      "description_en": "Combine two previously-created FreeCAD solids with a Boolean operation. 'cut' subtracts tool_object from base_object (e.g. drilling a hole); 'union' fuses both into one solid; 'intersect' keeps only the volume where they overlap. Both base_object and tool_object must be the exact object name (default 'Box'/'Cylinder'/'Pyramid'/'StarPrism' unless overridden) of solids already created via create_freecad_box/create_freecad_cylinder/create_freecad_pyramid/create_freecad_star_prism (or a prior perform_freecad_boolean result) earlier in this session.",
+      "parameters": [
+        {
+          "name": "operation", "type": "string", "required": true,
+          "enum": ["cut", "union", "intersect"],
+          "description_en": "'cut' subtracts tool_object from base_object; 'union' fuses them; 'intersect' keeps only their overlap."
+        },
+        {"name": "base_object", "type": "string", "required": true, "description_en": "Name of the main/base solid (e.g. the block being drilled)."},
+        {"name": "tool_object", "type": "string", "required": true, "description_en": "Name of the solid acting as the tool (e.g. the cylinder drilling the hole)."},
+        {"name": "name", "type": "string", "required": false, "description_en": "Name for the resulting object. Defaults to 'Cut'/'Fusion'/'Common' depending on operation."}
+      ]
     }
   ]
 }

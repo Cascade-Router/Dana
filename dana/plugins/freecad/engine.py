@@ -201,9 +201,22 @@ import FreeCADGui as Gui
 
 doc = App.ActiveDocument
 if doc is not None:
+    # A Boolean feature (Part::Cut/MultiFuse/MultiCommon) consumes its
+    # Base/Tool/Shapes children into the result — only the top-level
+    # feature should show, not the raw inputs it was built from.
+    consumed = set()
+    for obj in doc.Objects:
+        base = getattr(obj, "Base", None)
+        tool = getattr(obj, "Tool", None)
+        if base is not None:
+            consumed.add(base.Name)
+        if tool is not None:
+            consumed.add(tool.Name)
+        for shape in getattr(obj, "Shapes", None) or []:
+            consumed.add(shape.Name)
     for obj in doc.Objects:
         try:
-            obj.ViewObject.Visibility = True
+            obj.ViewObject.Visibility = obj.Name not in consumed
         except Exception:
             pass
     try:
@@ -719,6 +732,16 @@ def create_star_prism(
     return json.dumps(result)
 
 
+# FreeCAD Part::Cut is a Base/Tool pair; Part::MultiFuse/MultiCommon instead
+# take a Shapes list — two script shapes, chosen in Python (not branched
+# inside the FreeCADCmd subprocess) by which the operation actually needs.
+_BOOLEAN_FEATURE_TYPE: dict[str, str] = {
+    "cut": "Part::Cut",
+    "union": "Part::MultiFuse",
+    "intersect": "Part::MultiCommon",
+}
+_DEFAULT_BOOLEAN_NAME: dict[str, str] = {"cut": "Cut", "union": "Fusion", "intersect": "Common"}
+
 _BOOLEAN_CUT_SCRIPT = """\
 import FreeCAD as App
 
@@ -728,9 +751,26 @@ base_obj = base_doc.Objects[0]
 tool_obj = tool_doc.Objects[0]
 
 doc = App.newDocument("DanaModel")
-cut = doc.addObject("Part::Cut", {name!r})
-cut.Base = doc.copyObject(base_obj, False)
-cut.Tool = doc.copyObject(tool_obj, False)
+obj = doc.addObject("Part::Cut", {name!r})
+obj.Base = doc.copyObject(base_obj, False)
+obj.Tool = doc.copyObject(tool_obj, False)
+doc.recompute()
+doc.saveAs({out_path!r})
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {out_path!r})
+"""
+
+_BOOLEAN_FUSE_COMMON_SCRIPT = """\
+import FreeCAD as App
+
+base_doc = App.openDocument({base_path!r})
+tool_doc = App.openDocument({tool_path!r})
+base_obj = base_doc.Objects[0]
+tool_obj = tool_doc.Objects[0]
+
+doc = App.newDocument("DanaModel")
+obj = doc.addObject({feature_type!r}, {name!r})
+obj.Shapes = [doc.copyObject(base_obj, False), doc.copyObject(tool_obj, False)]
 doc.recompute()
 doc.saveAs({out_path!r})
 """ + _BBOX_PRINT + """\
@@ -747,36 +787,55 @@ print("{marker} path=" + {out_path!r})
 """
 
 
-def apply_boolean_cut(base_path: str, tool_path: str, name: str = "Cut") -> str:
-    """Subtract the solid in ``tool_path`` from the solid in ``base_path``.
+def apply_boolean(operation: str, base_path: str, tool_path: str, name: str | None = None) -> str:
+    """Combine two previously-created solids with a Boolean operation.
 
-    Both paths must be ``.FCStd`` documents previously produced by
-    ``create_box``/``create_cylinder``/``create_extruded_polyline`` (or a
-    prior cut) — each holds exactly one top-level object, which is what
-    gets copied into the new ``Part::Cut``.
+    ``"cut"`` builds a ``Part::Cut`` (subtracts the tool from the base);
+    ``"union"`` builds a ``Part::MultiFuse`` (fuses both into one solid);
+    ``"intersect"`` builds a ``Part::MultiCommon`` (keeps only their
+    overlapping volume). Both paths must be ``.FCStd`` documents previously
+    produced by ``create_box``/``create_cylinder``/``create_extruded_polyline``
+    (or a prior ``apply_boolean``) — each holds exactly one top-level
+    object, which is what gets copied into the new Boolean feature.
     """
+    op = (operation or "").strip().lower()
+    if op not in _BOOLEAN_FEATURE_TYPE:
+        return _error(f"apply_boolean: unknown operation '{operation}' — must be cut, union, or intersect")
     base = Path(base_path)
     tool = Path(tool_path)
     if not base.is_file():
-        return _error(f"apply_boolean_cut: base_path not found: {base_path}")
+        return _error(f"apply_boolean: base_path not found: {base_path}")
     if not tool.is_file():
-        return _error(f"apply_boolean_cut: tool_path not found: {tool_path}")
+        return _error(f"apply_boolean: tool_path not found: {tool_path}")
+    feature_type = _BOOLEAN_FEATURE_TYPE[op]
+    resolved_name = name or _DEFAULT_BOOLEAN_NAME[op]
     if is_dry_run_enabled():
-        return _dry_run_result("apply_boolean_cut", name=name, type="Part::Cut")
-    out_path = _output_path(name, ext="FCStd")
-    script = _BOOLEAN_CUT_SCRIPT.format(
-        base_path=str(base),
-        tool_path=str(tool),
-        name=name,
-        out_path=str(out_path),
-        marker=_OK_MARKER,
-    )
+        return _dry_run_result("apply_boolean", operation=op, name=resolved_name, type=feature_type)
+    out_path = _output_path(resolved_name, ext="FCStd")
+    if op == "cut":
+        script = _BOOLEAN_CUT_SCRIPT.format(
+            base_path=str(base),
+            tool_path=str(tool),
+            name=resolved_name,
+            out_path=str(out_path),
+            marker=_OK_MARKER,
+        )
+    else:
+        script = _BOOLEAN_FUSE_COMMON_SCRIPT.format(
+            base_path=str(base),
+            tool_path=str(tool),
+            feature_type=feature_type,
+            name=resolved_name,
+            out_path=str(out_path),
+            marker=_OK_MARKER,
+        )
     result = _run_freecad_script(script)
     if not result["ok"]:
-        return _error(f"apply_boolean_cut failed: {result['error']}")
+        return _error(f"apply_boolean failed: {result['error']}")
     return _ok(
-        name=name,
-        type="Part::Cut",
+        name=resolved_name,
+        type=feature_type,
+        operation=op,
         bounding_box=result.get("bounding_box"),
         path=str(out_path),
         gui_shown=_auto_show(out_path),
@@ -866,7 +925,7 @@ def execute_freecad_script(python_script_str: str) -> str:
 
 __all__ = (
     "FreeCADNotFoundError",
-    "apply_boolean_cut",
+    "apply_boolean",
     "create_box",
     "create_cylinder",
     "create_extruded_polyline",

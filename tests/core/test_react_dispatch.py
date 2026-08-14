@@ -214,6 +214,7 @@ def test_is_mutating_tool_classification() -> None:
     assert rd.is_mutating_tool("create_freecad_extrusion") is True
     assert rd.is_mutating_tool("create_freecad_pyramid") is True
     assert rd.is_mutating_tool("create_freecad_star_prism") is True
+    assert rd.is_mutating_tool("perform_freecad_boolean") is True
     assert rd.is_mutating_tool("resync_workspace") is True
     assert rd.is_mutating_tool("system_state") is False
     assert rd.is_mutating_tool("execute_vision_analysis") is False
@@ -405,6 +406,154 @@ def test_parse_utterance_pyramid_and_star_prism_pass_through(monkeypatch: pytest
     call = _parse("Create a sharp-edged ninja star with 8 points, outer radius 60mm, inner radius 20mm, thickness 5mm.")
     assert call is not None
     assert call.tool_id == "create_freecad_star_prism"
+
+
+# --------------------------------------------------------------------------
+# Boolean CSG operations: perform_freecad_boolean
+# --------------------------------------------------------------------------
+
+
+def test_describe_tool_call_boolean_cut() -> None:
+    call = ToolCall(
+        tool_id="perform_freecad_boolean",
+        arguments={"operation": "cut", "base_object": "Box", "tool_object": "Cylinder"},
+    )
+    description = rd.describe_tool_call(call)
+    assert "Cylinder" in description and "Box" in description
+
+
+def test_dispatch_boolean_rejects_unknown_operation() -> None:
+    call = ToolCall(
+        tool_id="perform_freecad_boolean",
+        arguments={"operation": "bogus", "base_object": "Box", "tool_object": "Cylinder"},
+    )
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "cut, union, intersect" in result.message
+
+
+def test_dispatch_boolean_requires_base_and_tool_object() -> None:
+    call = ToolCall(tool_id="perform_freecad_boolean", arguments={"operation": "cut"})
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "base_object" in result.message
+
+
+def test_dispatch_boolean_rejects_unknown_object_names() -> None:
+    call = ToolCall(
+        tool_id="perform_freecad_boolean",
+        arguments={"operation": "cut", "base_object": "NeverCreated1", "tool_object": "NeverCreated2"},
+    )
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "NeverCreated1" in result.message
+
+
+def test_dispatch_boolean_end_to_end_via_object_name_registry() -> None:
+    """create_freecad_box/cylinder register their (name -> path) in
+    rd._OBJECT_PATH_REGISTRY as a side effect of dispatch_tool_call; a later
+    perform_freecad_boolean call resolves base_object/tool_object against
+    that registry instead of needing a persistent FreeCAD ActiveDocument."""
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+
+    box_result = rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"length": 50, "width": 50, "height": 50, "name": "CsgBox"}),
+        engine,
+        control_plane,
+    )
+    assert box_result.ok is True
+
+    cyl_result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="create_freecad_cylinder",
+            arguments={
+                "radius": 15,
+                "height": 50,
+                "name": "CsgCylinder",
+                "placement_x": 25,
+                "placement_y": 25,
+            },
+        ),
+        engine,
+        control_plane,
+    )
+    assert cyl_result.ok is True
+
+    cut_result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="perform_freecad_boolean",
+            arguments={"operation": "cut", "base_object": "CsgBox", "tool_object": "CsgCylinder"},
+        ),
+        engine,
+        control_plane,
+    )
+    assert cut_result.ok is True
+    assert cut_result.payload["type"] == "Part::Cut"
+    assert cut_result.payload["name"] == "Cut"
+
+    # The boolean result itself registers too, so it can chain into a
+    # further boolean op as someone else's base_object/tool_object.
+    assert rd._OBJECT_PATH_REGISTRY["Cut"] == cut_result.payload["path"]
+
+
+def test_dispatch_boolean_union_and_intersect_use_default_names() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"length": 20, "width": 20, "height": 20, "name": "UBoxA"}),
+        engine,
+        control_plane,
+    )
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_cylinder", arguments={"radius": 5, "height": 20, "name": "UCylA"}),
+        engine,
+        control_plane,
+    )
+
+    union_result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="perform_freecad_boolean",
+            arguments={"operation": "union", "base_object": "UBoxA", "tool_object": "UCylA"},
+        ),
+        engine,
+        control_plane,
+    )
+    assert union_result.ok is True
+    assert union_result.payload["name"] == "Fusion"
+    assert union_result.payload["type"] == "Part::MultiFuse"
+
+    intersect_result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="perform_freecad_boolean",
+            arguments={"operation": "intersect", "base_object": "UBoxA", "tool_object": "UCylA"},
+        ),
+        engine,
+        control_plane,
+    )
+    assert intersect_result.ok is True
+    assert intersect_result.payload["name"] == "Common"
+    assert intersect_result.payload["type"] == "Part::MultiCommon"
+
+
+def test_parse_utterance_boolean_pass_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(
+        monkeypatch,
+        tool_calls=[
+            ToolCall(
+                tool_id="perform_freecad_boolean",
+                arguments={"operation": "cut", "base_object": "Box", "tool_object": "Cylinder"},
+            )
+        ],
+    )
+    call = _parse("Drill a hole through the box using the cylinder.")
+    assert call is not None
+    assert call.tool_id == "perform_freecad_boolean"
+    assert call.arguments["operation"] == "cut"
 
 
 # --------------------------------------------------------------------------

@@ -159,6 +159,7 @@ _CAD_CREATE_TOOLS = frozenset(
         "create_freecad_extrusion",
         "create_freecad_pyramid",
         "create_freecad_star_prism",
+        "perform_freecad_boolean",
     }
 )
 

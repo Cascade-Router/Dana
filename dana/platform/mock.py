@@ -180,31 +180,42 @@ class MockFreeCADEngine(BaseCADEngine):
             "note": _MOCK_NOTE_CAD,
         }
 
-    def apply_boolean_cut(self, base_path: str, tool_path: str, name: str = "Cut") -> dict[str, Any]:
+    def apply_boolean(
+        self, operation: str, base_path: str, tool_path: str, name: str | None = None
+    ) -> dict[str, Any]:
         import trimesh
+
+        op = (operation or "").strip().lower()
+        mesh_ops = {"cut": "difference", "union": "union", "intersect": "intersection"}
+        feature_types = {"cut": "Part::Cut", "union": "Part::MultiFuse", "intersect": "Part::MultiCommon"}
+        default_names = {"cut": "Cut", "union": "Fusion", "intersect": "Common"}
+        if op not in mesh_ops:
+            return {"ok": False, "error": f"apply_boolean: unknown operation '{operation}' — must be cut, union, or intersect"}
 
         base = Path(base_path)
         tool = Path(tool_path)
         if not base.is_file():
-            return {"ok": False, "error": f"apply_boolean_cut: base_path not found: {base_path}"}
+            return {"ok": False, "error": f"apply_boolean: base_path not found: {base_path}"}
         if not tool.is_file():
-            return {"ok": False, "error": f"apply_boolean_cut: tool_path not found: {tool_path}"}
+            return {"ok": False, "error": f"apply_boolean: tool_path not found: {tool_path}"}
 
+        resolved_name = name or default_names[op]
         base_mesh = trimesh.load(base, force="mesh")
         tool_mesh = trimesh.load(tool, force="mesh")
         try:
-            mesh = base_mesh.difference(tool_mesh)
+            mesh = getattr(base_mesh, mesh_ops[op])(tool_mesh)
             engine_note = _MOCK_NOTE_CAD
         except BaseException:  # noqa: BLE001 — boolean engine unavailable in this container
             mesh = base_mesh
             engine_note = f"{_MOCK_NOTE_CAD}; boolean engine unavailable, returned base unmodified"
 
-        out_path = _mesh_output_path(name)
+        out_path = _mesh_output_path(resolved_name)
         mesh.export(out_path)
         return {
             "ok": True,
-            "name": name,
-            "type": "Part::Cut",
+            "name": resolved_name,
+            "type": feature_types[op],
+            "operation": op,
             "bounding_box": _bbox(mesh),
             "path": str(out_path),
             "gui_shown": False,

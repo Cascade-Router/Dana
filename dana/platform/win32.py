@@ -84,10 +84,12 @@ class RealFreeCADEngine(BaseCADEngine):
 
         return json.loads(engine.create_cylinder(radius, height, name, placement=placement))
 
-    def apply_boolean_cut(self, base_path: str, tool_path: str, name: str = "Cut") -> dict[str, Any]:
+    def apply_boolean(
+        self, operation: str, base_path: str, tool_path: str, name: str | None = None
+    ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.apply_boolean_cut(base_path, tool_path, name))
+        return json.loads(engine.apply_boolean(operation, base_path, tool_path, name))
 
     def create_extrusion(
         self, profile_points: list[list[float]], height: float, name: str = "Extrusion"
