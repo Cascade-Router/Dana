@@ -318,6 +318,67 @@ def _tool_create_freecad_pipe(args: dict[str, Any], engine: Any, _cp: Any) -> di
     )
 
 
+_ALIGNMENT_TYPES = frozenset({"top_center", "bottom_center", "flush_left", "flush_right"})
+
+
+def _tool_align_freecad_objects(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    source_name = str(args.get("source_object") or "").strip()
+    if not source_name:
+        return {"ok": False, "error": "align_freecad_objects requires source_object"}
+    target_name = str(args.get("target_object") or "").strip()
+    if not target_name:
+        return {"ok": False, "error": "align_freecad_objects requires target_object"}
+    alignment_type = str(args.get("alignment_type") or "").strip().lower()
+    if alignment_type not in _ALIGNMENT_TYPES:
+        return {
+            "ok": False,
+            "error": "align_freecad_objects requires alignment_type to be one of "
+            "top_center, bottom_center, flush_left, flush_right",
+        }
+
+    source_path = _OBJECT_PATH_REGISTRY.get(source_name)
+    if not source_path:
+        return {
+            "ok": False,
+            "error": f"unknown source_object '{source_name}' — create it first with a create_freecad_* tool",
+        }
+    target_path = _OBJECT_PATH_REGISTRY.get(target_name)
+    if not target_path:
+        return {
+            "ok": False,
+            "error": f"unknown target_object '{target_name}' — create it first with a create_freecad_* tool",
+        }
+    return engine.align_objects(source_path, target_path, alignment_type)
+
+
+_EXPORT_FORMATS = frozenset({"stl", "step"})
+
+
+def _tool_export_freecad_model(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    export_format = str(args.get("format") or "").strip().lower()
+    if export_format not in _EXPORT_FORMATS:
+        return {"ok": False, "error": "export_freecad_model requires format to be one of stl, step"}
+    target_names = args.get("target_objects")
+    if not isinstance(target_names, list) or not target_names:
+        return {"ok": False, "error": "export_freecad_model requires a non-empty target_objects list"}
+    filename = str(args.get("filename") or "").strip()
+    if not filename:
+        return {"ok": False, "error": "export_freecad_model requires filename"}
+
+    target_paths = []
+    for raw_name in target_names:
+        name = str(raw_name).strip()
+        path = _OBJECT_PATH_REGISTRY.get(name)
+        if not path:
+            return {
+                "ok": False,
+                "error": f"unknown target object '{name}' — create it first with a create_freecad_* tool",
+            }
+        target_paths.append(path)
+
+    return engine.export_model(target_paths, export_format, filename)
+
+
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] = {
     "create_freecad_box": _tool_create_box,
     "create_freecad_cylinder": _tool_create_cylinder,
@@ -329,6 +390,8 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "modify_freecad_parameter": _tool_modify_freecad_parameter,
     "get_freecad_bounding_box": _tool_get_freecad_bounding_box,
     "create_freecad_pipe": _tool_create_freecad_pipe,
+    "align_freecad_objects": _tool_align_freecad_objects,
+    "export_freecad_model": _tool_export_freecad_model,
     "resync_workspace": _tool_resync_workspace,
     "get_active_display": _tool_get_active_display,
     "prevent_focus_steal": _tool_prevent_focus_steal,
@@ -352,9 +415,11 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         "perform_freecad_edge_operation",
         "modify_freecad_parameter",
         "create_freecad_pipe",
-        # get_freecad_bounding_box is intentionally absent — read-only query,
-        # never HITL-gated, so the LLM can inspect geometry mid-reasoning
-        # without stalling on a human approval click just to do math.
+        "align_freecad_objects",
+        # get_freecad_bounding_box and export_freecad_model are intentionally
+        # absent — read-only/file-IO, never HITL-gated, so the LLM can
+        # inspect geometry or ship a finished export without stalling on a
+        # human approval click.
         "resync_workspace",
         "prevent_focus_steal",
     }
@@ -427,6 +492,17 @@ def describe_tool_call(call: ToolCall) -> str:
         if path_type == "arc":
             return f"Create a curved pipe (radius {radius}mm) bending {value} degrees in FreeCAD."
         return f"Create a straight pipe (radius {radius}mm, length {value}mm) in FreeCAD."
+    if call.tool_id == "align_freecad_objects":
+        source = call.arguments.get("source_object", "?")
+        target = call.arguments.get("target_object", "?")
+        alignment = call.arguments.get("alignment_type", "?")
+        return f"Snap `{source}` to `{target}` ({alignment}) in FreeCAD."
+    if call.tool_id == "export_freecad_model":
+        targets = call.arguments.get("target_objects", [])
+        fmt = str(call.arguments.get("format") or "?").upper()
+        filename = call.arguments.get("filename", "?")
+        joined = ", ".join(str(t) for t in targets) if isinstance(targets, list) else str(targets)
+        return f"Export {joined} as {fmt} named `{filename}`."
     if call.tool_id == "resync_workspace":
         return "Reposition managed FreeCAD windows onto their target monitor."
     if call.tool_id == "prevent_focus_steal":
@@ -468,6 +544,8 @@ _LLM_TOOL_IDS = frozenset(
         "modify_freecad_parameter",
         "get_freecad_bounding_box",
         "create_freecad_pipe",
+        "align_freecad_objects",
+        "export_freecad_model",
         "manipulate_camera",
         "resync_workspace",
         "get_active_display",
@@ -707,6 +785,13 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         )
     if call.tool_id == "modify_freecad_parameter":
         return f"Set `{payload.get('name')}`.{payload.get('parameter_name')} = {payload.get('new_value')}mm."
+    if call.tool_id == "align_freecad_objects":
+        return (
+            f"Aligned `{payload.get('name')}` ({payload.get('alignment_type')}) — "
+            f"new placement {payload.get('placement')}."
+        )
+    if call.tool_id == "export_freecad_model":
+        return f"Exported {payload.get('target_count')} object(s) as {str(payload.get('format')).upper()} -> `{payload.get('path')}`."
     if call.tool_id == "get_freecad_bounding_box":
         return (
             f"Bounding box: x=[{payload.get('x_min')}, {payload.get('x_max')}], "

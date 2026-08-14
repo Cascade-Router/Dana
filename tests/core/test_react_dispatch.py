@@ -339,12 +339,14 @@ def test_is_mutating_tool_classification() -> None:
     assert rd.is_mutating_tool("perform_freecad_edge_operation") is True
     assert rd.is_mutating_tool("modify_freecad_parameter") is True
     assert rd.is_mutating_tool("create_freecad_pipe") is True
+    assert rd.is_mutating_tool("align_freecad_objects") is True
     assert rd.is_mutating_tool("resync_workspace") is True
     assert rd.is_mutating_tool("system_state") is False
     assert rd.is_mutating_tool("execute_vision_analysis") is False
     assert rd.is_mutating_tool("manipulate_camera") is False
-    # CRITICAL: read-only, must never require HITL approval just to do math.
+    # CRITICAL: read-only/file-IO, must never require HITL approval.
     assert rd.is_mutating_tool("get_freecad_bounding_box") is False
+    assert rd.is_mutating_tool("export_freecad_model") is False
 
 
 def test_describe_tool_call_box() -> None:
@@ -1077,6 +1079,210 @@ def test_parse_utterance_pipe_pass_through(monkeypatch: pytest.MonkeyPatch) -> N
     assert call.tool_id == "create_freecad_pipe"
     assert call.arguments["path_type"] == "arc"
     assert call.arguments["length_or_angle"] == 90
+
+
+# --------------------------------------------------------------------------
+# Assembly alignment: align_freecad_objects
+# --------------------------------------------------------------------------
+
+
+def test_describe_tool_call_align() -> None:
+    call = ToolCall(
+        tool_id="align_freecad_objects",
+        arguments={"source_object": "Cylinder", "target_object": "Box", "alignment_type": "top_center"},
+    )
+    description = rd.describe_tool_call(call)
+    assert "Cylinder" in description and "Box" in description and "top_center" in description
+
+
+def test_dispatch_align_rejects_unknown_alignment_type() -> None:
+    call = ToolCall(
+        tool_id="align_freecad_objects",
+        arguments={"source_object": "Cylinder", "target_object": "Box", "alignment_type": "sideways"},
+    )
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "top_center" in result.message
+
+
+def test_dispatch_align_requires_source_and_target_object() -> None:
+    call = ToolCall(tool_id="align_freecad_objects", arguments={"alignment_type": "top_center"})
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "source_object" in result.message
+
+
+def test_dispatch_align_rejects_unknown_object_names() -> None:
+    call = ToolCall(
+        tool_id="align_freecad_objects",
+        arguments={"source_object": "NeverCreated1", "target_object": "NeverCreated2", "alignment_type": "top_center"},
+    )
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "NeverCreated1" in result.message
+
+
+def test_dispatch_align_end_to_end_via_registry() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"length": 60, "width": 60, "height": 5, "name": "AlignBaseA"}),
+        engine,
+        control_plane,
+    )
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_cylinder", arguments={"radius": 20, "height": 40, "name": "AlignCylA"}),
+        engine,
+        control_plane,
+    )
+
+    result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="align_freecad_objects",
+            arguments={"source_object": "AlignCylA", "target_object": "AlignBaseA", "alignment_type": "top_center"},
+        ),
+        engine,
+        control_plane,
+    )
+    assert result.ok is True
+    assert result.payload["alignment_type"] == "top_center"
+    assert len(result.payload["placement"]) == 3
+    # The aligned object re-registers under the same name -> same path
+    # (it moved in place, it didn't get a new identity or file).
+    assert rd._OBJECT_PATH_REGISTRY["AlignCylA"] == result.payload["path"]
+
+
+# --------------------------------------------------------------------------
+# Export pipelines: export_freecad_model
+# --------------------------------------------------------------------------
+
+
+def test_describe_tool_call_export() -> None:
+    call = ToolCall(
+        tool_id="export_freecad_model",
+        arguments={"format": "stl", "target_objects": ["Box", "Cylinder"], "filename": "assembly"},
+    )
+    description = rd.describe_tool_call(call)
+    assert "Box" in description and "Cylinder" in description and "STL" in description and "assembly" in description
+
+
+def test_dispatch_export_rejects_unknown_format() -> None:
+    call = ToolCall(
+        tool_id="export_freecad_model",
+        arguments={"format": "obj", "target_objects": ["Box"], "filename": "x"},
+    )
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "stl, step" in result.message
+
+
+def test_dispatch_export_requires_non_empty_target_objects() -> None:
+    call = ToolCall(tool_id="export_freecad_model", arguments={"format": "stl", "target_objects": [], "filename": "x"})
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "target_objects" in result.message
+
+
+def test_dispatch_export_requires_filename() -> None:
+    call = ToolCall(tool_id="export_freecad_model", arguments={"format": "stl", "target_objects": ["Box"]})
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "filename" in result.message
+
+
+def test_dispatch_export_rejects_unknown_object_name() -> None:
+    call = ToolCall(
+        tool_id="export_freecad_model",
+        arguments={"format": "stl", "target_objects": ["NeverCreated"], "filename": "x"},
+    )
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "NeverCreated" in result.message
+
+
+def test_dispatch_export_end_to_end_via_registry() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"length": 60, "width": 60, "height": 5, "name": "ExportBaseA"}),
+        engine,
+        control_plane,
+    )
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_cylinder", arguments={"radius": 20, "height": 40, "name": "ExportCylA"}),
+        engine,
+        control_plane,
+    )
+
+    result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="export_freecad_model",
+            arguments={"format": "stl", "target_objects": ["ExportBaseA", "ExportCylA"], "filename": "motor_mount_assembly"},
+        ),
+        engine,
+        control_plane,
+    )
+    assert result.ok is True
+    assert result.payload["target_count"] == 2
+    # An export result has no "name" of its own — it must NOT register as
+    # a fresh object in the name->path registry.
+    assert "motor_mount_assembly" not in rd._OBJECT_PATH_REGISTRY
+
+
+def test_dispatch_export_step_reports_mock_limitation_not_a_crash() -> None:
+    """The mock engine can't produce real STEP (B-rep) data via trimesh —
+    this must surface as a clean ok:False, not an exception."""
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"length": 10, "width": 10, "height": 10, "name": "StepBoxA"}),
+        engine,
+        control_plane,
+    )
+    result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="export_freecad_model",
+            arguments={"format": "step", "target_objects": ["StepBoxA"], "filename": "x"},
+        ),
+        engine,
+        control_plane,
+    )
+    assert result.ok is False
+    assert "STEP" in result.message
+
+
+def test_parse_utterance_align_and_export_pass_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(
+        monkeypatch,
+        tool_calls=[
+            ToolCall(
+                tool_id="align_freecad_objects",
+                arguments={"source_object": "Cylinder", "target_object": "Box", "alignment_type": "top_center"},
+            )
+        ],
+    )
+    call = _parse("Snap the cylinder to the top center of the box.")
+    assert call is not None
+    assert call.tool_id == "align_freecad_objects"
+
+    _mock_llm(
+        monkeypatch,
+        tool_calls=[
+            ToolCall(
+                tool_id="export_freecad_model",
+                arguments={"format": "stl", "target_objects": ["Box", "Cylinder"], "filename": "motor_mount_assembly"},
+            )
+        ],
+    )
+    call = _parse("Export both objects as an STL file named motor_mount_assembly.")
+    assert call is not None
+    assert call.tool_id == "export_freecad_model"
 
 
 # --------------------------------------------------------------------------

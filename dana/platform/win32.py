@@ -171,5 +171,15 @@ class RealFreeCADEngine(BaseCADEngine):
             engine.create_pipe(pipe_radius, path_type, length_or_angle, name, placement=placement)
         )
 
+    def align_objects(self, source_path: str, target_path: str, alignment_type: str) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.align_objects(source_path, target_path, alignment_type))
+
+    def export_model(self, target_paths: list[str], format: str, filename: str) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.export_model(target_paths, format, filename))
+
 
 __all__ = ("RealFreeCADEngine", "Win32ControlPlane")

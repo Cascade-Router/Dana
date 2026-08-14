@@ -2221,6 +2221,35 @@
         {"name": "placement_y", "type": "number", "required": false, "description_en": "Global Y-axis offset in mm. Defaults to 0."},
         {"name": "placement_z", "type": "number", "required": false, "description_en": "Global Z-axis offset in mm. Defaults to 0."}
       ]
+    },
+    {
+      "id": "export_freecad_model",
+      "description_en": "Exports the specified 3D objects to an STL file (for 3D printing) or a STEP file (for external CAD software). Saves to the local output directory.",
+      "parameters": [
+        {
+          "name": "format", "type": "string", "required": true,
+          "enum": ["stl", "step"],
+          "description_en": "'stl' for 3D printing/mesh viewers; 'step' for external CAD software interchange."
+        },
+        {
+          "name": "target_objects", "type": "array", "items_type": "string", "required": true,
+          "description_en": "Names of the objects to export together into one file (e.g. ['Box', 'Cylinder'])."
+        },
+        {"name": "filename", "type": "string", "required": true, "description_en": "Desired output name, without extension (e.g. 'part_v1')."}
+      ]
+    },
+    {
+      "id": "align_freecad_objects",
+      "description_en": "Snaps the source_object directly to the bounding box of the target_object. Use 'top_center' to stack an object perfectly on top of another.",
+      "parameters": [
+        {"name": "source_object", "type": "string", "required": true, "description_en": "Name of the object to move."},
+        {"name": "target_object", "type": "string", "required": true, "description_en": "Name of the object to snap to (stays in place)."},
+        {
+          "name": "alignment_type", "type": "string", "required": true,
+          "enum": ["top_center", "bottom_center", "flush_left", "flush_right"],
+          "description_en": "'top_center' stacks source on top of target; 'bottom_center' stacks source below target; 'flush_left'/'flush_right' align source's -X/+X face with target's, centered on the other axes."
+        }
+      ]
     }
   ]
 }

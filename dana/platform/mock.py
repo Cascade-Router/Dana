@@ -507,5 +507,99 @@ class MockFreeCADEngine(BaseCADEngine):
             "note": f"{_MOCK_NOTE_CAD}; arc sweep not geometrically simulated, returned a placeholder",
         }
 
+    def align_objects(self, source_path: str, target_path: str, alignment_type: str) -> dict[str, Any]:
+        import trimesh
+
+        align = (alignment_type or "").strip().lower()
+        valid_types = ("top_center", "bottom_center", "flush_left", "flush_right")
+        if align not in valid_types:
+            return {
+                "ok": False,
+                "error": f"align_objects: unknown alignment_type '{alignment_type}' — must be one of {', '.join(valid_types)}",
+            }
+
+        source = Path(source_path)
+        target = Path(target_path)
+        if not source.is_file():
+            return {"ok": False, "error": f"align_objects: source_path not found: {source_path}"}
+        if not target.is_file():
+            return {"ok": False, "error": f"align_objects: target_path not found: {target_path}"}
+
+        source_mesh = trimesh.load(source, force="mesh")
+        target_mesh = trimesh.load(target, force="mesh")
+        s_min, s_max = source_mesh.bounds
+        t_min, t_max = target_mesh.bounds
+        scx, scy, scz = (s_min + s_max) / 2.0
+        tcx, tcy, tcz = (t_min + t_max) / 2.0
+
+        if align == "top_center":
+            delta = [tcx - scx, tcy - scy, t_max[2] - s_min[2]]
+        elif align == "bottom_center":
+            delta = [tcx - scx, tcy - scy, t_min[2] - s_max[2]]
+        elif align == "flush_left":
+            delta = [t_min[0] - s_min[0], tcy - scy, tcz - scz]
+        else:  # flush_right
+            delta = [t_max[0] - s_max[0], tcy - scy, tcz - scz]
+
+        source_mesh.apply_translation(delta)
+        source_mesh.export(source)
+        return {
+            "ok": True,
+            "name": source.stem,
+            "path": str(source),
+            "alignment_type": align,
+            # Best-effort in mock mode: the translation just applied to the
+            # mesh, not a tracked absolute Placement.Base like the real
+            # FreeCAD engine reports (there's no separate placement state
+            # here beyond the mesh's own vertex positions).
+            "placement": [float(v) for v in delta],
+            "bounding_box": _bbox(source_mesh),
+            "gui_shown": False,
+            "driver": "mock",
+            "note": _MOCK_NOTE_CAD,
+        }
+
+    def export_model(self, target_paths: list[str], format: str, filename: str) -> dict[str, Any]:
+        fmt = (format or "").strip().lower()
+        if fmt not in ("stl", "step"):
+            return {"ok": False, "error": f"export_model: unknown format '{format}' — must be stl or step"}
+        paths = [Path(p) for p in (target_paths or [])]
+        if not paths:
+            return {"ok": False, "error": "export_model requires at least one target path"}
+        missing = [str(p) for p in paths if not p.is_file()]
+        if missing:
+            return {"ok": False, "error": f"export_model: target path(s) not found: {missing}"}
+
+        if fmt == "step":
+            # Honest failure rather than a fake file: trimesh has no B-rep/
+            # STEP writer (triangle-mesh formats only), so this genuinely
+            # cannot be produced without the real FreeCAD engine's
+            # Part.export — writing something mislabeled .step would be
+            # worse than a clear error for a manufacturing/CAD-interchange
+            # export a user might actually try to open elsewhere.
+            return {
+                "ok": False,
+                "error": (
+                    "export_model: STEP export isn't supported by the mock (trimesh) engine — "
+                    "trimesh has no B-rep/STEP writer, only triangle-mesh formats. Needs the "
+                    "real FreeCAD engine (Part.export)."
+                ),
+            }
+
+        import trimesh
+
+        meshes = [trimesh.load(p, force="mesh") for p in paths]
+        combined = trimesh.util.concatenate(meshes) if len(meshes) > 1 else meshes[0]
+        out_path = _mesh_output_path(filename or "export")
+        combined.export(out_path)
+        return {
+            "ok": True,
+            "format": fmt,
+            "path": str(out_path),
+            "target_count": len(paths),
+            "driver": "mock",
+            "note": _MOCK_NOTE_CAD,
+        }
+
 
 __all__ = ("MockControlPlane", "MockFreeCADEngine")

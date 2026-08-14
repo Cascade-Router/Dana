@@ -174,3 +174,20 @@ class BaseCADEngine(ABC):
         straight line; ``path_type="arc"`` sweeps ``length_or_angle``
         degrees along a circular arc (a curved elbow). Same result shape
         as ``create_box``."""
+
+    @abstractmethod
+    def align_objects(self, source_path: str, target_path: str, alignment_type: str) -> dict[str, Any]:
+        """Snap the ``source_path`` object directly to the ``target_path``
+        object's bounding box (``alignment_type`` one of ``top_center``/
+        ``bottom_center``/``flush_left``/``flush_right``), translating the
+        source object's placement in place — reopens and overwrites the
+        SAME source document/path, like ``modify_parameter``. Returns a
+        result dict including ``{"ok": bool, "path": str, "placement":
+        [x, y, z]}``."""
+
+    @abstractmethod
+    def export_model(self, target_paths: list[str], format: str, filename: str) -> dict[str, Any]:
+        """Export one or more previously-created objects together into a
+        single named ``.stl`` (3D printing) or ``.step`` (external CAD
+        interchange) file. Returns a result dict including
+        ``{"ok": bool, "path": str}``."""

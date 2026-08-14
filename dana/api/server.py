@@ -170,9 +170,12 @@ _CAD_CREATE_TOOLS = frozenset(
         "perform_freecad_edge_operation",
         "modify_freecad_parameter",
         "create_freecad_pipe",
-        # get_freecad_bounding_box is intentionally absent — a read-only
-        # query with no new/changed geometry, so it shouldn't trigger
-        # another mesh export on every call.
+        "align_freecad_objects",
+        # get_freecad_bounding_box and export_freecad_model are intentionally
+        # absent: bounding-box reads have no new/changed geometry, and an
+        # export's own output (.stl/.step, possibly multi-object) isn't a
+        # single FreeCAD document export_mesh_stl can re-tessellate for the
+        # viewer the way every other tool here produces.
     }
 )
 

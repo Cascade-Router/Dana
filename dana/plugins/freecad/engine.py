@@ -49,7 +49,10 @@ _WINDOW_POLL_INTERVAL_S = 0.75
 _OK_MARKER = "DANA_FREECAD_OK"
 _BBOX_MARKER = f"{_OK_MARKER}_BBOX"
 _BBOX_RE = re.compile(re.escape(_BBOX_MARKER) + r" (\[.*?\])")
+_PLACEMENT_MARKER = f"{_OK_MARKER}_PLACEMENT"
+_PLACEMENT_RE = re.compile(re.escape(_PLACEMENT_MARKER) + r" (\[.*?\])")
 _OUTPUT_DIR = DANA_WORKSPACE / "freecad_output"
+_EXPORT_DIR = DANA_WORKSPACE / "exports"
 
 
 class FreeCADNotFoundError(RuntimeError):
@@ -349,6 +352,22 @@ def _extract_bbox(stdout: str) -> list[float] | None:
     return None
 
 
+def _extract_placement(stdout: str) -> list[float] | None:
+    """Parse the ``[x, y, z]`` line ``align_objects``'s script prints after
+    updating ``Placement.Base`` — same ``ast.literal_eval`` safety as
+    ``_extract_bbox``."""
+    m = _PLACEMENT_RE.search(stdout or "")
+    if not m:
+        return None
+    try:
+        values = ast.literal_eval(m.group(1))
+    except (ValueError, SyntaxError):
+        return None
+    if isinstance(values, list) and all(isinstance(v, (int, float)) for v in values):
+        return [float(v) for v in values]
+    return None
+
+
 def _run_freecad_script(
     script_text: str, *, timeout: float = _DEFAULT_TIMEOUT_S, require_marker: bool = True
 ) -> dict[str, Any]:
@@ -400,6 +419,7 @@ def _run_freecad_script(
         "stdout": proc.stdout,
         "stderr": proc.stderr,
         "bounding_box": _extract_bbox(proc.stdout) if ok else None,
+        "placement": _extract_placement(proc.stdout) if ok else None,
     }
 
 
@@ -753,8 +773,8 @@ import FreeCAD as App
 
 base_doc = App.openDocument({base_path!r})
 tool_doc = App.openDocument({tool_path!r})
-base_obj = base_doc.Objects[0]
-tool_obj = tool_doc.Objects[0]
+base_obj = next((o for o in base_doc.Objects if not o.InList), base_doc.Objects[-1])
+tool_obj = next((o for o in tool_doc.Objects if not o.InList), tool_doc.Objects[-1])
 
 doc = App.newDocument("DanaModel")
 obj = doc.addObject("Part::Cut", {name!r})
@@ -771,8 +791,8 @@ import FreeCAD as App
 
 base_doc = App.openDocument({base_path!r})
 tool_doc = App.openDocument({tool_path!r})
-base_obj = base_doc.Objects[0]
-tool_obj = tool_doc.Objects[0]
+base_obj = next((o for o in base_doc.Objects if not o.InList), base_doc.Objects[-1])
+tool_obj = next((o for o in tool_doc.Objects if not o.InList), tool_doc.Objects[-1])
 
 doc = App.newDocument("DanaModel")
 obj = doc.addObject({feature_type!r}, {name!r})
@@ -856,7 +876,7 @@ _EDGE_OP_WHOLE_SCRIPT = """\
 import FreeCAD as App
 
 base_doc = App.openDocument({target_path!r})
-base_obj = base_doc.Objects[0]
+base_obj = next((o for o in base_doc.Objects if not o.InList), base_doc.Objects[-1])
 
 doc = App.newDocument("DanaModel")
 copied = doc.copyObject(base_obj, False)
@@ -881,7 +901,7 @@ _EDGE_OP_FACE_SCRIPT = """\
 import FreeCAD as App
 
 base_doc = App.openDocument({target_path!r})
-base_obj = base_doc.Objects[0]
+base_obj = next((o for o in base_doc.Objects if not o.InList), base_doc.Objects[-1])
 
 doc = App.newDocument("DanaModel")
 copied = doc.copyObject(base_obj, False)
@@ -990,7 +1010,7 @@ _MODIFY_PARAMETER_SCRIPT = """\
 import FreeCAD as App
 
 doc = App.openDocument({target_path!r})
-obj = doc.Objects[0]
+obj = next((o for o in doc.Objects if not o.InList), doc.Objects[-1])
 setattr(obj, {parameter_name!r}, {new_value})
 doc.recompute()
 doc.save()
@@ -1042,7 +1062,7 @@ _GET_BOUNDING_BOX_SCRIPT = """\
 import FreeCAD as App
 
 doc = App.openDocument({target_path!r})
-obj = doc.Objects[0]
+obj = next((o for o in doc.Objects if not o.InList), doc.Objects[-1])
 """ + _BBOX_PRINT + """\
 print("{marker} path=" + {target_path!r})
 """
@@ -1075,6 +1095,108 @@ def get_bounding_box(target_path: str) -> str:
         x_max=x_max,
         y_max=y_max,
         z_max=z_max,
+    )
+
+
+_ALIGNMENT_TYPES = frozenset({"top_center", "bottom_center", "flush_left", "flush_right"})
+
+_ALIGN_APPLY_SCRIPT = """\
+import FreeCAD as App
+
+doc = App.openDocument({source_path!r})
+obj = next((o for o in doc.Objects if not o.InList), doc.Objects[-1])
+obj.Placement.Base = obj.Placement.Base + App.Vector({dx}, {dy}, {dz})
+doc.recompute()
+doc.save()
+print("{marker}_PLACEMENT " + str([obj.Placement.Base.x, obj.Placement.Base.y, obj.Placement.Base.z]))
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {source_path!r})
+"""
+
+
+def _alignment_delta(
+    alignment_type: str, source_bbox: dict[str, Any], target_bbox: dict[str, Any]
+) -> tuple[float, float, float]:
+    """Pure-Python XYZ delta for each ``alignment_type`` — plain arithmetic
+    on two ``get_bounding_box``-shaped dicts, no FreeCAD needed, so this is
+    independently unit-testable.
+
+    ``top_center``/``bottom_center`` stack the source directly above/below
+    the target (a mirror pair — the directive spells out ``top_center``'s
+    formula explicitly; ``bottom_center`` is its natural counterpart, source
+    hanging below rather than resting above). ``flush_left``/``flush_right``
+    instead make the source's -X/+X face coincide with the target's (a flush
+    seam, not a stack). Every axis not being explicitly aligned is centered
+    on the target rather than left at an arbitrary offset — matching "snap
+    to the bounding box" rather than "move part-way and hope."
+    """
+    sbb, tbb = source_bbox, target_bbox
+    scx = (sbb["x_min"] + sbb["x_max"]) / 2.0
+    scy = (sbb["y_min"] + sbb["y_max"]) / 2.0
+    scz = (sbb["z_min"] + sbb["z_max"]) / 2.0
+    tcx = (tbb["x_min"] + tbb["x_max"]) / 2.0
+    tcy = (tbb["y_min"] + tbb["y_max"]) / 2.0
+    tcz = (tbb["z_min"] + tbb["z_max"]) / 2.0
+
+    if alignment_type == "top_center":
+        return (tcx - scx, tcy - scy, tbb["z_max"] - sbb["z_min"])
+    if alignment_type == "bottom_center":
+        return (tcx - scx, tcy - scy, tbb["z_min"] - sbb["z_max"])
+    if alignment_type == "flush_left":
+        return (tbb["x_min"] - sbb["x_min"], tcy - scy, tcz - scz)
+    if alignment_type == "flush_right":
+        return (tbb["x_max"] - sbb["x_max"], tcy - scy, tcz - scz)
+    raise ValueError(f"unknown alignment_type: {alignment_type}")
+
+
+def align_objects(source_path: str, target_path: str, alignment_type: str) -> str:
+    """Snap ``source_path``'s object directly to ``target_path``'s
+    bounding box (``alignment_type`` one of ``top_center``/``bottom_center``/
+    ``flush_left``/``flush_right``) by translating the source object's
+    ``Placement.Base`` in place — same document/path, like
+    ``modify_parameter``, since this moves the existing object rather than
+    creating a new feature. Reads both bounding boxes via
+    ``get_bounding_box`` (plain Python delta math, no FreeCAD needed for
+    that part) before touching FreeCAD at all.
+    """
+    align = (alignment_type or "").strip().lower()
+    if align not in _ALIGNMENT_TYPES:
+        return _error(
+            f"align_objects: unknown alignment_type '{alignment_type}' — "
+            f"must be one of {', '.join(sorted(_ALIGNMENT_TYPES))}"
+        )
+    source = Path(source_path)
+    target = Path(target_path)
+    if not source.is_file():
+        return _error(f"align_objects: source_path not found: {source_path}")
+    if not target.is_file():
+        return _error(f"align_objects: target_path not found: {target_path}")
+
+    source_bbox = json.loads(get_bounding_box(str(source)))
+    if not source_bbox.get("ok"):
+        return _error(f"align_objects: failed to read source bounding box: {source_bbox.get('error')}")
+    target_bbox = json.loads(get_bounding_box(str(target)))
+    if not target_bbox.get("ok"):
+        return _error(f"align_objects: failed to read target bounding box: {target_bbox.get('error')}")
+
+    dx, dy, dz = _alignment_delta(align, source_bbox, target_bbox)
+
+    if is_dry_run_enabled():
+        return _dry_run_result("align_objects", alignment_type=align, path=str(source), delta=[dx, dy, dz])
+
+    script = _ALIGN_APPLY_SCRIPT.format(
+        source_path=str(source), dx=dx, dy=dy, dz=dz, marker=_OK_MARKER
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"align_objects failed: {result['error']}")
+    return _ok(
+        name=source.stem,
+        path=str(source),
+        alignment_type=align,
+        placement=result.get("placement"),
+        bounding_box=result.get("bounding_box"),
+        gui_shown=_auto_show(source),
     )
 
 
@@ -1238,6 +1360,74 @@ def export_mesh_stl(source_path: str, name: str | None = None) -> str:
     return _ok(op="export_mesh_stl", source_path=str(source), path=str(out_path))
 
 
+# Distinct from export_mesh_stl above (an internal single-document ->
+# temp-STL hop for the 3D viewer's preview mesh) — this is the user-facing,
+# possibly-multi-object manufacturing/handoff export, saved to a permanent
+# named file under _EXPORT_DIR rather than a throwaway viewer temp path.
+_EXPORT_FORMAT_EXT: dict[str, str] = {"stl": "stl", "step": "step"}
+
+_EXPORT_MODEL_STL_SCRIPT = """\
+import FreeCAD as App
+import Mesh
+
+objects = []
+for p in {target_paths!r}:
+    d = App.openDocument(p)
+    objects.append(next((o for o in d.Objects if not o.InList), d.Objects[-1]))
+
+Mesh.export(objects, {out_path!r})
+print("{marker} path=" + {out_path!r})
+"""
+
+_EXPORT_MODEL_STEP_SCRIPT = """\
+import FreeCAD as App
+import Part
+
+objects = []
+for p in {target_paths!r}:
+    d = App.openDocument(p)
+    objects.append(next((o for o in d.Objects if not o.InList), d.Objects[-1]))
+
+Part.export(objects, {out_path!r})
+print("{marker} path=" + {out_path!r})
+"""
+
+
+def export_model(target_paths: list[str], format: str, filename: str) -> str:
+    """Export one or more previously-created objects together into a single
+    named ``.stl`` (3D printing) or ``.step`` (external CAD interchange)
+    file under ``_EXPORT_DIR`` — only each document's primary (non-consumed)
+    object is exported, not every helper object a Boolean/Sweep/Fillet
+    result's document happens to also contain.
+    """
+    fmt = (format or "").strip().lower()
+    if fmt not in _EXPORT_FORMAT_EXT:
+        return _error(f"export_model: unknown format '{format}' — must be stl or step")
+    paths = [Path(p) for p in (target_paths or [])]
+    if not paths:
+        return _error("export_model requires at least one target path")
+    missing = [str(p) for p in paths if not p.is_file()]
+    if missing:
+        return _error(f"export_model: target path(s) not found: {missing}")
+
+    ext = _EXPORT_FORMAT_EXT[fmt]
+    safe_name = _safe_name(filename or "export")
+    if is_dry_run_enabled():
+        out_path = _EXPORT_DIR / f"{safe_name}.{ext}"
+        return _dry_run_result("export_model", format=fmt, path=str(out_path), target_count=len(paths))
+
+    _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = _EXPORT_DIR / f"{safe_name}.{ext}"
+    template = _EXPORT_MODEL_STL_SCRIPT if fmt == "stl" else _EXPORT_MODEL_STEP_SCRIPT
+    script = template.format(
+        target_paths=[str(p) for p in paths], out_path=str(out_path), marker=_OK_MARKER
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"export_model failed: {result['error']}")
+    return _ok(format=fmt, path=str(out_path), target_count=len(paths))
+
+
 _MODIFY_PREAMBLE = 'import FreeCAD as App\n\ndoc = App.openDocument({in_path!r})\n'
 _MODIFY_POSTAMBLE = (
     '\n\ndoc.recompute()\n'
@@ -1301,6 +1491,7 @@ def execute_freecad_script(python_script_str: str) -> str:
 
 __all__ = (
     "FreeCADNotFoundError",
+    "align_objects",
     "apply_boolean",
     "apply_edge_operation",
     "create_box",
@@ -1310,6 +1501,7 @@ __all__ = (
     "create_pyramid",
     "create_star_prism",
     "export_mesh_stl",
+    "export_model",
     "get_bounding_box",
     "modify_existing_document",
     "modify_parameter",
