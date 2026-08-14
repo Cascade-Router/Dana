@@ -81,6 +81,28 @@ class BaseCADEngine(ABC):
         geometrically meaningful. Same result shape as ``create_box``."""
 
     @abstractmethod
+    def create_pyramid(
+        self, length: float, width: float, height: float, name: str = "Pyramid"
+    ) -> dict[str, Any]:
+        """Create a sharp-edged rectangular pyramid: a ``length`` x ``width``
+        base centered at the origin, apex at ``(0, 0, height)``. Same result
+        shape as ``create_box``."""
+
+    @abstractmethod
+    def create_star_prism(
+        self,
+        points: int,
+        outer_radius: float,
+        inner_radius: float,
+        height: float,
+        name: str = "StarPrism",
+    ) -> dict[str, Any]:
+        """Create a sharp-edged, ``points``-pointed star prism: an N-point
+        star polygon (vertices alternating ``outer_radius``/``inner_radius``)
+        extruded ``height`` units along Z. Same result shape as
+        ``create_box``."""
+
+    @abstractmethod
     def export_mesh_stl(self, source_path: str, name: str | None = None) -> dict[str, Any]:
         """Tessellate/export the solid at ``source_path`` to a standalone
         ``.stl`` mesh file. Returns ``{"ok": bool, "path": str}``."""

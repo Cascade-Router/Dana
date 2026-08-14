@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import glob
 import json
+import math
 import os
 import re
 import shutil
@@ -428,7 +429,36 @@ face = Part.Face(wire)
 solid = face.extrude(App.Vector(0.0, 0.0, {height}))
 
 doc = App.newDocument("DanaModel")
-obj = doc.addObject("Part::Feature", "ExtrudedPolyline")
+obj = doc.addObject("Part::Feature", {name!r})
+obj.Shape = solid
+doc.recompute()
+doc.saveAs({out_path!r})
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {out_path!r})
+"""
+
+_PYRAMID_SCRIPT = """\
+import FreeCAD as App
+import Part
+
+L, W, H = {length}, {width}, {height}
+base_pts = [
+    App.Vector(-L / 2, -W / 2, 0.0),
+    App.Vector(L / 2, -W / 2, 0.0),
+    App.Vector(L / 2, W / 2, 0.0),
+    App.Vector(-L / 2, W / 2, 0.0),
+]
+apex = App.Vector(0.0, 0.0, H)
+
+base_face = Part.Face(Part.makePolygon(base_pts + [base_pts[0]]))
+side_faces = [
+    Part.Face(Part.makePolygon([base_pts[i], base_pts[(i + 1) % 4], apex, base_pts[i]]))
+    for i in range(4)
+]
+solid = Part.Solid(Part.Shell([base_face] + side_faces))
+
+doc = App.newDocument("DanaModel")
+obj = doc.addObject("Part::Feature", {name!r})
 obj.Shape = solid
 doc.recompute()
 doc.saveAs({out_path!r})
@@ -508,18 +538,21 @@ def create_cylinder(radius: float, height: float, name: str = "Cylinder") -> str
     )
 
 
-def create_extruded_polyline(points_list: Sequence[Sequence[float]], height: float) -> str:
+def create_extruded_polyline(
+    points_list: Sequence[Sequence[float]], height: float, name: str = "ExtrudedPolyline"
+) -> str:
     """Extrude a closed polyline profile into a solid ``Part::Feature`` and save it.
 
     Builds the profile as a ``Part.makePolygon`` wire (auto-closing it if
     the first/last points differ), faces it, and extrudes ``height`` units
     — no scratch objects to clean up, unlike AutoCAD's region-from-polyline
-    detour.
+    detour. Works for any simple (non-self-intersecting) planar polygon,
+    convex or not — ``create_star_prism`` below reuses this directly for
+    its star-shaped profile rather than duplicating the FreeCAD script.
     """
     if len(points_list) < 3:
         return _error("create_extruded_polyline requires at least 3 points")
     points = [[float(p[0]), float(p[1])] for p in points_list]
-    name = "ExtrudedPolyline"
     dims = {"height": float(height), "profile_points": len(points)}
     if is_dry_run_enabled():
         return _dry_run_result(
@@ -527,7 +560,7 @@ def create_extruded_polyline(points_list: Sequence[Sequence[float]], height: flo
         )
     out_path = _output_path(name, ext="FCStd")
     script = _EXTRUDE_SCRIPT.format(
-        points=points, height=dims["height"], out_path=str(out_path), marker=_OK_MARKER
+        points=points, height=dims["height"], name=name, out_path=str(out_path), marker=_OK_MARKER
     )
     result = _run_freecad_script(script)
     if not result["ok"]:
@@ -540,6 +573,80 @@ def create_extruded_polyline(points_list: Sequence[Sequence[float]], height: flo
         path=str(out_path),
         gui_shown=_auto_show(out_path),
     )
+
+
+def create_pyramid(length: float, width: float, height: float, name: str = "Pyramid") -> str:
+    """Create a sharp-edged rectangular pyramid (``length`` x ``width`` base,
+    apex at ``height``) as a solid ``Part::Feature`` and save it.
+
+    Built from 5 explicit triangular/quad faces (one base + four sides)
+    rather than a collapsed ``Part::Wedge`` — a wedge with a degenerate top
+    edge is a valid solid but a fragile one (some FreeCAD versions produce
+    sliver/self-intersecting geometry at the collapsed edge); building the
+    shell directly from the 4 base corners + apex is unambiguous.
+    """
+    dims = {"length": float(length), "width": float(width), "height": float(height)}
+    if is_dry_run_enabled():
+        return _dry_run_result("create_pyramid", name=name, type="Part::Feature", dimensions=dims)
+    out_path = _output_path(name, ext="FCStd")
+    script = _PYRAMID_SCRIPT.format(
+        length=dims["length"],
+        width=dims["width"],
+        height=dims["height"],
+        name=name,
+        out_path=str(out_path),
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"create_pyramid failed: {result['error']}")
+    return _ok(
+        name=name,
+        type="Part::Feature",
+        bounding_box=result.get("bounding_box"),
+        dimensions=dims,
+        path=str(out_path),
+        gui_shown=_auto_show(out_path),
+    )
+
+
+def _star_polygon_vertices(points: int, outer_radius: float, inner_radius: float) -> list[list[float]]:
+    """Alternating outer/inner vertices of a symmetric N-point star, first
+    point straight up — pure trig, no FreeCAD dependency, so it's testable
+    without a FreeCADCmd binary."""
+    n = points * 2
+    return [
+        [
+            (outer_radius if i % 2 == 0 else inner_radius) * math.cos((math.pi / points) * i - math.pi / 2),
+            (outer_radius if i % 2 == 0 else inner_radius) * math.sin((math.pi / points) * i - math.pi / 2),
+        ]
+        for i in range(n)
+    ]
+
+
+def create_star_prism(
+    points: int, outer_radius: float, inner_radius: float, height: float, name: str = "StarPrism"
+) -> str:
+    """Extrude a sharp-edged N-point star polygon ``height`` units along Z.
+
+    A star is just another closed planar polygon, so this computes its
+    vertices (alternating ``outer_radius``/``inner_radius``) and hands them
+    straight to ``create_extruded_polyline`` — ``Part.Face`` builds a face
+    from a concave/star-shaped wire the same way it does a convex one, no
+    separate extrusion script needed.
+    """
+    if int(points) < 3:
+        return _error("create_star_prism requires at least 3 points")
+    vertices = _star_polygon_vertices(int(points), float(outer_radius), float(inner_radius))
+    result = json.loads(create_extruded_polyline(vertices, height, name=name))
+    if result.get("ok"):
+        result["dimensions"] = {
+            "points": int(points),
+            "outer_radius": float(outer_radius),
+            "inner_radius": float(inner_radius),
+            "height": float(height),
+        }
+    return json.dumps(result)
 
 
 _BOOLEAN_CUT_SCRIPT = """\
@@ -693,6 +800,8 @@ __all__ = (
     "create_box",
     "create_cylinder",
     "create_extruded_polyline",
+    "create_pyramid",
+    "create_star_prism",
     "export_mesh_stl",
     "modify_existing_document",
     "detect_freecadcmd",

@@ -212,6 +212,8 @@ def test_is_mutating_tool_classification() -> None:
     assert rd.is_mutating_tool("create_freecad_box") is True
     assert rd.is_mutating_tool("create_freecad_cylinder") is True
     assert rd.is_mutating_tool("create_freecad_extrusion") is True
+    assert rd.is_mutating_tool("create_freecad_pyramid") is True
+    assert rd.is_mutating_tool("create_freecad_star_prism") is True
     assert rd.is_mutating_tool("resync_workspace") is True
     assert rd.is_mutating_tool("system_state") is False
     assert rd.is_mutating_tool("execute_vision_analysis") is False
@@ -267,6 +269,86 @@ def test_dispatch_extrusion_with_selection_builds_default_footprint() -> None:
     assert result.ok is True
     assert result.payload["dimensions"]["height"] == 25.0
     assert result.payload["dimensions"]["profile_points"] == 4
+
+
+# --------------------------------------------------------------------------
+# Sharp-edged primitives: pyramid + star prism
+# --------------------------------------------------------------------------
+
+
+def test_describe_tool_call_pyramid() -> None:
+    call = ToolCall(tool_id="create_freecad_pyramid", arguments={"length": 50, "width": 50, "height": 75})
+    description = rd.describe_tool_call(call)
+    assert "50" in description and "75" in description
+
+
+def test_describe_tool_call_star_prism() -> None:
+    call = ToolCall(
+        tool_id="create_freecad_star_prism",
+        arguments={"points": 8, "outer_radius": 60, "inner_radius": 20, "height": 5},
+    )
+    description = rd.describe_tool_call(call)
+    assert "8" in description and "60" in description and "20" in description and "5" in description
+
+
+def test_dispatch_pyramid_via_mock_engine() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    call = ToolCall(tool_id="create_freecad_pyramid", arguments={"length": 50, "width": 50, "height": 75})
+    result = rd.dispatch_tool_call(call, MockFreeCADEngine(), MockControlPlane())
+    assert result.ok is True
+    assert result.payload["dimensions"] == {"length": 50.0, "width": 50.0, "height": 75.0}
+    assert result.payload["bounding_box"] == [-25.0, -25.0, 0.0, 25.0, 25.0, 75.0]
+
+
+def test_dispatch_star_prism_via_mock_engine() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    call = ToolCall(
+        tool_id="create_freecad_star_prism",
+        arguments={"points": 8, "outer_radius": 60, "inner_radius": 20, "height": 5},
+    )
+    result = rd.dispatch_tool_call(call, MockFreeCADEngine(), MockControlPlane())
+    assert result.ok is True
+    assert result.payload["dimensions"] == {
+        "points": 8,
+        "outer_radius": 60.0,
+        "inner_radius": 20.0,
+        "height": 5.0,
+    }
+    assert result.payload["bounding_box"] == [-60.0, -60.0, 0.0, 60.0, 60.0, 5.0]
+
+
+def test_dispatch_star_prism_rejects_too_few_points() -> None:
+    call = ToolCall(tool_id="create_freecad_star_prism", arguments={"points": 2, "outer_radius": 60, "inner_radius": 20})
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "at least 3 points" in result.message
+
+
+def test_parse_utterance_pyramid_and_star_prism_pass_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(
+        monkeypatch,
+        tool_calls=[
+            ToolCall(tool_id="create_freecad_pyramid", arguments={"length": 50, "width": 50, "height": 75})
+        ],
+    )
+    call = _parse("Build me a pyramid with a 50x50 base and a height of 75.")
+    assert call is not None
+    assert call.tool_id == "create_freecad_pyramid"
+
+    _mock_llm(
+        monkeypatch,
+        tool_calls=[
+            ToolCall(
+                tool_id="create_freecad_star_prism",
+                arguments={"points": 8, "outer_radius": 60, "inner_radius": 20, "height": 5},
+            )
+        ],
+    )
+    call = _parse("Create a sharp-edged ninja star with 8 points, outer radius 60mm, inner radius 20mm, thickness 5mm.")
+    assert call is not None
+    assert call.tool_id == "create_freecad_star_prism"
 
 
 # --------------------------------------------------------------------------

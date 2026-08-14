@@ -37,6 +37,57 @@ def _mesh_output_path(name: str) -> Path:
     return Path(raw_path)
 
 
+def _fan_triangulated_extrusion(points: list[list[float]], height: float) -> Any:
+    """Extrude a closed 2D (XY) polygon ``height`` units along Z, headless.
+
+    Fans both caps from the polygon's CENTROID rather than from vertex 0 —
+    a star polygon's concave notches aren't visible from an outer spike
+    vertex, so a vertex-0 fan would self-intersect there; every boundary
+    point of a symmetric/convex/star-shaped polygon *is* visible from its
+    centroid, so this works for a plain square footprint and an N-point
+    star alike with no shapely/triangle dependency.
+    """
+    import numpy as np
+    import trimesh
+
+    pts = [(float(x), float(y)) for x, y in points]
+    if pts[0] == pts[-1]:
+        pts = pts[:-1]
+    n = len(pts)
+    cx = sum(p[0] for p in pts) / n
+    cy = sum(p[1] for p in pts) / n
+
+    # bottom block is [n perimeter verts, 1 center] = n+1 entries, so the
+    # top block's perimeter verts start at index n+1, not n.
+    bottom = np.array([[x, y, 0.0] for x, y in pts] + [[cx, cy, 0.0]])
+    top = np.array([[x, y, float(height)] for x, y in pts] + [[cx, cy, float(height)]])
+    vertices = np.vstack([bottom, top])
+    bottom_center = n
+    top_offset = n + 1
+    top_center = top_offset + n
+
+    faces = []
+    for i in range(n):
+        j = (i + 1) % n
+        faces.append([bottom_center, j, i])
+        faces.append([top_center, top_offset + i, top_offset + j])
+        faces.append([i, j, top_offset + j])
+        faces.append([i, top_offset + j, top_offset + i])
+    return trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
+
+
+def _star_polygon_vertices(points: int, outer_radius: float, inner_radius: float) -> list[list[float]]:
+    import math
+
+    n = points * 2
+    vertices = []
+    for i in range(n):
+        angle = (math.pi / points) * i - (math.pi / 2)
+        radius = outer_radius if i % 2 == 0 else inner_radius
+        vertices.append([radius * math.cos(angle), radius * math.sin(angle)])
+    return vertices
+
+
 class MockControlPlane(BaseControlPlane):
     def resync_workspace(self) -> dict[str, Any]:
         moved = [
@@ -152,30 +203,79 @@ class MockFreeCADEngine(BaseCADEngine):
         if len(profile_points) < 3:
             return {"ok": False, "error": "create_extrusion requires at least 3 profile points"}
 
+        mesh = _fan_triangulated_extrusion(profile_points, height)
+        dims = {"height": float(height), "profile_points": len(profile_points)}
+        out_path = _mesh_output_path(name)
+        mesh.export(out_path)
+        return {
+            "ok": True,
+            "name": name,
+            "type": "Part::Feature",
+            "bounding_box": _bbox(mesh),
+            "dimensions": dims,
+            "path": str(out_path),
+            "gui_shown": False,
+            "driver": "mock",
+            "note": _MOCK_NOTE_CAD,
+        }
+
+    def create_pyramid(self, length: float, width: float, height: float, name: str = "Pyramid") -> dict[str, Any]:
         import numpy as np
         import trimesh
 
-        pts = [(float(x), float(y)) for x, y in profile_points]
-        if pts[0] == pts[-1]:
-            pts = pts[:-1]
-        n = len(pts)
-        # Fan triangulation from vertex 0 — exact for convex/star-shaped
-        # profiles (covers the default square footprint this mock exists
-        # to unblock); no shapely/triangle dependency needed for that case.
-        bottom = np.array([[x, y, 0.0] for x, y in pts])
-        top = np.array([[x, y, float(height)] for x, y in pts])
-        vertices = np.vstack([bottom, top])
-        faces = []
-        for i in range(1, n - 1):
-            faces.append([0, i + 1, i])
-            faces.append([n, n + i, n + i + 1])
-        for i in range(n):
-            j = (i + 1) % n
-            faces.append([i, j, n + j])
-            faces.append([i, n + j, n + i])
+        length_f, width_f, height_f = float(length), float(width), float(height)
+        vertices = np.array(
+            [
+                [-length_f / 2, -width_f / 2, 0.0],
+                [length_f / 2, -width_f / 2, 0.0],
+                [length_f / 2, width_f / 2, 0.0],
+                [-length_f / 2, width_f / 2, 0.0],
+                [0.0, 0.0, height_f],
+            ]
+        )
+        faces = [
+            [0, 2, 1],
+            [0, 3, 2],  # base, facing -Z
+            [0, 1, 4],
+            [1, 2, 4],
+            [2, 3, 4],
+            [3, 0, 4],  # four triangular sides
+        ]
         mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
+        dims = {"length": length_f, "width": width_f, "height": height_f}
+        out_path = _mesh_output_path(name)
+        mesh.export(out_path)
+        return {
+            "ok": True,
+            "name": name,
+            "type": "Part::Feature",
+            "bounding_box": _bbox(mesh),
+            "dimensions": dims,
+            "path": str(out_path),
+            "gui_shown": False,
+            "driver": "mock",
+            "note": _MOCK_NOTE_CAD,
+        }
 
-        dims = {"height": float(height), "profile_points": n}
+    def create_star_prism(
+        self,
+        points: int,
+        outer_radius: float,
+        inner_radius: float,
+        height: float,
+        name: str = "StarPrism",
+    ) -> dict[str, Any]:
+        if int(points) < 3:
+            return {"ok": False, "error": "create_star_prism requires at least 3 points"}
+
+        vertices2d = _star_polygon_vertices(int(points), float(outer_radius), float(inner_radius))
+        mesh = _fan_triangulated_extrusion(vertices2d, float(height))
+        dims = {
+            "points": int(points),
+            "outer_radius": float(outer_radius),
+            "inner_radius": float(inner_radius),
+            "height": float(height),
+        }
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
         return {

@@ -88,6 +88,25 @@ class RealFreeCADEngine(BaseCADEngine):
         # its existing behavior; not something to silently change here).
         return json.loads(engine.create_extruded_polyline(profile_points, height))
 
+    def create_pyramid(
+        self, length: float, width: float, height: float, name: str = "Pyramid"
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.create_pyramid(length, width, height, name))
+
+    def create_star_prism(
+        self,
+        points: int,
+        outer_radius: float,
+        inner_radius: float,
+        height: float,
+        name: str = "StarPrism",
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.create_star_prism(points, outer_radius, inner_radius, height, name))
+
     def export_mesh_stl(self, source_path: str, name: str | None = None) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 

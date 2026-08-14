@@ -154,9 +154,33 @@ def _tool_create_freecad_extrusion(args: dict[str, Any], engine: Any, _cp: Any) 
     return engine.create_extrusion(profile_points, height, name=str(args.get("name") or "Extrusion"))
 
 
+def _tool_create_freecad_pyramid(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    return engine.create_pyramid(
+        float(args.get("length", 40)),
+        float(args.get("width", 40)),
+        float(args.get("height", 60)),
+        name=str(args.get("name") or "Pyramid"),
+    )
+
+
+def _tool_create_freecad_star_prism(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    points = int(args.get("points", 5))
+    if points < 3:
+        return {"ok": False, "error": "create_freecad_star_prism requires at least 3 points"}
+    return engine.create_star_prism(
+        points,
+        float(args.get("outer_radius", 50)),
+        float(args.get("inner_radius", 20)),
+        float(args.get("height", 10)),
+        name=str(args.get("name") or "StarPrism"),
+    )
+
+
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] = {
     "create_freecad_box": _tool_create_box,
     "create_freecad_cylinder": _tool_create_cylinder,
+    "create_freecad_pyramid": _tool_create_freecad_pyramid,
+    "create_freecad_star_prism": _tool_create_freecad_star_prism,
     "create_freecad_extrusion": _tool_create_freecad_extrusion,
     "resync_workspace": _tool_resync_workspace,
     "get_active_display": _tool_get_active_display,
@@ -175,6 +199,8 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         "create_freecad_box",
         "create_freecad_cylinder",
         "create_freecad_extrusion",
+        "create_freecad_pyramid",
+        "create_freecad_star_prism",
         "resync_workspace",
         "prevent_focus_steal",
     }
@@ -203,6 +229,20 @@ def describe_tool_call(call: ToolCall) -> str:
             f"Extrude a default {2 * _EXTRUSION_DEFAULT_HALF_WIDTH:g}x"
             f"{2 * _EXTRUSION_DEFAULT_HALF_WIDTH:g}mm footprint at the selected point by {height}mm "
             "(approximate — exact face bounds aren't available from a single click)."
+        )
+    if call.tool_id == "create_freecad_pyramid":
+        length = call.arguments.get("length", 40)
+        width = call.arguments.get("width", 40)
+        height = call.arguments.get("height", 60)
+        return f"Create a sharp-edged {length}x{width}mm base pyramid, height {height}mm, in FreeCAD."
+    if call.tool_id == "create_freecad_star_prism":
+        points = call.arguments.get("points", 5)
+        outer = call.arguments.get("outer_radius", 50)
+        inner = call.arguments.get("inner_radius", 20)
+        height = call.arguments.get("height", 10)
+        return (
+            f"Create a sharp-edged {points}-point star prism (outer radius {outer}mm, "
+            f"inner radius {inner}mm, thickness {height}mm) in FreeCAD."
         )
     if call.tool_id == "resync_workspace":
         return "Reposition managed FreeCAD windows onto their target monitor."
@@ -238,6 +278,8 @@ _LLM_TOOL_IDS = frozenset(
         "create_freecad_box",
         "create_freecad_cylinder",
         "create_freecad_extrusion",
+        "create_freecad_pyramid",
+        "create_freecad_star_prism",
         "manipulate_camera",
         "resync_workspace",
         "get_active_display",
@@ -354,7 +396,13 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
     if not result.ok:
         return f"`{call.tool_id}` failed: {result.message}"
     payload = result.payload
-    if call.tool_id in ("create_freecad_box", "create_freecad_cylinder", "create_freecad_extrusion"):
+    if call.tool_id in (
+        "create_freecad_box",
+        "create_freecad_cylinder",
+        "create_freecad_extrusion",
+        "create_freecad_pyramid",
+        "create_freecad_star_prism",
+    ):
         driver = payload.get("driver", "win32/freecad")
         return (
             f"Created `{payload.get('type')}` named `{payload.get('name')}` via the "

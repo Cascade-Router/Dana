@@ -149,10 +149,24 @@ def get_mesh(token: str) -> FileResponse:
     return FileResponse(path, media_type="model/stl", filename=f"{token}.stl")
 
 
+# Tools whose successful result is a solid FreeCAD/mock CAD document that
+# should be tessellated and pushed to the 3D viewer as an STL mesh — kept
+# as one constant since dag-node coloring and mesh export both key off it.
+_CAD_CREATE_TOOLS = frozenset(
+    {
+        "create_freecad_box",
+        "create_freecad_cylinder",
+        "create_freecad_extrusion",
+        "create_freecad_pyramid",
+        "create_freecad_star_prism",
+    }
+)
+
+
 def _node_type_for(tool_id: str) -> str:
     if tool_id == "execute_vision_analysis":
         return "vision"
-    if tool_id in ("create_freecad_box", "create_freecad_cylinder", "create_freecad_extrusion"):
+    if tool_id in _CAD_CREATE_TOOLS:
         return "tool"
     return "agent"
 
@@ -183,7 +197,7 @@ async def _dispatch_and_emit(websocket: WebSocket, call: Any) -> None:
     result = dispatch_tool_call(call, engine, control_plane)
 
     mesh_url = None
-    if result.ok and call.tool_id in ("create_freecad_box", "create_freecad_cylinder", "create_freecad_extrusion"):
+    if result.ok and call.tool_id in _CAD_CREATE_TOOLS:
         mesh = engine.export_mesh_stl(result.payload["path"], name=result.payload.get("name"))
         if mesh.get("ok"):
             token = _register_mesh(mesh["path"])

@@ -2128,6 +2128,27 @@
       "id": "check_plugin_registry",
       "description_en": "List which Dana plugins and their tools are currently active.",
       "parameters": []
+    },
+    {
+      "id": "create_freecad_pyramid",
+      "description_en": "Create a sharp-edged, pointed rectangular pyramid (Part::Feature) in FreeCAD — a flat rectangular base tapering up to a single sharp apex point. Use for pyramid/tapered/pointed-top solid requests.",
+      "parameters": [
+        {"name": "length", "type": "number", "required": false, "description_en": "Base length in mm."},
+        {"name": "width", "type": "number", "required": false, "description_en": "Base width in mm."},
+        {"name": "height", "type": "number", "required": false, "description_en": "Height from base to the apex point, in mm."},
+        {"name": "name", "type": "string", "required": false, "description_en": "Name for the created object."}
+      ]
+    },
+    {
+      "id": "create_freecad_star_prism",
+      "description_en": "Create a sophisticated, sharp-edged N-pointed star prism (Part::Feature) in FreeCAD — alternating outer/inner radius vertices extruded into a flat prism with sharp spikes, like a ninja star or a star-shaped gasket. Use whenever the user asks for a star, spikes, points, or a 'ninja star' shape.",
+      "parameters": [
+        {"name": "points", "type": "integer", "required": true, "description_en": "Number of star points/spikes (e.g. 5 for a classic star, 8 for a shuriken/ninja-star look)."},
+        {"name": "outer_radius", "type": "number", "required": true, "description_en": "Radius in mm to each outer spike tip."},
+        {"name": "inner_radius", "type": "number", "required": true, "description_en": "Radius in mm to each inner notch between spikes — smaller than outer_radius."},
+        {"name": "height", "type": "number", "required": false, "description_en": "Thickness of the prism in mm (extrusion distance along Z)."},
+        {"name": "name", "type": "string", "required": false, "description_en": "Name for the created object."}
+      ]
     }
   ]
 }
