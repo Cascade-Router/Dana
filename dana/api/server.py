@@ -1,11 +1,16 @@
 """Headless FastAPI server — the single backend for the Tauri/React frontend.
 
 Replaces the Gradio UI's in-process callbacks with a ``/ws/chat`` WebSocket
-that streams ReAct-style tool-dispatch events (tool_call -> tool_result ->
-assistant_message) to any connected client. All dispatch logic lives in
-``dana.core.react_dispatch`` and goes through ``dana.platform.get_control_plane()``
-/ ``get_cad_engine()`` exactly as the legacy UI did — only the transport
-changed, not the drivers.
+that streams ReAct-style tool-dispatch events to any connected client.
+Each user turn runs a genuine multi-step ReAct while-loop (see
+``_run_react_loop`` below): the LLM can chain several tool calls within one
+turn, each one's result appended back into the running conversation so the
+NEXT LLM call actually sees it (e.g. read a bounding box, then use those
+numbers to place a new object) — not just one tool_call -> tool_result ->
+assistant_message per turn. All dispatch logic still lives in
+``dana.core.react_dispatch`` and goes through
+``dana.platform.get_control_plane()`` / ``get_cad_engine()`` exactly as the
+legacy UI did — only the transport changed, not the drivers.
 
 Boot locally with ``scripts/launchers/launch_api_server.py``. In production
 (e.g. a Hugging Face Space Docker deploy) the built ``frontend/dist`` bundle
@@ -29,13 +34,15 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from dana.core.react_dispatch import (
+    build_assistant_tool_call_message,
+    build_system_prompt,
+    build_tool_result_message,
     describe_tool_call,
     dispatch_tool_call,
     driver_state,
     is_mutating_tool,
-    parse_utterance,
+    next_react_turn,
     plugin_registry_view,
-    summarize_result,
 )
 from dana.paths import CAPTURES_DIR
 from dana.platform import get_cad_engine, get_control_plane
@@ -192,13 +199,28 @@ async def _dag_complete(
     )
 
 
-async def _dispatch_and_emit(websocket: WebSocket, call: Any) -> None:
-    """Runs an already-approved (or never-gated) tool call and streams the
-    dispatch/DAG/mesh/camera events for it. Shared by the plain-chat path
-    and the post-approval resume path so both emit an identical sequence."""
-    await _dag_start(websocket, "dispatch", call.tool_id, _node_type_for(call.tool_id), call.arguments)
-    await websocket.send_json({"type": "tool_call", "tool_id": call.tool_id, "arguments": call.arguments})
+# Safety counter for _run_react_loop — forcefully stops the loop after this
+# many tool-executing iterations within one user turn, so a model stuck
+# re-deciding to call tools (a hallucination loop) can't run forever.
+_MAX_REACT_ITERATIONS = 5
 
+
+async def _execute_and_continue(
+    websocket: WebSocket,
+    session: dict[str, Any],
+    messages: list[dict[str, Any]],
+    loop_count: int,
+    call: Any,
+    tool_call_id: str,
+    node_id: str,
+) -> None:
+    """Runs an already-approved (or never-gated) tool call, streams its
+    dispatch/DAG/mesh/camera events, appends its result back into
+    ``messages`` as a ``tool`` role reply, then loops back into
+    ``_run_react_loop`` for the NEXT iteration — this loop-back, not just
+    the dispatch itself, is what lets the LLM actually see the result and
+    decide whether to chain another tool call.
+    """
     engine = get_cad_engine()
     control_plane = get_control_plane()
     result = dispatch_tool_call(call, engine, control_plane)
@@ -210,9 +232,7 @@ async def _dispatch_and_emit(websocket: WebSocket, call: Any) -> None:
             token = _register_mesh(mesh["path"])
             mesh_url = f"/api/mesh/{token}.stl"
 
-    await _dag_complete(
-        websocket, "dispatch", "success" if result.ok else "error", result.payload, result.duration_ms
-    )
+    await _dag_complete(websocket, node_id, "success" if result.ok else "error", result.payload, result.duration_ms)
     await websocket.send_json(
         {
             "type": "tool_result",
@@ -230,49 +250,74 @@ async def _dispatch_and_emit(websocket: WebSocket, call: Any) -> None:
             {"type": "camera_animate", "position": result.payload["position"], "target": result.payload["target"]}
         )
 
-    await websocket.send_json({"type": "assistant_message", "content": summarize_result(call, result)})
+    messages.append(build_tool_result_message(tool_call_id, result))
+    await _run_react_loop(websocket, session, messages, loop_count + 1)
 
 
-async def _resolve_hitl(websocket: WebSocket, call: Any, response: dict[str, Any]) -> None:
-    if not response.get("approved"):
-        await _dag_complete(websocket, "dispatch", "error", {"cancelled": True}, 0)
-        await websocket.send_json({"type": "assistant_message", "content": "Cancelled — no changes were made."})
-        return
-    override = response.get("parameters")
-    if isinstance(override, dict):
-        call.arguments.update(override)
-    await _dispatch_and_emit(websocket, call)
+async def _run_react_loop(
+    websocket: WebSocket, session: dict[str, Any], messages: list[dict[str, Any]], loop_count: int
+) -> None:
+    """The multi-step ReAct loop for one user turn: ask the LLM what to do
+    next given the running ``messages`` history, either finish with plain
+    text or dispatch (HITL-gating mutating tools) one tool call and loop
+    back with its result — up to ``_MAX_REACT_ITERATIONS`` times.
 
-
-async def _process_user_text(websocket: WebSocket, session: dict[str, Any], user_text: str) -> None:
-    """Parse + dispatch one chat utterance for ``session``'s connection.
-
-    Used both for a client's own typed messages and for a finalized
-    ``VoiceService`` transcript replayed across every connected session —
-    same dispatch path, same DAG/HITL events, regardless of the source.
+    A mutating tool call SUSPENDS the loop here: it stashes everything
+    needed to resume (``messages``, ``loop_count``, the pending call) on
+    ``session["react_state"]`` and returns, letting ``ws_chat``'s own
+    receive loop pick the next inbound message back up — normal control
+    flow for a coroutine, not a real generator suspend, but the effect is
+    the same: this turn's reasoning picks up exactly where it left off once
+    ``_resolve_react_hitl`` sees the matching ``hitl_response``.
     """
-    await _dag_start(websocket, "parse", "Parse intent", "agent", {"text": user_text})
-    parse_start = time.perf_counter()
-    call = await parse_utterance(user_text, session.get("active_selection"))
-    parse_ms = int((time.perf_counter() - parse_start) * 1000)
-
-    if call is None:
-        await _dag_complete(websocket, "parse", "error", {"matched": False}, parse_ms)
+    if loop_count >= _MAX_REACT_ITERATIONS:
         await websocket.send_json(
             {
                 "type": "assistant_message",
-                "content": (
-                    "I didn't think that needed a tool call — try asking for a specific "
-                    "action (e.g. \"build a box 60x40x20\")."
-                ),
+                "content": f"Reached the maximum number of reasoning steps ({_MAX_REACT_ITERATIONS}) — stopping here.",
             }
         )
         return
-    await _dag_complete(websocket, "parse", "success", {"tool_id": call.tool_id}, parse_ms)
+
+    node_id = f"parse-{loop_count}"
+    await _dag_start(websocket, node_id, "Parse intent", "agent", {"step": loop_count})
+    parse_start = time.perf_counter()
+    raw_text = next((m["content"] for m in messages if m.get("role") == "user"), "")
+    turn = await next_react_turn(messages, session.get("active_selection"), raw_text=raw_text)
+    parse_ms = int((time.perf_counter() - parse_start) * 1000)
+
+    if turn.kind == "error":
+        await _dag_complete(websocket, node_id, "error", {"matched": False}, parse_ms)
+        await websocket.send_json(
+            {"type": "assistant_message", "content": "I ran into a problem talking to the model — please try again."}
+        )
+        return
+
+    if turn.kind == "final":
+        await _dag_complete(websocket, node_id, "success", {"final": True}, parse_ms)
+        content = turn.content or (
+            "I didn't think that needed a tool call — try asking for a specific "
+            "action (e.g. \"build a box 60x40x20\")."
+        )
+        messages.append({"role": "assistant", "content": content})
+        await websocket.send_json({"type": "assistant_message", "content": content})
+        return
+
+    # turn.kind == "tool_call"
+    await _dag_complete(websocket, node_id, "success", {"tool_id": turn.call.tool_id}, parse_ms)
+    call = turn.call
+    assistant_message, tool_call_id = build_assistant_tool_call_message(call)
+    messages.append(assistant_message)
 
     if is_mutating_tool(call.tool_id):
         request_id = uuid.uuid4().hex
-        session["pending_hitl"] = {"request_id": request_id, "call": call}
+        session["react_state"] = {
+            "messages": messages,
+            "loop_count": loop_count,
+            "call": call,
+            "tool_call_id": tool_call_id,
+            "request_id": request_id,
+        }
         await websocket.send_json(
             {
                 "type": "hitl_approval_required",
@@ -286,7 +331,67 @@ async def _process_user_text(websocket: WebSocket, session: dict[str, Any], user
         )
         return
 
-    await _dispatch_and_emit(websocket, call)
+    # Non-mutating: "dag_node_start"/"tool_call" fire only now, right as
+    # execution actually begins — same contract a mutating tool gets below,
+    # post-approval, in _resolve_react_hitl (never pre-approval — a client
+    # must not see "tool_call" for something that hasn't run yet).
+    dispatch_node_id = f"dispatch-{loop_count}"
+    await _dag_start(websocket, dispatch_node_id, call.tool_id, _node_type_for(call.tool_id), call.arguments)
+    await websocket.send_json({"type": "tool_call", "tool_id": call.tool_id, "arguments": call.arguments})
+    await _execute_and_continue(websocket, session, messages, loop_count, call, tool_call_id, dispatch_node_id)
+
+
+async def _resolve_react_hitl(websocket: WebSocket, session: dict[str, Any], response: dict[str, Any]) -> None:
+    state = session.get("react_state")
+    if state is None or response.get("request_id") != state["request_id"]:
+        return  # stale or unknown request_id — ignore
+    session["react_state"] = None
+
+    call = state["call"]
+    if not response.get("approved"):
+        # Never dispatched — no "tool_call"/dag node was ever opened for a
+        # call awaiting approval, so there's nothing to dag-complete either.
+        await websocket.send_json({"type": "assistant_message", "content": "Cancelled — no changes were made."})
+        return
+
+    override = response.get("parameters")
+    if isinstance(override, dict):
+        call.arguments.update(override)
+
+    loop_count = state["loop_count"]
+    dispatch_node_id = f"dispatch-{loop_count}"
+    await _dag_start(websocket, dispatch_node_id, call.tool_id, _node_type_for(call.tool_id), call.arguments)
+    await websocket.send_json({"type": "tool_call", "tool_id": call.tool_id, "arguments": call.arguments})
+
+    await _execute_and_continue(
+        websocket, session, state["messages"], loop_count, call, state["tool_call_id"], dispatch_node_id
+    )
+
+
+async def _process_user_text(websocket: WebSocket, session: dict[str, Any], user_text: str) -> None:
+    """Starts a fresh multi-step ReAct loop for one chat utterance.
+
+    Used both for a client's own typed messages and for a finalized
+    ``VoiceService`` transcript replayed across every connected session —
+    same loop, same DAG/HITL events, regardless of the source. Bounces
+    with a nudge instead of starting a second loop if one is already
+    mid-flight (suspended on a pending HITL approval) for this session —
+    starting a new ``messages`` history here would silently orphan that
+    pending approval and desync session["react_state"].
+    """
+    if session.get("react_state") is not None:
+        await websocket.send_json(
+            {
+                "type": "assistant_message",
+                "content": "Please resolve the pending approval above (Proceed/Cancel) before sending another message.",
+            }
+        )
+        return
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": build_system_prompt(session.get("active_selection"))},
+        {"role": "user", "content": user_text},
+    ]
+    await _run_react_loop(websocket, session, messages, 0)
 
 
 @app.websocket("/ws/chat")
@@ -299,7 +404,7 @@ async def ws_chat(websocket: WebSocket) -> None:
             "plugins": plugin_registry_view(),
         }
     )
-    session: dict[str, Any] = {"active_selection": None, "pending_hitl": None}
+    session: dict[str, Any] = {"active_selection": None, "react_state": None}
     _active_sessions[websocket] = session
     try:
         while True:
@@ -312,23 +417,11 @@ async def ws_chat(websocket: WebSocket) -> None:
 
             if msg_type == "hitl_response":
                 payload = data.get("payload") or {}
-                pending = session.get("pending_hitl")
-                if pending is None or payload.get("request_id") != pending["request_id"]:
-                    continue  # stale or unknown request_id — ignore
-                session["pending_hitl"] = None
-                await _resolve_hitl(websocket, pending["call"], payload)
+                await _resolve_react_hitl(websocket, session, payload)
                 continue
 
             user_text = str(data.get("text") or "").strip()
             if not user_text:
-                continue
-            if session.get("pending_hitl") is not None:
-                await websocket.send_json(
-                    {
-                        "type": "assistant_message",
-                        "content": "Please resolve the pending approval above (Proceed/Cancel) before sending another message.",
-                    }
-                )
                 continue
 
             await _process_user_text(websocket, session, user_text)

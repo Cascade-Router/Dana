@@ -51,13 +51,46 @@ def encode_image_bytes(raw_bytes: bytes) -> str:
     return base64.b64encode(raw_bytes).decode("ascii")
 
 
+def _scan_embedded_json_values(text: str) -> list[Any]:
+    """Best-effort scan for JSON object/array literals embedded ANYWHERE in
+    ``text`` — a further-degraded variant of the same quirk
+    ``_fallback_tool_calls_from_content`` recovers from, where the model
+    prefixes its structured call with prose (e.g. "Here's the coordinate...
+    {"name": "create_freecad_cylinder", ...}") instead of emitting only
+    JSON. Uses ``JSONDecoder.raw_decode`` at each ``{``/``[`` so trailing
+    prose/other content after a valid JSON value doesn't break the parse —
+    a plain ``json.loads`` would reject the whole string outright.
+    """
+    decoder = json.JSONDecoder()
+    values: list[Any] = []
+    idx = 0
+    length = len(text)
+    while idx < length:
+        brace = text.find("{", idx)
+        bracket = text.find("[", idx)
+        candidates = [p for p in (brace, bracket) if p != -1]
+        if not candidates:
+            break
+        start = min(candidates)
+        try:
+            value, end = decoder.raw_decode(text, start)
+            values.append(value)
+            idx = end
+        except json.JSONDecodeError:
+            idx = start + 1
+    return values
+
+
 def _fallback_tool_calls_from_content(content: str | None) -> list[dict[str, Any]]:
     """Recover a tool call some local Ollama models emit as plain JSON text
     in ``message.content`` instead of populating ``message.tool_calls`` —
     a real, observed quirk of qwen2.5-coder over the OpenAI-compat
     ``/v1/chat/completions`` shim (verified live against a running Ollama
-    daemon), not a hypothetical. Returns ``[]`` when ``content`` isn't a
-    ``{"name": ..., "arguments": {...}}``-shaped JSON object/array.
+    daemon), not a hypothetical. Tries the whole content as one JSON
+    object/array first; falls back to scanning for JSON values embedded in
+    surrounding prose (also observed live) before giving up. Returns ``[]``
+    when nothing recoverable looks like a ``{"name": ..., "arguments": {...}}``
+    shape.
     """
     if not content:
         return []
@@ -69,11 +102,12 @@ def _fallback_tool_calls_from_content(content: str | None) -> list[dict[str, Any
         text = text.strip()
     try:
         parsed = json.loads(text)
+        candidates: list[Any] = parsed if isinstance(parsed, list) else [parsed]
     except (json.JSONDecodeError, ValueError):
-        return []
+        candidates = _scan_embedded_json_values(text)
 
     calls: list[dict[str, Any]] = []
-    for candidate in parsed if isinstance(parsed, list) else [parsed]:
+    for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
         fn = candidate.get("function") if isinstance(candidate.get("function"), dict) else candidate

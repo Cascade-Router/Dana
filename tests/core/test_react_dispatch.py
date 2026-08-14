@@ -15,6 +15,7 @@ a plain ``asyncio.run(...)`` call from an ordinary sync ``def test_...()``.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
@@ -200,6 +201,126 @@ def test_parse_utterance_respects_llm_provided_target_over_fallback(monkeypatch:
     assert call is not None
     # The LLM's own values win — the fallback never overwrites a real answer.
     assert call.arguments["target_position"] == [9.0, 9.0, 9.0]
+
+
+# --------------------------------------------------------------------------
+# next_react_turn / ReactTurn — the multi-step loop's single-iteration
+# building block. parse_utterance (tested above) is now a thin single-turn
+# wrapper around this; dana.api.server drives it directly, iteration after
+# iteration, with an evolving `messages` history.
+# --------------------------------------------------------------------------
+
+
+def test_next_react_turn_returns_final_when_no_tool_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, content="All done here.")
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+    turn = asyncio.run(rd.next_react_turn(messages))
+    assert turn.kind == "final"
+    assert turn.content == "All done here."
+
+
+def test_next_react_turn_returns_tool_call_and_finalizes_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, tool_calls=[ToolCall(tool_id="create_freecad_box", arguments={})])
+    selection = {"centroid": [1.0, 2.0, 3.0], "normal": [0.0, 1.0, 0.0]}
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "add a box here"}]
+    turn = asyncio.run(rd.next_react_turn(messages, selection, raw_text="add a box here"))
+    assert turn.kind == "tool_call"
+    assert turn.call.tool_id == "create_freecad_box"
+    # _finalize_call_arguments still runs — same selection-injection fallback
+    # parse_utterance relies on, now reachable at any loop iteration.
+    assert turn.call.arguments["target_position"] == [1.0, 2.0, 3.0]
+
+
+def test_next_react_turn_uses_explicit_raw_text_not_latest_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """raw_text must be the ORIGINAL user utterance, not whatever the last
+    message in a multi-turn history happens to be — a later loop iteration's
+    last message is a tool result, which has no bearing on whether the user
+    said "here" several tool calls ago."""
+    _mock_llm(monkeypatch, tool_calls=[ToolCall(tool_id="create_freecad_box", arguments={})])
+    selection = {"centroid": [4.0, 5.0, 6.0], "normal": [0.0, 0.0, 1.0]}
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "add a box here"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "system_state", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call_1", "content": '{"ok": true}'},
+    ]
+    turn = asyncio.run(rd.next_react_turn(messages, selection, raw_text="add a box here"))
+    assert turn.call.arguments["target_position"] == [4.0, 5.0, 6.0]
+
+
+def test_next_react_turn_unknown_tool_id_yields_final(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, tool_calls=[ToolCall(tool_id="not_a_real_tool", arguments={})], content="")
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "do something weird"}]
+    turn = asyncio.run(rd.next_react_turn(messages))
+    assert turn.kind == "final"
+
+
+def test_next_react_turn_llm_exception_yields_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, raises=RuntimeError("ollama unreachable"))
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "build a box"}]
+    turn = asyncio.run(rd.next_react_turn(messages))
+    assert turn.kind == "error"
+
+
+def test_build_assistant_tool_call_message_shape() -> None:
+    call = ToolCall(tool_id="create_freecad_box", arguments={"length": 30, "width": 30, "height": 30})
+    message, call_id = rd.build_assistant_tool_call_message(call)
+    assert message["role"] == "assistant"
+    assert message["tool_calls"][0]["id"] == call_id
+    assert message["tool_calls"][0]["function"]["name"] == "create_freecad_box"
+    assert json.loads(message["tool_calls"][0]["function"]["arguments"]) == {"length": 30, "width": 30, "height": 30}
+
+
+def test_build_assistant_tool_call_message_ids_are_unique() -> None:
+    call = ToolCall(tool_id="system_state", arguments={})
+    _msg1, id1 = rd.build_assistant_tool_call_message(call)
+    _msg2, id2 = rd.build_assistant_tool_call_message(call)
+    assert id1 != id2
+
+
+def test_build_tool_result_message_success() -> None:
+    result = rd.ToolResult("create_freecad_box", True, {"ok": True, "name": "Box", "path": "x.FCStd"}, "ok", 5)
+    message = rd.build_tool_result_message("call_abc", result)
+    assert message == {
+        "role": "tool",
+        "tool_call_id": "call_abc",
+        "content": json.dumps({"ok": True, "name": "Box", "path": "x.FCStd"}),
+    }
+
+
+def test_build_tool_result_message_failure_reports_error() -> None:
+    result = rd.ToolResult("create_freecad_box", False, {}, "boom", 5)
+    message = rd.build_tool_result_message("call_abc", result)
+    assert json.loads(message["content"]) == {"ok": False, "error": "boom"}
+
+
+def test_multi_iteration_message_history_round_trips_through_next_react_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A small end-to-end check of the actual pattern dana.api.server drives:
+    build the assistant+tool messages for one tool call, append them, then
+    ask next_react_turn again — proving the shapes these helpers produce
+    are exactly what next_react_turn's own LLM call site can consume."""
+    fake = _mock_llm(
+        monkeypatch,
+        tool_calls=[ToolCall(tool_id="get_freecad_bounding_box", arguments={"target_object": "Box"})],
+    )
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "check the box then stop"}]
+    turn1 = asyncio.run(rd.next_react_turn(messages, raw_text="check the box then stop"))
+    assert turn1.kind == "tool_call"
+
+    assistant_message, call_id = rd.build_assistant_tool_call_message(turn1.call)
+    messages.append(assistant_message)
+    result = rd.ToolResult("get_freecad_bounding_box", True, {"ok": True, "z_max": 30.0}, "ok", 5)
+    messages.append(rd.build_tool_result_message(call_id, result))
+
+    fake._tool_calls = []
+    fake._content = "The box is 30mm tall."
+    turn2 = asyncio.run(rd.next_react_turn(messages, raw_text="check the box then stop"))
+    assert turn2.kind == "final"
+    assert turn2.content == "The box is 30mm tall."
+    # The second LLM call actually received the full history, tool result included.
+    assert fake.calls[-1]["messages"] == messages
 
 
 # --------------------------------------------------------------------------

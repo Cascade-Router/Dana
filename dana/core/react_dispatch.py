@@ -15,6 +15,7 @@ import asyncio
 import json
 import re
 import time
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -488,11 +489,26 @@ def _llm_tools_schema() -> list[dict[str, Any]]:
 
 def build_system_prompt(active_selection: dict[str, Any] | None) -> str:
     """The dynamic context the LLM reasons over each turn — this is where
-    the React 3D viewer's canvas-selection state enters the ReAct loop."""
+    the React 3D viewer's canvas-selection state enters the ReAct loop.
+
+    This system prompt is re-sent on EVERY iteration of the multi-step
+    ReAct loop (dana.api.server._run_react_loop), with the running
+    conversation (including prior tool results) appended after it — so a
+    request describing several steps at once gets to keep seeing this
+    same "one step at a time" instruction as it progresses, not just on
+    the first turn.
+    """
     lines = [
-        "You are Dana, a CAD co-pilot for FreeCAD. Call at most one tool per message, "
-        "only when the user is clearly asking for an action. If they're just chatting "
-        "or asking a question, reply in plain text without calling a tool.",
+        "You are Dana, a CAD co-pilot for FreeCAD. The user's request may describe "
+        "several steps at once (e.g. 'create a box, then check its size, then add a "
+        "cylinder on top') — you can only take ONE step per turn. Call a tool using "
+        "the tool-calling mechanism for the SINGLE NEXT step only, then stop and wait "
+        "for its result before deciding the following step — NEVER write a tool call "
+        "(or a list of tool calls) as JSON text in your reply; that text is never "
+        "executed. Call at most one tool per message, only when the user is clearly "
+        "asking for an action. If they're just chatting, asking a question, or you've "
+        "already completed every step they asked for, reply in plain text without "
+        "calling a tool.",
     ]
     centroid = active_selection.get("centroid") if active_selection else None
     normal = active_selection.get("normal") if active_selection else None
@@ -536,11 +552,31 @@ def _finalize_call_arguments(call: ToolCall, active_selection: dict[str, Any] | 
         call.arguments["target_normal"] = active_selection.get("normal")
 
 
+async def _call_llm_once(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """One raw LLM turn against the running ``messages`` history, via the
+    existing OpenAI-tool-calling bridge (``dana.core.model_provider.
+    ModelProvider`` + ``dana.tools.schema``) — no parsing/finalization of
+    the result here, just the network call, so both the single-shot
+    ``parse_utterance`` and the multi-step ``next_react_turn`` loop below
+    share exactly one call site.
+    """
+    provider = ModelProvider()
+    return await asyncio.to_thread(
+        provider.complete_with_tool_calls,
+        messages,
+        tools=_llm_tools_schema(),
+        provider="ollama",
+    )
+
+
 async def parse_utterance(text: str, active_selection: dict[str, Any] | None = None) -> ToolCall | None:
     """One reason-then-act ReAct step: ask the local LLM whether this
-    utterance needs a tool call, via the existing OpenAI-tool-calling bridge
-    (``dana.core.model_provider.ModelProvider`` + ``dana.tools.schema``) —
-    no separate ReAct while-loop built here, and no regex intent parsing.
+    utterance needs a tool call. Kept as a single-turn convenience wrapper
+    around ``next_react_turn`` for callers that only need one tool call and
+    no multi-step loop (e.g. the existing test suite) — ``dana.api.server``'s
+    ``/ws/chat`` handler drives the real multi-step loop directly via
+    ``next_react_turn`` instead, so it can keep asking the LLM what to do
+    next after each tool result.
     """
     text = (text or "").strip()
     if not text:
@@ -550,26 +586,87 @@ async def parse_utterance(text: str, active_selection: dict[str, Any] | None = N
         {"role": "system", "content": build_system_prompt(active_selection)},
         {"role": "user", "content": text},
     ]
-    provider = ModelProvider()
+    turn = await next_react_turn(messages, active_selection, raw_text=text)
+    return turn.call if turn.kind == "tool_call" else None
+
+
+class ReactTurn:
+    """Outcome of one ``next_react_turn`` iteration: either a final text
+    answer (the loop should stop) or a resolved ``ToolCall`` ready for the
+    caller to HITL-gate/dispatch and loop back with the result."""
+
+    __slots__ = ("kind", "content", "call")
+
+    def __init__(self, kind: str, content: str = "", call: ToolCall | None = None) -> None:
+        self.kind = kind  # "final" | "tool_call" | "error"
+        self.content = content
+        self.call = call
+
+
+async def next_react_turn(
+    messages: list[dict[str, Any]],
+    active_selection: dict[str, Any] | None = None,
+    *,
+    raw_text: str = "",
+) -> ReactTurn:
+    """One step of the multi-step ReAct loop: given the full running
+    ``messages`` history (system + user + any prior assistant/tool turns
+    already appended by the caller), ask the LLM what to do next.
+
+    ``raw_text`` is the ORIGINAL user utterance for this turn (not the
+    latest tool result) — ``_finalize_call_arguments``'s selection-reference
+    check ("this"/"here"/...) matches against what the user actually said,
+    which may be several tool calls back in a multi-step chain.
+    """
     try:
-        result = await asyncio.to_thread(
-            provider.complete_with_tool_calls,
-            messages,
-            tools=_llm_tools_schema(),
-            provider="ollama",
-        )
-    except Exception:  # noqa: BLE001 — Ollama unreachable/model missing degrades to "no tool", not a crash
-        return None
+        result = await _call_llm_once(messages)
+    except Exception as exc:  # noqa: BLE001 — Ollama unreachable/model missing surfaces as an error turn
+        return ReactTurn("error", content=str(exc))
 
     tool_calls = result.get("tool_calls") or []
     if not tool_calls:
-        return None
-    call = tool_calls[0]  # one tool per turn, matching the existing single parse/dispatch DAG shape
+        return ReactTurn("final", content=result.get("content") or "")
+    call = tool_calls[0]  # one tool per LLM turn — the loop itself is what allows chaining several
     if call.tool_id not in TOOL_HANDLERS:
-        return None
-    call.raw_text = text
+        return ReactTurn("final", content=result.get("content") or "")
+    call.raw_text = raw_text
     _finalize_call_arguments(call, active_selection)
-    return call
+    return ReactTurn("tool_call", call=call)
+
+
+def build_assistant_tool_call_message(call: ToolCall) -> tuple[dict[str, Any], str]:
+    """The OpenAI-wire assistant message announcing ``call``, to append to
+    the running ``messages`` history so the model remembers deciding to
+    call this tool — plus the synthetic ``tool_call_id`` the matching
+    tool-result message must echo back.
+
+    Dana's ``ToolCall`` IR has no id of its own (``openai_tool_calls_to_ir``
+    doesn't preserve the wire ``id`` from the raw response), and round-
+    tripping through this custom ``messages`` array only needs internal
+    self-consistency between this message and its own tool-result reply —
+    not the model's original id — so one is generated here.
+    """
+    call_id = f"call_{uuid.uuid4().hex[:24]}"
+    message = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": call.tool_id, "arguments": json.dumps(call.arguments)},
+            }
+        ],
+    }
+    return message, call_id
+
+
+def build_tool_result_message(tool_call_id: str, result: "ToolResult") -> dict[str, Any]:
+    """The OpenAI-wire ``tool`` role message reporting ``result`` back to
+    the model for the next loop iteration, keyed to the assistant message
+    that requested it via ``tool_call_id``."""
+    payload = result.payload if result.ok else {"ok": False, "error": result.message}
+    return {"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(payload)}
 
 
 def dispatch_tool_call(call: ToolCall, engine: Any, control_plane: Any) -> ToolResult:
@@ -659,12 +756,16 @@ def plugin_registry_view() -> dict[str, Any]:
 __all__ = (
     "MUTATING_TOOLS",
     "TOOL_HANDLERS",
+    "ReactTurn",
     "ToolResult",
+    "build_assistant_tool_call_message",
     "build_system_prompt",
+    "build_tool_result_message",
     "describe_tool_call",
     "dispatch_tool_call",
     "driver_state",
     "is_mutating_tool",
+    "next_react_turn",
     "parse_utterance",
     "plugin_registry_view",
     "summarize_result",

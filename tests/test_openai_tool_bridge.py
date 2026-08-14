@@ -72,6 +72,43 @@ def test_fallback_ignores_json_without_a_name() -> None:
     assert bridge._fallback_tool_calls_from_content('{"arguments": {"a": 1}}') == []
 
 
+def test_fallback_recovers_json_embedded_after_prose() -> None:
+    """Real, observed live: qwen2.5-coder:7b answering a spatial-math
+    question with its own explanation THEN a JSON tool call, instead of
+    emitting only JSON — a further-degraded variant of the plain-JSON quirk
+    the other fallback tests cover."""
+    content = (
+        "The top-center coordinate of the box is at (15, 15, 30). Now, let's "
+        "create a 15mm radius cylinder perfectly resting on top of it.\n\n"
+        '{"name": "create_freecad_cylinder", "arguments": '
+        '{"height": 1, "name": "Cylinder", "placement_x": 15, "placement_y": 15, '
+        '"placement_z": 30, "radius": 15}}'
+    )
+    calls = bridge._fallback_tool_calls_from_content(content)
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "create_freecad_cylinder"
+    assert calls[0]["function"]["arguments"]["placement_z"] == 30
+
+
+def test_fallback_recovers_first_of_multiple_embedded_json_blobs() -> None:
+    """A model that plans several steps at once and dumps each as its own
+    JSON blob — callers only ever take the first (see next_react_turn's
+    "one tool per turn" convention), but the fallback itself should recover
+    all of them rather than silently dropping everything after the first."""
+    content = (
+        '{"name": "create_freecad_box", "arguments": {"height": 30}}\n\n'
+        '{"name": "get_freecad_bounding_box", "arguments": {"target_object": "Box"}}'
+    )
+    calls = bridge._fallback_tool_calls_from_content(content)
+    assert [c["function"]["name"] for c in calls] == ["create_freecad_box", "get_freecad_bounding_box"]
+
+
+def test_fallback_prose_with_parenthesized_numbers_yields_nothing_spurious() -> None:
+    """"(15, 15, 30)"-style prose must not be mistaken for a JSON array —
+    only real {..}/[..] JSON literals should ever be scanned."""
+    assert bridge._fallback_tool_calls_from_content("The coordinate is (15, 15, 30).") == []
+
+
 # --------------------------------------------------------------------------
 # complete_openai_with_tools — end-to-end through the fake HTTP layer
 # --------------------------------------------------------------------------
