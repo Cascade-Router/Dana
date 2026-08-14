@@ -2058,7 +2058,10 @@
         {
           "name": "target_normal", "type": "array", "items_type": "number", "required": false,
           "description_en": "[nx, ny, nz] surface normal at the selected point, copied verbatim from the active canvas selection when relevant."
-        }
+        },
+        {"name": "placement_x", "type": "number", "required": false, "description_en": "Global X-axis offset in mm. Defaults to 0."},
+        {"name": "placement_y", "type": "number", "required": false, "description_en": "Global Y-axis offset in mm. Defaults to 0."},
+        {"name": "placement_z", "type": "number", "required": false, "description_en": "Global Z-axis offset in mm. Defaults to 0."}
       ]
     },
     {
@@ -2075,7 +2078,10 @@
         {
           "name": "target_normal", "type": "array", "items_type": "number", "required": false,
           "description_en": "[nx, ny, nz] surface normal at the selected point, copied verbatim from the active canvas selection when relevant."
-        }
+        },
+        {"name": "placement_x", "type": "number", "required": false, "description_en": "Global X-axis offset in mm. Defaults to 0."},
+        {"name": "placement_y", "type": "number", "required": false, "description_en": "Global Y-axis offset in mm. Defaults to 0."},
+        {"name": "placement_z", "type": "number", "required": false, "description_en": "Global Z-axis offset in mm. Defaults to 0."}
       ]
     },
     {
@@ -2136,7 +2142,10 @@
         {"name": "length", "type": "number", "required": false, "description_en": "Base length in mm."},
         {"name": "width", "type": "number", "required": false, "description_en": "Base width in mm."},
         {"name": "height", "type": "number", "required": false, "description_en": "Height from base to the apex point, in mm."},
-        {"name": "name", "type": "string", "required": false, "description_en": "Name for the created object."}
+        {"name": "name", "type": "string", "required": false, "description_en": "Name for the created object."},
+        {"name": "placement_x", "type": "number", "required": false, "description_en": "Global X-axis offset in mm. Defaults to 0."},
+        {"name": "placement_y", "type": "number", "required": false, "description_en": "Global Y-axis offset in mm. Defaults to 0."},
+        {"name": "placement_z", "type": "number", "required": false, "description_en": "Global Z-axis offset in mm. Defaults to 0."}
       ]
     },
     {
@@ -2147,7 +2156,10 @@
         {"name": "outer_radius", "type": "number", "required": true, "description_en": "Radius in mm to each outer spike tip."},
         {"name": "inner_radius", "type": "number", "required": true, "description_en": "Radius in mm to each inner notch between spikes — smaller than outer_radius."},
         {"name": "height", "type": "number", "required": false, "description_en": "Thickness of the prism in mm (extrusion distance along Z)."},
-        {"name": "name", "type": "string", "required": false, "description_en": "Name for the created object."}
+        {"name": "name", "type": "string", "required": false, "description_en": "Name for the created object."},
+        {"name": "placement_x", "type": "number", "required": false, "description_en": "Global X-axis offset in mm. Defaults to 0."},
+        {"name": "placement_y", "type": "number", "required": false, "description_en": "Global Y-axis offset in mm. Defaults to 0."},
+        {"name": "placement_z", "type": "number", "required": false, "description_en": "Global Z-axis offset in mm. Defaults to 0."}
       ]
     }
   ]

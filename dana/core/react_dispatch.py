@@ -48,12 +48,21 @@ class ToolResult:
 # ---------------------------------------------------------------------------
 
 
+def _extract_placement(args: dict[str, Any]) -> tuple[float, float, float]:
+    return (
+        float(args.get("placement_x", 0.0) or 0.0),
+        float(args.get("placement_y", 0.0) or 0.0),
+        float(args.get("placement_z", 0.0) or 0.0),
+    )
+
+
 def _tool_create_box(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
     return engine.create_box(
         float(args.get("length", 40)),
         float(args.get("width", 25)),
         float(args.get("height", 15)),
         name=str(args.get("name") or "Box"),
+        placement=_extract_placement(args),
     )
 
 
@@ -62,6 +71,7 @@ def _tool_create_cylinder(args: dict[str, Any], engine: Any, _cp: Any) -> dict[s
         float(args.get("radius", 10)),
         float(args.get("height", 30)),
         name=str(args.get("name") or "Cylinder"),
+        placement=_extract_placement(args),
     )
 
 
@@ -160,6 +170,7 @@ def _tool_create_freecad_pyramid(args: dict[str, Any], engine: Any, _cp: Any) ->
         float(args.get("width", 40)),
         float(args.get("height", 60)),
         name=str(args.get("name") or "Pyramid"),
+        placement=_extract_placement(args),
     )
 
 
@@ -173,6 +184,7 @@ def _tool_create_freecad_star_prism(args: dict[str, Any], engine: Any, _cp: Any)
         float(args.get("inner_radius", 20)),
         float(args.get("height", 10)),
         name=str(args.get("name") or "StarPrism"),
+        placement=_extract_placement(args),
     )
 
 

@@ -326,6 +326,62 @@ def test_dispatch_star_prism_rejects_too_few_points() -> None:
     assert "at least 3 points" in result.message
 
 
+def test_extract_placement_defaults_to_origin() -> None:
+    assert rd._extract_placement({}) == (0.0, 0.0, 0.0)
+
+
+def test_extract_placement_reads_xyz_args() -> None:
+    assert rd._extract_placement({"placement_x": 1, "placement_y": 2, "placement_z": 3}) == (1.0, 2.0, 3.0)
+
+
+def test_dispatch_box_with_placement_passes_through_to_engine() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    call = ToolCall(
+        tool_id="create_freecad_box",
+        arguments={
+            "length": 20,
+            "width": 20,
+            "height": 20,
+            "placement_x": 0,
+            "placement_y": 0,
+            "placement_z": 25,
+        },
+    )
+    result = rd.dispatch_tool_call(call, MockFreeCADEngine(), MockControlPlane())
+    assert result.ok is True
+    assert result.payload["placement"] == [0.0, 0.0, 25.0]
+
+
+def test_dispatch_cylinder_without_placement_defaults_to_origin() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    call = ToolCall(tool_id="create_freecad_cylinder", arguments={"radius": 10, "height": 30})
+    result = rd.dispatch_tool_call(call, MockFreeCADEngine(), MockControlPlane())
+    assert result.ok is True
+    assert result.payload["placement"] == [0.0, 0.0, 0.0]
+
+
+def test_dispatch_pyramid_and_star_prism_with_placement() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    pyramid_call = ToolCall(
+        tool_id="create_freecad_pyramid",
+        arguments={"length": 50, "width": 50, "height": 75, "placement_x": 10, "placement_y": -5},
+    )
+    result = rd.dispatch_tool_call(pyramid_call, MockFreeCADEngine(), MockControlPlane())
+    assert result.ok is True
+    assert result.payload["placement"] == [10.0, -5.0, 0.0]
+
+    star_call = ToolCall(
+        tool_id="create_freecad_star_prism",
+        arguments={"points": 8, "outer_radius": 60, "inner_radius": 20, "height": 5, "placement_z": 12},
+    )
+    result = rd.dispatch_tool_call(star_call, MockFreeCADEngine(), MockControlPlane())
+    assert result.ok is True
+    assert result.payload["placement"] == [0.0, 0.0, 12.0]
+
+
 def test_parse_utterance_pyramid_and_star_prism_pass_through(monkeypatch: pytest.MonkeyPatch) -> None:
     _mock_llm(
         monkeypatch,

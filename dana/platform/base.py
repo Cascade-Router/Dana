@@ -49,16 +49,28 @@ class BaseCADEngine(ABC):
 
     @abstractmethod
     def create_box(
-        self, length: float, width: float, height: float, name: str = "Box"
+        self,
+        length: float,
+        width: float,
+        height: float,
+        name: str = "Box",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> dict[str, Any]:
-        """Create a parametric box primitive. Returns a result dict including
-        at least ``{"ok": bool, "path": str, "dimensions": {...}}``."""
+        """Create a parametric box primitive, translated by ``placement``
+        (global X/Y/Z offset in mm) on top of its normal local origin.
+        Returns a result dict including at least
+        ``{"ok": bool, "path": str, "dimensions": {...}}``."""
 
     @abstractmethod
     def create_cylinder(
-        self, radius: float, height: float, name: str = "Cylinder"
+        self,
+        radius: float,
+        height: float,
+        name: str = "Cylinder",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> dict[str, Any]:
-        """Create a parametric cylinder primitive. Same result shape as
+        """Create a parametric cylinder primitive, translated by
+        ``placement`` (global X/Y/Z offset in mm). Same result shape as
         ``create_box``."""
 
     @abstractmethod
@@ -82,11 +94,17 @@ class BaseCADEngine(ABC):
 
     @abstractmethod
     def create_pyramid(
-        self, length: float, width: float, height: float, name: str = "Pyramid"
+        self,
+        length: float,
+        width: float,
+        height: float,
+        name: str = "Pyramid",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> dict[str, Any]:
         """Create a sharp-edged rectangular pyramid: a ``length`` x ``width``
-        base centered at the origin, apex at ``(0, 0, height)``. Same result
-        shape as ``create_box``."""
+        base centered at the origin, apex at ``(0, 0, height)``, translated
+        by ``placement`` (global X/Y/Z offset in mm). Same result shape as
+        ``create_box``."""
 
     @abstractmethod
     def create_star_prism(
@@ -96,11 +114,12 @@ class BaseCADEngine(ABC):
         inner_radius: float,
         height: float,
         name: str = "StarPrism",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> dict[str, Any]:
         """Create a sharp-edged, ``points``-pointed star prism: an N-point
         star polygon (vertices alternating ``outer_radius``/``inner_radius``)
-        extruded ``height`` units along Z. Same result shape as
-        ``create_box``."""
+        extruded ``height`` units along Z, translated by ``placement``
+        (global X/Y/Z offset in mm). Same result shape as ``create_box``."""
 
     @abstractmethod
     def export_mesh_stl(self, source_path: str, name: str | None = None) -> dict[str, Any]:

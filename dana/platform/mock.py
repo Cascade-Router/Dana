@@ -124,13 +124,19 @@ class MockFreeCADEngine(BaseCADEngine):
     """
 
     def create_box(
-        self, length: float, width: float, height: float, name: str = "Box"
+        self,
+        length: float,
+        width: float,
+        height: float,
+        name: str = "Box",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> dict[str, Any]:
         import trimesh
 
         dims = {"length": float(length), "width": float(width), "height": float(height)}
         mesh = trimesh.creation.box(extents=[dims["length"], dims["width"], dims["height"]])
         mesh.apply_translation(-mesh.centroid)
+        mesh.apply_translation(placement)
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
         return {
@@ -139,18 +145,26 @@ class MockFreeCADEngine(BaseCADEngine):
             "type": "Part::Box",
             "bounding_box": _bbox(mesh),
             "dimensions": dims,
+            "placement": list(placement),
             "path": str(out_path),
             "gui_shown": False,
             "driver": "mock",
             "note": _MOCK_NOTE_CAD,
         }
 
-    def create_cylinder(self, radius: float, height: float, name: str = "Cylinder") -> dict[str, Any]:
+    def create_cylinder(
+        self,
+        radius: float,
+        height: float,
+        name: str = "Cylinder",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> dict[str, Any]:
         import trimesh
 
         dims = {"radius": float(radius), "height": float(height)}
         mesh = trimesh.creation.cylinder(radius=dims["radius"], height=dims["height"])
         mesh.apply_translation(-mesh.centroid)
+        mesh.apply_translation(placement)
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
         return {
@@ -159,6 +173,7 @@ class MockFreeCADEngine(BaseCADEngine):
             "type": "Part::Cylinder",
             "bounding_box": _bbox(mesh),
             "dimensions": dims,
+            "placement": list(placement),
             "path": str(out_path),
             "gui_shown": False,
             "driver": "mock",
@@ -219,7 +234,14 @@ class MockFreeCADEngine(BaseCADEngine):
             "note": _MOCK_NOTE_CAD,
         }
 
-    def create_pyramid(self, length: float, width: float, height: float, name: str = "Pyramid") -> dict[str, Any]:
+    def create_pyramid(
+        self,
+        length: float,
+        width: float,
+        height: float,
+        name: str = "Pyramid",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> dict[str, Any]:
         import numpy as np
         import trimesh
 
@@ -242,6 +264,7 @@ class MockFreeCADEngine(BaseCADEngine):
             [3, 0, 4],  # four triangular sides
         ]
         mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
+        mesh.apply_translation(placement)
         dims = {"length": length_f, "width": width_f, "height": height_f}
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
@@ -251,6 +274,7 @@ class MockFreeCADEngine(BaseCADEngine):
             "type": "Part::Feature",
             "bounding_box": _bbox(mesh),
             "dimensions": dims,
+            "placement": list(placement),
             "path": str(out_path),
             "gui_shown": False,
             "driver": "mock",
@@ -264,12 +288,14 @@ class MockFreeCADEngine(BaseCADEngine):
         inner_radius: float,
         height: float,
         name: str = "StarPrism",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> dict[str, Any]:
         if int(points) < 3:
             return {"ok": False, "error": "create_star_prism requires at least 3 points"}
 
         vertices2d = _star_polygon_vertices(int(points), float(outer_radius), float(inner_radius))
         mesh = _fan_triangulated_extrusion(vertices2d, float(height))
+        mesh.apply_translation(placement)
         dims = {
             "points": int(points),
             "outer_radius": float(outer_radius),
@@ -284,6 +310,7 @@ class MockFreeCADEngine(BaseCADEngine):
             "type": "Part::Feature",
             "bounding_box": _bbox(mesh),
             "dimensions": dims,
+            "placement": list(placement),
             "path": str(out_path),
             "gui_shown": False,
             "driver": "mock",

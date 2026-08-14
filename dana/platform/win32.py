@@ -62,16 +62,27 @@ class Win32ControlPlane(BaseControlPlane):
 
 class RealFreeCADEngine(BaseCADEngine):
     def create_box(
-        self, length: float, width: float, height: float, name: str = "Box"
+        self,
+        length: float,
+        width: float,
+        height: float,
+        name: str = "Box",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.create_box(length, width, height, name))
+        return json.loads(engine.create_box(length, width, height, name, placement=placement))
 
-    def create_cylinder(self, radius: float, height: float, name: str = "Cylinder") -> dict[str, Any]:
+    def create_cylinder(
+        self,
+        radius: float,
+        height: float,
+        name: str = "Cylinder",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.create_cylinder(radius, height, name))
+        return json.loads(engine.create_cylinder(radius, height, name, placement=placement))
 
     def apply_boolean_cut(self, base_path: str, tool_path: str, name: str = "Cut") -> dict[str, Any]:
         from dana.plugins.freecad import engine
@@ -89,11 +100,16 @@ class RealFreeCADEngine(BaseCADEngine):
         return json.loads(engine.create_extruded_polyline(profile_points, height))
 
     def create_pyramid(
-        self, length: float, width: float, height: float, name: str = "Pyramid"
+        self,
+        length: float,
+        width: float,
+        height: float,
+        name: str = "Pyramid",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.create_pyramid(length, width, height, name))
+        return json.loads(engine.create_pyramid(length, width, height, name, placement=placement))
 
     def create_star_prism(
         self,
@@ -102,10 +118,13 @@ class RealFreeCADEngine(BaseCADEngine):
         inner_radius: float,
         height: float,
         name: str = "StarPrism",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.create_star_prism(points, outer_radius, inner_radius, height, name))
+        return json.loads(
+            engine.create_star_prism(points, outer_radius, inner_radius, height, name, placement=placement)
+        )
 
     def export_mesh_stl(self, source_path: str, name: str | None = None) -> dict[str, Any]:
         from dana.plugins.freecad import engine

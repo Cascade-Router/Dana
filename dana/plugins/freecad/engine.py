@@ -390,6 +390,15 @@ _BBOX_PRINT = (
     "bbox.XMax, bbox.YMax, bbox.ZMax]))\n"
 )
 
+# Global XYZ translation applied on top of an object's normal local
+# geometry — a no-op line when placement is the origin, so every existing
+# script's output is byte-for-byte unchanged for callers that never pass one.
+_PLACEMENT_SNIPPET = (
+    "if {placement!r} != (0.0, 0.0, 0.0):\n"
+    "    _px, _py, _pz = {placement!r}\n"
+    "    obj.Placement = App.Placement(App.Vector(_px, _py, _pz), App.Rotation())\n"
+)
+
 _BOX_SCRIPT = """\
 import FreeCAD as App
 
@@ -398,6 +407,7 @@ obj = doc.addObject("Part::Box", {name!r})
 obj.Length = {length}
 obj.Width = {width}
 obj.Height = {height}
+""" + _PLACEMENT_SNIPPET + """\
 doc.recompute()
 doc.saveAs({out_path!r})
 """ + _BBOX_PRINT + """\
@@ -411,6 +421,7 @@ doc = App.newDocument("DanaModel")
 obj = doc.addObject("Part::Cylinder", {name!r})
 obj.Radius = {radius}
 obj.Height = {height}
+""" + _PLACEMENT_SNIPPET + """\
 doc.recompute()
 doc.saveAs({out_path!r})
 """ + _BBOX_PRINT + """\
@@ -431,6 +442,7 @@ solid = face.extrude(App.Vector(0.0, 0.0, {height}))
 doc = App.newDocument("DanaModel")
 obj = doc.addObject("Part::Feature", {name!r})
 obj.Shape = solid
+""" + _PLACEMENT_SNIPPET + """\
 doc.recompute()
 doc.saveAs({out_path!r})
 """ + _BBOX_PRINT + """\
@@ -460,6 +472,7 @@ solid = Part.Solid(Part.Shell([base_face] + side_faces))
 doc = App.newDocument("DanaModel")
 obj = doc.addObject("Part::Feature", {name!r})
 obj.Shape = solid
+""" + _PLACEMENT_SNIPPET + """\
 doc.recompute()
 doc.saveAs({out_path!r})
 """ + _BBOX_PRINT + """\
@@ -480,22 +493,34 @@ def _auto_show(out_path: Path) -> bool:
         return False
 
 
-def create_box(length: float, width: float, height: float, name: str = "Box") -> str:
-    """Create a parametric ``Part::Box`` and save it as a ``.FCStd`` document.
+def create_box(
+    length: float,
+    width: float,
+    height: float,
+    name: str = "Box",
+    placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> str:
+    """Create a parametric ``Part::Box`` and save it as a ``.FCStd`` document,
+    translated by ``placement`` (global X/Y/Z offset in mm) on top of its
+    normal corner-at-origin position.
 
     Returns lean JSON (name/type/bounding_box/dimensions/path) rather than
     echoing every input verbatim — keeps context small for fast local-LLM
     ReAct turns that chain many CAD primitives in a row.
     """
     dims = {"length": float(length), "width": float(width), "height": float(height)}
+    placement = (float(placement[0]), float(placement[1]), float(placement[2]))
     if is_dry_run_enabled():
-        return _dry_run_result("create_box", name=name, type="Part::Box", dimensions=dims)
+        return _dry_run_result(
+            "create_box", name=name, type="Part::Box", dimensions=dims, placement=list(placement)
+        )
     out_path = _output_path(name, ext="FCStd")
     script = _BOX_SCRIPT.format(
         name=name,
         length=dims["length"],
         width=dims["width"],
         height=dims["height"],
+        placement=placement,
         out_path=str(out_path),
         marker=_OK_MARKER,
     )
@@ -507,21 +532,32 @@ def create_box(length: float, width: float, height: float, name: str = "Box") ->
         type="Part::Box",
         bounding_box=result.get("bounding_box"),
         dimensions=dims,
+        placement=list(placement),
         path=str(out_path),
         gui_shown=_auto_show(out_path),
     )
 
 
-def create_cylinder(radius: float, height: float, name: str = "Cylinder") -> str:
-    """Create a parametric ``Part::Cylinder`` and save it as a ``.FCStd`` document."""
+def create_cylinder(
+    radius: float,
+    height: float,
+    name: str = "Cylinder",
+    placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> str:
+    """Create a parametric ``Part::Cylinder`` and save it as a ``.FCStd``
+    document, translated by ``placement`` (global X/Y/Z offset in mm)."""
     dims = {"radius": float(radius), "height": float(height)}
+    placement = (float(placement[0]), float(placement[1]), float(placement[2]))
     if is_dry_run_enabled():
-        return _dry_run_result("create_cylinder", name=name, type="Part::Cylinder", dimensions=dims)
+        return _dry_run_result(
+            "create_cylinder", name=name, type="Part::Cylinder", dimensions=dims, placement=list(placement)
+        )
     out_path = _output_path(name, ext="FCStd")
     script = _CYLINDER_SCRIPT.format(
         name=name,
         radius=dims["radius"],
         height=dims["height"],
+        placement=placement,
         out_path=str(out_path),
         marker=_OK_MARKER,
     )
@@ -533,15 +569,20 @@ def create_cylinder(radius: float, height: float, name: str = "Cylinder") -> str
         type="Part::Cylinder",
         bounding_box=result.get("bounding_box"),
         dimensions=dims,
+        placement=list(placement),
         path=str(out_path),
         gui_shown=_auto_show(out_path),
     )
 
 
 def create_extruded_polyline(
-    points_list: Sequence[Sequence[float]], height: float, name: str = "ExtrudedPolyline"
+    points_list: Sequence[Sequence[float]],
+    height: float,
+    name: str = "ExtrudedPolyline",
+    placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> str:
-    """Extrude a closed polyline profile into a solid ``Part::Feature`` and save it.
+    """Extrude a closed polyline profile into a solid ``Part::Feature`` and
+    save it, translated by ``placement`` (global X/Y/Z offset in mm).
 
     Builds the profile as a ``Part.makePolygon`` wire (auto-closing it if
     the first/last points differ), faces it, and extrudes ``height`` units
@@ -554,13 +595,23 @@ def create_extruded_polyline(
         return _error("create_extruded_polyline requires at least 3 points")
     points = [[float(p[0]), float(p[1])] for p in points_list]
     dims = {"height": float(height), "profile_points": len(points)}
+    placement = (float(placement[0]), float(placement[1]), float(placement[2]))
     if is_dry_run_enabled():
         return _dry_run_result(
-            "create_extruded_polyline", name=name, type="Part::Feature", dimensions=dims
+            "create_extruded_polyline",
+            name=name,
+            type="Part::Feature",
+            dimensions=dims,
+            placement=list(placement),
         )
     out_path = _output_path(name, ext="FCStd")
     script = _EXTRUDE_SCRIPT.format(
-        points=points, height=dims["height"], name=name, out_path=str(out_path), marker=_OK_MARKER
+        points=points,
+        height=dims["height"],
+        name=name,
+        placement=placement,
+        out_path=str(out_path),
+        marker=_OK_MARKER,
     )
     result = _run_freecad_script(script)
     if not result["ok"]:
@@ -570,14 +621,22 @@ def create_extruded_polyline(
         type="Part::Feature",
         bounding_box=result.get("bounding_box"),
         dimensions=dims,
+        placement=list(placement),
         path=str(out_path),
         gui_shown=_auto_show(out_path),
     )
 
 
-def create_pyramid(length: float, width: float, height: float, name: str = "Pyramid") -> str:
+def create_pyramid(
+    length: float,
+    width: float,
+    height: float,
+    name: str = "Pyramid",
+    placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> str:
     """Create a sharp-edged rectangular pyramid (``length`` x ``width`` base,
-    apex at ``height``) as a solid ``Part::Feature`` and save it.
+    apex at ``height``) as a solid ``Part::Feature`` and save it, translated
+    by ``placement`` (global X/Y/Z offset in mm).
 
     Built from 5 explicit triangular/quad faces (one base + four sides)
     rather than a collapsed ``Part::Wedge`` — a wedge with a degenerate top
@@ -586,14 +645,18 @@ def create_pyramid(length: float, width: float, height: float, name: str = "Pyra
     shell directly from the 4 base corners + apex is unambiguous.
     """
     dims = {"length": float(length), "width": float(width), "height": float(height)}
+    placement = (float(placement[0]), float(placement[1]), float(placement[2]))
     if is_dry_run_enabled():
-        return _dry_run_result("create_pyramid", name=name, type="Part::Feature", dimensions=dims)
+        return _dry_run_result(
+            "create_pyramid", name=name, type="Part::Feature", dimensions=dims, placement=list(placement)
+        )
     out_path = _output_path(name, ext="FCStd")
     script = _PYRAMID_SCRIPT.format(
         length=dims["length"],
         width=dims["width"],
         height=dims["height"],
         name=name,
+        placement=placement,
         out_path=str(out_path),
         marker=_OK_MARKER,
     )
@@ -605,6 +668,7 @@ def create_pyramid(length: float, width: float, height: float, name: str = "Pyra
         type="Part::Feature",
         bounding_box=result.get("bounding_box"),
         dimensions=dims,
+        placement=list(placement),
         path=str(out_path),
         gui_shown=_auto_show(out_path),
     )
@@ -625,9 +689,15 @@ def _star_polygon_vertices(points: int, outer_radius: float, inner_radius: float
 
 
 def create_star_prism(
-    points: int, outer_radius: float, inner_radius: float, height: float, name: str = "StarPrism"
+    points: int,
+    outer_radius: float,
+    inner_radius: float,
+    height: float,
+    name: str = "StarPrism",
+    placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> str:
-    """Extrude a sharp-edged N-point star polygon ``height`` units along Z.
+    """Extrude a sharp-edged N-point star polygon ``height`` units along Z,
+    translated by ``placement`` (global X/Y/Z offset in mm).
 
     A star is just another closed planar polygon, so this computes its
     vertices (alternating ``outer_radius``/``inner_radius``) and hands them
@@ -638,7 +708,7 @@ def create_star_prism(
     if int(points) < 3:
         return _error("create_star_prism requires at least 3 points")
     vertices = _star_polygon_vertices(int(points), float(outer_radius), float(inner_radius))
-    result = json.loads(create_extruded_polyline(vertices, height, name=name))
+    result = json.loads(create_extruded_polyline(vertices, height, name=name, placement=placement))
     if result.get("ok"):
         result["dimensions"] = {
             "points": int(points),
