@@ -15,6 +15,15 @@ from fastapi.testclient import TestClient
 
 from dana.api import server as server_module
 from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+from dana.tools.schema import ToolCall
+
+
+class _FakeProvider:
+    def __init__(self, tool_calls: list[ToolCall]) -> None:
+        self._tool_calls = tool_calls
+
+    def complete_with_tool_calls(self, messages: Any, *, tools: Any, provider: Any = None, **kwargs: Any) -> dict:
+        return {"content": "", "tool_calls": self._tool_calls, "provider": "test"}
 
 
 class FakeVoiceService:
@@ -74,7 +83,14 @@ def test_voice_state_event_broadcasts_to_connected_client(fake_voice: Any) -> No
             assert msg == {"type": "voice_state", "state": "listening", "transcript": ""}
 
 
-def test_finalized_transcript_dispatches_through_connected_session(fake_voice: Any) -> None:
+def test_finalized_transcript_dispatches_through_connected_session(
+    fake_voice: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dana.core.react_dispatch as react_dispatch
+
+    monkeypatch.setattr(
+        react_dispatch, "ModelProvider", lambda: _FakeProvider([ToolCall(tool_id="system_state", arguments={})])
+    )
     with TestClient(server_module.app) as client:
         service = fake_voice.instances[0]
         with client.websocket_connect("/ws/chat") as ws:

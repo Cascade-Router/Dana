@@ -1,55 +1,217 @@
-"""Unit tests for dana.core.react_dispatch's intent parsing and tool gate."""
+"""Unit tests for dana.core.react_dispatch's LLM-driven ReAct parsing step
+and its (unchanged) tool execution / HITL-gating layer.
+
+``parse_utterance`` now calls a real LLM (via ``ModelProvider.
+complete_with_tool_calls``) instead of matching regex, so every test here
+mocks that one call site (``rd.ModelProvider``) rather than starting a real
+Ollama daemon — these tests are about the ReAct wiring (system prompt
+construction, tool-call translation, HITL/DAG-safe fallbacks), not about
+LLM quality.
+
+No async test functions/plugin needed: each test drives the coroutine with
+a plain ``asyncio.run(...)`` call from an ordinary sync ``def test_...()``.
+"""
 
 from __future__ import annotations
 
+import asyncio
+from typing import Any
+
+import pytest
+
 from dana.core import react_dispatch as rd
+from dana.tools.schema import ToolCall
 
 
-def test_parse_utterance_box_with_dimensions() -> None:
-    call = rd.parse_utterance("build a box 60x40x20")
-    assert call is not None
-    assert call.tool_id == "create_freecad_box"
-    assert call.arguments == {"length": "60", "width": "40", "height": "20"}
+class _FakeProvider:
+    """Stands in for ``dana.core.model_provider.ModelProvider``."""
+
+    def __init__(
+        self,
+        tool_calls: list[ToolCall] | None = None,
+        content: str = "",
+        raises: Exception | None = None,
+    ) -> None:
+        self._tool_calls = tool_calls or []
+        self._content = content
+        self._raises = raises
+        self.calls: list[dict[str, Any]] = []
+
+    def complete_with_tool_calls(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]],
+        provider: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        self.calls.append({"messages": messages, "tools": tools, "provider": provider})
+        if self._raises is not None:
+            raise self._raises
+        return {"content": self._content, "tool_calls": self._tool_calls, "provider": "test"}
 
 
-def test_parse_utterance_injects_selection_when_referenced() -> None:
+def _mock_llm(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    tool_calls: list[ToolCall] | None = None,
+    content: str = "",
+    raises: Exception | None = None,
+) -> _FakeProvider:
+    fake = _FakeProvider(tool_calls=tool_calls, content=content, raises=raises)
+    monkeypatch.setattr(rd, "ModelProvider", lambda: fake)
+    return fake
+
+
+def _parse(text: str, active_selection: dict[str, Any] | None = None) -> ToolCall | None:
+    return asyncio.run(rd.parse_utterance(text, active_selection))
+
+
+# --------------------------------------------------------------------------
+# build_system_prompt
+# --------------------------------------------------------------------------
+
+
+def test_build_system_prompt_without_selection_omits_selection_text() -> None:
+    prompt = rd.build_system_prompt(None)
+    assert "canvas selection" not in prompt.lower()
+
+
+def test_build_system_prompt_includes_active_selection() -> None:
     selection = {"centroid": [1.0, 2.0, 3.0], "normal": [0.0, 1.0, 0.0]}
-    call = rd.parse_utterance("extrude a box here", selection)
+    prompt = rd.build_system_prompt(selection)
+    assert "[1.0, 2.0, 3.0]" in prompt
+    assert "[0.0, 1.0, 0.0]" in prompt
+
+
+# --------------------------------------------------------------------------
+# parse_utterance — control flow
+# --------------------------------------------------------------------------
+
+
+def test_parse_utterance_empty_text_short_circuits_without_calling_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom() -> None:
+        raise AssertionError("LLM should not be called for empty text")
+
+    monkeypatch.setattr(rd, "ModelProvider", _boom)
+    assert _parse("   ") is None
+
+
+def test_parse_utterance_no_tool_calls_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, tool_calls=[], content="Sure, happy to chat!")
+    assert _parse("thanks!") is None
+
+
+def test_parse_utterance_llm_exception_returns_none_gracefully(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, raises=RuntimeError("ollama unreachable"))
+    assert _parse("build a box") is None
+
+
+def test_parse_utterance_unknown_tool_id_from_llm_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, tool_calls=[ToolCall(tool_id="not_a_real_tool", arguments={})])
+    assert _parse("do something weird") is None
+
+
+def test_parse_utterance_returns_first_proposed_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _mock_llm(
+        monkeypatch,
+        tool_calls=[ToolCall(tool_id="create_freecad_box", arguments={"length": 60, "width": 40, "height": 20})],
+    )
+    call = _parse("Create a parametric 60x40x20mm box")
     assert call is not None
     assert call.tool_id == "create_freecad_box"
+    assert call.arguments == {"length": 60, "width": 40, "height": 20}
+    assert call.raw_text == "Create a parametric 60x40x20mm box"
+    # The tools handed to the LLM are exactly the wired subset, not the
+    # full tools.json registry (which also serves the legacy regex broker).
+    tool_names = {t["function"]["name"] for t in fake.calls[0]["tools"]}
+    assert tool_names == rd._LLM_TOOL_IDS
+    assert fake.calls[0]["provider"] == "ollama"
+
+
+# --------------------------------------------------------------------------
+# parse_utterance — camera preset resolution
+# --------------------------------------------------------------------------
+
+
+def test_parse_utterance_camera_preset_resolves_to_position_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, tool_calls=[ToolCall(tool_id="manipulate_camera", arguments={"preset": "iso"})])
+    call = _parse("Show me the isometric view")
+    assert call is not None
+    assert call.tool_id == "manipulate_camera"
+    assert call.arguments["position"] == list(rd._CAMERA_PRESETS["iso"])
+    assert call.arguments["target"] == [0.0, 0.0, 0.0]
+
+
+def test_parse_utterance_camera_preset_uses_active_selection_as_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, tool_calls=[ToolCall(tool_id="manipulate_camera", arguments={"preset": "top"})])
+    selection = {"centroid": [5.0, 6.0, 7.0], "normal": [0.0, 0.0, 1.0]}
+    call = _parse("orbit to the top view", selection)
+    assert call is not None
+    assert call.arguments["position"] == list(rd._CAMERA_PRESETS["top"])
+    assert call.arguments["target"] == [5.0, 6.0, 7.0]
+
+
+def test_parse_utterance_camera_preset_invalid_value_defaults_to_iso(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, tool_calls=[ToolCall(tool_id="manipulate_camera", arguments={"preset": "bottom"})])
+    call = _parse("show me the bottom")
+    assert call is not None
+    assert call.arguments["position"] == list(rd._CAMERA_PRESETS["iso"])
+
+
+# --------------------------------------------------------------------------
+# parse_utterance — selection-injection fallback
+# --------------------------------------------------------------------------
+
+
+def test_parse_utterance_injects_selection_when_llm_omits_it_but_user_said_here(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_llm(monkeypatch, tool_calls=[ToolCall(tool_id="create_freecad_box", arguments={})])
+    selection = {"centroid": [1.0, 2.0, 3.0], "normal": [0.0, 1.0, 0.0]}
+    call = _parse("add a box here", selection)
+    assert call is not None
     assert call.arguments["target_position"] == [1.0, 2.0, 3.0]
     assert call.arguments["target_normal"] == [0.0, 1.0, 0.0]
 
 
-def test_parse_utterance_no_selection_injection_without_reference_word() -> None:
+def test_parse_utterance_no_fallback_injection_without_reference_word(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, tool_calls=[ToolCall(tool_id="create_freecad_box", arguments={})])
     selection = {"centroid": [1.0, 2.0, 3.0], "normal": [0.0, 1.0, 0.0]}
-    call = rd.parse_utterance("build a cube", selection)
+    call = _parse("build a cube", selection)
     assert call is not None
     assert "target_position" not in call.arguments
 
 
-def test_parse_utterance_camera_preset_uses_selection_centroid() -> None:
-    selection = {"centroid": [5.0, 6.0, 7.0]}
-    call = rd.parse_utterance("look at it from the top", selection)
+def test_parse_utterance_respects_llm_provided_target_over_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(
+        monkeypatch,
+        tool_calls=[
+            ToolCall(
+                tool_id="create_freecad_extrusion",
+                arguments={"height": 25, "target_position": [9.0, 9.0, 9.0], "target_normal": [0.0, 0.0, 1.0]},
+            )
+        ],
+    )
+    selection = {"centroid": [1.0, 2.0, 3.0], "normal": [0.0, 1.0, 0.0]}
+    call = _parse("extrude this by 25mm", selection)
     assert call is not None
-    assert call.tool_id == "manipulate_camera"
-    assert call.arguments["target"] == [5.0, 6.0, 7.0]
-    assert call.arguments["position"] == list(rd._CAMERA_PRESETS["top"])
+    # The LLM's own values win — the fallback never overwrites a real answer.
+    assert call.arguments["target_position"] == [9.0, 9.0, 9.0]
 
 
-def test_parse_utterance_camera_preset_defaults_target_without_selection() -> None:
-    call = rd.parse_utterance("orbit to the front view")
-    assert call is not None
-    assert call.tool_id == "manipulate_camera"
-    assert call.arguments["target"] == [0.0, 0.0, 0.0]
-
-
-def test_parse_utterance_unmatched_returns_none() -> None:
-    assert rd.parse_utterance("tell me a joke") is None
+# --------------------------------------------------------------------------
+# Tool execution / HITL layer — unchanged by the LLM swap, so ToolCall is
+# constructed directly here rather than routed through parse_utterance.
+# --------------------------------------------------------------------------
 
 
 def test_is_mutating_tool_classification() -> None:
     assert rd.is_mutating_tool("create_freecad_box") is True
+    assert rd.is_mutating_tool("create_freecad_cylinder") is True
+    assert rd.is_mutating_tool("create_freecad_extrusion") is True
     assert rd.is_mutating_tool("resync_workspace") is True
     assert rd.is_mutating_tool("system_state") is False
     assert rd.is_mutating_tool("execute_vision_analysis") is False
@@ -57,8 +219,7 @@ def test_is_mutating_tool_classification() -> None:
 
 
 def test_describe_tool_call_box() -> None:
-    call = rd.parse_utterance("build a box 60x40x20")
-    assert call is not None
+    call = ToolCall(tool_id="create_freecad_box", arguments={"length": 60, "width": 40, "height": 20})
     description = rd.describe_tool_call(call)
     assert "60" in description and "40" in description and "20" in description
 
@@ -72,117 +233,24 @@ def test_manipulate_camera_tool_handler_requires_vectors() -> None:
 
 
 def test_dispatch_manipulate_camera_via_registry() -> None:
-    call = rd.parse_utterance("orbit to the side view")
-    assert call is not None
+    call = ToolCall(tool_id="manipulate_camera", arguments={"position": [200, 0, 0], "target": [0, 0, 0]})
     result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
     assert result.ok is True
-    assert result.payload["position"] == list(rd._CAMERA_PRESETS["side"])
-
-
-def test_parse_utterance_box_dims_prefix_order_with_units() -> None:
-    call = rd.parse_utterance("Create a parametric 50x50x20mm box")
-    assert call is not None
-    assert call.tool_id == "create_freecad_box"
-    assert float(call.arguments["length"]) == 50.0
-    assert float(call.arguments["width"]) == 50.0
-    assert float(call.arguments["height"]) == 20.0
-
-
-def test_parse_utterance_box_dims_suffix_order_unchanged() -> None:
-    call = rd.parse_utterance("Build a box 40x30x10")
-    assert call is not None
-    assert call.tool_id == "create_freecad_box"
-    assert float(call.arguments["length"]) == 40.0
-    assert float(call.arguments["width"]) == 30.0
-    assert float(call.arguments["height"]) == 10.0
-
-
-def test_parse_utterance_box_dims_all_word_order_and_unit_variants() -> None:
-    variants = [
-        "50x50x20 box",
-        "50 x 50 x 20 mm box",
-        "box 50x50x20",
-        "box 50x50x20mm",
-        "box 50 x 50 x 20 mm",
-    ]
-    for text in variants:
-        call = rd.parse_utterance(text)
-        assert call is not None, text
-        assert call.tool_id == "create_freecad_box", text
-        assert float(call.arguments["length"]) == 50.0, text
-        assert float(call.arguments["width"]) == 50.0, text
-        assert float(call.arguments["height"]) == 20.0, text
-
-
-def test_parse_utterance_cylinder_bare_dims_either_word_order() -> None:
-    call = rd.parse_utterance("Create a 10x30 cylinder")
-    assert call is not None
-    assert call.tool_id == "create_freecad_cylinder"
-    assert float(call.arguments["radius"]) == 10.0
-    assert float(call.arguments["height"]) == 30.0
-
-    call = rd.parse_utterance("cylinder 10x30mm")
-    assert call is not None
-    assert call.tool_id == "create_freecad_cylinder"
-    assert float(call.arguments["radius"]) == 10.0
-    assert float(call.arguments["height"]) == 30.0
-
-
-def test_parse_utterance_cylinder_radius_height_keywords_unchanged() -> None:
-    call = rd.parse_utterance("Create a cylinder radius 10 height 30")
-    assert call is not None
-    assert call.tool_id == "create_freecad_cylinder"
-    assert float(call.arguments["radius"]) == 10.0
-    assert float(call.arguments["height"]) == 30.0
-
-
-def test_parse_utterance_prefix_dims_no_longer_falls_back_to_defaults() -> None:
-    """Regression test for the exact bug found live-testing the WS dispatch
-    endpoint: "<dims> box" word order silently fell through to the
-    dims-less generic box pattern, creating a 40x25x15mm default box
-    instead of the requested 50x50x20mm one."""
-    call = rd.parse_utterance(
-        "Create a parametric 50x50x20mm box in FreeCAD, then add a 10mm radius cylinder directly on top of it."
-    )
-    assert call is not None
-    assert call.tool_id == "create_freecad_box"
-    assert float(call.arguments["length"]) == 50.0
-    assert float(call.arguments["width"]) == 50.0
-    assert float(call.arguments["height"]) == 20.0
-
-
-def test_parse_utterance_extrude_routes_to_extrusion_tool() -> None:
-    call = rd.parse_utterance("Extrude this by 25mm")
-    assert call is not None
-    assert call.tool_id == "create_freecad_extrusion"
-    assert float(call.arguments["height"]) == 25.0
-
-
-def test_parse_utterance_extrude_injects_selection_as_anchor() -> None:
-    selection = {"centroid": [0, 0, 50], "normal": [0, 0, 1]}
-    call = rd.parse_utterance("Extrude this by 25mm", selection)
-    assert call is not None
-    assert call.tool_id == "create_freecad_extrusion"
-    assert call.arguments["target_position"] == [0, 0, 50]
-    assert call.arguments["target_normal"] == [0, 0, 1]
-
-
-def test_is_mutating_tool_includes_extrusion() -> None:
-    assert rd.is_mutating_tool("create_freecad_extrusion") is True
+    assert result.payload["position"] == [200.0, 0.0, 0.0]
 
 
 def test_dispatch_extrusion_without_profile_or_selection_fails_cleanly() -> None:
-    call = rd.parse_utterance("Extrude this by 25mm")
-    assert call is not None
+    call = ToolCall(tool_id="create_freecad_extrusion", arguments={"height": 25})
     result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
     assert result.ok is False
     assert "profile points" in result.message or "selected face" in result.message
 
 
 def test_dispatch_extrusion_rejects_non_z_normal() -> None:
-    selection = {"centroid": [0, 0, 50], "normal": [1, 0, 0]}
-    call = rd.parse_utterance("Extrude this by 25mm", selection)
-    assert call is not None
+    call = ToolCall(
+        tool_id="create_freecad_extrusion",
+        arguments={"height": 25, "target_position": [0, 0, 50], "target_normal": [1, 0, 0]},
+    )
     result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
     assert result.ok is False
     assert "Z axis" in result.message
@@ -191,32 +259,37 @@ def test_dispatch_extrusion_rejects_non_z_normal() -> None:
 def test_dispatch_extrusion_with_selection_builds_default_footprint() -> None:
     from dana.platform.mock import MockControlPlane, MockFreeCADEngine
 
-    selection = {"centroid": [0, 0, 50], "normal": [0, 0, 1]}
-    call = rd.parse_utterance("Extrude this by 25mm", selection)
-    assert call is not None
+    call = ToolCall(
+        tool_id="create_freecad_extrusion",
+        arguments={"height": 25, "target_position": [0, 0, 50], "target_normal": [0, 0, 1]},
+    )
     result = rd.dispatch_tool_call(call, MockFreeCADEngine(), MockControlPlane())
     assert result.ok is True
     assert result.payload["dimensions"]["height"] == 25.0
     assert result.payload["dimensions"]["profile_points"] == 4
 
 
-def test_parse_utterance_camera_preset_first_word_order() -> None:
-    """Regression test for the word-order bug found live-testing the WS
-    dispatch endpoint: "Show me the isometric view" (preset word before
-    the trigger word "view") didn't match any INTENT_PATTERNS entry."""
-    call = rd.parse_utterance("Show me the isometric view")
-    assert call is not None
-    assert call.tool_id == "manipulate_camera"
-    assert call.arguments["position"] == list(rd._CAMERA_PRESETS["iso"])
-
-    call = rd.parse_utterance("top view")
-    assert call is not None
-    assert call.tool_id == "manipulate_camera"
-    assert call.arguments["position"] == list(rd._CAMERA_PRESETS["top"])
+# --------------------------------------------------------------------------
+# Phase A: schema registry unification — the LLM tool subset must actually
+# resolve against tools.json (dana/tools/tools.json), and must line up
+# exactly with the dispatch-side TOOL_HANDLERS/MUTATING_TOOLS sets.
+# --------------------------------------------------------------------------
 
 
-def test_parse_utterance_camera_preset_trigger_first_word_order_unchanged() -> None:
-    call = rd.parse_utterance("orbit to the iso view")
-    assert call is not None
-    assert call.tool_id == "manipulate_camera"
-    assert call.arguments["position"] == list(rd._CAMERA_PRESETS["iso"])
+def test_llm_tool_ids_all_have_handlers() -> None:
+    for tool_id in rd._LLM_TOOL_IDS:
+        assert tool_id in rd.TOOL_HANDLERS, tool_id
+
+
+def test_llm_tools_schema_resolves_against_tools_json() -> None:
+    schema = rd._llm_tools_schema()
+    names = {t["function"]["name"] for t in schema}
+    assert names == rd._LLM_TOOL_IDS
+
+
+def test_llm_tools_schema_has_no_duplicate_or_missing_parameter_names() -> None:
+    for entry in rd._llm_tools_schema():
+        fn = entry["function"]
+        properties = fn["parameters"]["properties"]
+        for required_name in fn["parameters"]["required"]:
+            assert required_name in properties, f"{fn['name']}: required {required_name!r} not in properties"

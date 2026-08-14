@@ -14,6 +14,10 @@ class ToolParameterSpec:
     type: str
     required: bool = True
     enum: tuple[str, ...] = ()
+    # JSON-schema element type for ``type == "array"`` params (e.g. "number"
+    # for a [x, y, z] vector) — kept as a plain string rather than a nested
+    # dict so this dataclass stays trivially hashable.
+    items_type: str = ""
     description_en: str = ""
     description_fa: str = ""
 
@@ -62,6 +66,7 @@ def load_tool_registry(path: str | None = None) -> dict[str, ToolSpec]:
                 type=str(p.get("type", "string")),
                 required=bool(p.get("required", True)),
                 enum=tuple(str(x) for x in (p.get("enum") or [])),
+                items_type=str(p.get("items_type") or ""),
                 description_en=str(p.get("description_en") or ""),
                 description_fa=str(p.get("description_fa") or ""),
             )
@@ -112,6 +117,8 @@ def to_openai_function_schema(spec: ToolSpec) -> dict[str, Any]:
         }
         if param.enum:
             prop["enum"] = list(param.enum)
+        if param.type == "array" and param.items_type:
+            prop["items"] = {"type": param.items_type}
         properties[param.name] = prop
         if param.required:
             required.append(param.name)

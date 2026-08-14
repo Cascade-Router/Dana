@@ -2042,6 +2042,92 @@
       "aliases_fa": {
         "_intent": []
       }
+    },
+    {
+      "id": "create_freecad_box",
+      "description_en": "Create a parametric rectangular box (Part::Box) solid in FreeCAD, saved as a .FCStd document.",
+      "parameters": [
+        {"name": "length", "type": "number", "required": false, "description_en": "Box length in mm."},
+        {"name": "width", "type": "number", "required": false, "description_en": "Box width in mm."},
+        {"name": "height", "type": "number", "required": false, "description_en": "Box height in mm."},
+        {"name": "name", "type": "string", "required": false, "description_en": "Name for the created object."},
+        {
+          "name": "target_position", "type": "array", "items_type": "number", "required": false,
+          "description_en": "[x, y, z] anchor point, ONLY when the user refers to a previously clicked/selected point ('this', 'here') — copy it verbatim from the active canvas selection given in the system prompt."
+        },
+        {
+          "name": "target_normal", "type": "array", "items_type": "number", "required": false,
+          "description_en": "[nx, ny, nz] surface normal at the selected point, copied verbatim from the active canvas selection when relevant."
+        }
+      ]
+    },
+    {
+      "id": "create_freecad_cylinder",
+      "description_en": "Create a parametric cylinder (Part::Cylinder) solid in FreeCAD, saved as a .FCStd document.",
+      "parameters": [
+        {"name": "radius", "type": "number", "required": false, "description_en": "Cylinder radius in mm."},
+        {"name": "height", "type": "number", "required": false, "description_en": "Cylinder height in mm."},
+        {"name": "name", "type": "string", "required": false, "description_en": "Name for the created object."},
+        {
+          "name": "target_position", "type": "array", "items_type": "number", "required": false,
+          "description_en": "[x, y, z] anchor point, ONLY when the user refers to a previously clicked/selected point ('this', 'here') — copy it verbatim from the active canvas selection given in the system prompt."
+        },
+        {
+          "name": "target_normal", "type": "array", "items_type": "number", "required": false,
+          "description_en": "[nx, ny, nz] surface normal at the selected point, copied verbatim from the active canvas selection when relevant."
+        }
+      ]
+    },
+    {
+      "id": "create_freecad_extrusion",
+      "description_en": "Extrude a solid straight up along Z, anchored at a previously clicked/selected face (the underlying engine only extrudes along Z — it cannot extrude along an arbitrary face normal). Only usable when the user has selected a point on the canvas AND that point's normal is close to the Z axis; otherwise this tool will cleanly fail.",
+      "parameters": [
+        {"name": "height", "type": "number", "required": true, "description_en": "Extrusion distance in mm (e.g. 'extrude this by 25mm' -> 25)."},
+        {
+          "name": "target_position", "type": "array", "items_type": "number", "required": true,
+          "description_en": "[x, y, z] anchor point — copy verbatim from the active canvas selection given in the system prompt. Do not invent coordinates."
+        },
+        {
+          "name": "target_normal", "type": "array", "items_type": "number", "required": true,
+          "description_en": "[nx, ny, nz] surface normal at the selected point — copy verbatim from the active canvas selection given in the system prompt."
+        }
+      ]
+    },
+    {
+      "id": "manipulate_camera",
+      "description_en": "Move the 3D viewer's camera to a preset framing of the current model.",
+      "parameters": [
+        {
+          "name": "preset", "type": "string", "required": true,
+          "enum": ["top", "front", "side", "iso"],
+          "description_en": "Which preset view to frame: top-down, front, side, or isometric."
+        }
+      ]
+    },
+    {
+      "id": "resync_workspace",
+      "description_en": "Reposition managed FreeCAD windows onto their target monitor without stealing OS focus.",
+      "parameters": []
+    },
+    {
+      "id": "get_active_display",
+      "description_en": "Read the current display/monitor topology (primary and secondary monitor geometry).",
+      "parameters": []
+    },
+    {
+      "id": "prevent_focus_steal",
+      "description_en": "Read the current foreground window without changing OS focus — used to confirm an actuation didn't steal focus.",
+      "parameters": []
+    },
+    {
+      "id": "system_state",
+      "description_en": "Report which control-plane/CAD-engine drivers are active and whether dry-run mode is on.",
+      "parameters": []
+    },
+    {
+      "id": "check_plugin_registry",
+      "description_en": "List which Dana plugins and their tools are currently active.",
+      "parameters": []
     }
   ]
 }

@@ -1,6 +1,12 @@
 """Integration tests for the ``/ws/chat`` protocol: DAG event streaming,
 canvas-selection context injection, camera automation, and the HITL
-approval gate — all layered on dana.core.react_dispatch's dispatch core."""
+approval gate — all layered on dana.core.react_dispatch's dispatch core.
+
+``parse_utterance`` is LLM-driven now, so every test mocks the one LLM
+call site (``dana.core.react_dispatch.ModelProvider``) with a canned
+tool-call response — these are protocol/wiring tests, not LLM-quality
+tests, and must not require a real Ollama daemon to run.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +17,24 @@ from fastapi.testclient import TestClient
 
 from dana.api import server as server_module
 from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+from dana.tools.schema import ToolCall
+
+
+class _FakeProvider:
+    def __init__(self, tool_calls: list[ToolCall]) -> None:
+        self._tool_calls = tool_calls
+
+    def complete_with_tool_calls(self, messages: Any, *, tools: Any, provider: Any = None, **kwargs: Any) -> dict:
+        return {"content": "", "tool_calls": self._tool_calls, "provider": "test"}
+
+
+def _mock_llm(monkeypatch: pytest.MonkeyPatch, tool_call: ToolCall | None) -> None:
+    """Make the next ``parse_utterance`` call propose exactly ``tool_call``
+    (or none, if ``None``) without hitting a real Ollama daemon."""
+    import dana.core.react_dispatch as react_dispatch
+
+    fake = _FakeProvider([tool_call] if tool_call is not None else [])
+    monkeypatch.setattr(react_dispatch, "ModelProvider", lambda: fake)
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +63,8 @@ def test_ready_message_on_connect(client: TestClient) -> None:
         assert "driver_state" in msg
 
 
-def test_safe_tool_streams_dag_events_without_hitl(client: TestClient) -> None:
+def test_safe_tool_streams_dag_events_without_hitl(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, ToolCall(tool_id="system_state", arguments={}))
     with client.websocket_connect("/ws/chat") as ws:
         ws.receive_json()  # ready
         ws.send_json({"text": "system status"})
@@ -65,7 +90,23 @@ def test_safe_tool_streams_dag_events_without_hitl(client: TestClient) -> None:
         assert "control_plane=" in assistant["content"]
 
 
-def test_mutating_tool_requires_hitl_approval_then_proceeds(client: TestClient) -> None:
+def test_no_tool_call_yields_plain_fallback_message(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, None)
+    with client.websocket_connect("/ws/chat") as ws:
+        ws.receive_json()  # ready
+        ws.send_json({"text": "thanks!"})
+
+        parse_complete = _drain_until(ws, "dag_node_complete")
+        assert parse_complete["status"] == "error"
+
+        assistant = _drain_until(ws, "assistant_message")
+        assert "tool call" in assistant["content"] or "action" in assistant["content"]
+
+
+def test_mutating_tool_requires_hitl_approval_then_proceeds(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_llm(monkeypatch, ToolCall(tool_id="create_freecad_box", arguments={"length": 60, "width": 40, "height": 20}))
     with client.websocket_connect("/ws/chat") as ws:
         ws.receive_json()  # ready
         ws.send_json({"text": "build a box 60x40x20"})
@@ -85,7 +126,8 @@ def test_mutating_tool_requires_hitl_approval_then_proceeds(client: TestClient) 
         assert tool_result["mesh_url"] is not None
 
 
-def test_mutating_tool_cancelled_when_not_approved(client: TestClient) -> None:
+def test_mutating_tool_cancelled_when_not_approved(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, ToolCall(tool_id="create_freecad_box", arguments={"length": 60, "width": 40, "height": 20}))
     with client.websocket_connect("/ws/chat") as ws:
         ws.receive_json()  # ready
         ws.send_json({"text": "build a box 60x40x20"})
@@ -99,7 +141,10 @@ def test_mutating_tool_cancelled_when_not_approved(client: TestClient) -> None:
         assert "Cancelled" in assistant["content"]
 
 
-def test_hitl_modify_overrides_parameters_before_dispatch(client: TestClient) -> None:
+def test_hitl_modify_overrides_parameters_before_dispatch(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_llm(monkeypatch, ToolCall(tool_id="create_freecad_box", arguments={"length": 60, "width": 40, "height": 20}))
     with client.websocket_connect("/ws/chat") as ws:
         ws.receive_json()  # ready
         ws.send_json({"text": "build a box 60x40x20"})
@@ -118,7 +163,7 @@ def test_hitl_modify_overrides_parameters_before_dispatch(client: TestClient) ->
         assert tool_call["arguments"]["length"] == "99"
 
 
-def test_canvas_selection_feeds_camera_target(client: TestClient) -> None:
+def test_canvas_selection_feeds_camera_target(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     with client.websocket_connect("/ws/chat") as ws:
         ws.receive_json()  # ready
         ws.send_json(
@@ -127,6 +172,7 @@ def test_canvas_selection_feeds_camera_target(client: TestClient) -> None:
                 "payload": {"mesh_id": "current_mesh", "centroid": [5.0, 6.0, 7.0], "normal": [0, 1, 0]},
             }
         )
+        _mock_llm(monkeypatch, ToolCall(tool_id="manipulate_camera", arguments={"preset": "top"}))
         ws.send_json({"text": "look at it from the top"})
 
         tool_call = _drain_until(ws, "tool_call")
@@ -137,7 +183,9 @@ def test_canvas_selection_feeds_camera_target(client: TestClient) -> None:
         assert camera_animate["target"] == [5.0, 6.0, 7.0]
 
 
-def test_canvas_selection_injects_target_position_on_mutating_tool(client: TestClient) -> None:
+def test_canvas_selection_injects_target_position_on_mutating_tool(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     with client.websocket_connect("/ws/chat") as ws:
         ws.receive_json()  # ready
         ws.send_json(
@@ -146,6 +194,10 @@ def test_canvas_selection_injects_target_position_on_mutating_tool(client: TestC
                 "payload": {"mesh_id": "current_mesh", "centroid": [1.0, 2.0, 3.0], "normal": [0, 0, 1]},
             }
         )
+        # The LLM proposes the box with no anchor of its own — the
+        # deterministic fallback in react_dispatch._finalize_call_arguments
+        # must inject it since the user said "here".
+        _mock_llm(monkeypatch, ToolCall(tool_id="create_freecad_box", arguments={}))
         ws.send_json({"text": "add a box here"})
 
         approval = _drain_until(ws, "hitl_approval_required")

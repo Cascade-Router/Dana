@@ -230,19 +230,19 @@ async def _process_user_text(websocket: WebSocket, session: dict[str, Any], user
     ``VoiceService`` transcript replayed across every connected session —
     same dispatch path, same DAG/HITL events, regardless of the source.
     """
+    await _dag_start(websocket, "parse", "Parse intent", "agent", {"text": user_text})
     parse_start = time.perf_counter()
-    call = parse_utterance(user_text, session.get("active_selection"))
+    call = await parse_utterance(user_text, session.get("active_selection"))
     parse_ms = int((time.perf_counter() - parse_start) * 1000)
 
-    await _dag_start(websocket, "parse", "Parse intent", "agent", {"text": user_text})
     if call is None:
         await _dag_complete(websocket, "parse", "error", {"matched": False}, parse_ms)
         await websocket.send_json(
             {
                 "type": "assistant_message",
                 "content": (
-                    "I didn't match that to a registered tool. Try phrasing it "
-                    "like a command (e.g. \"build a box 60x40x20\")."
+                    "I didn't think that needed a tool call — try asking for a specific "
+                    "action (e.g. \"build a box 60x40x20\")."
                 ),
             }
         )

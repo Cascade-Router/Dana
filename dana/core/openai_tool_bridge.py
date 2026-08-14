@@ -51,6 +51,42 @@ def encode_image_bytes(raw_bytes: bytes) -> str:
     return base64.b64encode(raw_bytes).decode("ascii")
 
 
+def _fallback_tool_calls_from_content(content: str | None) -> list[dict[str, Any]]:
+    """Recover a tool call some local Ollama models emit as plain JSON text
+    in ``message.content`` instead of populating ``message.tool_calls`` —
+    a real, observed quirk of qwen2.5-coder over the OpenAI-compat
+    ``/v1/chat/completions`` shim (verified live against a running Ollama
+    daemon), not a hypothetical. Returns ``[]`` when ``content`` isn't a
+    ``{"name": ..., "arguments": {...}}``-shaped JSON object/array.
+    """
+    if not content:
+        return []
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text[:4].lower() == "json":
+            text = text[4:]
+        text = text.strip()
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+    calls: list[dict[str, Any]] = []
+    for candidate in parsed if isinstance(parsed, list) else [parsed]:
+        if not isinstance(candidate, dict):
+            continue
+        fn = candidate.get("function") if isinstance(candidate.get("function"), dict) else candidate
+        name = fn.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        arguments = fn.get("arguments")
+        if not isinstance(arguments, (dict, str)):
+            arguments = {}
+        calls.append({"type": "function", "function": {"name": name, "arguments": arguments}})
+    return calls
+
+
 def complete_openai_with_tools(
     messages: list[dict[str, Any]],
     *,
@@ -101,10 +137,13 @@ def complete_openai_with_tools(
     if not choices:
         raise RuntimeError("cloud response missing choices")
     message = (choices[0] or {}).get("message") or {}
-    return {
-        "content": message.get("content"),
-        "tool_calls": message.get("tool_calls") or [],
-    }
+    content = message.get("content")
+    tool_calls = message.get("tool_calls") or []
+    if tools and not tool_calls:
+        tool_calls = _fallback_tool_calls_from_content(content)
+        if tool_calls:
+            content = ""  # it was a function call, not a reply meant for the user
+    return {"content": content, "tool_calls": tool_calls}
 
 
 __all__ = (

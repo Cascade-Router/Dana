@@ -11,18 +11,20 @@ FreeCADCmd directly.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
 from collections.abc import Callable
 from typing import Any
 
+from dana.core.model_provider import ModelProvider
 from dana.platform import factory as platform_factory
 from dana.platform import get_cad_engine, get_control_plane
 from dana.plugins.plugin_manager import discover_plugin_dirs, load_all_plugins
 from dana.security.dry_run import is_dry_run_enabled
 from dana.tools.cad_vision import analyze_cad_blueprint, capture_cad_viewport
-from dana.tools.schema import ToolCall
+from dana.tools.schema import ToolCall, ToolSpec, load_tool_registry, openai_tools_schema
 
 
 class ToolResult:
@@ -209,120 +211,128 @@ def describe_tool_call(call: ToolCall) -> str:
     return f"Run `{call.tool_id}`."
 
 
-# (regex, tool_id, arg_names) — first match wins, same shape as the
-# simplified broker sibling this replaces in hf_space/hf_sandbox/agent_bridge.py.
-_NUM = r"(\d+(?:\.\d+)?)"
-# A unit suffix is optional and non-capturing, so a group like "50mm" still
-# captures the clean numeric string "50" — no separate stripping step needed
-# before float() at the tool-handler level.
-_UNIT = r"(?:\s*(?:mm|cm|in|inch(?:es)?))?"
-_DIM_SEP = r"\s*(?:x|by|,)\s*"
-_DIM = rf"{_NUM}{_UNIT}"
-_DIMS3 = rf"{_DIM}{_DIM_SEP}{_DIM}{_DIM_SEP}{_DIM}"
-_DIMS2 = rf"{_DIM}{_DIM_SEP}{_DIM}"
-_BOX_WORD = r"\b(?:box|mounting plate|cube|cuboid|block)\b"
-_CYLINDER_WORD = r"\bcylinder\b"
-
-INTENT_PATTERNS: tuple[tuple[re.Pattern[str], str, tuple[str, ...]], ...] = (
-    # Dimensions may land either after the object noun ("box 60x40x20") or
-    # before it ("60x40x20mm box") — matched as two separate patterns (each
-    # with its own 3 capturing groups) rather than one alternation, so the
-    # arg_names zip below always lines up with exactly 3 groups either way.
-    (
-        re.compile(rf"{_BOX_WORD}.*?{_DIMS3}", re.I),
-        "create_freecad_box",
-        ("length", "width", "height"),
-    ),
-    (
-        re.compile(rf"{_DIMS3}.*?{_BOX_WORD}", re.I),
-        "create_freecad_box",
-        ("length", "width", "height"),
-    ),
-    (re.compile(_BOX_WORD, re.I), "create_freecad_box", ()),
-    (
-        re.compile(rf"{_CYLINDER_WORD}.*?radius\s*{_NUM}{_UNIT}.*?height\s*{_NUM}{_UNIT}", re.I),
-        "create_freecad_cylinder",
-        ("radius", "height"),
-    ),
-    (
-        re.compile(rf"{_CYLINDER_WORD}.*?{_DIMS2}", re.I),
-        "create_freecad_cylinder",
-        ("radius", "height"),
-    ),
-    (
-        re.compile(rf"{_DIMS2}.*?{_CYLINDER_WORD}", re.I),
-        "create_freecad_cylinder",
-        ("radius", "height"),
-    ),
-    (re.compile(_CYLINDER_WORD, re.I), "create_freecad_cylinder", ()),
-    (
-        re.compile(rf"\bextrude\b.*?(?:by\s+)?{_NUM}{_UNIT}", re.I),
-        "create_freecad_extrusion",
-        ("height",),
-    ),
-    (
-        re.compile(r"\b(look at|see|check|analyze|what'?s on)\b.*\b(screen|window|freecad|blueprint|cad)\b", re.I),
-        "execute_vision_analysis",
-        (),
-    ),
-    (re.compile(r"\bresync\b.*\bworkspace\b", re.I), "resync_workspace", ()),
-    (re.compile(r"\b(active|open)\s+(windows?|display)\b", re.I), "get_active_display", ()),
-    (re.compile(r"\bfocus\b", re.I), "prevent_focus_steal", ()),
-    (re.compile(r"\b(system state|status|driver)\b", re.I), "system_state", ()),
-    (re.compile(r"\bplugins?\b", re.I), "check_plugin_registry", ()),
-)
-
 # Preset camera poses for "look at it from the top/front/side" phrasing —
 # distances are tuned for the ~40-100mm primitives create_freecad_* produces.
+# The LLM proposes a preset NAME (see manipulate_camera's tools.json schema);
+# this is where that name still gets turned into an actual position/target,
+# exactly as the old regex parser did.
 _CAMERA_PRESETS: dict[str, tuple[float, float, float]] = {
     "top": (0, 200, 0.001),
     "front": (0, 0, 200),
     "side": (200, 0, 0),
     "iso": (120, 120, 120),
 }
-_CAMERA_TRIGGER = r"(?:look at|view|orbit to|camera)"
-_CAMERA_PRESET_WORD = r"(top|front|side|iso(?:metric)?)"
-# Two directional patterns rather than one alternation, so whichever
-# matches, group(1) is always the preset word — "orbit to the iso view"
-# (trigger-then-preset) and "show me the isometric view" (preset-then-
-# trigger) both resolve the same way downstream.
-_CAMERA_PRESET_PATTERN = re.compile(rf"\b{_CAMERA_TRIGGER}\b.*?\b{_CAMERA_PRESET_WORD}\b", re.I)
-_CAMERA_PRESET_PATTERN_REVERSED = re.compile(rf"\b{_CAMERA_PRESET_WORD}\b.*?\b{_CAMERA_TRIGGER}\b", re.I)
+
+# Cheap deterministic backstop, not a parser: local 7B tool-calling models
+# don't reliably copy multi-decimal floats verbatim into JSON arguments, so
+# if the LLM omits target_position/target_normal but the user clearly meant
+# the active selection ("this"/"here"/...), inject it ourselves rather than
+# silently losing the anchor point.
 _SELECTION_REFERENCE_PATTERN = re.compile(r"\b(this|here|that spot|selected)\b", re.I)
 
+# Tools exposed to the LLM for function-calling — a subset of tools.json's
+# full registry (which also serves dana.tools.broker's regex/alias router
+# for the legacy desktop agent; that router is untouched by this module).
+_LLM_TOOL_IDS = frozenset(
+    {
+        "create_freecad_box",
+        "create_freecad_cylinder",
+        "create_freecad_extrusion",
+        "manipulate_camera",
+        "resync_workspace",
+        "get_active_display",
+        "prevent_focus_steal",
+        "system_state",
+        "check_plugin_registry",
+    }
+)
 
-def parse_utterance(text: str, active_selection: dict[str, Any] | None = None) -> ToolCall | None:
-    camera_match = _CAMERA_PRESET_PATTERN.search(text) or _CAMERA_PRESET_PATTERN_REVERSED.search(text)
-    if camera_match:
-        preset = camera_match.group(1).lower()
-        preset = "iso" if preset.startswith("iso") else preset
-        target = active_selection.get("centroid") if active_selection else None
-        target = target if isinstance(target, list) and len(target) == 3 else [0.0, 0.0, 0.0]
-        position = list(_CAMERA_PRESETS[preset])
-        return ToolCall(
-            tool_id="manipulate_camera",
-            arguments={"position": position, "target": target},
-            raw_text=text,
+_llm_tool_registry_cache: dict[str, ToolSpec] | None = None
+
+
+def _llm_tools_schema() -> list[dict[str, Any]]:
+    global _llm_tool_registry_cache
+    if _llm_tool_registry_cache is None:
+        _llm_tool_registry_cache = load_tool_registry()
+    return openai_tools_schema(_llm_tool_registry_cache, tool_ids=_LLM_TOOL_IDS)
+
+
+def build_system_prompt(active_selection: dict[str, Any] | None) -> str:
+    """The dynamic context the LLM reasons over each turn — this is where
+    the React 3D viewer's canvas-selection state enters the ReAct loop."""
+    lines = [
+        "You are Dana, a CAD co-pilot for FreeCAD. Call at most one tool per message, "
+        "only when the user is clearly asking for an action. If they're just chatting "
+        "or asking a question, reply in plain text without calling a tool.",
+    ]
+    centroid = active_selection.get("centroid") if active_selection else None
+    normal = active_selection.get("normal") if active_selection else None
+    if centroid:
+        lines.append(
+            f"Current active canvas selection: centroid {centroid}, normal {normal}. "
+            "If the user refers to 'this', 'here', 'that spot', or 'the selected face', "
+            "pass this centroid as target_position and this normal as target_normal "
+            "(copy the numbers verbatim — do not invent your own coordinates)."
         )
+    return "\n".join(lines)
 
-    for pattern, tool_id, arg_names in INTENT_PATTERNS:
-        m = pattern.search(text)
-        if not m:
-            continue
-        arguments: dict[str, Any] = {}
-        if arg_names and m.groups():
-            for name, value in zip(arg_names, m.groups(), strict=True):
-                if value is not None:
-                    arguments[name] = value
-        if (
-            active_selection
-            and tool_id in ("create_freecad_box", "create_freecad_cylinder", "create_freecad_extrusion")
-            and _SELECTION_REFERENCE_PATTERN.search(text)
-        ):
-            arguments["target_position"] = active_selection.get("centroid")
-            arguments["target_normal"] = active_selection.get("normal")
-        return ToolCall(tool_id=tool_id, arguments=arguments, raw_text=text)
-    return None
+
+def _resolve_camera_call(call: ToolCall, active_selection: dict[str, Any] | None) -> None:
+    preset = str(call.arguments.get("preset") or "iso").strip().lower()
+    preset = "iso" if preset.startswith("iso") else preset
+    if preset not in _CAMERA_PRESETS:
+        preset = "iso"
+    target = active_selection.get("centroid") if active_selection else None
+    target = target if isinstance(target, list) and len(target) == 3 else [0.0, 0.0, 0.0]
+    call.arguments = {"position": list(_CAMERA_PRESETS[preset]), "target": target}
+
+
+def _finalize_call_arguments(call: ToolCall, active_selection: dict[str, Any] | None) -> None:
+    if call.tool_id == "manipulate_camera":
+        _resolve_camera_call(call, active_selection)
+        return
+    if call.tool_id not in ("create_freecad_box", "create_freecad_cylinder", "create_freecad_extrusion"):
+        return
+    has_anchor = call.arguments.get("target_position") and call.arguments.get("target_normal")
+    if not has_anchor and active_selection and _SELECTION_REFERENCE_PATTERN.search(call.raw_text or ""):
+        call.arguments["target_position"] = active_selection.get("centroid")
+        call.arguments["target_normal"] = active_selection.get("normal")
+
+
+async def parse_utterance(text: str, active_selection: dict[str, Any] | None = None) -> ToolCall | None:
+    """One reason-then-act ReAct step: ask the local LLM whether this
+    utterance needs a tool call, via the existing OpenAI-tool-calling bridge
+    (``dana.core.model_provider.ModelProvider`` + ``dana.tools.schema``) —
+    no separate ReAct while-loop built here, and no regex intent parsing.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+
+    messages = [
+        {"role": "system", "content": build_system_prompt(active_selection)},
+        {"role": "user", "content": text},
+    ]
+    provider = ModelProvider()
+    try:
+        result = await asyncio.to_thread(
+            provider.complete_with_tool_calls,
+            messages,
+            tools=_llm_tools_schema(),
+            provider="ollama",
+        )
+    except Exception:  # noqa: BLE001 — Ollama unreachable/model missing degrades to "no tool", not a crash
+        return None
+
+    tool_calls = result.get("tool_calls") or []
+    if not tool_calls:
+        return None
+    call = tool_calls[0]  # one tool per turn, matching the existing single parse/dispatch DAG shape
+    if call.tool_id not in TOOL_HANDLERS:
+        return None
+    call.raw_text = text
+    _finalize_call_arguments(call, active_selection)
+    return call
 
 
 def dispatch_tool_call(call: ToolCall, engine: Any, control_plane: Any) -> ToolResult:
@@ -391,10 +401,10 @@ def plugin_registry_view() -> dict[str, Any]:
 
 
 __all__ = (
-    "INTENT_PATTERNS",
     "MUTATING_TOOLS",
     "TOOL_HANDLERS",
     "ToolResult",
+    "build_system_prompt",
     "describe_tool_call",
     "dispatch_tool_call",
     "driver_state",
