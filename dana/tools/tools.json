@@ -2188,6 +2188,39 @@
         {"name": "target_object", "type": "string", "required": true, "description_en": "Name of the object to modify (e.g. 'Box')."},
         {"name": "value", "type": "number", "required": true, "description_en": "Fillet radius or chamfer distance in mm."}
       ]
+    },
+    {
+      "id": "modify_freecad_parameter",
+      "description_en": "Modifies a dimensional property of an existing object (e.g. changing a box's Height, or a cylinder's Radius) in place, without recreating it.",
+      "parameters": [
+        {"name": "target_object", "type": "string", "required": true, "description_en": "Name of the existing object to modify (e.g. 'Box')."},
+        {"name": "parameter_name", "type": "string", "required": true, "description_en": "Name of the dimensional property to change, e.g. 'Length', 'Width', 'Height', 'Radius'."},
+        {"name": "new_value", "type": "number", "required": true, "description_en": "New value for the parameter, in mm."}
+      ]
+    },
+    {
+      "id": "get_freecad_bounding_box",
+      "description_en": "Reads the physical bounding box dimensions (x_min, y_min, z_min, x_max, y_max, z_max) of an existing object, in mm. Use this to calculate placement coordinates before creating new objects that need to align with existing ones — e.g. read an object's z_max to know where its top face sits before placing something on top of it. Read-only — does not modify anything.",
+      "parameters": [
+        {"name": "target_object", "type": "string", "required": true, "description_en": "Name of the existing object to inspect (e.g. 'Box')."}
+      ]
+    },
+    {
+      "id": "create_freecad_pipe",
+      "description_en": "Creates a tubular pipe by sweeping a circular profile along a path. Use 'straight' for a plain cylindrical pipe, or 'arc' for a curved elbow/macaroni-shaped bend.",
+      "parameters": [
+        {"name": "pipe_radius", "type": "number", "required": true, "description_en": "Radius of the pipe's circular cross-section, in mm."},
+        {
+          "name": "path_type", "type": "string", "required": true,
+          "enum": ["straight", "arc"],
+          "description_en": "'straight' sweeps along a line (length_or_angle is a distance in mm); 'arc' sweeps along a circular arc (length_or_angle is an angle in degrees)."
+        },
+        {"name": "length_or_angle", "type": "number", "required": true, "description_en": "For 'straight': length of the pipe in mm. For 'arc': sweep angle in degrees (e.g. 90 for a right-angle elbow)."},
+        {"name": "name", "type": "string", "required": false, "description_en": "Name for the created object."},
+        {"name": "placement_x", "type": "number", "required": false, "description_en": "Global X-axis offset in mm. Defaults to 0."},
+        {"name": "placement_y", "type": "number", "required": false, "description_en": "Global Y-axis offset in mm. Defaults to 0."},
+        {"name": "placement_z", "type": "number", "required": false, "description_en": "Global Z-axis offset in mm. Defaults to 0."}
+      ]
     }
   ]
 }

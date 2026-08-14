@@ -147,5 +147,29 @@ class RealFreeCADEngine(BaseCADEngine):
 
         return json.loads(engine.export_mesh_stl(source_path, name))
 
+    def modify_parameter(self, target_path: str, parameter_name: str, new_value: float) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.modify_parameter(target_path, parameter_name, new_value))
+
+    def get_bounding_box(self, target_path: str) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.get_bounding_box(target_path))
+
+    def create_pipe(
+        self,
+        pipe_radius: float,
+        path_type: str,
+        length_or_angle: float,
+        name: str = "Pipe",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(
+            engine.create_pipe(pipe_radius, path_type, length_or_angle, name, placement=placement)
+        )
+
 
 __all__ = ("RealFreeCADEngine", "Win32ControlPlane")

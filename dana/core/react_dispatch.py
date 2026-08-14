@@ -263,6 +263,60 @@ def _tool_perform_freecad_edge_operation(args: dict[str, Any], engine: Any, _cp:
     )
 
 
+def _tool_modify_freecad_parameter(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    target_name = str(args.get("target_object") or "").strip()
+    if not target_name:
+        return {"ok": False, "error": "modify_freecad_parameter requires target_object"}
+    target_path = _OBJECT_PATH_REGISTRY.get(target_name)
+    if not target_path:
+        return {
+            "ok": False,
+            "error": f"unknown target_object '{target_name}' — create it first with a create_freecad_* tool",
+        }
+    parameter_name = str(args.get("parameter_name") or "").strip()
+    if not parameter_name:
+        return {"ok": False, "error": "modify_freecad_parameter requires parameter_name"}
+    try:
+        new_value = float(args.get("new_value"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "modify_freecad_parameter requires a numeric new_value"}
+    return engine.modify_parameter(target_path, parameter_name, new_value)
+
+
+def _tool_get_freecad_bounding_box(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    target_name = str(args.get("target_object") or "").strip()
+    if not target_name:
+        return {"ok": False, "error": "get_freecad_bounding_box requires target_object"}
+    target_path = _OBJECT_PATH_REGISTRY.get(target_name)
+    if not target_path:
+        return {
+            "ok": False,
+            "error": f"unknown target_object '{target_name}' — create it first with a create_freecad_* tool",
+        }
+    return engine.get_bounding_box(target_path)
+
+
+_PIPE_PATH_TYPES = frozenset({"straight", "arc"})
+
+
+def _tool_create_freecad_pipe(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    path_type = str(args.get("path_type") or "").strip().lower()
+    if path_type not in _PIPE_PATH_TYPES:
+        return {"ok": False, "error": "create_freecad_pipe requires path_type to be one of straight, arc"}
+    try:
+        pipe_radius = float(args.get("pipe_radius"))
+        length_or_angle = float(args.get("length_or_angle"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "create_freecad_pipe requires numeric pipe_radius and length_or_angle"}
+    return engine.create_pipe(
+        pipe_radius,
+        path_type,
+        length_or_angle,
+        name=str(args.get("name") or "Pipe"),
+        placement=_extract_placement(args),
+    )
+
+
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] = {
     "create_freecad_box": _tool_create_box,
     "create_freecad_cylinder": _tool_create_cylinder,
@@ -271,6 +325,9 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "create_freecad_extrusion": _tool_create_freecad_extrusion,
     "perform_freecad_boolean": _tool_perform_freecad_boolean,
     "perform_freecad_edge_operation": _tool_perform_freecad_edge_operation,
+    "modify_freecad_parameter": _tool_modify_freecad_parameter,
+    "get_freecad_bounding_box": _tool_get_freecad_bounding_box,
+    "create_freecad_pipe": _tool_create_freecad_pipe,
     "resync_workspace": _tool_resync_workspace,
     "get_active_display": _tool_get_active_display,
     "prevent_focus_steal": _tool_prevent_focus_steal,
@@ -292,6 +349,11 @@ MUTATING_TOOLS: frozenset[str] = frozenset(
         "create_freecad_star_prism",
         "perform_freecad_boolean",
         "perform_freecad_edge_operation",
+        "modify_freecad_parameter",
+        "create_freecad_pipe",
+        # get_freecad_bounding_box is intentionally absent — read-only query,
+        # never HITL-gated, so the LLM can inspect geometry mid-reasoning
+        # without stalling on a human approval click just to do math.
         "resync_workspace",
         "prevent_focus_steal",
     }
@@ -349,6 +411,21 @@ def describe_tool_call(call: ToolCall) -> str:
         verb = "Fillet" if operation == "fillet" else "Chamfer"
         scope = "the selected face's edges of" if call.arguments.get("face_centroid") else "every edge of"
         return f"{verb} {scope} `{target}` by {value}mm in FreeCAD."
+    if call.tool_id == "modify_freecad_parameter":
+        target = call.arguments.get("target_object", "?")
+        param = call.arguments.get("parameter_name", "?")
+        value = call.arguments.get("new_value", "?")
+        return f"Set `{target}`.{param} = {value}mm in FreeCAD."
+    if call.tool_id == "get_freecad_bounding_box":
+        target = call.arguments.get("target_object", "?")
+        return f"Read the bounding box of `{target}` in FreeCAD."
+    if call.tool_id == "create_freecad_pipe":
+        radius = call.arguments.get("pipe_radius", "?")
+        path_type = call.arguments.get("path_type", "?")
+        value = call.arguments.get("length_or_angle", "?")
+        if path_type == "arc":
+            return f"Create a curved pipe (radius {radius}mm) bending {value} degrees in FreeCAD."
+        return f"Create a straight pipe (radius {radius}mm, length {value}mm) in FreeCAD."
     if call.tool_id == "resync_workspace":
         return "Reposition managed FreeCAD windows onto their target monitor."
     if call.tool_id == "prevent_focus_steal":
@@ -387,6 +464,9 @@ _LLM_TOOL_IDS = frozenset(
         "create_freecad_star_prism",
         "perform_freecad_boolean",
         "perform_freecad_edge_operation",
+        "modify_freecad_parameter",
+        "get_freecad_bounding_box",
+        "create_freecad_pipe",
         "manipulate_camera",
         "resync_workspace",
         "get_active_display",
@@ -521,11 +601,20 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         "create_freecad_star_prism",
         "perform_freecad_boolean",
         "perform_freecad_edge_operation",
+        "create_freecad_pipe",
     ):
         driver = payload.get("driver", "win32/freecad")
         return (
             f"Created `{payload.get('type')}` named `{payload.get('name')}` via the "
             f"**{driver}** driver -> `{payload.get('path')}`."
+        )
+    if call.tool_id == "modify_freecad_parameter":
+        return f"Set `{payload.get('name')}`.{payload.get('parameter_name')} = {payload.get('new_value')}mm."
+    if call.tool_id == "get_freecad_bounding_box":
+        return (
+            f"Bounding box: x=[{payload.get('x_min')}, {payload.get('x_max')}], "
+            f"y=[{payload.get('y_min')}, {payload.get('y_max')}], "
+            f"z=[{payload.get('z_min')}, {payload.get('z_max')}]."
         )
     if call.tool_id == "resync_workspace":
         moved = payload.get("moved", [])

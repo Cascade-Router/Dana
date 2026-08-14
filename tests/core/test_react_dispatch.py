@@ -216,10 +216,14 @@ def test_is_mutating_tool_classification() -> None:
     assert rd.is_mutating_tool("create_freecad_star_prism") is True
     assert rd.is_mutating_tool("perform_freecad_boolean") is True
     assert rd.is_mutating_tool("perform_freecad_edge_operation") is True
+    assert rd.is_mutating_tool("modify_freecad_parameter") is True
+    assert rd.is_mutating_tool("create_freecad_pipe") is True
     assert rd.is_mutating_tool("resync_workspace") is True
     assert rd.is_mutating_tool("system_state") is False
     assert rd.is_mutating_tool("execute_vision_analysis") is False
     assert rd.is_mutating_tool("manipulate_camera") is False
+    # CRITICAL: read-only, must never require HITL approval just to do math.
+    assert rd.is_mutating_tool("get_freecad_bounding_box") is False
 
 
 def test_describe_tool_call_box() -> None:
@@ -724,6 +728,234 @@ def test_parse_utterance_edge_operation_pass_through_with_active_selection(
     assert call is not None
     assert call.tool_id == "perform_freecad_edge_operation"
     assert call.arguments["face_centroid"] == [25.0, 25.0, 50.0]
+
+
+# --------------------------------------------------------------------------
+# Parametric modification: modify_freecad_parameter
+# --------------------------------------------------------------------------
+
+
+def test_describe_tool_call_modify_parameter() -> None:
+    call = ToolCall(
+        tool_id="modify_freecad_parameter",
+        arguments={"target_object": "Box", "parameter_name": "Height", "new_value": 100},
+    )
+    description = rd.describe_tool_call(call)
+    assert "Box" in description and "Height" in description and "100" in description
+
+
+def test_dispatch_modify_parameter_requires_target_object() -> None:
+    call = ToolCall(
+        tool_id="modify_freecad_parameter",
+        arguments={"parameter_name": "Height", "new_value": 100},
+    )
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "target_object" in result.message
+
+
+def test_dispatch_modify_parameter_rejects_unknown_object_name() -> None:
+    call = ToolCall(
+        tool_id="modify_freecad_parameter",
+        arguments={"target_object": "NeverCreated", "parameter_name": "Height", "new_value": 100},
+    )
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "NeverCreated" in result.message
+
+
+def test_dispatch_modify_parameter_requires_numeric_new_value() -> None:
+    call = ToolCall(
+        tool_id="modify_freecad_parameter",
+        arguments={"target_object": "Box", "parameter_name": "Height", "new_value": "not-a-number"},
+    )
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "numeric new_value" in result.message
+
+
+def test_dispatch_modify_parameter_end_to_end_via_registry() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"length": 20, "width": 20, "height": 20, "name": "ModBoxA"}),
+        engine,
+        control_plane,
+    )
+
+    result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="modify_freecad_parameter",
+            arguments={"target_object": "ModBoxA", "parameter_name": "Height", "new_value": 99},
+        ),
+        engine,
+        control_plane,
+    )
+    assert result.ok is True
+    assert result.payload["parameter_name"] == "Height"
+    assert result.payload["new_value"] == 99.0
+
+
+# --------------------------------------------------------------------------
+# Non-mutating spatial query: get_freecad_bounding_box
+# --------------------------------------------------------------------------
+
+
+def test_describe_tool_call_get_bounding_box() -> None:
+    call = ToolCall(tool_id="get_freecad_bounding_box", arguments={"target_object": "Box"})
+    description = rd.describe_tool_call(call)
+    assert "Box" in description
+
+
+def test_dispatch_get_bounding_box_requires_target_object() -> None:
+    call = ToolCall(tool_id="get_freecad_bounding_box", arguments={})
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "target_object" in result.message
+
+
+def test_dispatch_get_bounding_box_rejects_unknown_object_name() -> None:
+    call = ToolCall(tool_id="get_freecad_bounding_box", arguments={"target_object": "NeverCreated"})
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "NeverCreated" in result.message
+
+
+def test_dispatch_get_bounding_box_end_to_end_via_registry() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"length": 30, "width": 30, "height": 30, "name": "BBoxBoxA"}),
+        engine,
+        control_plane,
+    )
+
+    result = rd.dispatch_tool_call(
+        ToolCall(tool_id="get_freecad_bounding_box", arguments={"target_object": "BBoxBoxA"}),
+        engine,
+        control_plane,
+    )
+    assert result.ok is True
+    for key in ("x_min", "y_min", "z_min", "x_max", "y_max", "z_max"):
+        assert key in result.payload
+
+
+def test_get_bounding_box_never_registers_a_new_object() -> None:
+    """A read shouldn't mutate the object registry — get_bounding_box's
+    payload has no "name" key at all, so dispatch_tool_call's generic
+    post-success registration (keyed on payload["name"]) is a no-op here."""
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"length": 10, "width": 10, "height": 10, "name": "BBoxBoxB"}),
+        engine,
+        control_plane,
+    )
+    before = dict(rd._OBJECT_PATH_REGISTRY)
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="get_freecad_bounding_box", arguments={"target_object": "BBoxBoxB"}),
+        engine,
+        control_plane,
+    )
+    assert rd._OBJECT_PATH_REGISTRY == before
+
+
+# --------------------------------------------------------------------------
+# 2D-to-3D sweeps: create_freecad_pipe
+# --------------------------------------------------------------------------
+
+
+def test_describe_tool_call_pipe_straight() -> None:
+    call = ToolCall(
+        tool_id="create_freecad_pipe",
+        arguments={"pipe_radius": 8, "path_type": "straight", "length_or_angle": 60},
+    )
+    description = rd.describe_tool_call(call)
+    assert "straight" in description.lower() and "8" in description and "60" in description
+
+
+def test_describe_tool_call_pipe_arc() -> None:
+    call = ToolCall(
+        tool_id="create_freecad_pipe",
+        arguments={"pipe_radius": 10, "path_type": "arc", "length_or_angle": 90},
+    )
+    description = rd.describe_tool_call(call)
+    assert "curved" in description.lower() and "90" in description
+
+
+def test_dispatch_pipe_rejects_unknown_path_type() -> None:
+    call = ToolCall(
+        tool_id="create_freecad_pipe",
+        arguments={"pipe_radius": 10, "path_type": "bogus", "length_or_angle": 90},
+    )
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "straight, arc" in result.message
+
+
+def test_dispatch_pipe_requires_numeric_fields() -> None:
+    call = ToolCall(
+        tool_id="create_freecad_pipe",
+        arguments={"pipe_radius": "nope", "path_type": "straight", "length_or_angle": 60},
+    )
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "numeric" in result.message
+
+
+def test_dispatch_pipe_straight_via_mock_engine() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    call = ToolCall(
+        tool_id="create_freecad_pipe",
+        arguments={"pipe_radius": 5, "path_type": "straight", "length_or_angle": 40, "name": "PipeA"},
+    )
+    result = rd.dispatch_tool_call(call, MockFreeCADEngine(), MockControlPlane())
+    assert result.ok is True
+    assert result.payload["type"] == "Part::Sweep"
+    assert result.payload["dimensions"]["path_type"] == "straight"
+
+
+def test_dispatch_pipe_arc_with_placement_via_mock_engine() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    call = ToolCall(
+        tool_id="create_freecad_pipe",
+        arguments={
+            "pipe_radius": 10,
+            "path_type": "arc",
+            "length_or_angle": 90,
+            "name": "PipeB",
+            "placement_x": 5,
+        },
+    )
+    result = rd.dispatch_tool_call(call, MockFreeCADEngine(), MockControlPlane())
+    assert result.ok is True
+    assert result.payload["placement"] == [5.0, 0.0, 0.0]
+    assert result.payload["dimensions"]["path_type"] == "arc"
+
+
+def test_parse_utterance_pipe_pass_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(
+        monkeypatch,
+        tool_calls=[
+            ToolCall(
+                tool_id="create_freecad_pipe",
+                arguments={"pipe_radius": 10, "path_type": "arc", "length_or_angle": 90},
+            )
+        ],
+    )
+    call = _parse("Create a curved pipe with a 10mm radius that bends at a 90-degree angle.")
+    assert call is not None
+    assert call.tool_id == "create_freecad_pipe"
+    assert call.arguments["path_type"] == "arc"
+    assert call.arguments["length_or_angle"] == 90
 
 
 # --------------------------------------------------------------------------

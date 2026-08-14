@@ -202,8 +202,9 @@ import FreeCADGui as Gui
 doc = App.ActiveDocument
 if doc is not None:
     # A Boolean feature (Part::Cut/MultiFuse/MultiCommon) consumes its
-    # Base/Tool/Shapes children into the result — only the top-level
-    # feature should show, not the raw inputs it was built from.
+    # Base/Tool/Shapes children into the result, and a Part::Sweep consumes
+    # its Sections/Spine profile+path — only the top-level feature should
+    # show, not the raw inputs it was built from.
     consumed = set()
     for obj in doc.Objects:
         base = getattr(obj, "Base", None)
@@ -214,6 +215,11 @@ if doc is not None:
             consumed.add(tool.Name)
         for shape in getattr(obj, "Shapes", None) or []:
             consumed.add(shape.Name)
+        for section in getattr(obj, "Sections", None) or []:
+            consumed.add(section.Name)
+        spine = getattr(obj, "Spine", None)
+        if spine is not None and spine[0] is not None:
+            consumed.add(spine[0].Name)
     for obj in doc.Objects:
         try:
             obj.ViewObject.Visibility = obj.Name not in consumed
@@ -980,6 +986,238 @@ def apply_edge_operation(
     )
 
 
+_MODIFY_PARAMETER_SCRIPT = """\
+import FreeCAD as App
+
+doc = App.openDocument({target_path!r})
+obj = doc.Objects[0]
+setattr(obj, {parameter_name!r}, {new_value})
+doc.recompute()
+doc.save()
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {out_path!r})
+"""
+
+
+def modify_parameter(target_path: str, parameter_name: str, new_value: float) -> str:
+    """Change a single dimensional property (e.g. ``"Height"``, ``"Radius"``)
+    on a previously-created object, in place — unlike the ``create_*``
+    helpers, this reopens and overwrites the SAME ``.FCStd`` document rather
+    than starting a new one, so the object's parametric history/name/path
+    are preserved across the edit.
+    """
+    target = Path(target_path)
+    if not target.is_file():
+        return _error(f"modify_parameter: target_path not found: {target_path}")
+    param = (parameter_name or "").strip()
+    if not param:
+        return _error("modify_parameter requires a non-empty parameter_name")
+    try:
+        value_f = float(new_value)
+    except (TypeError, ValueError):
+        return _error(f"modify_parameter: new_value must be a number, got {new_value!r}")
+    if is_dry_run_enabled():
+        return _dry_run_result("modify_parameter", path=str(target), parameter_name=param, new_value=value_f)
+    script = _MODIFY_PARAMETER_SCRIPT.format(
+        target_path=str(target),
+        parameter_name=param,
+        new_value=value_f,
+        out_path=str(target),
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"modify_parameter failed: {result['error']}")
+    return _ok(
+        name=target.stem,
+        path=str(target),
+        parameter_name=param,
+        new_value=value_f,
+        bounding_box=result.get("bounding_box"),
+        gui_shown=_auto_show(target),
+    )
+
+
+_GET_BOUNDING_BOX_SCRIPT = """\
+import FreeCAD as App
+
+doc = App.openDocument({target_path!r})
+obj = doc.Objects[0]
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {target_path!r})
+"""
+
+
+def get_bounding_box(target_path: str) -> str:
+    """Read-only: the physical bounding box of a previously-created object,
+    in mm. Never saves — a query, not a mutation, so it never needs the
+    HITL approval gate the create_*/apply_* mutators do.
+    """
+    target = Path(target_path)
+    if not target.is_file():
+        return _error(f"get_bounding_box: target_path not found: {target_path}")
+    if is_dry_run_enabled():
+        return _dry_run_result(
+            "get_bounding_box", path=str(target),
+            x_min=0.0, y_min=0.0, z_min=0.0, x_max=0.0, y_max=0.0, z_max=0.0,
+        )
+    script = _GET_BOUNDING_BOX_SCRIPT.format(target_path=str(target), marker=_OK_MARKER)
+    result = _run_freecad_script(script, require_marker=True)
+    if not result["ok"]:
+        return _error(f"get_bounding_box failed: {result['error']}")
+    bbox = result.get("bounding_box") or [0.0] * 6
+    x_min, y_min, z_min, x_max, y_max, z_max = bbox
+    return _ok(
+        path=str(target),
+        x_min=x_min,
+        y_min=y_min,
+        z_min=z_min,
+        x_max=x_max,
+        y_max=y_max,
+        z_max=z_max,
+    )
+
+
+# Part::Sweep's own bend radius isn't exposed by create_freecad_pipe's schema
+# (only the pipe's cross-section radius and the sweep angle are) — this is a
+# conventional-enough elbow curvature default for that narrower schema.
+_PIPE_ARC_BEND_RADIUS_MULTIPLIER = 3.0
+_PIPE_ARC_MIN_BEND_RADIUS = 20.0
+
+# A circle profile in the XY plane already faces +Z, which is exactly right
+# for sweeping straight up along a Part::Line path — no reorientation needed.
+_PIPE_STRAIGHT_SCRIPT = """\
+import FreeCAD as App
+
+doc = App.newDocument("DanaModel")
+
+profile = doc.addObject("Part::Circle", "Profile")
+profile.Radius = {pipe_radius}
+
+path = doc.addObject("Part::Line", "Path")
+path.X1, path.Y1, path.Z1 = 0.0, 0.0, 0.0
+path.X2, path.Y2, path.Z2 = 0.0, 0.0, {length_or_angle}
+
+doc.recompute()
+
+obj = doc.addObject("Part::Sweep", {name!r})
+obj.Sections = [profile]
+obj.Spine = (path, [])
+obj.Solid = True
+obj.Frenet = False
+""" + _PLACEMENT_SNIPPET + """\
+doc.recompute()
+doc.saveAs({out_path!r})
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {out_path!r})
+"""
+
+# The arc path (a Part::Circle restricted to Angle1..Angle2) starts at angle
+# 0 -> point (arc_radius, 0, 0), tangent +Y there — rotating the profile
+# circle 90 deg about X turns its default +Z-facing normal to face +Y,
+# perpendicular to that tangent, so the sweep starts from a valid cross-
+# section regardless of how far Angle2 extends. Frenet=True lets Part::Sweep
+# transport/reorient that cross-section along the rest of the curving path.
+_PIPE_ARC_SCRIPT = """\
+import FreeCAD as App
+
+doc = App.newDocument("DanaModel")
+
+profile = doc.addObject("Part::Circle", "Profile")
+profile.Radius = {pipe_radius}
+profile.Placement = App.Placement(App.Vector({arc_radius}, 0.0, 0.0), App.Rotation(App.Vector(1, 0, 0), 90))
+
+path = doc.addObject("Part::Circle", "Path")
+path.Radius = {arc_radius}
+path.Angle1 = 0.0
+path.Angle2 = {length_or_angle}
+
+doc.recompute()
+
+obj = doc.addObject("Part::Sweep", {name!r})
+obj.Sections = [profile]
+obj.Spine = (path, [])
+obj.Solid = True
+obj.Frenet = True
+""" + _PLACEMENT_SNIPPET + """\
+doc.recompute()
+doc.saveAs({out_path!r})
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {out_path!r})
+"""
+
+
+def create_pipe(
+    pipe_radius: float,
+    path_type: str,
+    length_or_angle: float,
+    name: str = "Pipe",
+    placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> str:
+    """Sweep a circular profile (``pipe_radius`` mm) into a tubular
+    ``Part::Sweep`` solid and save it.
+
+    ``path_type="straight"`` sweeps ``length_or_angle`` mm along a straight
+    line (a plain cylindrical pipe). ``path_type="arc"`` sweeps
+    ``length_or_angle`` degrees along a circular arc (a curved elbow) with
+    a default bend radius (see ``_PIPE_ARC_BEND_RADIUS_MULTIPLIER`` — the
+    schema has no separate bend-radius parameter of its own).
+    """
+    pt = (path_type or "").strip().lower()
+    if pt not in ("straight", "arc"):
+        return _error(f"create_pipe: unknown path_type '{path_type}' — must be straight or arc")
+    try:
+        radius_f = float(pipe_radius)
+        value_f = float(length_or_angle)
+    except (TypeError, ValueError):
+        return _error("create_pipe: pipe_radius and length_or_angle must be numbers")
+    if radius_f <= 0:
+        return _error("create_pipe: pipe_radius must be a positive number")
+    if value_f <= 0:
+        return _error("create_pipe: length_or_angle must be a positive number")
+    placement = (float(placement[0]), float(placement[1]), float(placement[2]))
+
+    dims = {"pipe_radius": radius_f, "path_type": pt, "length_or_angle": value_f}
+    if is_dry_run_enabled():
+        return _dry_run_result(
+            "create_pipe", name=name, type="Part::Sweep", dimensions=dims, placement=list(placement)
+        )
+
+    out_path = _output_path(name, ext="FCStd")
+    if pt == "straight":
+        script = _PIPE_STRAIGHT_SCRIPT.format(
+            pipe_radius=radius_f,
+            length_or_angle=value_f,
+            name=name,
+            placement=placement,
+            out_path=str(out_path),
+            marker=_OK_MARKER,
+        )
+    else:
+        arc_radius = max(radius_f * _PIPE_ARC_BEND_RADIUS_MULTIPLIER, _PIPE_ARC_MIN_BEND_RADIUS)
+        script = _PIPE_ARC_SCRIPT.format(
+            pipe_radius=radius_f,
+            arc_radius=arc_radius,
+            length_or_angle=value_f,
+            name=name,
+            placement=placement,
+            out_path=str(out_path),
+            marker=_OK_MARKER,
+        )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"create_pipe failed: {result['error']}")
+    return _ok(
+        name=name,
+        type="Part::Sweep",
+        bounding_box=result.get("bounding_box"),
+        dimensions=dims,
+        placement=list(placement),
+        path=str(out_path),
+        gui_shown=_auto_show(out_path),
+    )
+
+
 def export_mesh_stl(source_path: str, name: str | None = None) -> str:
     """Tessellate every object in ``source_path`` (a ``.FCStd`` document)
     into a standalone ``.stl`` mesh file — the hand-off format for
@@ -1068,10 +1306,13 @@ __all__ = (
     "create_box",
     "create_cylinder",
     "create_extruded_polyline",
+    "create_pipe",
     "create_pyramid",
     "create_star_prism",
     "export_mesh_stl",
+    "get_bounding_box",
     "modify_existing_document",
+    "modify_parameter",
     "detect_freecadcmd",
     "execute_freecad_script",
     "get_freecad_gui_path",

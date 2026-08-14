@@ -161,6 +161,11 @@ _CAD_CREATE_TOOLS = frozenset(
         "create_freecad_star_prism",
         "perform_freecad_boolean",
         "perform_freecad_edge_operation",
+        "modify_freecad_parameter",
+        "create_freecad_pipe",
+        # get_freecad_bounding_box is intentionally absent — a read-only
+        # query with no new/changed geometry, so it shouldn't trigger
+        # another mesh export on every call.
     }
 )
 

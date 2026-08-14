@@ -143,3 +143,34 @@ class BaseCADEngine(ABC):
     def export_mesh_stl(self, source_path: str, name: str | None = None) -> dict[str, Any]:
         """Tessellate/export the solid at ``source_path`` to a standalone
         ``.stl`` mesh file. Returns ``{"ok": bool, "path": str}``."""
+
+    @abstractmethod
+    def modify_parameter(self, target_path: str, parameter_name: str, new_value: float) -> dict[str, Any]:
+        """Change a single dimensional property (e.g. ``"Height"``,
+        ``"Radius"``) on a previously-created object, in place — reopens
+        and overwrites the SAME document/path rather than creating a new
+        one. Returns a result dict including ``{"ok": bool, "path": str,
+        "name": str}``."""
+
+    @abstractmethod
+    def get_bounding_box(self, target_path: str) -> dict[str, Any]:
+        """Read-only: the physical bounding box of a previously-created
+        object, in mm. Never mutates anything. Returns
+        ``{"ok": bool, "x_min": float, "y_min": float, "z_min": float,
+        "x_max": float, "y_max": float, "z_max": float}``."""
+
+    @abstractmethod
+    def create_pipe(
+        self,
+        pipe_radius: float,
+        path_type: str,
+        length_or_angle: float,
+        name: str = "Pipe",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> dict[str, Any]:
+        """Sweep a circular profile (``pipe_radius`` mm) into a tubular
+        solid, translated by ``placement`` (global X/Y/Z offset in mm).
+        ``path_type="straight"`` sweeps ``length_or_angle`` mm along a
+        straight line; ``path_type="arc"`` sweeps ``length_or_angle``
+        degrees along a circular arc (a curved elbow). Same result shape
+        as ``create_box``."""

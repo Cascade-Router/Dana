@@ -393,5 +393,119 @@ class MockFreeCADEngine(BaseCADEngine):
             "note": _MOCK_NOTE_CAD,
         }
 
+    def modify_parameter(self, target_path: str, parameter_name: str, new_value: float) -> dict[str, Any]:
+        target = Path(target_path)
+        if not target.is_file():
+            return {"ok": False, "error": f"modify_parameter: target_path not found: {target_path}"}
+        param = (parameter_name or "").strip()
+        if not param:
+            return {"ok": False, "error": "modify_parameter requires a non-empty parameter_name"}
+        try:
+            value_f = float(new_value)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": f"modify_parameter: new_value must be a number, got {new_value!r}"}
+        # Safe stub: a headless mesh has no named "Length"/"Height"/"Radius"
+        # properties to setattr onto (there's no parametric object behind
+        # it, just triangles), so this can't resize the mesh for real —
+        # returns the target unmodified under the same name/path so callers
+        # relying on the ok/path/name contract still get a consistent result.
+        return {
+            "ok": True,
+            "name": target.stem,
+            "path": str(target),
+            "parameter_name": param,
+            "new_value": value_f,
+            "driver": "mock",
+            "note": f"{_MOCK_NOTE_CAD}; parameter not geometrically applied, returned target unmodified",
+        }
+
+    def get_bounding_box(self, target_path: str) -> dict[str, Any]:
+        import trimesh
+
+        target = Path(target_path)
+        if not target.is_file():
+            return {"ok": False, "error": f"get_bounding_box: target_path not found: {target_path}"}
+        mesh = trimesh.load(target, force="mesh")
+        x_min, y_min, z_min, x_max, y_max, z_max = _bbox(mesh)
+        return {
+            "ok": True,
+            "path": str(target),
+            "x_min": x_min,
+            "y_min": y_min,
+            "z_min": z_min,
+            "x_max": x_max,
+            "y_max": y_max,
+            "z_max": z_max,
+            "driver": "mock",
+            "note": _MOCK_NOTE_CAD,
+        }
+
+    def create_pipe(
+        self,
+        pipe_radius: float,
+        path_type: str,
+        length_or_angle: float,
+        name: str = "Pipe",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> dict[str, Any]:
+        pt = (path_type or "").strip().lower()
+        if pt not in ("straight", "arc"):
+            return {"ok": False, "error": f"create_pipe: unknown path_type '{path_type}' — must be straight or arc"}
+        try:
+            radius_f = float(pipe_radius)
+            value_f = float(length_or_angle)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "create_pipe: pipe_radius and length_or_angle must be numbers"}
+        if radius_f <= 0 or value_f <= 0:
+            return {"ok": False, "error": "create_pipe: pipe_radius and length_or_angle must be positive numbers"}
+
+        dims = {"pipe_radius": radius_f, "path_type": pt, "length_or_angle": value_f}
+        if pt == "straight":
+            # A straight pipe is geometrically just a cylinder — real,
+            # correct mock geometry, not a stub.
+            import trimesh
+
+            mesh = trimesh.creation.cylinder(radius=radius_f, height=value_f, sections=32)
+            mesh.apply_translation([0.0, 0.0, value_f / 2.0])  # base-at-origin, matching the real engine
+            mesh.apply_translation(placement)
+            out_path = _mesh_output_path(name)
+            mesh.export(out_path)
+            return {
+                "ok": True,
+                "name": name,
+                "type": "Part::Sweep",
+                "bounding_box": _bbox(mesh),
+                "dimensions": dims,
+                "placement": list(placement),
+                "path": str(out_path),
+                "gui_shown": False,
+                "driver": "mock",
+                "note": _MOCK_NOTE_CAD,
+            }
+
+        # Safe stub: a partial-torus elbow isn't one of trimesh's built-in
+        # creation primitives, so the curved-arc case isn't simulated
+        # geometrically here — returns a placeholder result under the
+        # ok/path/name/type contract so callers (mesh export, the object
+        # registry, HITL summaries) still work end-to-end.
+        out_path = _mesh_output_path(name)
+        import trimesh
+
+        placeholder = trimesh.creation.cylinder(radius=radius_f, height=radius_f * 2, sections=32)
+        placeholder.apply_translation(placement)
+        placeholder.export(out_path)
+        return {
+            "ok": True,
+            "name": name,
+            "type": "Part::Sweep",
+            "bounding_box": _bbox(placeholder),
+            "dimensions": dims,
+            "placement": list(placement),
+            "path": str(out_path),
+            "gui_shown": False,
+            "driver": "mock",
+            "note": f"{_MOCK_NOTE_CAD}; arc sweep not geometrically simulated, returned a placeholder",
+        }
+
 
 __all__ = ("MockControlPlane", "MockFreeCADEngine")
