@@ -1,5 +1,3 @@
-def get_total(numbers):
-    total = 0
-    for n in numbers:
-        total = total + n
-    return total
+def get_total(numbers: list[int]) -> int:
+    """Return the sum of a list of integers."""
+    return sum(numbers)
