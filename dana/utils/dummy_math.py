@@ -1,3 +1,2 @@
-def get_total(numbers: list[int]) -> int:
-    """Return the sum of a list of integers."""
-    return sum(numbers)
+def divide_numbers(a: int, b: int) -> float:
+    return a / b
