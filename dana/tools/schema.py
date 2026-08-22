@@ -31,6 +31,19 @@ class ToolSpec:
     aliases_en: dict[str, tuple[str, ...]] = field(default_factory=dict)
     aliases_fa: dict[str, tuple[str, ...]] = field(default_factory=dict)
     dynamic: bool = False
+    # The SOLE source of truth for HITL gating, for every tool regardless of
+    # origin (tools.json OR a manifest.json plugin) — see
+    # dana.core.react_dispatch.is_mutating_tool. Defaults to False (HITL-
+    # gated) so ANY tool — a brand-new native handler someone forgot to
+    # annotate, or a third-party plugin — fails SAFE by default: its author
+    # must explicitly opt OUT of approval gating (``"read_only": true`` in
+    # its declaration) rather than opt in to being dangerous. This
+    # deliberately replaced an older design (a hardcoded
+    # ``MUTATING_TOOLS`` allow-list in react_dispatch.py that tools.json
+    # tools were checked against, with this field only read for plugins) —
+    # that design fails OPEN: a new native tool nobody remembered to add to
+    # the list would silently dispatch with no human approval.
+    read_only: bool = False
 
 
 @dataclass
@@ -80,6 +93,10 @@ def load_tool_registry(path: str | None = None) -> dict[str, ToolSpec]:
             aliases_en=_as_tuple_map(item.get("aliases_en") or {}),
             aliases_fa=_as_tuple_map(item.get("aliases_fa") or {}),
             dynamic=bool(item.get("dynamic", False)),
+            # Fail-closed: absent/false means HITL-gated — see ToolSpec.
+            # read_only's own docstring. A tools.json entry must explicitly
+            # declare "read_only": true to dispatch without approval.
+            read_only=bool(item.get("read_only", False)),
         )
         tools[spec.id] = spec
     return tools

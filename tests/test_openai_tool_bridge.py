@@ -7,7 +7,9 @@ JSON text in ``message.content`` instead of populating the OpenAI
 
 from __future__ import annotations
 
+import io
 import json
+import urllib.error
 from typing import Any
 
 import pytest
@@ -16,11 +18,16 @@ from dana.core import openai_tool_bridge as bridge
 
 
 class _FakeResponse:
-    def __init__(self, body: dict[str, Any]) -> None:
-        self._body = json.dumps(body).encode("utf-8")
+    """Mimics the SSE-chunked ``requests``/``urllib`` streaming response
+    ``complete_openai_with_tools`` now iterates line-by-line (it used to
+    read one blocking JSON body — see the module docstring's note on the
+    P2 rescue-plan streaming rewrite)."""
 
-    def read(self) -> bytes:
-        return self._body
+    def __init__(self, lines: list[bytes]) -> None:
+        self._lines = lines
+
+    def __iter__(self):
+        return iter(self._lines)
 
     def __enter__(self) -> "_FakeResponse":
         return self
@@ -29,9 +36,33 @@ class _FakeResponse:
         return None
 
 
+def _sse_chunk(delta: dict[str, Any]) -> bytes:
+    return ("data: " + json.dumps({"choices": [{"delta": delta}]}) + "\n").encode("utf-8")
+
+
+def _sse_lines_for_message(message: dict[str, Any]) -> list[bytes]:
+    """Reshapes a one-shot ``{"content", "tool_calls"}`` message (the old
+    non-streaming fixture shape every test below already uses) into the
+    streamed ``delta`` chunks a real OpenAI-compatible server would emit —
+    one content chunk (if any) plus one indexed tool-call chunk per call,
+    terminated by the standard ``[DONE]`` sentinel.
+    """
+    lines: list[bytes] = []
+    content = message.get("content")
+    if content:
+        lines.append(_sse_chunk({"content": content}))
+    for i, call in enumerate(message.get("tool_calls") or []):
+        fn = (call or {}).get("function") or {}
+        lines.append(
+            _sse_chunk({"tool_calls": [{"index": i, "function": {"name": fn.get("name"), "arguments": fn.get("arguments")}}]})
+        )
+    lines.append(b"data: [DONE]\n")
+    return lines
+
+
 def _mock_response(monkeypatch: pytest.MonkeyPatch, message: dict[str, Any]) -> None:
-    body = {"choices": [{"message": message}]}
-    monkeypatch.setattr(bridge.urllib.request, "urlopen", lambda *_a, **_k: _FakeResponse(body))
+    lines = _sse_lines_for_message(message)
+    monkeypatch.setattr(bridge.urllib.request, "urlopen", lambda *_a, **_k: _FakeResponse(lines))
 
 
 # --------------------------------------------------------------------------
@@ -125,7 +156,12 @@ def test_native_tool_calls_pass_through_unchanged(monkeypatch: pytest.MonkeyPatc
         model="qwen2.5-coder:7b",
         tools=[{"type": "function", "function": {"name": "system_state", "parameters": {}}}],
     )
-    assert result["tool_calls"] == native_calls
+    # Compares just the function name/arguments, not the whole dict — a
+    # streamed reconstruction adds its own "id"/"type" bookkeeping fields
+    # (see complete_openai_with_tools' tool_call_parts accumulation) that a
+    # single non-streamed native_calls fixture never carried in the first
+    # place; openai_tool_calls_to_ir only ever reads "function" anyway.
+    assert result["tool_calls"][0]["function"] == native_calls[0]["function"]
 
 
 def test_falls_back_to_content_json_when_tool_calls_empty(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -176,3 +212,166 @@ def test_plain_prose_content_with_tools_requested_stays_empty_tool_calls(monkeyp
     )
     assert result["tool_calls"] == []
     assert result["content"] == "Sure, I can help with that!"
+
+
+# --------------------------------------------------------------------------
+# State-aware pause/throttle for Groq's tokens-per-minute 429 — no more
+# hardcoded fallback model, just wait out the provider's own retry-after
+# hint and retry the identical request against the identical model.
+# --------------------------------------------------------------------------
+
+
+def _tpm_http_error(retry_after_text: str) -> urllib.error.HTTPError:
+    """A live-shaped Groq TPM 429 body, e.g. '...Please try again in 19.0725s...'."""
+    body = json.dumps(
+        {
+            "error": {
+                "message": (
+                    "Rate limit reached for model `openai/gpt-oss-120b` in organization "
+                    "`org_123` on tokens per minute (TPM): Limit 8000, Used 6800, Requested "
+                    f"3200. Please try again in {retry_after_text}. Visit "
+                    "https://console.groq.com/docs/rate-limits for more information."
+                ),
+                "type": "tokens",
+                "code": "rate_limit_exceeded",
+            }
+        }
+    ).encode("utf-8")
+    return urllib.error.HTTPError(
+        "https://api.groq.com/openai/v1/chat/completions", 429, "Too Many Requests", {}, io.BytesIO(body)
+    )
+
+
+def test_parse_retry_after_seconds_extracts_groq_hint() -> None:
+    body = json.dumps({"error": {"message": "Requested 3200. Please try again in 19.0725s. Visit ..."}})
+    assert bridge._parse_retry_after_seconds(body) == pytest.approx(19.0725)
+
+
+def test_parse_retry_after_seconds_returns_none_when_absent_or_unparseable() -> None:
+    assert bridge._parse_retry_after_seconds(json.dumps({"error": {"message": "no hint here"}})) is None
+    assert bridge._parse_retry_after_seconds("not json at all") is None
+    assert bridge._parse_retry_after_seconds(json.dumps({"error": {}})) is None
+
+
+def test_tpm_429_sleeps_per_groq_hint_then_retries_same_model_and_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    success_lines = _sse_lines_for_message({"content": "ok", "tool_calls": []})
+
+    def fake_urlopen(request: Any, *_a: Any, **_k: Any) -> Any:
+        calls.append(request.full_url if hasattr(request, "full_url") else "?")
+        if len(calls) == 1:
+            raise _tpm_http_error("19.0725s")
+        return _FakeResponse(success_lines)
+
+    monkeypatch.setattr(bridge.urllib.request, "urlopen", fake_urlopen)
+    sleeps: list[float] = []
+    monkeypatch.setattr(bridge.time, "sleep", lambda s: sleeps.append(s))
+
+    result = bridge.complete_openai_with_tools(
+        [{"role": "user", "content": "hi"}],
+        api_key="k",
+        base_url="https://api.groq.com/openai/v1",
+        model="openai/gpt-oss-120b",
+    )
+    assert result["content"] == "ok"
+    assert len(calls) == 2  # first attempt (429) + one retry against the SAME model
+    assert sleeps == [pytest.approx(20.0725)]  # retry_after (19.0725) + 1
+
+
+def test_tpm_429_exhausts_max_retries_then_returns_degraded_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    call_count = {"n": 0}
+
+    def fake_urlopen(*_a: Any, **_k: Any) -> Any:
+        call_count["n"] += 1
+        raise _tpm_http_error("5s")
+
+    monkeypatch.setattr(bridge.urllib.request, "urlopen", fake_urlopen)
+    sleeps: list[float] = []
+    monkeypatch.setattr(bridge.time, "sleep", lambda s: sleeps.append(s))
+
+    result = bridge.complete_openai_with_tools(
+        [{"role": "user", "content": "hi"}],
+        api_key="k",
+        base_url="https://api.groq.com/openai/v1",
+        model="openai/gpt-oss-120b",
+    )
+    assert result == bridge._degraded_summary_response()
+    # Initial attempt + _MAX_TPM_RETRIES retries, never more.
+    assert call_count["n"] == bridge._MAX_TPM_RETRIES + 1
+    assert len(sleeps) == bridge._MAX_TPM_RETRIES
+
+
+def test_tpm_429_with_unreasonably_long_retry_after_degrades_without_sleeping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    call_count = {"n": 0}
+
+    def fake_urlopen(*_a: Any, **_k: Any) -> Any:
+        call_count["n"] += 1
+        raise _tpm_http_error("120s")  # >= _MAX_REASONABLE_RETRY_AFTER_SEC
+
+    monkeypatch.setattr(bridge.urllib.request, "urlopen", fake_urlopen)
+    sleeps: list[float] = []
+    monkeypatch.setattr(bridge.time, "sleep", lambda s: sleeps.append(s))
+
+    result = bridge.complete_openai_with_tools(
+        [{"role": "user", "content": "hi"}],
+        api_key="k",
+        base_url="https://api.groq.com/openai/v1",
+        model="openai/gpt-oss-120b",
+    )
+    assert result == bridge._degraded_summary_response()
+    assert call_count["n"] == 1  # never retries on an unreasonable hint
+    assert sleeps == []
+
+
+def test_non_tpm_429_is_not_retried_or_throttled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A requests-per-minute 429 (type != 'tokens') must raise immediately —
+    waiting out a TPM window wouldn't fix a requests-per-minute cap, and
+    this shape must still reach whatever caller-side fallback (e.g. local
+    Ollama) exists for a real failure, not be swallowed by this loop."""
+    body = json.dumps(
+        {"error": {"message": "too many requests", "type": "requests", "code": "rate_limit_exceeded"}}
+    ).encode("utf-8")
+
+    def fake_urlopen(*_a: Any, **_k: Any) -> Any:
+        raise urllib.error.HTTPError("url", 429, "Too Many Requests", {}, io.BytesIO(body))
+
+    monkeypatch.setattr(bridge.urllib.request, "urlopen", fake_urlopen)
+    sleeps: list[float] = []
+    monkeypatch.setattr(bridge.time, "sleep", lambda s: sleeps.append(s))
+
+    with pytest.raises(RuntimeError):
+        bridge.complete_openai_with_tools(
+            [{"role": "user", "content": "hi"}],
+            api_key="k",
+            base_url="https://api.groq.com/openai/v1",
+            model="openai/gpt-oss-120b",
+        )
+    assert sleeps == []
+
+
+def test_5xx_error_is_not_retried_or_throttled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A real server-side 5xx must also raise immediately, unretried by
+    this TPM-specific loop, so it still reaches whatever caller-side
+    fallback exists for an actual outage."""
+
+    def fake_urlopen(*_a: Any, **_k: Any) -> Any:
+        raise urllib.error.HTTPError("url", 503, "Service Unavailable", {}, io.BytesIO(b"{}"))
+
+    monkeypatch.setattr(bridge.urllib.request, "urlopen", fake_urlopen)
+    sleeps: list[float] = []
+    monkeypatch.setattr(bridge.time, "sleep", lambda s: sleeps.append(s))
+
+    with pytest.raises(RuntimeError):
+        bridge.complete_openai_with_tools(
+            [{"role": "user", "content": "hi"}],
+            api_key="k",
+            base_url="https://api.groq.com/openai/v1",
+            model="openai/gpt-oss-120b",
+        )
+    assert sleeps == []

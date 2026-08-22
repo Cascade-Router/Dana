@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
 import os
+import time
 from typing import Any, Literal
 
-from dana.core.openai_tool_bridge import build_multimodal_messages, complete_openai_with_tools
+import requests
+
+from dana.core.openai_tool_bridge import _USER_AGENT, build_multimodal_messages, complete_openai_with_tools
+from dana.system_health import llm_lock
 from dana.tools.schema import openai_tool_calls_to_ir
 
 ProviderKind = Literal["local", "cloud", "auto"]
@@ -18,19 +24,111 @@ _NON_OPENAI_SCHEMA_PROVIDERS = frozenset({"gemini", "google", "anthropic"})
 _DEFAULT_LOCAL_MODEL = "qwen2.5-coder:7b"
 _COMPLEXITY_REJECT = "REJECT: Task too complex for local model"
 
+# Native Gemini generateContent (REST) — a DIFFERENT calling convention than
+# the OpenAI-compatible "gemini_openai" provider above (its own request/
+# response shape, not OpenAI-wire tool_calls). Extracted from the now-
+# removed legacy dana.graph.cloud_planner module, which this is the only
+# live-stack caller of: cloud_provider_name() defaults to "gemini", so this
+# is the plain-text cloud-fallback path complete()/_complete_cloud actually
+# hits by default, not a legacy-only remnant.
+_GEMINI_KEY_ENVS = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AI_API_KEY")
+_DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+_GEMINI_THROTTLE_MAX_RETRIES = 5
+_GEMINI_THROTTLE_MAX_WAIT_S = 30.0
+
 
 def ensure_dotenv_loaded() -> None:
     try:
-        from dana.graph.cloud_planner import ensure_dotenv_loaded as _load
+        from dotenv import load_dotenv
 
-        _load()
+        from dana.paths import ENV_PATH
+
+        load_dotenv(ENV_PATH)
+        load_dotenv()
     except Exception:  # noqa: BLE001
-        try:
-            from dotenv import load_dotenv
+        pass
 
-            load_dotenv()
-        except Exception:  # noqa: BLE001
-            pass
+
+def _gemini_api_key() -> str:
+    ensure_dotenv_loaded()
+    for name in _GEMINI_KEY_ENVS:
+        raw = (os.environ.get(name) or "").strip()
+        if raw:
+            return raw
+    return ""
+
+
+def _gemini_model_id() -> str:
+    return (
+        (os.environ.get("DANA_GEMINI_MODEL") or "").strip()
+        or (os.environ.get("GEMINI_MODEL") or "").strip()
+        or _DEFAULT_GEMINI_MODEL
+    )
+
+
+def _ask_gemini_text_native(
+    messages: list[dict[str, str]],
+    *,
+    temperature: float,
+    max_output_tokens: int,
+    response_mime_type: str | None,
+) -> str:
+    """Native Gemini ``generateContent`` call — used only by ``_complete_cloud``
+    when ``cloud_provider_name()`` resolves to "gemini"/"google" (the
+    default). Retries a 429/503 with capped exponential backoff, same as
+    the module this was extracted from.
+    """
+    key = _gemini_api_key()
+    if not key:
+        raise RuntimeError("No GEMINI_API_KEY / GOOGLE_API_KEY configured")
+
+    system_bits: list[str] = []
+    contents: list[dict[str, Any]] = []
+    for m in messages:
+        role = str(m.get("role") or "user").strip().lower()
+        text = str(m.get("content") or "")
+        if role == "system":
+            system_bits.append(text)
+            continue
+        gem_role = "model" if role in {"assistant", "model"} else "user"
+        contents.append({"role": gem_role, "parts": [{"text": text}]})
+    if not contents:
+        contents = [{"role": "user", "parts": [{"text": "\n".join(system_bits) or ""}]}]
+
+    model = _gemini_model_id()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    gen_cfg: dict[str, Any] = {
+        "temperature": float(temperature),
+        "maxOutputTokens": int(max_output_tokens),
+    }
+    if response_mime_type:
+        gen_cfg["responseMimeType"] = str(response_mime_type)
+    payload: dict[str, Any] = {"contents": contents, "generationConfig": gen_cfg}
+    if system_bits:
+        payload["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_bits)}]}
+
+    throttle_retries = 0
+    while True:
+        resp = requests.post(url, params={"key": key}, json=payload, timeout=90)
+        if resp.status_code in {429, 503}:
+            if throttle_retries >= _GEMINI_THROTTLE_MAX_RETRIES:
+                resp.raise_for_status()
+            wait = min(_GEMINI_THROTTLE_MAX_WAIT_S, float(2**throttle_retries))
+            print(f"[Gemini] Throttled — retrying in {wait:g}s...", flush=True)
+            time.sleep(wait)
+            throttle_retries += 1
+            continue
+        resp.raise_for_status()
+        data = resp.json()
+        try:
+            parts = data["candidates"][0]["content"]["parts"]
+            texts = [str(p.get("text") or "") for p in parts if isinstance(p, dict)]
+            out = "".join(texts).strip()
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(f"Unexpected Gemini response shape: {exc}") from exc
+        if not out:
+            raise RuntimeError("Gemini returned empty content")
+        return out
 
 
 def cloud_fallback_enabled() -> bool:
@@ -65,6 +163,85 @@ def cloud_provider_name() -> str:
     )
 
 
+def cloud_primary_enabled() -> bool:
+    """Whether the ReAct loop's per-turn TOOL-CALLING hot path (dana.core.
+    react_dispatch._call_llm_once) should route through a cloud OpenAI-
+    compatible endpoint instead of the local Ollama daemon — the "shift the
+    heavy lifting off local VRAM onto a free, larger cloud model" rescue-plan
+    path. Distinct from ``cloud_fallback_enabled``: that one only kicks in
+    AFTER a local call fails/rejects; this one skips local entirely for the
+    tool-calling hot path, by default.
+    """
+    ensure_dotenv_loaded()
+    return (os.environ.get("DANA_CLOUD_PRIMARY") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def tool_calling_provider() -> str:
+    """Which ``ModelProvider.complete_with_tool_calls`` provider the ReAct
+    loop's hot path should target this turn — the single source of truth
+    ``dana.core.react_dispatch._call_llm_once`` defers to instead of a
+    hardcoded ``"ollama"``.
+
+    ``"ollama"`` (local, free-per-request but VRAM/context limited) unless
+    ``cloud_primary_enabled()`` — then ``DANA_CLOUD_PROVIDER`` if explicitly
+    set, else ``"groq"`` by default.
+
+    ``"gemini_openai"`` (Gemini's OpenAI-compatible endpoint, 1,000,000 TPM
+    versus Groq's free-tier 8,000) briefly WAS the default here, to kill
+    that 8k TPM ceiling. Reverted: Google's OpenAI-compat endpoint 400s
+    mid-multi-turn-ReAct-loop, requiring a proprietary ``thought_signature``
+    field in the replayed ``tool_calls`` history that this bridge's plain
+    OpenAI wire format has no way to carry. Reverting is also no longer a
+    real regression now that ``search_codebase`` (context compression —
+    dana.plugins.coder_plugin) means the ReAct loop doesn't actually need
+    Gemini's 1M-token ceiling to stay under Groq's 8,000 TPM in practice —
+    Aider still calls Gemini NATIVELY (its own API, not this bridge) for
+    the actual heavy file-editing work, so this is a genuine hybrid
+    architecture, not a full retreat. ``_resolve_openai_endpoint``'s
+    ``gemini_openai`` branch (below) is left fully intact and still
+    reachable via ``DANA_CLOUD_PROVIDER=gemini_openai`` for whenever
+    Google fixes that endpoint or this bridge learns to carry
+    ``thought_signature`` — just no longer the default.
+    """
+    if not cloud_primary_enabled():
+        return "ollama"
+    return (os.environ.get("DANA_CLOUD_PROVIDER") or "").strip().lower() or "groq"
+
+
+def _log_ttft(
+    model: str, ttft_ms: float | None, *, tools_schema_bytes: int | None = None
+) -> None:
+    """Best-effort perf log for a streamed ``complete_openai_with_tools``
+    call's real "time to first token" — the same ``dana_performance.log``
+    signal ``dana.core.agent_loop.ask_ollama_messages`` already records for
+    the native-Ollama path, now also covering the OpenAI-tool-calling bridge
+    (the ReAct loop's actual hot path), which previously logged nothing
+    until the entire blocking request finished.
+
+    ``tools_schema_bytes`` (P1 of the local-agent rescue plan) rides on the
+    SAME log line as ``ttft_ms`` — not a separate metric — specifically so
+    the two are trivially correlatable in ``dana_performance.log`` without
+    joining across records: as a session's ``agent_loaded_capabilities``
+    grows the tool schema, this is the number that should visibly grow
+    alongside a climbing TTFT, and shrink back down once P1's per-session
+    capability decay (dana.api.server._effective_capabilities) drops an
+    unused domain back out.
+    """
+    if ttft_ms is None:
+        return
+    try:
+        from dana.perf import log_perf
+
+        log_perf("llm_ttft", ttft_ms, model=model, tools_schema_bytes=tools_schema_bytes)
+    except Exception:  # noqa: BLE001 — perf logging must never break a real completion
+        pass
+
+
 def complexity_reject_marker() -> str:
     return _COMPLEXITY_REJECT
 
@@ -89,11 +266,19 @@ class ModelProvider:
         *,
         local_model: str | None = None,
         prefer: ProviderKind = "auto",
+        api_keys: dict[str, str] | None = None,
     ) -> None:
         self.local_model = (local_model or local_model_name()).strip()
         self.prefer = prefer
         self.last_provider: str = "none"
         self.last_error: str = ""
+        # BYOK — per-session keys (e.g. from the frontend's SecretsMenu,
+        # threaded down via dana.api.server's session dict), keyed the same
+        # way the frontend's ServiceId already is: "openai", "anthropic".
+        # Session key wins; _resolve_openai_endpoint/_complete_openai_compatible
+        # fall back to the environment variable only when a provider has no
+        # entry here. Never logged — this dict is never passed to print/log.
+        self._api_keys: dict[str, str] = dict(api_keys) if api_keys else {}
 
     def complete(
         self,
@@ -194,18 +379,24 @@ class ModelProvider:
         num_predict: int,
         temperature: float,
     ) -> str:
-        from dana.core.agent_loop import ask_ollama_messages
-        from dana.system_health import llm_lock
-
+        """Plain-text local completion via Ollama's own OpenAI-compatible
+        ``/v1/chat/completions`` surface — the SAME ``complete_openai_with_tools``
+        bridge the tool-calling hot path already uses (just with no
+        ``tools=``), so this has no dependency on the legacy
+        ``dana.core.agent_loop`` stack's native ``/api/chat`` caller.
+        """
+        key, base, _ = self._resolve_openai_endpoint("ollama")
         with llm_lock:
-            raw = ask_ollama_messages(
+            raw = complete_openai_with_tools(
                 messages,
+                api_key=key,
+                base_url=base,
                 model=self.local_model,
                 num_predict=num_predict,
                 temperature=temperature,
             )
         self.last_provider = "local"
-        return str(raw or "").strip()
+        return str(raw.get("content") or "").strip()
 
     def _complete_cloud(
         self,
@@ -217,9 +408,7 @@ class ModelProvider:
     ) -> str:
         provider = cloud_provider_name()
         if provider in {"gemini", "google"}:
-            from dana.graph.cloud_planner import ask_gemini_text
-
-            text = ask_gemini_text(
+            text = _ask_gemini_text_native(
                 messages,
                 temperature=temperature,
                 max_output_tokens=int(num_predict),
@@ -228,7 +417,7 @@ class ModelProvider:
             self.last_provider = "cloud:gemini"
             return str(text or "").strip()
 
-        # OpenAI-compatible path (OpenAI / Groq / Anthropic via compatible gateway).
+        # OpenAI-compatible path (OpenAI / Groq / Gemini's OpenAI-compat endpoint).
         return self._complete_openai_compatible(
             messages,
             num_predict=num_predict,
@@ -248,8 +437,28 @@ class ModelProvider:
         API key.
         """
         ensure_dotenv_loaded()
-        if provider == "groq":
-            key = (os.environ.get("GROQ_API_KEY") or "").strip()
+        if provider == "gemini_openai":
+            # Google's OpenAI-compatible endpoint — distinct from the
+            # "gemini"/"google" provider names in _NON_OPENAI_SCHEMA_PROVIDERS,
+            # which target Gemini's own native API (dana.graph.cloud_planner.
+            # ask_gemini_text, plain-text only, no tool-calling/vision). This
+            # branch is what actually lets Gemini serve the OpenAI-wire tool-
+            # calling/vision bridge below — a 1,000,000 TPM ceiling versus
+            # Groq's free-tier 8,000 TPM (see tool_calling_provider's docstring).
+            key = (self._api_keys.get("gemini") or os.environ.get("GEMINI_API_KEY") or "").strip()
+            base = (
+                (os.environ.get("GEMINI_API_BASE") or "").strip()
+                or "https://generativelanguage.googleapis.com/v1beta/openai/"
+            )
+            model = (
+                (os.environ.get("DANA_GEMINI_MODEL") or "").strip()
+                or "gemini-3.6-flash"
+            )
+        elif provider == "groq":
+            # CLOUD_API_KEY is a generic fallback for whichever cloud
+            # provider DANA_CLOUD_PRIMARY/DANA_CLOUD_PROVIDER selects —
+            # GROQ_API_KEY wins if both happen to be set.
+            key = (os.environ.get("GROQ_API_KEY") or os.environ.get("CLOUD_API_KEY") or "").strip()
             base = (
                 (os.environ.get("GROQ_API_BASE") or "").strip()
                 or "https://api.groq.com/openai/v1"
@@ -266,7 +475,7 @@ class ModelProvider:
             )
             model = (os.environ.get("DANA_OPENAI_TOOLS_MODEL") or "").strip() or self.local_model
         else:
-            key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+            key = (self._api_keys.get("openai") or os.environ.get("OPENAI_API_KEY") or "").strip()
             base = (
                 (os.environ.get("OPENAI_API_BASE") or "").strip()
                 or "https://api.openai.com/v1"
@@ -291,7 +500,7 @@ class ModelProvider:
         if provider == "anthropic":
             # Prefer Anthropic Messages API via env-compatible OpenAI proxy if set;
             # otherwise use raw Anthropic endpoint.
-            key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+            key = (self._api_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY") or "").strip()
             if not key:
                 raise RuntimeError("ANTHROPIC_API_KEY not configured")
             return self._complete_anthropic(
@@ -302,14 +511,24 @@ class ModelProvider:
             )
 
         key, base, model = self._resolve_openai_endpoint(provider)
-        raw = complete_openai_with_tools(
-            messages,
-            api_key=key,
-            base_url=base,
-            model=model,
-            num_predict=num_predict,
-            temperature=temperature,
-        )
+        # Serializes with every other LOCAL Ollama generation in this
+        # process (dana.system_health.llm_lock) — running two generations
+        # concurrently against the same local daemon is what doubles VRAM
+        # usage and fragments it (see llm_lock's own docstring). A genuine
+        # cloud provider (groq/openai/anthropic) consumes no local VRAM at
+        # all, so it deliberately bypasses this lock (nullcontext) — cloud
+        # calls run fully in parallel with each other AND with a concurrent
+        # local Ollama call, rather than being serialized for no reason.
+        with llm_lock if provider == "ollama" else contextlib.nullcontext():
+            raw = complete_openai_with_tools(
+                messages,
+                api_key=key,
+                base_url=base,
+                model=model,
+                num_predict=num_predict,
+                temperature=temperature,
+            )
+        _log_ttft(model, raw.get("ttft_ms"))
         self.last_provider = f"cloud:{provider}"
         return str(raw.get("content") or "").strip()
 
@@ -340,16 +559,27 @@ class ModelProvider:
                 "(uses a non-OpenAI tool schema)"
             )
         key, base, model = self._resolve_openai_endpoint(resolved_provider)
-        raw = complete_openai_with_tools(
-            messages,
-            api_key=key,
-            base_url=base,
-            model=model,
-            tools=tools,
-            tool_choice=tool_choice,
-            num_predict=num_predict,
-            temperature=temperature,
-        )
+        # See the matching comment in _complete_openai_compatible above —
+        # this is the ReAct loop's actual per-turn call site, so it's the
+        # one that matters most both for VRAM-fragmentation-from-concurrent-
+        # local-generations (when DANA_CLOUD_PRIMARY is off) AND for letting
+        # cloud-routed turns (DANA_CLOUD_PRIMARY on — see
+        # dana.core.model_provider.tool_calling_provider) run fully
+        # unserialized, since a cloud call has no local VRAM to contend for.
+        with llm_lock if resolved_provider == "ollama" else contextlib.nullcontext():
+            raw = complete_openai_with_tools(
+                messages,
+                api_key=key,
+                base_url=base,
+                model=model,
+                tools=tools,
+                tool_choice=tool_choice,
+                num_predict=num_predict,
+                temperature=temperature,
+            )
+        # P1 metric — logged on the SAME line as ttft_ms (see _log_ttft) so
+        # the two are directly correlatable turn over turn.
+        _log_ttft(model, raw.get("ttft_ms"), tools_schema_bytes=len(json.dumps(tools)) if tools else 0)
         self.last_provider = f"cloud:{resolved_provider}"
         return {
             "content": str(raw.get("content") or "").strip(),
@@ -386,14 +616,16 @@ class ModelProvider:
             )
         key, base, model = self._resolve_openai_endpoint(resolved_provider)
         messages = build_multimodal_messages(prompt, image_b64=image_b64, mime_type=mime_type)
-        raw = complete_openai_with_tools(
-            messages,
-            api_key=key,
-            base_url=base,
-            model=model,
-            num_predict=num_predict,
-            temperature=temperature,
-        )
+        with llm_lock if resolved_provider == "ollama" else contextlib.nullcontext():
+            raw = complete_openai_with_tools(
+                messages,
+                api_key=key,
+                base_url=base,
+                model=model,
+                num_predict=num_predict,
+                temperature=temperature,
+            )
+        _log_ttft(model, raw.get("ttft_ms"))
         self.last_provider = f"cloud:{resolved_provider}"
         return str(raw.get("content") or "").strip()
 
@@ -441,6 +673,7 @@ class ModelProvider:
                 "Content-Type": "application/json",
                 "x-api-key": api_key,
                 "anthropic-version": "2023-06-01",
+                "User-Agent": _USER_AGENT,
             },
             method="POST",
         )
@@ -463,9 +696,11 @@ def get_default_provider() -> ModelProvider:
 __all__ = (
     "ModelProvider",
     "cloud_fallback_enabled",
+    "cloud_primary_enabled",
     "complexity_reject_marker",
     "force_local",
     "get_default_provider",
     "is_complexity_reject",
     "local_model_name",
+    "tool_calling_provider",
 )

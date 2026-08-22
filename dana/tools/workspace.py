@@ -12,6 +12,8 @@ clipboard is exact, where vision OCR would be lossy).
 
 from __future__ import annotations
 
+from dana.logging import log_debug
+
 
 def list_active_windows() -> str:
     """Return a clean, readable list of currently visible application windows.
@@ -24,12 +26,7 @@ def list_active_windows() -> str:
     notice) on success, or ``"ERROR: ..."`` if the OS window list couldn't
     be read.
     """
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="list_active_windows")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=list_active_windows")
 
     try:
         from dana.tools.os_control import get_active_windows
@@ -59,12 +56,7 @@ def focus_window(target_description: str) -> str:
     ``"ERROR: ..."`` when matching or focusing fails, or ``"HALTED: ..."``
     if the global kill switch fired mid-action.
     """
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="focus_window")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=focus_window")
 
     pattern = str(target_description or "").strip()
     if not pattern:
@@ -96,12 +88,7 @@ def press_keyboard_shortcut(shortcut: str) -> str:
     when parsing/pressing fails, or ``"HALTED: ..."`` if the global kill
     switch fired mid-action.
     """
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="press_keyboard_shortcut")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=press_keyboard_shortcut")
 
     combo = str(shortcut or "").strip()
     if not combo:
@@ -142,12 +129,7 @@ def read_clipboard() -> str:
     "empty" notice) on success, or ``"ERROR: ..."`` if the clipboard
     couldn't be read.
     """
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="read_clipboard")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=read_clipboard")
 
     from dana.security.sanitizers import sanitize_clipboard_content
     from dana.tools.clipboard_actuator import ClipboardActuator
@@ -177,12 +159,7 @@ def write_clipboard(text: str) -> str:
     ``"ERROR: ..."`` when the write fails, or ``"HALTED: ..."`` if the
     global kill switch fired mid-action.
     """
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="write_clipboard")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=write_clipboard")
 
     body = text if isinstance(text, str) else str(text or "")
     if not body.strip():

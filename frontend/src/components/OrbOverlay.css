@@ -1,47 +1,6 @@
-.orb-overlay {
+.orb-overlay-window {
   width: 100vw;
   height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   background: transparent;
   -webkit-app-region: drag;
-}
-
-.orb {
-  --orb-color: #3b82f6;
-  width: 84px;
-  height: 84px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 35%, rgba(255, 255, 255, 0.9), var(--orb-color) 55%, transparent 100%);
-  box-shadow: 0 0 32px 8px var(--orb-color);
-  animation: orb-pulse 2.4s ease-in-out infinite;
-}
-
-.orb--idle {
-  animation-duration: 2.6s;
-}
-
-.orb--listening {
-  animation-duration: 1.3s;
-}
-
-.orb--processing {
-  animation-duration: 0.85s;
-}
-
-.orb--speaking {
-  animation-duration: 0.55s;
-}
-
-@keyframes orb-pulse {
-  0%,
-  100% {
-    transform: scale(0.82);
-    opacity: 0.7;
-  }
-  50% {
-    transform: scale(1.08);
-    opacity: 1;
-  }
 }

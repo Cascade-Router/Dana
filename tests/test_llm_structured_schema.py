@@ -246,38 +246,3 @@ def test_retry_parser_fails_after_max_retries() -> None:
             max_retries=3,
         )
     assert excinfo.value.attempts == 4  # initial + 3 retries
-
-
-def test_ask_ollama_messages_accepts_format_kwarg(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ensure response_format is forwarded into the Ollama payload."""
-    import dana.core.agent_loop as ca
-
-    captured: dict = {}
-
-    class _Resp:
-        def raise_for_status(self) -> None:
-            return None
-
-        def iter_lines(self, decode_unicode: bool = True):
-            yield json.dumps({"message": {"content": '{"ok":true}'}, "done": True})
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-    def fake_post(url, json=None, timeout=None, stream=None):  # noqa: A002
-        captured["payload"] = json
-        return _Resp()
-
-    monkeypatch.setattr(ca.requests, "post", fake_post)
-    out = ca.ask_ollama_messages(
-        [{"role": "user", "content": "hi"}],
-        response_format={"type": "object", "properties": {"ok": {"type": "boolean"}}},
-        temperature=0.0,
-        num_predict=32,
-    )
-    assert out
-    assert captured["payload"]["format"]["type"] == "object"
-    assert captured["payload"]["options"]["temperature"] == 0.0

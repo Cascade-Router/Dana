@@ -1,7 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window and the floating voice orb overlay",
-  "windows": ["main", "orb"],
-  "permissions": ["core:default"]
+  "description": "Core capabilities for Dana's main, orb, and dynamically-spawned plugin windows.",
+  "windows": ["*"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:webview:allow-create-webview-window",
+    "core:event:allow-emit",
+    "core:event:allow-emit-to",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "store:default",
+    "dialog:default"
+  ]
 }

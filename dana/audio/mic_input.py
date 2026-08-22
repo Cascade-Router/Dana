@@ -1113,14 +1113,9 @@ def record_utterance(
         if not floor_listening_emitted and not (
             state.tts_busy.is_set() or frame_idx < ignore_onset_frames
         ):
-            try:
-                if frame_rms_raw >= speech_floor:
-                    floor_listening_emitted = True
-                    from dana.ui.status_bus import emit_state_change
-
-                    emit_state_change("listening")
-            except Exception:  # noqa: BLE001
-                pass
+            if frame_rms_raw >= speech_floor:
+                floor_listening_emitted = True
+                log_debug("Mic", "state -> listening (noise floor breached)")
 
         if not speech_started:
             pre_roll.append(samples_16k.copy())
@@ -1205,16 +1200,7 @@ def record_utterance(
         "max_timeout",
         "silence_cutoff",
     ):
-        try:
-            from dana.ui.status_bus import emit_state_change
-
-            emit_state_change(
-                "idle",
-                tool="vad_timeout",
-                message="No speech detected — disarmed",
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        log_debug("Mic", "state -> idle (vad_timeout: no speech detected — disarmed)")
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     if not collected:

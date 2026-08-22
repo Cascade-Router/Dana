@@ -39,6 +39,7 @@ def _manifest_to_tool_spec(tool_def: dict[str, Any]) -> ToolSpec:
             type=str(p.get("type", "string")),
             required=bool(p.get("required", True)),
             enum=tuple(str(x) for x in (p.get("enum") or [])),
+            items_type=str(p.get("items_type") or ""),
             description_en=str(p.get("description_en") or ""),
             description_fa=str(p.get("description_fa") or ""),
         )
@@ -51,6 +52,9 @@ def _manifest_to_tool_spec(tool_def: dict[str, Any]) -> ToolSpec:
         parameters=params,
         aliases_en={k: tuple(v) for k, v in (tool_def.get("aliases_en") or {}).items()},
         aliases_fa={k: tuple(v) for k, v in (tool_def.get("aliases_fa") or {}).items()},
+        # Safe-by-default: absent/false means HITL-gated — see ToolSpec.read_only's
+        # own docstring for why a manifest plugin must opt OUT of gating, not in.
+        read_only=bool(tool_def.get("read_only", False)),
     )
 
 
@@ -74,8 +78,17 @@ def _load_entry_module(plugin_dir: Path, entry_point: str, plugin_name: str) -> 
     return module
 
 
-def load_plugin(plugin_dir: Path) -> list[tuple[ToolSpec, Callable[..., Any]]]:
-    """Load one plugin folder's manifest + entry point; raises ``PluginLoadError``."""
+def _load_plugin_full(plugin_dir: Path) -> tuple[str, list[tuple[ToolSpec, Callable[..., Any]]]]:
+    """Shared body for ``load_plugin``/``load_all_plugins_grouped`` — loads
+    the manifest + entry point exactly once and also returns the plugin's
+    declared capability DOMAIN (``manifest["domain"]``, falling back to the
+    plugin's own name), which ``dana.core.react_dispatch``'s generic plugin
+    dispatch wiring groups this plugin's tools under in
+    ``_CAPABILITY_TOOL_IDS`` — the piece that makes "no react_dispatch.py
+    edits needed per plugin" actually true. Kept private/split out from
+    ``load_plugin`` specifically so a caller that needs the domain too
+    never re-parses the manifest or re-execs the entry module a second time.
+    """
     manifest_path = plugin_dir / "manifest.json"
     if not manifest_path.is_file():
         raise PluginLoadError(f"no manifest.json in {plugin_dir}")
@@ -85,6 +98,7 @@ def load_plugin(plugin_dir: Path) -> list[tuple[ToolSpec, Callable[..., Any]]]:
         raise PluginLoadError(f"invalid manifest.json in {plugin_dir}: {exc}") from exc
 
     plugin_name = str(manifest.get("name") or plugin_dir.name)
+    domain = str(manifest.get("domain") or plugin_name)
     entry_point = str(manifest.get("entry_point") or "engine.py")
     module = _load_entry_module(plugin_dir, entry_point, plugin_name)
 
@@ -101,6 +115,12 @@ def load_plugin(plugin_dir: Path) -> list[tuple[ToolSpec, Callable[..., Any]]]:
                 f"{func_name!r} for tool {tool_id!r}"
             )
         tools.append((_manifest_to_tool_spec(tool_def), func))
+    return domain, tools
+
+
+def load_plugin(plugin_dir: Path) -> list[tuple[ToolSpec, Callable[..., Any]]]:
+    """Load one plugin folder's manifest + entry point; raises ``PluginLoadError``."""
+    _domain, tools = _load_plugin_full(plugin_dir)
     return tools
 
 
@@ -143,9 +163,52 @@ def load_all_plugins(
     return all_tools
 
 
+_cached_plugins_grouped: dict[str, list[tuple[ToolSpec, Callable[..., Any]]]] | None = None
+
+
+def load_all_plugins_grouped(
+    *, force_refresh: bool = False, root: Path | None = None
+) -> dict[str, list[tuple[ToolSpec, Callable[..., Any]]]]:
+    """Every discovered plugin's tools, grouped by capability DOMAIN (each
+    manifest's own ``"domain"`` field) — the entry point
+    ``dana.core.react_dispatch.refresh_plugin_tools`` merges into
+    ``TOOL_HANDLERS``/``_CAPABILITY_TOOL_IDS``/this turn's ``tools=`` schema,
+    so a new plugin folder needs zero edits there to become reachable by
+    the live ReAct loop. Cached separately from ``load_all_plugins`` (that
+    one's own cache/shape is untouched, still used by
+    ``plugin_registry_view``'s introspection) — using both in the same
+    process re-execs each plugin's entry module once per distinct cache,
+    which is fine: it only happens at process start, not per turn.
+    """
+    global _cached_plugins_grouped
+    if _cached_plugins_grouped is not None and not force_refresh and root is None:
+        return _cached_plugins_grouped
+
+    grouped: dict[str, list[tuple[ToolSpec, Callable[..., Any]]]] = {}
+    for plugin_dir in discover_plugin_dirs(root):
+        try:
+            domain, tools = _load_plugin_full(plugin_dir)
+        except PluginLoadError as exc:
+            print(f"[plugin_manager] WARNING: skipping plugin {plugin_dir.name!r}: {exc}", flush=True)
+            continue
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[plugin_manager] WARNING: unexpected error loading plugin "
+                f"{plugin_dir.name!r}: {exc}",
+                flush=True,
+            )
+            continue
+        grouped.setdefault(domain, []).extend(tools)
+
+    if root is None:
+        _cached_plugins_grouped = grouped
+    return grouped
+
+
 __all__ = (
     "PluginLoadError",
     "discover_plugin_dirs",
     "load_all_plugins",
+    "load_all_plugins_grouped",
     "load_plugin",
 )

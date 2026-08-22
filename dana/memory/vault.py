@@ -9,6 +9,8 @@ import threading
 from pathlib import Path
 from typing import Any, Protocol
 
+from dana.logging import log_debug
+
 COLLECTION_NAME = "dana_codebase_vault"
 IDLE_COLLECTION_NAME = "idle_compressed"
 _DEFAULT_MODEL = "all-MiniLM-L6-v2"
@@ -82,12 +84,7 @@ def _iter_ingest_files(root: Path) -> list[Path]:
 
 
 def _emit_executing(tool: str) -> None:
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool=tool)
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Vault", f"executing tool={tool}")
 
 
 class CodebaseVault:

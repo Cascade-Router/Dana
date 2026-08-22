@@ -200,3 +200,4 @@ _h1.txt
 notes.txt
 *.bak
 *.tmp
+.aider*

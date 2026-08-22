@@ -163,16 +163,7 @@ def _deliver_proactive_briefing() -> int:
             f"You have {n} background job updates. "
             f"The latest finished with status {status}."
         )
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change(
-            "idle",
-            tool="proactive_briefing",
-            message=msg,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _log(f"WARNING: proactive StatusEventBus emit failed ({exc})")
+    _log(f"proactive briefing: {msg}")
     try:
         from dana.audio.tts_manager import enqueue_speech_impl as enqueue_speech
 
@@ -252,23 +243,10 @@ def _set_state(state: IdleState) -> None:
 
 
 def _emit_compute_mode(state: IdleState) -> None:
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        if state == USER_AWAY:
-            emit_state_change(
-                "idle",
-                tool="compute_high",
-                message="Compute: high (~80%) — USER_AWAY",
-            )
-        else:
-            emit_state_change(
-                "idle",
-                tool="compute_low",
-                message="Compute: medium (~65%) — USER_ACTIVE",
-            )
-    except Exception:  # noqa: BLE001
-        pass
+    if state == USER_AWAY:
+        _log("Compute: high (~80%) — USER_AWAY")
+    else:
+        _log("Compute: medium (~65%) — USER_ACTIVE")
 
 
 def _boost_pid(pid: int) -> None:

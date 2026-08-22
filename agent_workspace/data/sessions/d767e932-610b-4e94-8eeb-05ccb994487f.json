@@ -1,0 +1,16 @@
+{
+  "id": "d767e932-610b-4e94-8eeb-05ccb994487f",
+  "title": "Create a cylinder radius 10 height 30",
+  "created_at": "2026-08-20T07:08:02.509174+00:00",
+  "updated_at": "2026-08-20T07:08:02.509187+00:00",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Create a cylinder radius 10 height 30"
+    },
+    {
+      "role": "assistant",
+      "content": "I ran into a problem talking to the model \u2014 please try again."
+    }
+  ]
+}

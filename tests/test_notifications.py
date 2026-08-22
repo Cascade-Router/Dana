@@ -189,10 +189,3 @@ def test_registered_in_tool_registry_with_required_param() -> None:
     assert entry is not None
     param_names = {(p.name, p.required) for p in entry.spec.parameters}
     assert ("message", True) in param_names
-
-
-def test_default_args_for_forced_send_notification() -> None:
-    from dana.agentic_react_graph import _default_args_for_forced_tool
-
-    args = _default_args_for_forced_tool("send_notification", "let me know when it's done")
-    assert args == {"message": "let me know when it's done"}

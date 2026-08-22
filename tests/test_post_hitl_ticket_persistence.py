@@ -5,35 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def test_validation_bounce_not_logged_to_bug_tracker(tmp_path: Path, monkeypatch) -> None:
-    from dana import agentic as ag
-    from dana import bug_tracker as bt
-
-    target = tmp_path / "bug_tracker.json"
-    monkeypatch.setattr(bt, "BUG_TRACKER_PATH", target)
-    monkeypatch.setattr(bt, "TRACKER_DIR", tmp_path)
-    monkeypatch.setattr(bt, "PENDING_PATCHES_DIR", tmp_path / "pending")
-
-    ag._maybe_record_bug_tracker(
-        user_text="log a ticket about drama servers",
-        spoken="I couldn't finish that cleanly — please ask me again.",
-        last_obs=(
-            "ERROR: Validation Error: Value error, context is an intent-echo "
-            "payload; require root cause, step-by-step changes, and acceptance "
-            "criteria."
-        ),
-        tool_trace=[
-            {
-                "tool": "draft_cursor_prompt",
-                "observation": "ERROR: Validation Error: intent-echo",
-                "forced": True,
-            }
-        ],
-        had_errors=True,
-    )
-    assert not target.exists() or bt.load_bug_tracker(target) == []
-
-
 def test_draft_cursor_writes_ledger_with_makedirs(tmp_path: Path, monkeypatch) -> None:
     from dana.tools.general import draft_cursor_prompt as mod
 

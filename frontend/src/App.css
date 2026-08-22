@@ -18,17 +18,123 @@ body {
 }
 
 .app {
-  display: grid;
-  grid-template-columns: minmax(320px, 380px) 1fr;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
+  position: relative;
+}
+
+.app__topbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #2a2a2a;
+  flex-shrink: 0;
+}
+
+.app__tab-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.app__tab {
+  --tab-accent: #3b82f6;
+  background: none;
+  border: 1px solid transparent;
+  color: #aaa;
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.app__tab:hover {
+  background: #202020;
+  color: #eee;
+}
+
+.app__tab--active {
+  background: color-mix(in srgb, var(--tab-accent) 18%, transparent);
+  color: #fff;
+  border-color: color-mix(in srgb, var(--tab-accent) 45%, transparent);
+}
+
+.app__tab-glyph {
+  color: var(--tab-accent);
+}
+
+.app__pop-out {
+  background: none;
+  border: none;
+  color: #777;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 5px 6px;
+  border-radius: 6px;
+}
+
+.app__pop-out:hover {
+  background: #202020;
+  color: #ddd;
+}
+
+.app__topbar-spacer {
+  flex: 1;
+}
+
+.app__secrets-btn {
+  background: none;
+  border: none;
+  color: #aaa;
+  font-size: 15px;
+  cursor: pointer;
+  padding: 6px 9px;
+  border-radius: 6px;
+}
+
+.app__secrets-btn:hover {
+  background: #202020;
+  color: #eee;
+}
+
+.app__body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.app--with-plugin .app__body {
+  grid-template-columns: minmax(320px, 380px) 1fr;
 }
 
 .app__left {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   min-width: 0;
   min-height: 0;
   border-right: 1px solid #2a2a2a;
+}
+
+.app__chat-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.app:not(.app--with-plugin) .app__left {
+  border-right: none;
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 .app__right {
@@ -38,7 +144,11 @@ body {
   min-height: 0;
 }
 
-.app__right > .viewer3d {
+.app__plugin-loading {
   flex: 1;
-  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  font-size: 13px;
 }

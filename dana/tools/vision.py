@@ -32,6 +32,8 @@ import threading
 import time
 from typing import Any
 
+from dana.logging import log_debug
+
 try:
     import pytesseract
 
@@ -247,12 +249,7 @@ def click_ui_element(target_description: str) -> str:
     the click is blocked, or ``"HALTED: ..."`` if the global kill switch
     fired mid-click.
     """
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="click_ui_element")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=click_ui_element")
 
     label = str(target_description or "").strip()
     if not label:
@@ -316,12 +313,7 @@ def type_text_in_element(target_description: str, text: str) -> str:
     a completed click+type, ``"ERROR: ..."`` when locating/focusing/typing
     fails, or ``"HALTED: ..."`` if the global kill switch fired mid-action.
     """
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="type_text_in_element")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=type_text_in_element")
 
     label = str(target_description or "").strip()
     if not label:
@@ -409,12 +401,7 @@ def scroll_screen(direction: str, amount: str = "medium") -> str:
     an unknown direction/amount or a blocked scroll (rate limit), or
     ``"HALTED: ..."`` if the global kill switch fired mid-scroll.
     """
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="scroll_screen")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=scroll_screen")
 
     key = str(amount or "medium").strip().lower()
     ticks = _SCROLL_AMOUNT_TICKS.get(key)
@@ -453,12 +440,7 @@ def drag_ui_element(source_description: str, destination_description: str) -> st
     completed drag, ``"ERROR: ..."`` when a lookup or the drag itself fails,
     or ``"HALTED: ..."`` if the global kill switch fired mid-drag.
     """
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="drag_ui_element")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=drag_ui_element")
 
     source_label = str(source_description or "").strip()
     dest_label = str(destination_description or "").strip()
@@ -476,9 +458,9 @@ def drag_ui_element(source_description: str, destination_description: str) -> st
     if image is None:
         return "ERROR: drag_ui_element could not capture a screen frame"
 
-    from dana.graph.nodes.vision import locate_ui_element
-
     try:
+        from dana.graph.nodes.vision import locate_ui_element
+
         source_bbox_1000 = locate_ui_element(image, source_label)
     except Exception as exc:  # noqa: BLE001
         return f"ERROR: drag_ui_element vision lookup failed for source {source_label!r}: {exc}"
@@ -531,12 +513,7 @@ def analyze_visual_context() -> str:
 
     Emits UI telemetry ``STATE_CHANGE`` status=executing before capture.
     """
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="analyze_visual_context")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=analyze_visual_context")
 
     current = summarize_visual_history(seconds=30.0)
     if current.startswith("SYSTEM_ERROR:"):

@@ -1,0 +1,130 @@
+{
+  "name": "coder_plugin",
+  "domain": "software_engineering",
+  "entry_point": "engine.py",
+  "tools": [
+    {
+      "id": "search_codebase",
+      "function": "search_codebase",
+      "read_only": true,
+      "description_en": "Context-compressing codebase search: runs a fixed git grep -n -E <regex> (line numbers included), optionally scoped to one file extension. Use this FIRST to locate a function signature, class definition, or keyword by pattern — before reading any whole file — so you spend context on matching lines, not entire files. Never mutates anything and never runs an arbitrary shell command.",
+      "description_fa": "جست‌وجوی فشرده‌ساز کدبیس: اجرای git grep -n -E ثابت با شماره خط، پیش از خواندن کامل هر فایل.",
+      "aliases_en": {
+        "_intent": [
+          "grep",
+          "search code",
+          "find function",
+          "find function signature",
+          "regex search",
+          "find keyword",
+          "locate definition",
+          "software engineering"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "regex_pattern",
+          "type": "string",
+          "required": true,
+          "description_en": "Extended regular expression (git grep -E syntax) describing what to look for, e.g. 'def\\s+analyze_codebase' or 'class\\s+ToolRegistry'."
+        },
+        {
+          "name": "file_extension",
+          "type": "string",
+          "required": false,
+          "description_en": "Restrict the search to files with this extension (no leading dot), e.g. 'py' or 'ts'. Omit to search the whole repository."
+        }
+      ]
+    },
+    {
+      "id": "analyze_codebase",
+      "function": "analyze_codebase",
+      "read_only": true,
+      "description_en": "Read-only codebase reconnaissance: reads specific files verbatim in full. Call search_codebase FIRST to find which files/lines actually matter by pattern — only read a whole file here once you know it's the right one. Never mutates anything and never runs an arbitrary shell command.",
+      "description_fa": "بررسی فقط‌خواندنی کدبیس: خواندن کامل فایل‌های مشخص، پس از یافتن آن‌ها با search_codebase.",
+      "aliases_en": {
+        "_intent": [
+          "read code",
+          "understand codebase",
+          "inspect python file",
+          "read file",
+          "code review",
+          "look at source code",
+          "software engineering"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "files",
+          "type": "array",
+          "items_type": "string",
+          "required": true,
+          "description_en": "Repo-relative file paths to read in full — must be non-empty. Use search_codebase first if you don't already know the exact path(s)."
+        }
+      ]
+    },
+    {
+      "id": "run_verification_command",
+      "function": "run_verification_command",
+      "read_only": true,
+      "description_en": "Runs a WHITELISTED verification command only: pytest, flake8, mypy, or `black --check`. Use this to catch syntax/logic errors or lint issues in your own edit BEFORE handing it off for human approval. Any other command (or bare `black` with no `--check`) is rejected outright — never an arbitrary or destructive shell command. Returns combined stdout/stderr so a failing traceback can be read and acted on.",
+      "description_fa": "اجرای فقط یک دستور تأییدشده از فهرست سفید (pytest، flake8، mypy، یا black --check) برای بررسی تغییرات پیش از تأیید انسانی.",
+      "aliases_en": {
+        "_intent": [
+          "run tests",
+          "run pytest",
+          "run linter",
+          "verify code",
+          "check syntax",
+          "run flake8",
+          "run mypy",
+          "self-correction",
+          "software engineering"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "command",
+          "type": "string",
+          "required": true,
+          "description_en": "The exact verification command to run, e.g. 'pytest tests/plugins/coder_plugin/' or 'black --check dana/plugins/coder_plugin/engine.py'. Only pytest, flake8, mypy, and `black --check` are permitted — anything else is rejected."
+        }
+      ]
+    },
+    {
+      "id": "execute_code_task",
+      "function": "execute_code_task",
+      "read_only": false,
+      "description_en": "Hands a precise, already-verified coding task and its target files to Aider (gemini/gemini-3.6-flash, --edit-format diff so it emits SEARCH/REPLACE blocks rather than rewriting whole files) to implement and auto-commit. MUTATES real files and creates a real git commit — call search_codebase/analyze_codebase first to confirm the change is correct and scoped, and run_verification_command afterward to verify it before presenting the result for human approval; requires human approval before it ever runs.",
+      "description_fa": "سپردن یک وظیفهٔ کدنویسی دقیق و تأییدشده به Aider برای اعمال و کامیت خودکار — نیازمند تأیید انسانی.",
+      "aliases_en": {
+        "_intent": [
+          "refactor",
+          "refactor code",
+          "fix bug",
+          "write code",
+          "edit file",
+          "implement feature",
+          "python",
+          "software engineering",
+          "coding task"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "task_description",
+          "type": "string",
+          "required": true,
+          "description_en": "A precise, complete, self-contained instruction for exactly what to change and why — Aider sees ONLY this text, not the surrounding conversation."
+        },
+        {
+          "name": "files",
+          "type": "array",
+          "items_type": "string",
+          "required": true,
+          "description_en": "Repo-relative paths of every file this task should touch — must be non-empty."
+        }
+      ]
+    }
+  ]
+}

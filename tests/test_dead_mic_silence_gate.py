@@ -6,8 +6,6 @@ import numpy as np
 
 from dana.core.constants import DEAD_MIC_RMS_FLOOR
 from dana.audio.noise_floor import audio_buffer_rms, should_skip_wake_predict
-from dana.core.shared_state import vad_abort_event, vad_capture_active
-from dana.ingestion.text_injection import prioritize_text_input
 
 
 def test_dead_mic_floor_constant() -> None:
@@ -41,21 +39,9 @@ def test_should_skip_wake_predict_below_and_above_floor() -> None:
     assert should_skip_wake_predict(5e-5, floor=DEAD_MIC_RMS_FLOOR) is True
 
 
-def test_prioritize_text_input_sets_vad_abort() -> None:
-    vad_abort_event.clear()
-    vad_capture_active.set()
-    try:
-        prioritize_text_input(reason="unit_test")
-        assert vad_abort_event.is_set()
-    finally:
-        vad_capture_active.clear()
-        vad_abort_event.clear()
-
-
 if __name__ == "__main__":
     test_dead_mic_floor_constant()
     test_audio_buffer_rms_silence_and_empty()
     test_audio_buffer_rms_known_tone()
     test_should_skip_wake_predict_below_and_above_floor()
-    test_prioritize_text_input_sets_vad_abort()
     print("OK")

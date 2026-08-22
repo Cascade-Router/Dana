@@ -1,0 +1,12 @@
+.cad-plugin {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.cad-plugin > .viewer3d {
+  flex: 1;
+  min-height: 0;
+}

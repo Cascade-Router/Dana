@@ -84,3 +84,70 @@ def test_extract_placement_missing_marker_returns_none():
 def test_extract_placement_non_list_payload_returns_none():
     stdout = f"{engine._PLACEMENT_MARKER} not_a_list"
     assert engine._extract_placement(stdout) is None
+
+
+# --------------------------------------------------------------------------
+# _pattern_offsets — batch_pattern_array's pure offset math
+# --------------------------------------------------------------------------
+
+
+def test_pattern_offsets_grid_includes_original_position_at_index_zero():
+    """An 8x8 grid must produce 64 TOTAL placements (the '64 tiles in one
+    tool call' case this tool exists for), with the source's own existing
+    position as one of them, not 64 additional copies."""
+    offsets = engine._pattern_offsets("grid", count_x=8, count_y=8, spacing_x=10.0, spacing_y=10.0)
+    assert len(offsets) == 64
+    assert offsets[0] == (0.0, 0.0, 0.0, 0.0)
+    assert offsets[-1] == (70.0, 70.0, 0.0, 0.0)
+
+
+def test_pattern_offsets_circular_distributes_evenly_on_the_radius():
+    offsets = engine._pattern_offsets("circular", count=4, radius=10.0)
+    assert len(offsets) == 4
+    xs = [round(o[0], 6) for o in offsets]
+    ys = [round(o[1], 6) for o in offsets]
+    assert xs == [10.0, 0.0, -10.0, 0.0]
+    assert ys == [0.0, 10.0, 0.0, -10.0]
+    assert [o[3] for o in offsets] == [0.0, 90.0, 180.0, 270.0]
+
+
+def test_pattern_offsets_rejects_unknown_pattern_type():
+    import pytest
+
+    with pytest.raises(ValueError):
+        engine._pattern_offsets("hexagonal")
+
+
+# --------------------------------------------------------------------------
+# _sketch_edge_specs — create_sketch_extrude's pure geometry prep
+# --------------------------------------------------------------------------
+
+
+def test_sketch_edge_specs_builds_line_and_arc_edges_in_order():
+    segments = [
+        {"type": "line", "to": [10, 0]},
+        {"type": "arc", "to": [10, 10], "via": [13, 5]},
+        {"type": "line", "to": [0, 0]},
+    ]
+    specs = engine._sketch_edge_specs(segments, start=(0.0, 0.0), plane="XY")
+    assert specs == [
+        ("line", ((0.0, 0.0, 0.0), (10.0, 0.0, 0.0))),
+        ("arc", ((10.0, 0.0, 0.0), (13.0, 5.0, 0.0), (10.0, 10.0, 0.0))),
+        ("line", ((10.0, 10.0, 0.0), (0.0, 0.0, 0.0))),
+    ]
+
+
+def test_sketch_edge_specs_embeds_points_per_work_plane():
+    segments = [{"type": "line", "to": [4, 5]}]
+    assert engine._sketch_edge_specs(segments, start=(1.0, 2.0), plane="XY")[0][1] == (
+        (1.0, 2.0, 0.0),
+        (4.0, 5.0, 0.0),
+    )
+    assert engine._sketch_edge_specs(segments, start=(1.0, 2.0), plane="XZ")[0][1] == (
+        (1.0, 0.0, 2.0),
+        (4.0, 0.0, 5.0),
+    )
+    assert engine._sketch_edge_specs(segments, start=(1.0, 2.0), plane="YZ")[0][1] == (
+        (0.0, 1.0, 2.0),
+        (0.0, 4.0, 5.0),
+    )

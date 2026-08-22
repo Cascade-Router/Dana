@@ -56,15 +56,3 @@ def test_vision_overlay_gated_without_debug(monkeypatch) -> None:
     assert ov._thread is None or not ov._thread.is_alive()
     update_roi((10, 10, 50, 50), "should not open")
     assert ov._thread is None or not ov._thread.is_alive()
-
-
-def test_status_bus_message_updates_not_dropped() -> None:
-    from dana.ui.status_bus import StatusEventBus, drain_state_changes, emit_state_change
-
-    bus = StatusEventBus()
-    StatusEventBus._instance = bus
-    emit_state_change("executing", tool="meta_broker", message="Starting Epic 1")
-    emit_state_change("executing", tool="meta_broker", message="Epic 1 validated OK")
-    events = drain_state_changes(max_items=16)
-    assert len(events) == 2
-    assert events[-1]["message"] == "Epic 1 validated OK"

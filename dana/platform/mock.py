@@ -440,6 +440,28 @@ class MockFreeCADEngine(BaseCADEngine):
             "note": _MOCK_NOTE_CAD,
         }
 
+    def inspect_spatial_properties(self, target_path: str) -> dict[str, Any]:
+        import trimesh
+
+        target = Path(target_path)
+        if not target.is_file():
+            return {"ok": False, "error": f"inspect_spatial_properties: target_path not found: {target_path}"}
+        mesh = trimesh.load(target, force="mesh")
+        watertight = bool(mesh.is_watertight)
+        return {
+            "ok": True,
+            "path": str(target),
+            "volume": float(mesh.volume) if watertight else 0.0,
+            "area": float(mesh.area),
+            "center_of_mass": [float(v) for v in mesh.centroid],
+            "is_valid": watertight,
+            "face_count": int(len(mesh.faces)),
+            "edge_count": int(len(mesh.edges_unique)),
+            "vertex_count": int(len(mesh.vertices)),
+            "driver": "mock",
+            "note": _MOCK_NOTE_CAD,
+        }
+
     def create_pipe(
         self,
         pipe_radius: float,
@@ -554,6 +576,175 @@ class MockFreeCADEngine(BaseCADEngine):
             # here beyond the mesh's own vertex positions).
             "placement": [float(v) for v in delta],
             "bounding_box": _bbox(source_mesh),
+            "gui_shown": False,
+            "driver": "mock",
+            "note": _MOCK_NOTE_CAD,
+        }
+
+    def create_assembly_mate(
+        self,
+        fixed_path: str,
+        moving_path: str,
+        mate_type: str,
+        mate_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        import trimesh
+
+        # Reuses the real engine's pure delta-math helper directly — same
+        # justification as batch_pattern_array's reuse of _pattern_offsets:
+        # plain arithmetic, no FreeCAD import at module scope, so it's exactly
+        # as safe to call from this headless driver as duplicating it here.
+        from dana.plugins.freecad.engine import _MATE_TYPES, _mate_delta
+
+        fixed = Path(fixed_path)
+        moving = Path(moving_path)
+        if not fixed.is_file():
+            return {"ok": False, "error": f"create_assembly_mate: fixed_path not found: {fixed_path}"}
+        if not moving.is_file():
+            return {"ok": False, "error": f"create_assembly_mate: moving_path not found: {moving_path}"}
+        mt = (mate_type or "").strip().lower()
+        if mt not in _MATE_TYPES:
+            return {
+                "ok": False,
+                "error": f"create_assembly_mate: unknown mate_type '{mate_type}' — "
+                f"must be one of {', '.join(sorted(_MATE_TYPES))}",
+            }
+
+        fixed_mesh = trimesh.load(fixed, force="mesh")
+        moving_mesh = trimesh.load(moving, force="mesh")
+        f_min, f_max = fixed_mesh.bounds
+        m_min, m_max = moving_mesh.bounds
+        fixed_bbox = {"x_min": f_min[0], "y_min": f_min[1], "z_min": f_min[2], "x_max": f_max[0], "y_max": f_max[1], "z_max": f_max[2]}
+        moving_bbox = {"x_min": m_min[0], "y_min": m_min[1], "z_min": m_min[2], "x_max": m_max[0], "y_max": m_max[1], "z_max": m_max[2]}
+
+        try:
+            delta = _mate_delta(mt, dict(mate_params or {}), fixed_bbox, moving_bbox)
+        except ValueError as exc:
+            return {"ok": False, "error": f"create_assembly_mate: {exc}"}
+
+        moving_mesh.apply_translation(delta)
+        moving_mesh.export(moving)
+        return {
+            "ok": True,
+            "name": moving.stem,
+            "path": str(moving),
+            "mate_type": mt,
+            "fixed_object": str(fixed),
+            "placement": [float(v) for v in delta],
+            "bounding_box": _bbox(moving_mesh),
+            "gui_shown": False,
+            "driver": "mock",
+            "note": _MOCK_NOTE_CAD,
+        }
+
+    def create_sketch_extrude(
+        self,
+        segments: list[dict[str, Any]],
+        height: float,
+        start: tuple[float, float] = (0.0, 0.0),
+        plane: str = "XY",
+        name: str = "Sketch",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> dict[str, Any]:
+        if not segments:
+            return {"ok": False, "error": "create_sketch_extrude requires at least one segment"}
+
+        # Safe stub: trimesh's fan-triangulated extrusion (reused from
+        # _fan_triangulated_extrusion above) only handles straight-edged
+        # polygons and only ever builds in the XY plane — a real rounded
+        # arc and a non-XY work plane aren't geometrically simulated here,
+        # matching the same honest-approximation philosophy the fillet/
+        # chamfer and arc-pipe stubs above use.
+        has_arc = any(str(seg.get("type", "line")).lower() == "arc" for seg in segments)
+        points = [[float(start[0]), float(start[1])]]
+        for seg in segments:
+            to = seg["to"]
+            points.append([float(to[0]), float(to[1])])
+
+        mesh = _fan_triangulated_extrusion(points, float(height))
+        mesh.apply_translation(placement)
+        dims = {"height": float(height), "plane": str(plane).upper(), "segment_count": len(segments)}
+        out_path = _mesh_output_path(name)
+        mesh.export(out_path)
+
+        caveats = []
+        if has_arc:
+            caveats.append("arc segments approximated as straight chords")
+        if str(plane).upper() != "XY":
+            caveats.append("non-XY planes aren't applied to mock geometry (profile always built in XY)")
+        note = _MOCK_NOTE_CAD if not caveats else f"{_MOCK_NOTE_CAD}; " + "; ".join(caveats)
+
+        return {
+            "ok": True,
+            "name": name,
+            "type": "Part::Feature",
+            "bounding_box": _bbox(mesh),
+            "dimensions": dims,
+            "placement": list(placement),
+            "path": str(out_path),
+            "gui_shown": False,
+            "driver": "mock",
+            "note": note,
+        }
+
+    def batch_pattern_array(
+        self,
+        source_path: str,
+        pattern_type: str,
+        *,
+        count_x: int = 1,
+        count_y: int = 1,
+        spacing_x: float | None = None,
+        spacing_y: float | None = None,
+        count: int = 1,
+        radius: float = 0.0,
+        name: str = "Pattern",
+    ) -> dict[str, Any]:
+        import math
+
+        import trimesh
+
+        # Reuses the real engine's pure offset-math helper directly — it's
+        # plain arithmetic with no FreeCAD import at module scope (see
+        # dana.plugins.freecad.engine's docstring), so it's exactly as safe
+        # to call from this headless driver as duplicating the formula here.
+        from dana.plugins.freecad.engine import _PATTERN_TYPES, _pattern_offsets
+
+        source = Path(source_path)
+        if not source.is_file():
+            return {"ok": False, "error": f"batch_pattern_array: source_path not found: {source_path}"}
+        pt = (pattern_type or "").strip().lower()
+        if pt not in _PATTERN_TYPES:
+            return {
+                "ok": False,
+                "error": f"batch_pattern_array: unknown pattern_type '{pattern_type}' — must be linear, grid, or circular",
+            }
+
+        base_mesh = trimesh.load(source, force="mesh")
+        sx = spacing_x if spacing_x is not None else float(base_mesh.extents[0])
+        sy = spacing_y if spacing_y is not None else float(base_mesh.extents[1])
+        offsets = _pattern_offsets(
+            pt, count_x=count_x, count_y=count_y, spacing_x=sx, spacing_y=sy, count=count, radius=radius
+        )
+
+        copies = []
+        for dx, dy, dz, rot in offsets:
+            copy = base_mesh.copy()
+            if rot:
+                copy.apply_transform(trimesh.transformations.rotation_matrix(math.radians(rot), [0, 0, 1]))
+            copy.apply_translation([dx, dy, dz])
+            copies.append(copy)
+        combined = trimesh.util.concatenate(copies) if len(copies) > 1 else copies[0]
+
+        out_path = _mesh_output_path(name)
+        combined.export(out_path)
+        return {
+            "ok": True,
+            "name": name,
+            "type": "Part::Compound",
+            "bounding_box": _bbox(combined),
+            "dimensions": {"pattern_type": pt, "copy_count": len(offsets)},
+            "path": str(out_path),
             "gui_shown": False,
             "driver": "mock",
             "note": _MOCK_NOTE_CAD,

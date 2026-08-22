@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from dana.cascade_router import (
@@ -21,6 +22,81 @@ from dana.cascade_router import (
     note_high_complexity_deepseek_latency,
     reasoner_model_name,
 )
+
+
+@dataclass(frozen=True)
+class R1ThinkExtract:
+    """Separated DeepSeek-R1 reasoning vs clean downstream payload."""
+
+    think_text: str
+    clean_text: str
+
+
+def extract_r1_think_blocks(text: str) -> R1ThinkExtract:
+    """Split R1 ``<think>...</think>`` reasoning from the clean response.
+
+    Inlined from the now-removed ``dana.agentic`` (the legacy voice-agent
+    stack) — this module is the only remaining caller.
+
+    Handles:
+    - multiple closed think blocks
+    - unclosed ``<think>`` (captures through end-of-string — early halt)
+    - optional attributes on the opening tag (``<think ...>``)
+    - empty extracts (no tags / empty bodies): ``clean_text`` is the full
+      usable string so Stage-3 Pydantic guards still receive a payload
+    """
+    if not text:
+        return R1ThinkExtract("", "")
+
+    raw = str(text)
+    lower = raw.lower()
+    thinks: list[str] = []
+    clean_parts: list[str] = []
+    pos = 0
+    n = len(raw)
+
+    while pos < n:
+        idx = lower.find("<think", pos)
+        if idx < 0:
+            clean_parts.append(raw[pos:])
+            break
+        # Only treat real tags: <think> or <think ...>
+        after = lower[idx + 6 : idx + 7] if idx + 6 < n else ""
+        if after not in {">", " ", "\t", "\n", "\r"}:
+            clean_parts.append(raw[pos : idx + 6])
+            pos = idx + 6
+            continue
+        clean_parts.append(raw[pos:idx])
+        gt = raw.find(">", idx)
+        if gt < 0:
+            # Malformed open tag — remainder is reasoning.
+            thinks.append(raw[idx:].strip())
+            break
+        body_start = gt + 1
+        close_idx = lower.find("</think>", body_start)
+        if close_idx < 0:
+            # Unclosed think — capture through EOF (generation halt).
+            thinks.append(raw[body_start:].strip())
+            break
+        thinks.append(raw[body_start:close_idx].strip())
+        pos = close_idx + len("</think>")
+
+    think_text = "\n\n".join(t for t in thinks if t)
+    clean = "".join(clean_parts)
+    clean = re.sub(r"</think\s*>", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    # Empty extract fallback: if no usable clean payload, forward full raw
+    # so downstream Pydantic guards can reject/retry.
+    if not clean and raw.strip():
+        clean = raw.strip()
+    return R1ThinkExtract(think_text=think_text, clean_text=clean)
+
+
+def strip_r1_think_blocks(text: str) -> str:
+    """Remove DeepSeek-R1 think blocks (closed or unclosed); return clean text only."""
+    if not text:
+        return ""
+    return extract_r1_think_blocks(text).clean_text
 
 # Tools that must not be force-executed from thin broker args on MoA routes —
 # the reasoner plan should drive complete arguments (esp. draft_cursor_prompt).
@@ -187,8 +263,6 @@ def _llm_raw_text(result: Any) -> str:
 
 def _llm_text(result: Any) -> str:
     """Clean post-think text only (legacy helper)."""
-    from dana.agentic import extract_r1_think_blocks
-
     return extract_r1_think_blocks(_llm_raw_text(result)).clean_text.strip()
 
 
@@ -282,7 +356,6 @@ def run_moa_reasoner_stage(
     """
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    from dana.agentic import extract_r1_think_blocks
     from dana.logging import log
 
     allowed = ", ".join(allowed_tool_ids or []) or "(bound tools will be provided next)"

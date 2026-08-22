@@ -5,92 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from dana.tools.broker import IntentBroker
 from dana.tools.task_queue import (
     load_task_queue,
     migrate_legacy_input_txt,
-    pending_count,
     save_task_queue,
     update_task_status,
 )
-
-
-def test_dispatch_pending_marks_completed_and_failed(tmp_path: Path) -> None:
-    queue = tmp_path / "task_queue.json"
-    save_task_queue(
-        [
-            {
-                "id": "task_ok",
-                "status": "pending",
-                "command": "say hello",
-            },
-            {
-                "id": "task_bad",
-                "status": "pending",
-                "command": "boom",
-            },
-            {
-                "id": "task_done",
-                "status": "completed",
-                "command": "already done",
-            },
-            {
-                "id": "task_empty",
-                "status": "pending",
-                "command": "   ",
-            },
-        ],
-        path=queue,
-    )
-
-    seen: list[str] = []
-
-    def handler(command: str) -> None:
-        seen.append(command)
-        if command == "boom":
-            raise RuntimeError("simulated failure")
-
-    broker = IntentBroker(registry={})
-    results = broker.dispatch_pending_tasks(handler, path=queue)
-
-    assert seen == ["say hello", "boom"]
-    assert pending_count(queue) == 0
-
-    by_id = {r["id"]: r["status"] for r in results}
-    assert by_id["task_ok"] == "completed"
-    assert by_id["task_bad"] == "failed"
-    assert by_id["task_empty"] == "failed"
-
-    on_disk = {t["id"]: t for t in load_task_queue(queue)}
-    assert on_disk["task_ok"]["status"] == "completed"
-    assert on_disk["task_bad"]["status"] == "failed"
-    assert "simulated failure" in str(on_disk["task_bad"].get("error") or "")
-    assert on_disk["task_done"]["status"] == "completed"
-    assert on_disk["task_empty"]["status"] == "failed"
-    print("[PASS] dispatch_pending isolates failures")
-
-
-def test_failed_task_does_not_block_next(tmp_path: Path) -> None:
-    queue = tmp_path / "task_queue.json"
-    save_task_queue(
-        [
-            {"id": "a", "status": "pending", "command": "first"},
-            {"id": "b", "status": "pending", "command": "second"},
-        ],
-        path=queue,
-    )
-    order: list[str] = []
-
-    def handler(command: str) -> None:
-        order.append(command)
-        if command == "first":
-            raise ValueError("nope")
-
-    IntentBroker(registry={}).dispatch_pending_tasks(handler, path=queue)
-    assert order == ["first", "second"]
-    statuses = {t["id"]: t["status"] for t in load_task_queue(queue)}
-    assert statuses == {"a": "failed", "b": "completed"}
-    print("[PASS] failure isolation continues queue")
 
 
 def test_migrate_legacy_input_txt(tmp_path: Path) -> None:

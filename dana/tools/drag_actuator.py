@@ -30,6 +30,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from dana.logging import log_debug
 from dana.tools.rate_limiter import get_limiter
 from dana.vision.geometry import BBox, get_centroid, inset_bbox, normalize_coordinates
 
@@ -284,12 +285,7 @@ def drag_target_bbox(
     target_resolution: tuple[float, float] | None = None,
 ) -> str:
     """Tool entry point: safely drag from one bounding box's centroid to another's."""
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="drag_target_bbox")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=drag_target_bbox")
 
     result = DragActuator().drag_bbox(
         source_bbox,

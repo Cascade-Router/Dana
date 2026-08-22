@@ -160,6 +160,18 @@ class BaseCADEngine(ABC):
         "x_max": float, "y_max": float, "z_max": float}``."""
 
     @abstractmethod
+    def inspect_spatial_properties(self, target_path: str) -> dict[str, Any]:
+        """Read-only: richer topology introspection than ``get_bounding_box``
+        — volume, surface area, center of mass, solid validity, and face/
+        edge/vertex counts for a previously-created object. Never mutates
+        anything. Lets a caller check topology complexity/validity before a
+        risky fillet/chamfer/boolean rather than discovering infeasibility
+        only after it fails. Returns a result dict including
+        ``{"ok": bool, "volume": float, "area": float, "center_of_mass":
+        [x, y, z], "is_valid": bool, "face_count": int, "edge_count": int,
+        "vertex_count": int}``."""
+
+    @abstractmethod
     def create_pipe(
         self,
         pipe_radius: float,
@@ -191,3 +203,58 @@ class BaseCADEngine(ABC):
         single named ``.stl`` (3D printing) or ``.step`` (external CAD
         interchange) file. Returns a result dict including
         ``{"ok": bool, "path": str}``."""
+
+    @abstractmethod
+    def create_assembly_mate(
+        self,
+        fixed_path: str,
+        moving_path: str,
+        mate_type: str,
+        mate_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Position the MOVING object relative to the FIXED object as a
+        named kinematic mate (``mate_type`` one of ``concentric``/
+        ``coincident_planar``/``offset_axial``), translating the moving
+        object's placement in place — reopens and overwrites the SAME
+        moving-object document/path, like ``align_objects``. Returns a
+        result dict including ``{"ok": bool, "path": str, "mate_type": str,
+        "placement": [x, y, z]}``."""
+
+    @abstractmethod
+    def create_sketch_extrude(
+        self,
+        segments: list[dict[str, Any]],
+        height: float,
+        start: tuple[float, float] = (0.0, 0.0),
+        plane: str = "XY",
+        name: str = "Sketch",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> dict[str, Any]:
+        """Draw a closed 2D profile from an ordered list of line/arc
+        segments (each ``{"type": "line", "to": [x, y]}`` or ``{"type":
+        "arc", "to": [x, y], "via": [x, y]}``) on ``plane`` ("XY"/"XZ"/"YZ"),
+        then extrude it ``height`` units along the plane's normal into a
+        solid — a higher-leverage primitive than ``create_extrusion`` for
+        profiles with rounded/arc edges a straight-edged polyline can't
+        express. Same result shape as ``create_box``."""
+
+    @abstractmethod
+    def batch_pattern_array(
+        self,
+        source_path: str,
+        pattern_type: str,
+        *,
+        count_x: int = 1,
+        count_y: int = 1,
+        spacing_x: float | None = None,
+        spacing_y: float | None = None,
+        count: int = 1,
+        radius: float = 0.0,
+        name: str = "Pattern",
+    ) -> dict[str, Any]:
+        """Copy a previously-created object into a linear, grid, or
+        circular arrangement (``pattern_type``), combined into a single
+        compound — ONE call instead of one create_* call per copy, so a
+        repetitive layout (e.g. an 8x8 grid of 64 tiles) doesn't burn
+        through the ReAct loop's per-turn iteration cap. Returns a result
+        dict including ``{"ok": bool, "path": str, "name": str}``."""

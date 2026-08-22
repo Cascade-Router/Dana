@@ -149,13 +149,6 @@ def test_focus_window_registered_in_tool_registry_with_required_param() -> None:
     assert ("target_description", True) in param_names
 
 
-def test_default_args_for_forced_focus_window() -> None:
-    from dana.agentic_react_graph import _default_args_for_forced_tool
-
-    args = _default_args_for_forced_tool("focus_window", "switch to Chrome")
-    assert args == {"target_description": "switch to Chrome"}
-
-
 def test_focus_window_triggers_setforegroundwindow_when_not_dry_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -219,13 +212,6 @@ def test_press_keyboard_shortcut_registered_in_tool_registry_with_required_param
     assert entry is not None
     param_names = {(p.name, p.required) for p in entry.spec.parameters}
     assert ("shortcut", True) in param_names
-
-
-def test_default_args_for_forced_press_keyboard_shortcut() -> None:
-    from dana.agentic_react_graph import _default_args_for_forced_tool
-
-    args = _default_args_for_forced_tool("press_keyboard_shortcut", "press ctrl+shift+n")
-    assert args == {"shortcut": "press ctrl+shift+n"}
 
 
 def test_press_keyboard_shortcut_triggers_press_key_combo_when_not_dry_run(
@@ -363,13 +349,6 @@ def test_write_clipboard_registered_in_tool_registry_with_required_param() -> No
     assert entry is not None
     param_names = {(p.name, p.required) for p in entry.spec.parameters}
     assert ("text", True) in param_names
-
-
-def test_default_args_for_forced_write_clipboard() -> None:
-    from dana.agentic_react_graph import _default_args_for_forced_tool
-
-    args = _default_args_for_forced_tool("write_clipboard", "put this on the clipboard")
-    assert args == {"text": "put this on the clipboard"}
 
 
 def test_write_clipboard_triggers_set_clipboard_data_when_not_dry_run(

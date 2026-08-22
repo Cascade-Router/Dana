@@ -1,0 +1,148 @@
+"""Targeted tests for the Standard Parametric Part Generator sprint:
+dana.plugins.freecad.engineering_standards's new programmatic accessors
+(parse_screw_spec/get_bearing_geometry/get_nema17_dimensions) and
+dana.plugins.freecad.standard_parts.insert_standard_part, plus one
+end-to-end dispatch_tool_call integration check. Not a full test suite by
+design — pure-logic + dry-run coverage only, no live FreeCADCmd required.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from dana.plugins.freecad.engineering_standards import (
+    get_bearing_geometry,
+    get_nema17_dimensions,
+    parse_screw_spec,
+)
+from dana.plugins.freecad.standard_parts import insert_standard_part
+
+
+# --------------------------------------------------------------------------
+# engineering_standards.py's programmatic (non-fuzzy) accessors
+# --------------------------------------------------------------------------
+
+
+def test_parse_screw_spec_extracts_diameter_length_and_head_geometry():
+    geo = parse_screw_spec("M3x12")
+    assert geo == {
+        "nominal_diameter_mm": 3.0,
+        "length_mm": 12.0,
+        "head_diameter_mm": 5.5,
+        "head_height_mm": 3.0,
+    }
+
+
+def test_parse_screw_spec_accepts_uppercase_x_and_decimal_length():
+    geo = parse_screw_spec("M4X16.5")
+    assert geo["nominal_diameter_mm"] == 4.0
+    assert geo["length_mm"] == 16.5
+
+
+def test_parse_screw_spec_rejects_malformed_spec():
+    with pytest.raises(ValueError, match="invalid screw spec"):
+        parse_screw_spec("not-a-spec")
+
+
+def test_parse_screw_spec_rejects_unsupported_diameter():
+    with pytest.raises(ValueError, match="no screw geometry"):
+        parse_screw_spec("M8x20")
+
+
+def test_get_bearing_geometry_returns_exact_608_dimensions():
+    assert get_bearing_geometry("608") == {"bore_diameter_mm": 8.0, "outer_diameter_mm": 22.0, "width_mm": 7.0}
+
+
+def test_get_bearing_geometry_rejects_unknown_designation():
+    with pytest.raises(ValueError, match="no bearing geometry"):
+        get_bearing_geometry("999")
+
+
+def test_get_nema17_dimensions_includes_shaft_length_for_geometry_generation():
+    dims = get_nema17_dimensions()
+    assert dims["mounting_hole_spacing_mm"] == 31.0
+    assert dims["default_shaft_length_mm"] == 24.0
+
+
+# --------------------------------------------------------------------------
+# insert_standard_part — dry-run mode (no FreeCADCmd needed)
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
+
+
+def test_insert_nema17_motor_dry_run_reports_correct_dimensions():
+    result = json.loads(insert_standard_part("nema17_motor"))
+    assert result["ok"] is True
+    assert result["part_type"] == "nema17_motor"
+    assert result["dimensions"]["mounting_hole_spacing_mm"] == 31.0
+
+
+def test_insert_socket_head_screw_dry_run_resolves_spec():
+    result = json.loads(insert_standard_part("socket_head_screw", specification="M3x12"))
+    assert result["ok"] is True
+    assert result["name"] == "Screw_M3X12"
+    assert result["dimensions"]["head_diameter_mm"] == 5.5
+
+
+def test_insert_ball_bearing_dry_run_resolves_designation():
+    result = json.loads(insert_standard_part("ball_bearing", specification="608"))
+    assert result["ok"] is True
+    assert result["dimensions"]["outer_diameter_mm"] == 22.0
+
+
+def test_insert_standard_part_rejects_unknown_part_type():
+    result = json.loads(insert_standard_part("gearbox"))
+    assert result["ok"] is False
+    assert "unknown part_type" in result["error"]
+
+
+def test_insert_standard_part_rejects_malformed_screw_spec():
+    result = json.loads(insert_standard_part("socket_head_screw", specification="bogus"))
+    assert result["ok"] is False
+    assert "invalid screw spec" in result["error"]
+
+
+def test_insert_standard_part_custom_name_and_placement_are_honored():
+    result = json.loads(insert_standard_part("ball_bearing", specification="608", name="MyBearing", placement=(1.0, 2.0, 3.0)))
+    assert result["name"] == "MyBearing"
+    assert result["placement"] == [1.0, 2.0, 3.0]
+
+
+# --------------------------------------------------------------------------
+# End-to-end dispatch_tool_call integration
+# --------------------------------------------------------------------------
+
+
+def test_dispatch_tool_call_insert_standard_part_end_to_end():
+    """insert_standard_part bypasses the engine/control_plane driver
+    abstraction by design (see standard_parts.py's module docstring), so
+    engine=None/control_plane=None here proves dispatch never needs them
+    for this tool_id — dry-run mode keeps this CI-safe without FreeCADCmd."""
+    from dana.core import react_dispatch as rd
+    from dana.tools.schema import ToolCall
+
+    result = rd.dispatch_tool_call(
+        ToolCall(tool_id="insert_standard_part", arguments={"part_type": "nema17_motor"}),
+        engine=None,
+        control_plane=None,
+    )
+    assert result.ok is True
+    assert result.payload["part_type"] == "nema17_motor"
+    assert rd.is_mutating_tool("insert_standard_part") is True
+
+
+def test_dispatch_tool_call_insert_standard_part_missing_part_type():
+    from dana.core import react_dispatch as rd
+    from dana.tools.schema import ToolCall
+
+    result = rd.dispatch_tool_call(
+        ToolCall(tool_id="insert_standard_part", arguments={}), engine=None, control_plane=None
+    )
+    assert result.ok is False
+    assert "part_type" in result.message

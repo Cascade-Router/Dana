@@ -1,0 +1,16 @@
+{
+  "id": "9a756944-3ad6-452f-9e0f-7eed73845717",
+  "title": "In dana/utils/dummy_math.py, update divide_numbers to handl\u2026",
+  "created_at": "2026-08-21T18:28:24.005241+00:00",
+  "updated_at": "2026-08-21T18:28:24.005253+00:00",
+  "messages": [
+    {
+      "role": "user",
+      "content": "In dana/utils/dummy_math.py, update divide_numbers to handle zero division by raising ValueError('Cannot divide by zero'). Once edited, run pytest tests/utils/test_dummy_math.py using your verification tool. If the test fails, inspect the traceback and fix it automatically before presenting your final answer."
+    },
+    {
+      "role": "assistant",
+      "content": "The local model didn't respond in time (it may be under memory pressure or stuck) \u2014 please try again. If this keeps happening, restarting Ollama usually clears it."
+    }
+  ]
+}

@@ -38,14 +38,6 @@ def show_silent_toast(
         return False
 
     icon_path = (icon or "").strip() or None
-    if icon_path is None:
-        try:
-            from dana.ui.logo import toast_logo_path
-
-            path = toast_logo_path((64, 64))
-            icon_path = str(path) if path is not None else None
-        except Exception:  # noqa: BLE001
-            icon_path = None
 
     try:
         from win11toast import toast as _toast

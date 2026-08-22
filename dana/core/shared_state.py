@@ -397,18 +397,6 @@ def set_ui_state(state: str) -> None:
     log_debug("UI", f"State -> {state}")
     # Visual cue: tray icon turns green while VAD is actively listening.
     _notify_ui_state_listeners(state)
-    # Dashboard STATE_CHANGE (mic / system status); headless-safe.
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        if state in ("listening", "followup"):
-            emit_state_change("listening")
-        elif state in ("transcribing", "thinking"):
-            emit_state_change("processing")
-        elif state == "idle":
-            emit_state_change("idle")
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def get_ui_state() -> str:
@@ -661,21 +649,6 @@ def emit_trace(
         payload["status"] = "active"
     try:
         gui_telemetry_queue.put_nowait(payload)
-    except Exception:  # noqa: BLE001
-        pass
-    # Canonical bus for LiveTracePanel (never touches Tk from worker threads).
-    try:
-        from dana.ui.trace_bus import emit_trace_event
-
-        status_l = payload["status"]
-        et = "node_enter" if status_l == "active" else "node_exit"
-        emit_trace_event(
-            et,
-            node=payload["stage"],
-            message=payload["message"],
-            mode=payload["mode"] or "",
-            payload=payload["message"],
-        )
     except Exception:  # noqa: BLE001
         pass
 

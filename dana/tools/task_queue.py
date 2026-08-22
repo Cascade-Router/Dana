@@ -332,7 +332,14 @@ def drain(
     *,
     path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Atomic drain entrypoint — claim pending, then dispatch via broker."""
-    from dana.tools.broker import dispatch_pending_tasks
+    """Atomic drain entrypoint — claim pending, then dispatch via broker.
 
-    return dispatch_pending_tasks(handler, path=path)
+    The regex ``IntentBroker`` this dispatched through was removed along with
+    the legacy LangGraph stack; the ReAct tool-id dispatcher has no drop-in
+    replacement for free-text task dispatch. Currently unused (no live caller).
+    """
+    raise NotImplementedError(
+        "task_queue.drain() dispatched via the removed dana.tools.broker "
+        "IntentBroker and has no replacement; route through react_dispatch "
+        "tool_ids instead."
+    )

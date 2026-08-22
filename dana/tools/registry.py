@@ -478,6 +478,25 @@ class ToolRegistry:
             n += 1
         return n
 
+    def load_from_plugin_manager(self) -> int:
+        """Bulk-load every ``dana/plugins/*/manifest.json``-declared tool,
+        tagged with its plugin's capability domain — makes a manifest-based
+        plugin's tools semantically retrievable (Pillar 1's RAG narrowing)
+        alongside every ``tools.json``-native tool, the same way
+        ``dana.core.react_dispatch.refresh_plugin_tools`` makes them
+        dispatchable/schema-visible. Import kept local (not module-level) —
+        ``dana.plugins.plugin_manager`` doesn't need to be a hard dependency
+        of every ``ToolRegistry`` caller, only ones that actually load it.
+        """
+        from dana.plugins.plugin_manager import load_all_plugins_grouped
+
+        n = 0
+        for domain, tools in load_all_plugins_grouped().items():
+            for spec, fn in tools:
+                self.register(spec, callable=fn, source=f"plugin:{domain}", metadata={"domain": domain})
+                n += 1
+        return n
+
     def as_spec_dict(self) -> dict[str, ToolSpec]:
         with self._lock:
             return {
@@ -525,6 +544,7 @@ def get_tool_registry(*, reload: bool = False) -> ToolRegistry:
         if _registry_singleton is None or reload:
             reg = ToolRegistry()
             reg.load_from_tools_json(TOOLS_JSON)
+            reg.load_from_plugin_manager()
             _registry_singleton = reg
         return _registry_singleton
 

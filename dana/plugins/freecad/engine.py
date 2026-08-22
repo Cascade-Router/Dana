@@ -51,6 +51,8 @@ _BBOX_MARKER = f"{_OK_MARKER}_BBOX"
 _BBOX_RE = re.compile(re.escape(_BBOX_MARKER) + r" (\[.*?\])")
 _PLACEMENT_MARKER = f"{_OK_MARKER}_PLACEMENT"
 _PLACEMENT_RE = re.compile(re.escape(_PLACEMENT_MARKER) + r" (\[.*?\])")
+_SPATIAL_MARKER = f"{_OK_MARKER}_SPATIAL"
+_SPATIAL_RE = re.compile(re.escape(_SPATIAL_MARKER) + r" (\[.*?\])")
 _OUTPUT_DIR = DANA_WORKSPACE / "freecad_output"
 _EXPORT_DIR = DANA_WORKSPACE / "exports"
 
@@ -365,6 +367,24 @@ def _extract_placement(stdout: str) -> list[float] | None:
         return None
     if isinstance(values, list) and all(isinstance(v, (int, float)) for v in values):
         return [float(v) for v in values]
+    return None
+
+
+def _extract_spatial(stdout: str) -> list[Any] | None:
+    """Parse ``inspect_spatial_properties``'s 9-element stdout line
+    (``[volume, area, com_x, com_y, com_z, is_valid, face_count, edge_count,
+    vertex_count]``) — a flat list rather than a dict literal, matching
+    ``_extract_bbox``/``_extract_placement``'s convention, since ``.format()``
+    would otherwise need every ``{``/``}`` in a dict literal escaped."""
+    m = _SPATIAL_RE.search(stdout or "")
+    if not m:
+        return None
+    try:
+        values = ast.literal_eval(m.group(1))
+    except (ValueError, SyntaxError):
+        return None
+    if isinstance(values, list) and len(values) == 9:
+        return values
     return None
 
 
@@ -758,6 +778,280 @@ def create_star_prism(
     return json.dumps(result)
 
 
+# 2D-point-per-work-plane embedding: XY keeps (x, y, 0) and extrudes along
+# +Z; XZ/YZ embed the same 2 sketch coordinates into the other two axes and
+# extrude along whichever axis is left over — a plain lookup, no rotation
+# matrices needed since these are the 3 principal planes.
+_PLANE_NORMAL: dict[str, tuple[float, float, float]] = {
+    "XY": (0.0, 0.0, 1.0),
+    "XZ": (0.0, 1.0, 0.0),
+    "YZ": (1.0, 0.0, 0.0),
+}
+
+
+def _embed_2d(plane: str, x: float, y: float) -> tuple[float, float, float]:
+    if plane == "XY":
+        return (x, y, 0.0)
+    if plane == "XZ":
+        return (x, 0.0, y)
+    return (0.0, x, y)  # YZ
+
+
+def _sketch_edge_specs(
+    segments: Sequence[dict[str, Any]], start: Sequence[float], plane: str
+) -> list[tuple[str, tuple[Any, ...]]]:
+    """Pure geometry prep for ``create_sketch_extrude`` — walks an ordered
+    list of ``{"type": "line", "to": [x, y]}`` / ``{"type": "arc", "to":
+    [x, y], "via": [x, y]}`` segments into 3D-embedded edge specs the
+    FreeCAD script can build ``Part.LineSegment``/``Part.Arc`` from
+    directly. No FreeCAD needed here — testable in plain Python, same style
+    as ``_alignment_delta``/``_star_polygon_vertices``.
+    """
+    cur = _embed_2d(plane, float(start[0]), float(start[1]))
+    specs: list[tuple[str, tuple[Any, ...]]] = []
+    for seg in segments:
+        kind = str(seg.get("type", "line")).strip().lower()
+        to = _embed_2d(plane, float(seg["to"][0]), float(seg["to"][1]))
+        if kind == "arc":
+            via = _embed_2d(plane, float(seg["via"][0]), float(seg["via"][1]))
+            specs.append(("arc", (cur, via, to)))
+        else:
+            specs.append(("line", (cur, to)))
+        cur = to
+    return specs
+
+
+_SKETCH_EXTRUDE_SCRIPT = """\
+import FreeCAD as App
+import Part
+
+edges = []
+for kind, pts in {edge_specs!r}:
+    if kind == "arc":
+        p1, pm, p2 = pts
+        edges.append(Part.Arc(App.Vector(*p1), App.Vector(*pm), App.Vector(*p2)).toShape())
+    else:
+        p1, p2 = pts
+        edges.append(Part.LineSegment(App.Vector(*p1), App.Vector(*p2)).toShape())
+wire = Part.Wire(edges)
+nx, ny, nz = {normal!r}
+solid = Part.Face(wire).extrude(App.Vector(nx * {height}, ny * {height}, nz * {height}))
+
+doc = App.newDocument("DanaModel")
+obj = doc.addObject("Part::Feature", {name!r})
+obj.Shape = solid
+""" + _PLACEMENT_SNIPPET + """\
+doc.recompute()
+doc.saveAs({out_path!r})
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {out_path!r})
+"""
+
+
+def create_sketch_extrude(
+    segments: Sequence[dict[str, Any]],
+    height: float,
+    start: tuple[float, float] = (0.0, 0.0),
+    plane: str = "XY",
+    name: str = "Sketch",
+    placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> str:
+    """Draw a closed 2D profile from an ordered list of line/arc segments on
+    a chosen work plane, then extrude it into a solid ``Part::Feature`` —
+    a higher-leverage foundational primitive than ``create_extruded_polyline``
+    for shapes with rounded/arc edges (slots, D-profiles, filleted 2D
+    outlines) a straight-edged polyline can't express, without needing a
+    full parametric ``Sketcher::SketchObject`` and its constraint solver —
+    plain ``Part`` wire construction keeps this stateless and lean, matching
+    every other create_* primitive here.
+
+    Each segment is ``{"type": "line", "to": [x, y]}`` or ``{"type": "arc",
+    "to": [x, y], "via": [x, y]}`` (a 3-point arc through ``via`` ending at
+    ``to``). The profile starts at ``start`` and must close (the last
+    segment's ``to`` should equal ``start``).
+    """
+    plane_u = (plane or "XY").strip().upper()
+    if plane_u not in _PLANE_NORMAL:
+        return _error(f"create_sketch_extrude: unknown plane '{plane}' — must be XY, XZ, or YZ")
+    if not segments:
+        return _error("create_sketch_extrude requires at least one segment")
+    try:
+        edge_specs = _sketch_edge_specs(segments, start, plane_u)
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        return _error(f"create_sketch_extrude: malformed segment — {exc}")
+
+    dims = {"height": float(height), "plane": plane_u, "segment_count": len(segments)}
+    placement = (float(placement[0]), float(placement[1]), float(placement[2]))
+    if is_dry_run_enabled():
+        return _dry_run_result(
+            "create_sketch_extrude", name=name, type="Part::Feature", dimensions=dims, placement=list(placement)
+        )
+    out_path = _output_path(name, ext="FCStd")
+    script = _SKETCH_EXTRUDE_SCRIPT.format(
+        edge_specs=edge_specs,
+        normal=_PLANE_NORMAL[plane_u],
+        height=dims["height"],
+        name=name,
+        placement=placement,
+        out_path=str(out_path),
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"create_sketch_extrude failed: {result['error']}")
+    return _ok(
+        name=name,
+        type="Part::Feature",
+        bounding_box=result.get("bounding_box"),
+        dimensions=dims,
+        placement=list(placement),
+        path=str(out_path),
+        gui_shown=_auto_show(out_path),
+    )
+
+
+_PATTERN_TYPES = frozenset({"linear", "grid", "circular"})
+
+
+def _pattern_offsets(
+    pattern_type: str,
+    *,
+    count_x: int = 1,
+    count_y: int = 1,
+    spacing_x: float = 0.0,
+    spacing_y: float = 0.0,
+    count: int = 1,
+    radius: float = 0.0,
+) -> list[tuple[float, float, float, float]]:
+    """Pure arithmetic: ``(dx, dy, dz, z_rotation_deg)`` offsets for every
+    copy in a linear/grid/circular pattern — no FreeCAD needed, same style
+    as ``_alignment_delta``/``_star_polygon_vertices``.
+
+    For ``"linear"``/``"grid"``, index 0 is always ``(0, 0, 0, 0)`` — the
+    source object's own existing position — so ``count_x=8, count_y=8``
+    produces 64 TOTAL placements in one call (the "64 tiles in one tool
+    call" case ``batch_pattern_array`` exists to cover), not 64 additional
+    ones. ``"circular"`` instead places all ``count`` copies on the circle
+    (none necessarily coinciding with the source's original position).
+    """
+    pt = (pattern_type or "").strip().lower()
+    if pt == "linear":
+        n = max(1, int(count_x))
+        return [(i * spacing_x, 0.0, 0.0, 0.0) for i in range(n)]
+    if pt == "grid":
+        nx, ny = max(1, int(count_x)), max(1, int(count_y))
+        return [(i * spacing_x, j * spacing_y, 0.0, 0.0) for j in range(ny) for i in range(nx)]
+    if pt == "circular":
+        n = max(1, int(count))
+        return [
+            (
+                radius * math.cos(2 * math.pi * i / n),
+                radius * math.sin(2 * math.pi * i / n),
+                0.0,
+                360.0 * i / n,
+            )
+            for i in range(n)
+        ]
+    raise ValueError(f"unknown pattern_type: {pattern_type}")
+
+
+_PATTERN_ARRAY_SCRIPT = """\
+import FreeCAD as App
+
+src_doc = App.openDocument({source_path!r})
+base_obj = next((o for o in src_doc.Objects if not o.InList), src_doc.Objects[-1])
+
+doc = App.newDocument("DanaModel")
+copies = []
+for dx, dy, dz, rot in {offsets!r}:
+    c = doc.copyObject(base_obj, False)
+    c.Placement = App.Placement(
+        base_obj.Placement.Base + App.Vector(dx, dy, dz),
+        App.Rotation(App.Vector(0, 0, 1), rot).multiply(base_obj.Placement.Rotation),
+    )
+    copies.append(c)
+
+obj = doc.addObject("Part::Compound", {name!r})
+obj.Links = copies
+doc.recompute()
+doc.saveAs({out_path!r})
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {out_path!r})
+"""
+
+
+def batch_pattern_array(
+    source_path: str,
+    pattern_type: str,
+    *,
+    count_x: int = 1,
+    count_y: int = 1,
+    spacing_x: float | None = None,
+    spacing_y: float | None = None,
+    count: int = 1,
+    radius: float = 0.0,
+    name: str = "Pattern",
+) -> str:
+    """Copy a previously-created object into a linear, grid, or circular
+    arrangement, combined into a single ``Part::Compound`` — ONE tool call
+    instead of one create_freecad_* call per copy, so a repetitive layout
+    (e.g. "64 tiles" as an 8x8 grid) doesn't burn through the ReAct loop's
+    per-turn iteration cap one placement at a time.
+
+    ``spacing_x``/``spacing_y`` default to the source object's own
+    bounding-box width/depth (read via ``get_bounding_box``) so adjacent
+    copies sit edge-to-edge with no overlap unless a caller wants a
+    deliberate gap or overlap.
+    """
+    src = Path(source_path)
+    if not src.is_file():
+        return _error(f"batch_pattern_array: source_path not found: {source_path}")
+    pt = (pattern_type or "").strip().lower()
+    if pt not in _PATTERN_TYPES:
+        return _error(f"batch_pattern_array: unknown pattern_type '{pattern_type}' — must be linear, grid, or circular")
+
+    sx, sy = spacing_x, spacing_y
+    if pt in ("linear", "grid") and (sx is None or sy is None):
+        bbox = json.loads(get_bounding_box(str(src)))
+        if not bbox.get("ok"):
+            return _error(f"batch_pattern_array: failed to read source bounding box: {bbox.get('error')}")
+        sx = sx if sx is not None else (bbox["x_max"] - bbox["x_min"])
+        sy = sy if sy is not None else (bbox["y_max"] - bbox["y_min"])
+
+    try:
+        offsets = _pattern_offsets(
+            pt,
+            count_x=count_x,
+            count_y=count_y,
+            spacing_x=float(sx or 0.0),
+            spacing_y=float(sy or 0.0),
+            count=count,
+            radius=float(radius),
+        )
+    except ValueError as exc:
+        return _error(f"batch_pattern_array: {exc}")
+
+    dims = {"pattern_type": pt, "copy_count": len(offsets)}
+    if is_dry_run_enabled():
+        return _dry_run_result("batch_pattern_array", name=name, type="Part::Compound", dimensions=dims)
+
+    out_path = _output_path(name, ext="FCStd")
+    script = _PATTERN_ARRAY_SCRIPT.format(
+        source_path=str(src), offsets=offsets, name=name, out_path=str(out_path), marker=_OK_MARKER
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"batch_pattern_array failed: {result['error']}")
+    return _ok(
+        name=name,
+        type="Part::Compound",
+        bounding_box=result.get("bounding_box"),
+        dimensions=dims,
+        path=str(out_path),
+        gui_shown=_auto_show(out_path),
+    )
+
+
 # FreeCAD Part::Cut is a Base/Tool pair; Part::MultiFuse/MultiCommon instead
 # take a Shapes list — two script shapes, chosen in Python (not branched
 # inside the FreeCADCmd subprocess) by which the operation actually needs.
@@ -1098,6 +1392,67 @@ def get_bounding_box(target_path: str) -> str:
     )
 
 
+_INSPECT_SPATIAL_SCRIPT = """\
+import FreeCAD as App
+
+doc = App.openDocument({target_path!r})
+obj = next((o for o in doc.Objects if not o.InList), doc.Objects[-1])
+shape = obj.Shape
+com = shape.CenterOfMass
+print("{marker}_SPATIAL " + str([
+    shape.Volume, shape.Area, com.x, com.y, com.z,
+    shape.isValid(), len(shape.Faces), len(shape.Edges), len(shape.Vertexes),
+]))
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {target_path!r})
+"""
+
+
+def inspect_spatial_properties(target_path: str) -> str:
+    """Read-only: richer topology introspection than ``get_bounding_box`` —
+    solid volume, surface area, center of mass, validity, and face/edge/
+    vertex counts for a previously-created object. Never saves, so — like
+    ``get_bounding_box`` — it never needs the HITL approval gate the
+    create_*/apply_* mutators do.
+
+    Lets a caller (the LLM, mid-ReAct-loop) "look before it leaps": check
+    edge/face count and validity before a risky fillet/chamfer/boolean
+    rather than only discovering geometric infeasibility after the fact.
+    """
+    target = Path(target_path)
+    if not target.is_file():
+        return _error(f"inspect_spatial_properties: target_path not found: {target_path}")
+    if is_dry_run_enabled():
+        return _dry_run_result(
+            "inspect_spatial_properties",
+            path=str(target),
+            volume=0.0,
+            area=0.0,
+            center_of_mass=[0.0, 0.0, 0.0],
+            is_valid=True,
+            face_count=0,
+            edge_count=0,
+            vertex_count=0,
+        )
+    script = _INSPECT_SPATIAL_SCRIPT.format(target_path=str(target), marker=_OK_MARKER)
+    result = _run_freecad_script(script, require_marker=True)
+    if not result["ok"]:
+        return _error(f"inspect_spatial_properties failed: {result['error']}")
+    spatial = _extract_spatial(result["stdout"]) or [0.0, 0.0, 0.0, 0.0, 0.0, True, 0, 0, 0]
+    volume, area, cx, cy, cz, is_valid, face_count, edge_count, vertex_count = spatial
+    return _ok(
+        path=str(target),
+        volume=float(volume),
+        area=float(area),
+        center_of_mass=[float(cx), float(cy), float(cz)],
+        is_valid=bool(is_valid),
+        face_count=int(face_count),
+        edge_count=int(edge_count),
+        vertex_count=int(vertex_count),
+        bounding_box=result.get("bounding_box"),
+    )
+
+
 _ALIGNMENT_TYPES = frozenset({"top_center", "bottom_center", "flush_left", "flush_right"})
 
 _ALIGN_APPLY_SCRIPT = """\
@@ -1197,6 +1552,119 @@ def align_objects(source_path: str, target_path: str, alignment_type: str) -> st
         placement=result.get("placement"),
         bounding_box=result.get("bounding_box"),
         gui_shown=_auto_show(source),
+    )
+
+
+_MATE_TYPES = frozenset({"concentric", "coincident_planar", "offset_axial"})
+
+
+def _mate_delta(
+    mate_type: str, params: dict[str, Any], fixed_bbox: dict[str, Any], moving_bbox: dict[str, Any]
+) -> tuple[float, float, float]:
+    """Pure-Python XYZ delta for each ``mate_type`` — same bbox-center
+    arithmetic style as ``_alignment_delta``, generalized with caller-
+    supplied numeric params so two primitives can be positioned as a true
+    (if approximate) kinematic pair rather than only bbox-snapped.
+
+    Approximates a real CAD assembly mate's constraint solve with bounding-
+    box-center math rather than genuine face/axis-normal detection or a
+    persistent LCS/constraint-solver object — exact for axis-aligned
+    primitives (create_freecad_*'s own output), and it keeps every mate a
+    single stateless file-in/file-out translation like ``align_objects``,
+    with no separate assembly-constraint state to keep in sync.
+
+    ``"concentric"``: center the MOVING object's XY footprint on the FIXED
+    object's (their vertical central axes coincide), at an optional
+    ``z_offset`` — e.g. a shaft (moving) mated concentric inside a bearing
+    bore (fixed).
+    ``"coincident_planar"``: make the moving object's bottom face coincide
+    with the fixed object's top face (a flat mating plane), at an optional
+    in-plane ``offset_x``/``offset_y`` — e.g. a plate resting flush on a boss.
+    ``"offset_axial"``: center the moving object's XY footprint on the
+    fixed object's, standing off ``distance`` mm along Z from the fixed
+    object's top (or, with ``from_face="bottom"``, bottom) face — e.g. a
+    shaft protruding a fixed distance above a motor's pilot boss.
+    """
+    fbb, mbb = fixed_bbox, moving_bbox
+    fcx = (fbb["x_min"] + fbb["x_max"]) / 2.0
+    fcy = (fbb["y_min"] + fbb["y_max"]) / 2.0
+    mcx = (mbb["x_min"] + mbb["x_max"]) / 2.0
+    mcy = (mbb["y_min"] + mbb["y_max"]) / 2.0
+    dx, dy = fcx - mcx, fcy - mcy
+
+    if mate_type == "concentric":
+        return (dx, dy, float(params.get("z_offset", 0.0)))
+    if mate_type == "coincident_planar":
+        offset_x = float(params.get("offset_x", 0.0))
+        offset_y = float(params.get("offset_y", 0.0))
+        dz = fbb["z_max"] - mbb["z_min"]
+        return (dx + offset_x, dy + offset_y, dz)
+    if mate_type == "offset_axial":
+        distance = float(params.get("distance", 0.0))
+        from_face = str(params.get("from_face", "top")).strip().lower()
+        if from_face == "bottom":
+            dz = (fbb["z_min"] - distance) - mbb["z_max"]
+        else:
+            dz = (fbb["z_max"] + distance) - mbb["z_min"]
+        return (dx, dy, dz)
+    raise ValueError(f"unknown mate_type: {mate_type}")
+
+
+def create_assembly_mate(
+    fixed_path: str, moving_path: str, mate_type: str, mate_params: dict[str, Any] | None = None
+) -> str:
+    """Position ``moving_path``'s object relative to ``fixed_path``'s
+    object as a named kinematic mate (``mate_type`` one of ``concentric``/
+    ``coincident_planar``/``offset_axial``), translating the MOVING
+    object's ``Placement.Base`` in place — same document/path, like
+    ``align_objects``/``modify_parameter``, since this moves an existing
+    object rather than creating a new feature. Reads both bounding boxes
+    via ``get_bounding_box`` (plain Python delta math via ``_mate_delta``,
+    no FreeCAD needed for that part) before touching FreeCAD at all, then
+    reuses ``align_objects``'s own apply script verbatim — a mate and an
+    alignment are the same FreeCAD operation (translate + save), they only
+    differ in how the delta gets computed.
+    """
+    mt = (mate_type or "").strip().lower()
+    if mt not in _MATE_TYPES:
+        return _error(
+            f"create_assembly_mate: unknown mate_type '{mate_type}' — must be one of {', '.join(sorted(_MATE_TYPES))}"
+        )
+    fixed = Path(fixed_path)
+    moving = Path(moving_path)
+    if not fixed.is_file():
+        return _error(f"create_assembly_mate: fixed_path not found: {fixed_path}")
+    if not moving.is_file():
+        return _error(f"create_assembly_mate: moving_path not found: {moving_path}")
+
+    params = dict(mate_params or {})
+    fixed_bbox = json.loads(get_bounding_box(str(fixed)))
+    if not fixed_bbox.get("ok"):
+        return _error(f"create_assembly_mate: failed to read fixed object's bounding box: {fixed_bbox.get('error')}")
+    moving_bbox = json.loads(get_bounding_box(str(moving)))
+    if not moving_bbox.get("ok"):
+        return _error(f"create_assembly_mate: failed to read moving object's bounding box: {moving_bbox.get('error')}")
+
+    try:
+        dx, dy, dz = _mate_delta(mt, params, fixed_bbox, moving_bbox)
+    except ValueError as exc:
+        return _error(f"create_assembly_mate: {exc}")
+
+    if is_dry_run_enabled():
+        return _dry_run_result("create_assembly_mate", mate_type=mt, path=str(moving), delta=[dx, dy, dz])
+
+    script = _ALIGN_APPLY_SCRIPT.format(source_path=str(moving), dx=dx, dy=dy, dz=dz, marker=_OK_MARKER)
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"create_assembly_mate failed: {result['error']}")
+    return _ok(
+        name=moving.stem,
+        path=str(moving),
+        mate_type=mt,
+        fixed_object=str(fixed),
+        placement=result.get("placement"),
+        bounding_box=result.get("bounding_box"),
+        gui_shown=_auto_show(moving),
     )
 
 
@@ -1494,15 +1962,19 @@ __all__ = (
     "align_objects",
     "apply_boolean",
     "apply_edge_operation",
+    "batch_pattern_array",
+    "create_assembly_mate",
     "create_box",
     "create_cylinder",
     "create_extruded_polyline",
     "create_pipe",
     "create_pyramid",
+    "create_sketch_extrude",
     "create_star_prism",
     "export_mesh_stl",
     "export_model",
     "get_bounding_box",
+    "inspect_spatial_properties",
     "modify_existing_document",
     "modify_parameter",
     "detect_freecadcmd",

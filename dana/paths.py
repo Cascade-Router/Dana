@@ -75,6 +75,15 @@ CURSOR_HANDOFF_MIRROR_PATH: Path = CURSOR_HANDOFF_MIRROR_DIR / "dana_handoff.md"
 
 CAPTURES_DIR: Path = DANA_WORKSPACE / "captures"
 
+# Sandbox root for dana.plugins.os.file_system's list_directory/read_file/
+# write_file tools (the "os_tools" capability domain — see
+# dana.core.react_dispatch's _OS_TOOLS_TOOL_IDS). Deliberately its OWN
+# subtree, NOT DANA_WORKSPACE itself: DANA_WORKSPACE == PROJECT_ROOT (see
+# the module docstring), which also contains .env (a real API key),
+# .git, and Dana's own source — an LLM-driven read/write tool has no
+# business reaching any of that, so it gets a narrower, dedicated root.
+AGENT_WORKSPACE_DIR: Path = DANA_WORKSPACE / "agent_workspace"
+
 # --- Repo-local (config / models / vault / async ledger) ---
 
 # Importable security package + unified patch ledger (async Cursor tickets).
@@ -113,10 +122,6 @@ TOOL_REGISTRY_INDEX_DIR: Path = DOCS_DIR / "tool_registry_index"
 WATCHDOG_HISTORY_DB: Path = DOCS_DIR / "watchdog_history.db"
 
 RESEARCH_SCRATCHPAD_DB: Path = DOCS_DIR / "research_scratchpad.db"
-
-EVALS_DIR: Path = PROJECT_ROOT / "dana" / "evals"
-
-EVAL_CASES_PATH: Path = EVALS_DIR / "test_cases.json"
 
 # Preferred wake-word ONNX under assets/models.
 MODELS_DIR: Path = PROJECT_ROOT / "assets" / "models"

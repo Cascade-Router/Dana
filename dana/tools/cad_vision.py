@@ -131,7 +131,9 @@ def _candidate_vlm_providers(explicit: str | None) -> list[str]:
     return providers
 
 
-def analyze_cad_blueprint(image_path_or_base64: str, *, provider: str | None = None) -> str:
+def analyze_cad_blueprint(
+    image_path_or_base64: str, *, provider: str | None = None, api_key: str | None = None
+) -> str:
     """VLM read of a CAD screenshot into structured JSON (entities/layers/dims).
 
     Tries the local Ollama vision model (Qwen2.5-VL-class, zero cost, zero
@@ -139,12 +141,19 @@ def analyze_cad_blueprint(image_path_or_base64: str, *, provider: str | None = N
     (GPT-4o-class) only when local analysis errors or returns no parseable
     JSON, and only if ``DANA_ALLOW_CLOUD_FALLBACK`` is set — mirrors the
     local-first policy already used by ``dana.core.model_provider``.
+
+    ``api_key`` is a BYOK override (from the frontend's SecretsMenu, threaded
+    down through ``dana.core.react_dispatch.build_visual_inspection_result``)
+    for whichever cloud provider ends up being tried — ``_candidate_vlm_providers``
+    maps every cloud fallback except an explicit non-OpenAI-schema override to
+    ``"openai"``, so this is stored under that key; ``ModelProvider`` falls
+    back to ``OPENAI_API_KEY`` on its own when this is ``None``.
     """
     image_b64 = _resolve_to_base64(image_path_or_base64)
     if image_b64 is None:
         return json.dumps({"ok": False, "error": "could not read image_path_or_base64"})
 
-    provider_client = ModelProvider()
+    provider_client = ModelProvider(api_keys={"openai": api_key} if api_key else None)
     attempts: list[str] = []
     for candidate in _candidate_vlm_providers(provider):
         try:

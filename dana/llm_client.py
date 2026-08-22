@@ -228,23 +228,25 @@ def ask_ollama_structured(
 ) -> T:
     """Schema-constrained chat with up to ``max_retries`` JSON parse retries.
 
-    Passes the Pydantic JSON Schema via Ollama ``format`` and validates each
-    attempt with ``parse_with_schema_retry``.
+    Validates each attempt with ``parse_with_schema_retry``. Previously
+    passed the Pydantic JSON Schema via Ollama's native ``format`` kwarg
+    through the now-removed ``dana.core.agent_loop``; routed through
+    ``ModelProvider`` (the OpenAI-wire bridge) instead, which has no
+    equivalent schema-constraint hook — ``parse_with_schema_retry``'s
+    retry-on-malformed-JSON loop covers the gap.
     """
     from dana.core.constants import OLLAMA_MODEL
-    from dana.core.agent_loop import ask_ollama_messages
+    from dana.core.model_provider import ModelProvider
     from dana.middleware.json_schema_retry import parse_with_schema_retry
 
     model_id = (model or "").strip() or OLLAMA_MODEL
-    fmt = ollama_format_for_model(response_model)
 
     def _invoke(msgs: list[dict[str, str]]) -> str:
-        return ask_ollama_messages(
+        return ModelProvider(local_model=model_id).complete(
             msgs,
-            model=model_id,
-            num_predict=num_predict,
-            response_format=fmt,
-            temperature=temperature,
+            num_predict=num_predict or 512,
+            temperature=temperature or 0.0,
+            allow_cloud=False,
         )
 
     return parse_with_schema_retry(
@@ -265,43 +267,15 @@ def ask_planner_structured(
     temperature: float | None = 0.0,
     allow_cloud: bool = True,
 ) -> T:
-    """Route high-level planning through cloud (hybrid) or local Ollama.
+    """Route high-level planning through local Ollama.
 
-    Workers must continue calling ``ask_ollama_structured`` / local tools only.
+    The hybrid cloud-structured-planning path this used to try first
+    (``dana.graph.cloud_planner.ask_cloud_structured``) was removed with the
+    legacy LangGraph stack; ``allow_cloud``/``DANA_FORCE_LOCAL`` are accepted
+    for call-site compatibility but no longer change behavior — every call
+    now goes straight to local Ollama. Workers must continue calling
+    ``ask_ollama_structured`` / local tools only.
     """
-    force_local = (os.environ.get("DANA_FORCE_LOCAL") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if allow_cloud and not force_local:
-        try:
-            from dana.graph.cloud_planner import (
-                ask_cloud_structured,
-                hybrid_cloud_planner_active,
-                publish_planner_mode,
-            )
-
-            publish_planner_mode(warn_missing_key=True)
-            if hybrid_cloud_planner_active():
-                return ask_cloud_structured(
-                    messages,
-                    response_model,
-                    max_retries=max_retries,
-                    temperature=float(temperature or 0.0),
-                )
-        except Exception:
-            # Fall through to local Ollama — planning must not hard-crash.
-            pass
-    else:
-        try:
-            from dana.graph.cloud_planner import publish_planner_mode
-
-            publish_planner_mode(warn_missing_key=False)
-        except Exception:  # noqa: BLE001
-            pass
-
     return ask_ollama_structured(
         messages,
         response_model,

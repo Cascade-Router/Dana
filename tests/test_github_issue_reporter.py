@@ -14,8 +14,6 @@ from dana.tools.general.github_issue_reporter import (
     report_github_issue,
 )
 from dana.tools.registry import get_tool_registry, load_general_tools_from_disk
-from dana.tools.schema import ToolCall
-from dana.tools.broker import IntentBroker
 
 
 def test_format_issue_body_markdown() -> None:
@@ -147,37 +145,3 @@ def test_registry_loads_non_ephemeral_general_tool() -> None:
     param_names = {p.name for p in entry.spec.parameters}
     assert "title" in param_names
     assert "body" in param_names
-
-
-def test_broker_dispatches_via_registry_not_sandbox(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("GITHUB_ACCESS_TOKEN", "tok")
-    monkeypatch.setenv("GITHUB_REPO_OWNER", "acme")
-    monkeypatch.setenv("GITHUB_REPO_NAME", "dana")
-
-    reg = get_tool_registry(reload=True)
-    load_general_tools_from_disk()
-    assert reg.get("github_issue_reporter") is not None
-
-    with patch(
-        "dana.tools.general.github_issue_reporter.urllib.request.urlopen",
-        return_value=_mock_urlopen_response(
-            {"number": 7, "html_url": "https://github.com/acme/dana/issues/7"}
-        ),
-    ):
-        broker = IntentBroker()
-        # Ensure broker knows the tool id from tools.json
-        assert "github_issue_reporter" in broker.registry
-        result = broker.dispatch(
-            ToolCall(
-                tool_id="github_issue_reporter",
-                arguments={
-                    "title": "Broker path",
-                    "body": "via registry",
-                    "labels": "bug",
-                },
-            ),
-            handlers={},  # no dedicated handler / no __dynamic__
-        )
-    assert "Issue #7" in str(result)

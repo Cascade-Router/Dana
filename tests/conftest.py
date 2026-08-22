@@ -20,6 +20,11 @@ for _sub in ("scripts", "scripts/diagnostics"):
     if Path(_p).is_dir() and _p not in sys.path:
         sys.path.insert(0, _p)
 
+import dana.api.sessions as _sessions_module  # noqa: E402 — needs the sys.path bootstrap above first
+import dana.core.react_dispatch as _react_dispatch_module  # noqa: E402
+import dana.plugins.os.file_system as _file_system_module  # noqa: E402
+import dana.plugins.planning.task_board as _task_board_module  # noqa: E402
+
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
@@ -29,25 +34,77 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _stub_premium_logo_unless_stage899(
-    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
-) -> None:
-    """Avoid cross-test Tk PhotoImage / CTkImage ``pyimage`` collisions.
-
-    Stage 8.9.9 explicitly asserts CTkImage wiring and keeps real loaders.
+def _isolate_chat_sessions_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Global safety net: redirects Local Chat Session Persistence's
+    on-disk store (dana.api.sessions.SESSIONS_DIR) to a throwaway per-test
+    directory for EVERY test in this suite, not just the ones that
+    explicitly test it. dana.api.server's _finish_turn auto-saves after
+    every completed ReAct turn (dana.api.server._persist_turn), so any
+    test anywhere that drives a real /ws/chat turn would otherwise write a
+    real session file into the actual AGENT_WORKSPACE_DIR/data/sessions/
+    on disk. A test file that specifically exercises this feature (see
+    tests/api/test_sessions_api.py) may still redirect it again to its own
+    tmp_path via its own fixture — same effective value, harmless.
     """
-    nodeid = getattr(request.node, "nodeid", "") or ""
-    if "stage899" in nodeid or "premium_logo" in nodeid:
-        return
+    monkeypatch.setattr(_sessions_module, "SESSIONS_DIR", tmp_path / "sessions")
 
-    monkeypatch.setattr("dana.ui.logo.load_premium_logo", lambda *_a, **_k: None)
-    monkeypatch.setattr("dana.ui.logo.apply_window_icon", lambda *_a, **_k: False)
-    monkeypatch.setattr("dana.ui.logo.force_apply_window_icon", lambda *_a, **_k: False)
-    monkeypatch.setattr("dana.ui.logo.schedule_window_icon", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        "dana.ui.logo.load_premium_logo_photoimage",
-        lambda *_a, **_k: None,
-    )
+
+@pytest.fixture(autouse=True)
+def _isolate_os_tools_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Global safety net, same rationale as ``_isolate_chat_sessions_dir``
+    above: redirects the "os_tools" capability domain's real sandbox root
+    (dana.plugins.os.file_system._SANDBOX_ROOT) to a throwaway per-test
+    directory for EVERY test, not just tests/plugins/os/test_file_system.py
+    (which already does this itself, redundantly-but-harmlessly, via its
+    own fixture). Any test anywhere that drives a real /ws/chat turn
+    through a HITL-approved write_file call would otherwise write a real
+    file into the actual AGENT_WORKSPACE_DIR on disk.
+    """
+    root = tmp_path / "agent_workspace"
+    root.mkdir(exist_ok=True)
+    monkeypatch.setattr(_file_system_module, "_SANDBOX_ROOT", root)
+
+
+@pytest.fixture(autouse=True)
+def _reset_user_skills_registry():
+    """Global safety net: Autonomous Skill Acquisition's registry
+    (dana.core.react_dispatch's TOOL_HANDLERS / _USER_SKILL_TOOL_IDS /
+    _CAPABILITY_TOOL_IDS["user_skills"]) is process-wide, mutable, global
+    state — a skill saved/loaded by ANY test (test_skill_loader.py,
+    test_skills_api.py, or any future one) would otherwise leak into every
+    later test in the WHOLE suite via these shared module-level dicts.
+    Teardown-only: the registry is empty at process start and after any
+    earlier test's own cleanup here, so there's nothing to reset going in.
+    """
+    yield
+    rd = _react_dispatch_module
+    for tool_id in list(rd._USER_SKILL_TOOL_IDS):
+        rd.TOOL_HANDLERS.pop(tool_id, None)
+        rd._USER_SKILL_SCHEMAS.pop(tool_id, None)
+    rd._USER_SKILL_TOOL_IDS.clear()
+    rd._CAPABILITY_TOOL_IDS["user_skills"] = frozenset()
+    rd._LLM_TOOL_IDS = rd._CORE_TOOL_IDS.union(*rd._CAPABILITY_TOOL_IDS.values())
+    rd._tool_ids_for_plugins.cache_clear()
+    rd._llm_tools_schema_cached.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_task_board_plan():
+    """Global safety net, same rationale as ``_reset_user_skills_registry``
+    above: Task Planner / Executive Function's ``_ACTIVE_PLAN``
+    (dana.plugins.planning.task_board) is process-wide, mutable, global
+    state — a plan created by ANY test (e.g. one driving a real /ws/chat
+    turn that calls ``create_plan``) would otherwise leak into every later
+    test in the WHOLE suite via this shared module-level dict.
+    Teardown-only: the plan is already empty at process start and after
+    any earlier test's own cleanup here, so there's nothing to reset going
+    in.
+    """
+    yield
+    plan = _task_board_module._ACTIVE_PLAN
+    plan["objective"] = ""
+    plan["tasks"] = []
+    plan["current_task_id"] = None
 
 
 def _cancel_pending_after_events(root: tkinter.Misc) -> None:

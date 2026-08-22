@@ -234,7 +234,7 @@ def clean_ocr_with_llm(
     # Patch 8.3.2 — use Chat Node Llama (instruct), not DeepSeek-R1 reasoner.
     from dana.cascade_router import local_model_name
     from dana.core.constants import OLLAMA_MODEL
-    from dana.core.agent_loop import ask_ollama_messages
+    from dana.core.model_provider import ModelProvider
 
     model = (local_model_name() or "").strip() or OLLAMA_MODEL
 
@@ -242,12 +242,12 @@ def clean_ocr_with_llm(
     _log("Waiting 3 seconds for Vision Poller to clear VRAM...")
     time.sleep(3)
 
-    raw = ask_ollama_messages(
+    raw = ModelProvider(local_model=model).complete(
         [
             {"role": "system", "content": _OCR_SYSTEM_PROMPT},
             {"role": "user", "content": body},
         ],
-        model=model,
+        allow_cloud=False,
     )
     cleaned = strip_llm_markdown(str(raw or ""))
     if not cleaned:

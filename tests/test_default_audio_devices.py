@@ -123,35 +123,3 @@ def test_resolve_live_input_device_quiet_when_none_live() -> None:
 
 def test_system_default_label_constant() -> None:
     assert SYSTEM_DEFAULT_LABEL == "System Default (Auto)"
-
-
-def test_gui_audio_is_autonomous_system_default() -> None:
-    """Mic/Speaker menus removed; streams always use System Default."""
-    from dana.core_agent import DanaGUI
-    from dana.audio.mic_input import load_audio_settings
-    from dana.core.shared_state import set_engine_engaged
-
-    mic_id, speaker_id, _rate = load_audio_settings()
-    assert mic_id is None
-    assert speaker_id is None
-    assert SYSTEM_DEFAULT_LABEL  # helpers kept
-
-    set_engine_engaged(False)
-    try:
-        app = DanaGUI()
-    except Exception as exc:  # noqa: BLE001
-        import pytest
-
-        pytest.skip(f"Tk unavailable: {exc}")
-    try:
-        assert app.mic_menu is None
-        assert app.speaker_menu is None
-        assert app.apply_note is not None
-        note = str(app.apply_note.cget("text"))
-        assert "System Default" in note
-    finally:
-        set_engine_engaged(False)
-        try:
-            app.destroy()
-        except Exception:  # noqa: BLE001
-            pass

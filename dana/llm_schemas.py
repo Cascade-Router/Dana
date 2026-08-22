@@ -2,9 +2,75 @@
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+def _validate_dag_solvability(tasks: list[Any]) -> None:
+    """Raise ``ValueError`` if the DAG cannot execute (deadlock / bad topology).
+
+    Inlined from the now-removed ``dana.graph.dag_topology`` (the legacy
+    LangGraph supervisor stack) — this is the only remaining caller of it,
+    and the check itself (Kahn topological sort, stdlib-only) has no other
+    dependency worth keeping a whole extra module around for.
+
+    Checks
+    ------
+    1. At least one task has ``dependencies: []`` (entry point).
+    2. Every dependency id exists in the plan.
+    3. No circular dependencies (Kahn topological sort must cover all nodes).
+    """
+    rows: list[tuple[int, list[int]]] = [
+        (int(node.task_id), [int(d) for d in node.dependencies]) for node in tasks
+    ]
+    if not rows:
+        raise ValueError("Topological Error: empty task list; no executable DAG.")
+
+    ids = {tid for tid, _ in rows}
+    for tid, deps in rows:
+        for dep in deps:
+            if dep not in ids:
+                raise ValueError(
+                    f"Topological Error: task {tid} depends on missing "
+                    f"prerequisite id {dep} (not in plan)."
+                )
+            if dep == tid:
+                raise ValueError(
+                    f"Topological Error: task {tid} cannot depend on itself."
+                )
+
+    roots = [tid for tid, deps in rows if not deps]
+    if not roots:
+        raise ValueError(
+            "Topological Error: No starting tasks found. At least one task must "
+            "have dependencies: []"
+        )
+
+    children: dict[int, list[int]] = {tid: [] for tid, _ in rows}
+    indeg: dict[int, int] = {tid: 0 for tid, _ in rows}
+    for tid, deps in rows:
+        for dep in deps:
+            children[dep].append(tid)
+            indeg[tid] += 1
+
+    queue: deque[int] = deque(roots)
+    seen = 0
+    while queue:
+        node = queue.popleft()
+        seen += 1
+        for nxt in children[node]:
+            indeg[nxt] -= 1
+            if indeg[nxt] == 0:
+                queue.append(nxt)
+
+    if seen != len(rows):
+        cyclic = sorted(tid for tid, deg in indeg.items() if deg > 0)
+        raise ValueError(
+            "Topological Error: circular dependency detected among task_ids "
+            f"{cyclic} (A -> B -> A deadlock)."
+        )
 
 
 # Exact registered worker tool ids — shared by DAG TaskNode + WorkerToolCall.
@@ -175,9 +241,7 @@ class DAGPlan(BaseModel):
     @model_validator(mode="after")
     def _require_solvable_topology(self) -> DAGPlan:
         """Reject deadlocked / entry-less DAGs so json_schema_retry can re-prompt."""
-        from dana.graph.dag_topology import validate_dag_solvability
-
-        validate_dag_solvability(self.tasks)
+        _validate_dag_solvability(self.tasks)
         return self
 
     def to_dag_tasks(self) -> list[dict[str, Any]]:

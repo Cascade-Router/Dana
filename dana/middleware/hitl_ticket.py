@@ -214,20 +214,7 @@ def publish_pending(
         f"objective_chars={len(str(data.get('objective') or ''))} "
         f"denials={data['consecutive_denials']}"
     )
-    try:
-        from dana.ui.trace_bus import emit_trace_event
-
-        emit_trace_event(
-            "status",
-            node="ticket_approval",
-            tool=str(payload.get("tool") or "draft_cursor_prompt"),
-            message="HITL_PENDING_APPROVAL",
-            payload=text,
-            mode="developer",
-            state_keys=("hitl_ticket", "objective", "context"),
-        )
-    except Exception:  # noqa: BLE001
-        pass
+    _log(f"trace: HITL_PENDING_APPROVAL tool={payload.get('tool') or 'draft_cursor_prompt'}")
     try:
         # Lazy: importing dana.core.shared_state as the first thing touched
         # in a fresh process trips a pre-existing shared_state <-> dana.audio
@@ -316,21 +303,10 @@ def submit_decision(
         f"consecutive_denials={denials}"
     )
     _log_pending_feedback(decision_snap)
-    try:
-        from dana.ui.trace_bus import emit_trace_event
-
-        emit_trace_event(
-            "status",
-            node="ticket_approval",
-            message="HITL_RESOLVED",
-            payload=(
-                f"decision={act} approved={bool(approved)} "
-                f"consecutive_denials={denials}"
-            ),
-            mode="developer",
-        )
-    except Exception:  # noqa: BLE001
-        pass
+    _log(
+        f"trace: HITL_RESOLVED decision={act} approved={bool(approved)} "
+        f"consecutive_denials={denials}"
+    )
     return True
 
 

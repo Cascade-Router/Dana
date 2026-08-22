@@ -1,10 +1,10 @@
-"""Dana — local voice agent package.
+"""Dana — AI desktop assistant package (Tauri/React frontend + FastAPI/
+WebSocket backend, see dana.api.server / dana.core.react_dispatch).
 
 Submodules are importable as::
 
-    from dana import agentic, tools, prompts, core_agent
-    from dana.tools import broker
     from dana.paths import PROJECT_ROOT
+    from dana.core import react_dispatch, model_provider
 """
 
 from __future__ import annotations

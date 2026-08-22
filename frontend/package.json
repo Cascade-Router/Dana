@@ -13,6 +13,8 @@
     "@react-three/drei": "^9.114.0",
     "@react-three/fiber": "^8.17.10",
     "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@tauri-apps/plugin-store": "^2.1.1",
     "@xyflow/react": "^12.11.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

@@ -6,6 +6,16 @@ state machine, so ``dana.api.server`` can run this on a daemon thread and
 broadcast state transitions as ``voice_state`` websocket events without any
 GUI toolkit involved.
 
+This is push-to-talk, not a hot mic: the worker thread parks (mic closed)
+until ``request_listen()`` is called — the AssistiveOrb click/hotkey handler
+on the frontend, relayed through a ``voice_control`` websocket message (see
+``dana.api.server``). One call captures and transcribes exactly one
+utterance, then hands the transcript off and stays parked in "processing"
+until ``finish_turn()`` is called once the assistant has replied (text +
+TTS) — only then does the service re-arm for the next ``request_listen()``.
+This keeps this module's own STT-side states from racing the separate,
+server-driven "assistant is now speaking a TTS reply" state.
+
 Every dependency this needs — a real input device, ``sounddevice``, the
 Whisper model bundle — is optional at runtime: if any of it is missing the
 service degrades to sitting idle instead of raising, so a container/CI/dev
@@ -15,7 +25,6 @@ box with no microphone still boots the server cleanly.
 from __future__ import annotations
 
 import threading
-import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 
@@ -43,6 +52,8 @@ class VoiceService:
     def __init__(self, on_state: StateCallback | None = None) -> None:
         self._on_state: StateCallback = on_state or (lambda *_a: None)
         self._stop_event = threading.Event()
+        self._listen_trigger = threading.Event()
+        self._cancel_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._state: VoiceState = "idle"
         self._hardware_available = self._probe_hardware()
@@ -66,9 +77,34 @@ class VoiceService:
 
     def stop(self) -> None:
         self._stop_event.set()
+        self._listen_trigger.set()  # wake a parked _run() so it can observe stop_event promptly
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         self._set_state("idle", "")
+
+    def request_listen(self) -> bool:
+        """Starts one listen -> transcribe cycle. No-op (returns ``False``)
+        if a cycle is already in flight — the orb/hotkey handler should
+        treat that as "ignored", not an error."""
+        if self._state != "idle":
+            return False
+        self._listen_trigger.set()
+        return True
+
+    def cancel(self) -> None:
+        """Aborts an in-flight capture — e.g. the orb clicked again while
+        ``listening``. No-op once capture has already moved on to
+        transcription."""
+        if self._state == "listening":
+            self._cancel_event.set()
+
+    def finish_turn(self) -> None:
+        """Re-arms the service for the next ``request_listen()`` once the
+        caller (``dana.api.server``) has finished acting on a handed-off
+        transcript — i.e. the assistant's reply has been synthesized and
+        played back. No-op if a transcript isn't actually pending."""
+        if self._state == "processing":
+            self._set_state("idle", "")
 
     # -- setup -----------------------------------------------------------
 
@@ -107,22 +143,40 @@ class VoiceService:
                 self._stop_event.wait(1.0)
             return
 
+        self._set_state("idle", "")
         while not self._stop_event.is_set():
+            # Parked here (mic closed) until request_listen() sets the
+            # trigger — this is the push-to-talk gate.
+            triggered = self._listen_trigger.wait(timeout=1.0)
+            if not triggered:
+                continue
+            self._listen_trigger.clear()
+            if self._stop_event.is_set():
+                break
+
             self._set_state("listening", "")
             audio = self._capture_utterance()
             if self._stop_event.is_set():
                 break
-            if audio is None:
-                # Nothing captured (silence, transient device error) — brief
-                # backoff so a mocked/instant capture path can't busy-spin.
-                self._stop_event.wait(0.2)
+            if self._cancel_event.is_set():
+                self._cancel_event.clear()
+                self._set_state("idle", "")
                 continue
+            if audio is None:
+                # Nothing captured (silence, transient device error).
+                self._set_state("idle", "")
+                continue
+
             self._set_state("processing", "")
             transcript = self._transcribe(audio)
             if transcript:
-                self._set_state("speaking", transcript)
-                time.sleep(0.3)  # let listeners render the "speaking" pulse before idling
-            self._set_state("idle", "")
+                # Hand-off signal for dana.api.server: state stays
+                # "processing" (now carrying the transcript) rather than
+                # auto-idling — finish_turn() re-arms this loop once the
+                # assistant has replied. See the class docstring.
+                self._set_state("processing", transcript)
+            else:
+                self._set_state("idle", "")
 
     def _capture_utterance(self) -> "np.ndarray | None":
         try:
@@ -142,7 +196,11 @@ class VoiceService:
         elapsed_s = 0.0
         try:
             with sd.InputStream(device=device, samplerate=rate, channels=1, dtype="int16") as stream:
-                while not self._stop_event.is_set() and elapsed_s < _MAX_UTTERANCE_S:
+                while (
+                    not self._stop_event.is_set()
+                    and not self._cancel_event.is_set()
+                    and elapsed_s < _MAX_UTTERANCE_S
+                ):
                     frame, _overflowed = stream.read(int(rate * _LISTEN_CHUNK_S))
                     elapsed_s += _LISTEN_CHUNK_S
                     frame = np.asarray(frame, dtype=np.int16).reshape(-1)

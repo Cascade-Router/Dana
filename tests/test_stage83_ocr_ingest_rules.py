@@ -94,11 +94,14 @@ def test_write_feather_rules_overwrite(tmp_path: Path) -> None:
 
 def test_clean_ocr_uses_local_llama_not_reasoner(monkeypatch) -> None:  # noqa: ANN001
     """Patch 8.3.2 — formatting must hit Chat Node Llama, with VRAM pause."""
+    from dana.core.model_provider import ModelProvider
+
     calls: dict[str, object] = {}
 
-    def _fake_ask(messages, model=""):  # noqa: ANN001
-        calls["model"] = model
+    def _fake_complete(self, messages, *, allow_cloud=None, **_kwargs):  # noqa: ANN001
+        calls["model"] = self.local_model
         calls["messages"] = messages
+        calls["allow_cloud"] = allow_cloud
         return "- Cleaned rule\n"
 
     def _fake_sleep(seconds: float) -> None:
@@ -109,10 +112,7 @@ def test_clean_ocr_uses_local_llama_not_reasoner(monkeypatch) -> None:  # noqa: 
         "dana.cascade_router.local_model_name",
         lambda: "llama3.2:latest",
     )
-    monkeypatch.setattr(
-        "dana.core.agent_loop.ask_ollama_messages",
-        _fake_ask,
-    )
+    monkeypatch.setattr(ModelProvider, "complete", _fake_complete)
     monkeypatch.setattr(
         "dana.management.ingest_rules.time.sleep",
         _fake_sleep,
@@ -121,6 +121,7 @@ def test_clean_ocr_uses_local_llama_not_reasoner(monkeypatch) -> None:  # noqa: 
     out = clean_ocr_with_llm("Raw OCR rule text")
     assert "- Cleaned rule" in out
     assert calls.get("model") == "llama3.2:latest"
+    assert calls.get("allow_cloud") is False
     assert calls.get("slept") == 3.0
     assert "deepseek" not in str(calls.get("model") or "").lower()
 

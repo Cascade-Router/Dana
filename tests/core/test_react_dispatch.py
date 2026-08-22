@@ -15,7 +15,9 @@ a plain ``asyncio.run(...)`` call from an ordinary sync ``def test_...()``.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import time
 from typing import Any
 
 import pytest
@@ -37,6 +39,10 @@ class _FakeProvider:
         self._content = content
         self._raises = raises
         self.calls: list[dict[str, Any]] = []
+        # Every dict of kwargs the (mocked) ModelProvider(...) constructor
+        # was called with — lets BYOK tests assert api_keys actually reached
+        # the constructor without needing a real ModelProvider/HTTP call.
+        self.constructor_kwargs: list[dict[str, Any]] = []
 
     def complete_with_tool_calls(
         self,
@@ -60,7 +66,12 @@ def _mock_llm(
     raises: Exception | None = None,
 ) -> _FakeProvider:
     fake = _FakeProvider(tool_calls=tool_calls, content=content, raises=raises)
-    monkeypatch.setattr(rd, "ModelProvider", lambda: fake)
+
+    def _fake_constructor(**kwargs: Any) -> _FakeProvider:
+        fake.constructor_kwargs.append(kwargs)
+        return fake
+
+    monkeypatch.setattr(rd, "ModelProvider", _fake_constructor)
     return fake
 
 
@@ -260,6 +271,36 @@ def test_next_react_turn_llm_exception_yields_error(monkeypatch: pytest.MonkeyPa
     messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "build a box"}]
     turn = asyncio.run(rd.next_react_turn(messages))
     assert turn.kind == "error"
+
+
+# --------------------------------------------------------------------------
+# next_react_turn — BYOK: dana.api.server's session["api_keys"] must reach
+# ModelProvider's constructor unchanged, so a session-provided OpenAI/
+# Anthropic key takes precedence over the environment (see
+# dana.core.model_provider._resolve_openai_endpoint/_complete_openai_compatible).
+# --------------------------------------------------------------------------
+
+
+def test_next_react_turn_threads_api_keys_into_model_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _mock_llm(monkeypatch, content="done")
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+    api_keys = {"openai": "sk-session-key"}
+
+    asyncio.run(rd.next_react_turn(messages, api_keys=api_keys))
+
+    assert fake.constructor_kwargs == [{"api_keys": api_keys}]
+
+
+def test_next_react_turn_without_api_keys_passes_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No session["api_keys"] (e.g. the frontend hasn't sent update_secrets
+    yet) must not crash the constructor call — ModelProvider(api_keys=None)
+    is the documented no-BYOK case, same as omitting the kwarg entirely."""
+    fake = _mock_llm(monkeypatch, content="done")
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+
+    asyncio.run(rd.next_react_turn(messages))
+
+    assert fake.constructor_kwargs == [{"api_keys": None}]
 
 
 def test_build_assistant_tool_call_message_shape() -> None:
@@ -1288,7 +1329,8 @@ def test_parse_utterance_align_and_export_pass_through(monkeypatch: pytest.Monke
 # --------------------------------------------------------------------------
 # Phase A: schema registry unification — the LLM tool subset must actually
 # resolve against tools.json (dana/tools/tools.json), and must line up
-# exactly with the dispatch-side TOOL_HANDLERS/MUTATING_TOOLS sets.
+# exactly with the dispatch-side TOOL_HANDLERS set and is_mutating_tool's
+# fail-closed schema check.
 # --------------------------------------------------------------------------
 
 
@@ -1309,3 +1351,440 @@ def test_llm_tools_schema_has_no_duplicate_or_missing_parameter_names() -> None:
         properties = fn["parameters"]["properties"]
         for required_name in fn["parameters"]["required"]:
             assert required_name in properties, f"{fn['name']}: required {required_name!r} not in properties"
+
+
+# --------------------------------------------------------------------------
+# build_visual_inspection_result — BYOK: the take_canvas_screenshot
+# suspend/resume path's api_key must reach analyze_cad_blueprint unchanged,
+# same session["api_keys"]["openai"] dana.api.server._resolve_visual_capture
+# threads through.
+# --------------------------------------------------------------------------
+
+
+def test_build_visual_inspection_result_threads_api_key_to_vlm(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_analyze(image_b64: str, *, api_key: str | None = None) -> str:
+        captured["api_key"] = api_key
+        return json.dumps({"ok": True, "entities": [], "summary": "empty"})
+
+    monkeypatch.setattr(rd, "analyze_cad_blueprint", fake_analyze)
+    image_b64 = base64.b64encode(b"fake-png-bytes").decode("ascii")
+
+    result = rd.build_visual_inspection_result(image_b64, api_key="sk-session-key")
+
+    assert result["ok"] is True
+    assert captured["api_key"] == "sk-session-key"
+
+
+def test_build_visual_inspection_result_without_api_key_passes_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_analyze(image_b64: str, *, api_key: str | None = None) -> str:
+        captured["api_key"] = api_key
+        return json.dumps({"ok": True, "entities": [], "summary": "empty"})
+
+    monkeypatch.setattr(rd, "analyze_cad_blueprint", fake_analyze)
+    image_b64 = base64.b64encode(b"fake-png-bytes").decode("ascii")
+
+    rd.build_visual_inspection_result(image_b64)
+
+    assert captured["api_key"] is None
+
+
+# --------------------------------------------------------------------------
+# Capability routing — dana.api.server's session["active_plugins"] should
+# dictate which tools/system-prompt sections a turn gets, with "freecad" the
+# domain name for the CAD plugin (see dana.api.server._PLUGIN_ID_TO_CAPABILITY
+# for the frontend "cad" -> "freecad" normalization this module never sees).
+# --------------------------------------------------------------------------
+
+
+def test_llm_tools_schema_with_no_plugins_active_is_core_only() -> None:
+    schema = rd._llm_tools_schema(frozenset())
+    names = {t["function"]["name"] for t in schema}
+    assert names == rd._CORE_TOOL_IDS
+
+
+def test_llm_tools_schema_with_freecad_active_matches_core_plus_freecad() -> None:
+    """"freecad" active is core + FreeCAD's own (native + manifest-extended)
+    tools — no longer the same thing as rd._LLM_TOOL_IDS now that "os_tools"
+    (autonomous semantic routing's mock domain) is a separate,
+    independently-activatable set.
+
+    "freecad" also includes modify_existing_freecad_document/
+    execute_freecad_script — dana/plugins/freecad/manifest.json's two
+    genuinely-new tool ids (no native handler collision), unioned into the
+    domain by refresh_plugin_tools() rather than skipped wholesale the way
+    a manifest declaring an already-hardcoded domain name used to be."""
+    schema = rd._llm_tools_schema(frozenset({"freecad"}))
+    names = {t["function"]["name"] for t in schema}
+    assert names == rd._CORE_TOOL_IDS | rd._FREECAD_TOOL_IDS | {
+        "modify_existing_freecad_document", "execute_freecad_script",
+    }
+    assert "list_directory" not in names
+
+
+# --------------------------------------------------------------------------
+# freecad manifest.json extension — regression for the domain-collision fix
+# that used to skip dana/plugins/freecad/manifest.json's tools wholesale.
+# --------------------------------------------------------------------------
+
+
+def test_freecad_manifest_new_tool_ids_are_dispatchable() -> None:
+    """modify_existing_freecad_document/execute_freecad_script have no
+    native handler collision — they must actually be in TOOL_HANDLERS and
+    in the "freecad" domain's tool-id set, not silently dropped the way the
+    whole manifest used to be just because its domain name ("freecad")
+    already existed as a hardcoded capability."""
+    assert "modify_existing_freecad_document" in rd.TOOL_HANDLERS
+    assert "execute_freecad_script" in rd.TOOL_HANDLERS
+    assert "modify_existing_freecad_document" in rd._CAPABILITY_TOOL_IDS["freecad"]
+    assert "execute_freecad_script" in rd._CAPABILITY_TOOL_IDS["freecad"]
+
+
+def test_freecad_manifest_new_tools_are_mutating_by_default() -> None:
+    """Neither declares "read_only": true in the manifest (one edits an
+    existing .FCStd document, the other runs arbitrary Python inside
+    FreeCADCmd) — both must be HITL-gated, same fail-closed default every
+    other unannotated tool gets."""
+    assert rd.is_mutating_tool("modify_existing_freecad_document") is True
+    assert rd.is_mutating_tool("execute_freecad_script") is True
+
+
+def test_freecad_manifest_colliding_tool_ids_still_use_native_handler() -> None:
+    """create_freecad_box/cylinder/extrusion are declared in BOTH the
+    manifest (under a different underlying function name) and as native
+    handlers — the native, tested implementation must remain authoritative;
+    the manifest's version of these three specific ids is never installed
+    into TOOL_HANDLERS."""
+    for tool_id in ("create_freecad_box", "create_freecad_cylinder", "create_freecad_extrusion"):
+        assert tool_id not in rd._PLUGIN_TOOL_SCHEMAS, f"{tool_id} should stay native, not plugin-wrapped"
+
+
+def test_llm_tools_schema_default_still_matches_full_legacy_set() -> None:
+    """No active_plugins arg at all (e.g. a caller not yet plugin-aware)
+    must keep behaving exactly like the pre-capability-routing code —
+    already covered by test_llm_tools_schema_resolves_against_tools_json,
+    reasserted here for locality with the rest of this section."""
+    schema = rd._llm_tools_schema()
+    names = {t["function"]["name"] for t in schema}
+    assert names == rd._LLM_TOOL_IDS
+
+
+def test_llm_tools_schema_unknown_plugin_name_yields_core_only() -> None:
+    """An active plugin id with no matching tool set (e.g. a future plugin
+    react_dispatch doesn't know about yet) must degrade to core tools, not
+    raise — _PLUGIN_TOOL_IDS.get(..., frozenset()) is the guard."""
+    schema = rd._llm_tools_schema(frozenset({"some_future_plugin"}))
+    names = {t["function"]["name"] for t in schema}
+    assert names == rd._CORE_TOOL_IDS
+
+
+def test_tool_ids_for_plugins_is_cached_per_combination() -> None:
+    """Same active-plugin combination -> the exact same cached frozenset
+    object (functools.lru_cache), not a freshly recomputed one — this is
+    the O(1)-lookup-per-combination behavior the routing design relies on."""
+    first = rd._tool_ids_for_plugins(frozenset({"freecad"}))
+    second = rd._tool_ids_for_plugins(frozenset({"freecad"}))
+    assert first is second
+
+
+# --------------------------------------------------------------------------
+# software_engineering domain (dana/plugins/coder_plugin) — the agent must
+# be able to explicitly request this domain by name via load_capability,
+# same as any other plugin-contributed capability, and its OpenAI-facing
+# schema must list it too (regression: the "domain" parameter's tools.json
+# enum previously omitted "software_engineering" entirely, so a model that
+# tried to call load_capability(domain="software_engineering") verbatim had
+# no valid enum value for it and fell back to an unrelated domain instead).
+# --------------------------------------------------------------------------
+
+
+def test_load_capability_unlocks_software_engineering_tools() -> None:
+    result = rd._tool_load_capability({"domain": "software_engineering"}, None, None)
+    assert result["ok"] is True
+    assert result["domain"] == "software_engineering"
+    assert set(result["unlocked_tools"]) == {
+        "search_codebase", "analyze_codebase", "run_verification_command", "execute_code_task",
+    }
+
+
+def test_software_engineering_domain_tool_ids_include_coder_plugin_tools() -> None:
+    tool_ids = rd._tool_ids_for_plugins(frozenset({"software_engineering"}))
+    assert "search_codebase" in tool_ids
+    assert "analyze_codebase" in tool_ids
+    assert "run_verification_command" in tool_ids
+    assert "execute_code_task" in tool_ids
+
+
+def test_load_capability_schema_enum_lists_software_engineering() -> None:
+    """The LLM-facing schema (dana/tools/tools.json, not just the internal
+    _CAPABILITY_TOOL_IDS routing table) must expose "software_engineering"
+    as a valid enum value — an enum a strict tool-calling provider (e.g.
+    Groq) validates against, so omitting it here silently makes the domain
+    uncallable by name even though the routing table already knows it."""
+    from dana.tools.schema import load_tool_registry, to_openai_function_schema
+
+    spec = load_tool_registry()["load_capability"]
+    schema = to_openai_function_schema(spec)
+    domain_enum = schema["function"]["parameters"]["properties"]["domain"]["enum"]
+    assert "software_engineering" in domain_enum
+    assert "freecad" in domain_enum
+
+
+def test_core_system_prompt_routes_coding_requests_to_software_engineering() -> None:
+    prompt = rd.build_system_prompt(None, active_plugins=frozenset())
+    assert 'load_capability(domain="software_engineering")' in prompt
+
+
+# --------------------------------------------------------------------------
+# Semantic RAG "context drop" regression — a tool load_capability just
+# unlocked (e.g. execute_code_task right after
+# load_capability(domain="software_engineering")) must survive Pillar 1's
+# narrowing into the VERY NEXT turn's tools= schema, not just the tool
+# that was actually invoked (load_capability itself).
+# --------------------------------------------------------------------------
+
+
+def test_sticky_tool_ids_includes_already_invoked_tool() -> None:
+    messages = [
+        {"role": "user", "content": "create a box then check its bbox"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "create_freecad_box", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": json.dumps({"ok": True})},
+    ]
+    assert rd._sticky_tool_ids_from_messages(messages) == frozenset({"create_freecad_box"})
+
+
+def test_sticky_tool_ids_includes_tools_unlocked_by_load_capability() -> None:
+    """Regression: load_capability itself is the only tool actually
+    INVOKED in this chain — without reading its own "unlocked_tools" result
+    field, the tools it unlocked (e.g. execute_code_task) would never be
+    sticky and could be dropped by Pillar 1's narrowing on the very next
+    turn, the one turn they're overwhelmingly likely to actually get
+    called."""
+    messages = [
+        {"role": "user", "content": "refactor foo.py to use snake_case"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "load_capability", "arguments": '{"domain": "software_engineering"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": json.dumps(
+                {
+                    "ok": True,
+                    "domain": "software_engineering",
+                    "unlocked_tools": ["analyze_codebase", "execute_code_task"],
+                    "message": "Loaded 'software_engineering' -- newly available tools: ...",
+                }
+            ),
+        },
+    ]
+    sticky = rd._sticky_tool_ids_from_messages(messages)
+    assert sticky == frozenset({"load_capability", "analyze_codebase", "execute_code_task"})
+
+
+def test_sticky_tool_ids_ignores_unlocked_tools_from_a_different_tool_call() -> None:
+    """An unrelated tool's result that happens to contain an
+    "unlocked_tools" key must NOT be mistaken for a load_capability result
+    — matched strictly by tool_call_id -> the assistant call's own function
+    name, never by payload shape alone."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "check_plugin_registry", "arguments": "{}"}}
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": json.dumps({"ok": True, "unlocked_tools": ["execute_code_task"]}),
+        },
+    ]
+    sticky = rd._sticky_tool_ids_from_messages(messages)
+    assert sticky == frozenset({"check_plugin_registry"})
+
+
+def test_llm_tools_schema_keeps_newly_unlocked_tools_sticky_across_narrowing() -> None:
+    """End-to-end: once software_engineering is active and load_capability
+    has reported unlocking execute_code_task/analyze_codebase, those two
+    tool ids must survive into the tools= schema on the VERY NEXT turn even
+    when that turn's query text has nothing to do with code — this is
+    exactly Turn N+1 immediately after Turn N's load_capability call, where
+    the bug reproduced live (the model saw no tools and exited "final")."""
+    messages = [
+        {"role": "user", "content": "refactor foo.py to use snake_case"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "load_capability", "arguments": '{"domain": "software_engineering"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": json.dumps(
+                {
+                    "ok": True,
+                    "domain": "software_engineering",
+                    "unlocked_tools": ["analyze_codebase", "execute_code_task"],
+                }
+            ),
+        },
+    ]
+    sticky_ids = rd._sticky_tool_ids_from_messages(messages)
+    schema = rd._llm_tools_schema(
+        frozenset({"software_engineering"}), query="completely unrelated filler text", sticky_ids=sticky_ids
+    )
+    names = {t["function"]["name"] for t in schema}
+    assert "analyze_codebase" in names
+    assert "execute_code_task" in names
+
+
+def test_build_system_prompt_with_no_plugins_active_omits_engineering_rules() -> None:
+    prompt = rd.build_system_prompt(None, active_plugins=frozenset())
+    assert "Engineering Rules" not in prompt
+    assert "CAD co-pilot for FreeCAD" not in prompt
+    assert "general-purpose AI desktop assistant" in prompt
+
+
+def test_build_system_prompt_with_freecad_active_includes_engineering_rules() -> None:
+    prompt = rd.build_system_prompt(None, active_plugins=frozenset({"freecad"}))
+    assert "## Engineering Rules" in prompt
+    assert "CAD co-pilot for FreeCAD" in prompt
+
+
+def test_build_system_prompt_default_matches_freecad_active_exactly() -> None:
+    """No active_plugins arg (legacy callers, e.g. parse_utterance) must
+    produce the IDENTICAL prompt "freecad" active does — same selection
+    argument, only the plugin-set argument differs."""
+    selection = {"centroid": [1.0, 2.0, 3.0], "normal": [0.0, 1.0, 0.0]}
+    default_prompt = rd.build_system_prompt(selection)
+    freecad_prompt = rd.build_system_prompt(selection, active_plugins=frozenset({"freecad"}))
+    assert default_prompt == freecad_prompt
+
+
+def test_next_react_turn_blocks_freecad_tool_when_plugin_not_active(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Defensive guard: even if the (mocked) model proposes a FreeCAD tool,
+    next_react_turn must not hand back a "tool_call" turn for it when
+    "freecad" isn't in the active-plugin set — same fallback as an unknown
+    tool_id, so a stale/hallucinated call from earlier history can't dispatch
+    a plugin the frontend doesn't even have open anymore."""
+    fake = _mock_llm(
+        monkeypatch,
+        tool_calls=[ToolCall(tool_id="create_freecad_box", arguments={"length": 40})],
+        content="I'll build that.",
+    )
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "build a box"}]
+
+    turn = asyncio.run(rd.next_react_turn(messages, active_plugins=frozenset()))
+
+    assert turn.kind == "final"
+    assert turn.content == "I'll build that."
+    # And the model was never even offered the tool in the first place:
+    assert "create_freecad_box" not in {t["function"]["name"] for t in fake.calls[0]["tools"]}
+
+
+def test_next_react_turn_allows_freecad_tool_when_plugin_active(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, tool_calls=[ToolCall(tool_id="create_freecad_box", arguments={"length": 40})])
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "build a box"}]
+
+    turn = asyncio.run(rd.next_react_turn(messages, active_plugins=frozenset({"freecad"})))
+
+    assert turn.kind == "tool_call"
+    assert turn.call.tool_id == "create_freecad_box"
+
+
+def test_next_react_turn_core_tool_allowed_with_no_plugins_active(monkeypatch: pytest.MonkeyPatch) -> None:
+    """system_state (core) must still dispatch normally even with an empty
+    active-plugin set — capability routing must never block core tools."""
+    _mock_llm(monkeypatch, tool_calls=[ToolCall(tool_id="system_state", arguments={})])
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "status?"}]
+
+    turn = asyncio.run(rd.next_react_turn(messages, active_plugins=frozenset()))
+
+    assert turn.kind == "tool_call"
+    assert turn.call.tool_id == "system_state"
+
+
+# --------------------------------------------------------------------------
+# Turn-level timeout ceiling / provider attribution — a real Groq 429 TPM
+# throttle asking for a legitimate ~24-25s sleep (openai_tool_bridge's own
+# throttle-and-retry loop) used to get aborted mid-sleep by this module's
+# OWN, shorter (22s) outer timeout, then blamed on "the local model" in the
+# user-facing apology even though Groq (a cloud provider) was the one that
+# actually missed its deadline.
+# --------------------------------------------------------------------------
+
+
+def test_local_tool_call_timeout_exceeds_tpm_retry_ceiling() -> None:
+    from dana.core.openai_tool_bridge import _MAX_REASONABLE_RETRY_AFTER_SEC
+
+    assert rd._LOCAL_TOOL_CALL_TIMEOUT_SEC >= _MAX_REASONABLE_RETRY_AFTER_SEC + 1.0
+    assert rd._LOCAL_TOOL_CALL_TIMEOUT_SEC == _MAX_REASONABLE_RETRY_AFTER_SEC + 15.0
+
+
+def test_timeout_apology_text_attributes_local_provider_correctly() -> None:
+    text = rd._timeout_apology_text("ollama")
+    assert "local model" in text
+    assert "Ollama" in text
+
+
+def test_timeout_apology_text_attributes_cloud_provider_correctly() -> None:
+    text = rd._timeout_apology_text("groq")
+    assert "cloud model" in text
+    assert "groq" in text
+    assert "local" not in text.lower()
+
+
+def test_call_llm_once_timeout_attributes_apology_to_the_actual_cloud_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end regression: a primary call that hangs past the (shortened,
+    for this test) timeout must fall back to an apology correctly blaming
+    the ACTUAL provider that timed out (groq), never unconditionally "the
+    local model" — the exact user-facing bug this task fixes."""
+    monkeypatch.setattr(rd, "_LOCAL_TOOL_CALL_TIMEOUT_SEC", 0.05)
+    monkeypatch.setattr(rd, "tool_calling_provider", lambda: "groq")
+
+    class _HangingProvider:
+        """No .complete method on purpose: the fallback's own tiny local-
+        apology attempt (ModelProvider(local_model=..., api_keys=...).
+        complete(...)) hits AttributeError immediately, caught by its own
+        broad except, deterministically reaching the final hardcoded
+        _timeout_apology_text(...) path this test actually asserts on."""
+
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def complete_with_tool_calls(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            time.sleep(0.3)
+            return {"content": "too late", "tool_calls": [], "provider": "groq"}
+
+    monkeypatch.setattr(rd, "ModelProvider", _HangingProvider)
+
+    result = asyncio.run(rd._call_llm_once([{"role": "user", "content": "hi"}]))
+    assert "cloud model (groq)" in result["content"]
+    assert "local" not in result["content"].lower()

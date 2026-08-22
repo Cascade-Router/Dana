@@ -157,6 +157,11 @@ class RealFreeCADEngine(BaseCADEngine):
 
         return json.loads(engine.get_bounding_box(target_path))
 
+    def inspect_spatial_properties(self, target_path: str) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.inspect_spatial_properties(target_path))
+
     def create_pipe(
         self,
         pipe_radius: float,
@@ -180,6 +185,61 @@ class RealFreeCADEngine(BaseCADEngine):
         from dana.plugins.freecad import engine
 
         return json.loads(engine.export_model(target_paths, format, filename))
+
+    def create_assembly_mate(
+        self,
+        fixed_path: str,
+        moving_path: str,
+        mate_type: str,
+        mate_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.create_assembly_mate(fixed_path, moving_path, mate_type, mate_params))
+
+    def create_sketch_extrude(
+        self,
+        segments: list[dict[str, Any]],
+        height: float,
+        start: tuple[float, float] = (0.0, 0.0),
+        plane: str = "XY",
+        name: str = "Sketch",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(
+            engine.create_sketch_extrude(segments, height, start=start, plane=plane, name=name, placement=placement)
+        )
+
+    def batch_pattern_array(
+        self,
+        source_path: str,
+        pattern_type: str,
+        *,
+        count_x: int = 1,
+        count_y: int = 1,
+        spacing_x: float | None = None,
+        spacing_y: float | None = None,
+        count: int = 1,
+        radius: float = 0.0,
+        name: str = "Pattern",
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(
+            engine.batch_pattern_array(
+                source_path,
+                pattern_type,
+                count_x=count_x,
+                count_y=count_y,
+                spacing_x=spacing_x,
+                spacing_y=spacing_y,
+                count=count,
+                radius=radius,
+                name=name,
+            )
+        )
 
 
 __all__ = ("RealFreeCADEngine", "Win32ControlPlane")

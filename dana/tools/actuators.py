@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from dana.logging import log_debug
 from dana.tools.powershell import DANGEROUS_COMMANDS_RE, SECURITY_VIOLATION_MSG
 from dana.vault_service import windows_no_window_creationflags
 
@@ -29,12 +30,7 @@ _JOBS_LOCK = threading.Lock()
 
 def write_to_file(filepath: str, content: str) -> str:
     """Create parent dirs, write UTF-8 text, return absolute path + byte size."""
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="write_to_file")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=write_to_file")
 
     raw = (filepath or "").strip()
     if not raw:
@@ -67,12 +63,7 @@ def execute_command(command: str, timeout: int = DEFAULT_TIMEOUT_SEC) -> str:
     ``CREATE_NO_WINDOW`` and, when Job APIs are available, ``WindowsJob``
     (CREATE_SUSPENDED → assign → resume) with a hard timeout.
     """
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="execute_command")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=execute_command")
 
     cmd = (command or "").strip()
     if not cmd:
@@ -317,12 +308,7 @@ def execute_python_script(
     ``background=True`` starts a daemon job, streams output to
     ``execution_jail/jobs/<job_id>.log``, and returns the job handle immediately.
     """
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="execute_python_script")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=execute_python_script")
 
     try:
         script = _resolve_jailed_script(script_path)
@@ -534,12 +520,7 @@ def execute_python_script(
 
 def get_sandbox_job_status(job_id: str | None = None) -> str:
     """Return status / exit / duration / log tail for one or all sandbox jobs."""
-    try:
-        from dana.ui.status_bus import emit_state_change
-
-        emit_state_change("executing", tool="get_sandbox_job_status")
-    except Exception:  # noqa: BLE001
-        pass
+    log_debug("Actuator", "executing tool=get_sandbox_job_status")
 
     key = str(job_id or "").strip()
     with _JOBS_LOCK:

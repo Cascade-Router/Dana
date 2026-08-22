@@ -289,13 +289,6 @@ def publish_tool_to_general(
         },
     )
 
-    try:
-        from dana.tools.broker import reload_broker_registry
-
-        reload_broker_registry()
-    except Exception:  # noqa: BLE001
-        pass
-
     _log(f"Promoted + hot-loaded general tool={name!r} ephemeral=False")
     return {
         "ok": True,
