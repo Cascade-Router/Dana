@@ -34,14 +34,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from dana.api.memory import router as _memory_router
-from dana.api.planner import router as _planner_router
-from dana.api.services import router as _services_router
-from dana.api.skills import router as _skills_router
+from dana.api.cad import router as _cad_router
 from dana.api.sessions import derive_title, is_valid_session_id, load_session, new_session_id, save_session
 from dana.api.sessions import router as _sessions_router
+from dana.api.system import router as _system_router
 from dana.api.workspace import load_mounted_directories
 from dana.api.workspace import router as _workspace_router
+from dana.core.model_provider import tool_calling_provider
 from dana.core.react_dispatch import (
     ToolResult,
     build_assistant_tool_call_message,
@@ -99,7 +98,19 @@ _AUDIO_REGISTRY: dict[str, Path] = {}
 # this module's tool-routing logic changing at all. Unrecognized ids pass
 # through unchanged (a future plugin's domain name might just BE its id).
 _PLUGIN_ID_TO_CAPABILITY: dict[str, str] = {
-    "cad": "freecad",
+    # "freecad_essential" (dana.core.react_dispatch._FREECAD_ESSENTIAL_TOOL_IDS,
+    # 7 tools) instead of the full ~24-tool "freecad" domain: sending all of
+    # "freecad" as `tools=` on every turn is what previously blew a free-tier
+    # Groq model's 8000 TPM ceiling (observed live: HTTP 429, "Used 6895,
+    # Requested 6842"). The agent's own autonomous load_capability("freecad")
+    # call already redirects to this same essential set for the identical
+    # reason — this just brings the frontend's CAD-tab activation path in
+    # line with it instead of leaving it as the one unmitigated route to the
+    # full schema. Nothing is walled off: the agent can still self-escalate
+    # to domain="freecad_full" via load_capability whenever a task genuinely
+    # needs a heavier tool (patterns, assembly mates, blueprints, standard
+    # parts, engineering-standard lookup, camera control).
+    "cad": "freecad_essential",
     "freecad": "freecad",
     "coder": "software_engineering",
     "software_engineering": "software_engineering",
@@ -298,11 +309,9 @@ app.add_middleware(
 )
 
 app.include_router(_workspace_router)
-app.include_router(_memory_router)
 app.include_router(_sessions_router)
-app.include_router(_skills_router)
-app.include_router(_services_router)
-app.include_router(_planner_router)
+app.include_router(_system_router)
+app.include_router(_cad_router)
 
 
 def _register_mesh(path: str) -> str:
@@ -319,7 +328,12 @@ def _register_audio(path: str) -> str:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, **driver_state()}
+    # "provider" reuses the exact same source of truth _call_llm_once
+    # resolves its own ReAct-loop provider from (dana.core.model_provider.
+    # tool_calling_provider) — this is a status read, never a second
+    # decision, so the frontend's model-indicator badge can never disagree
+    # with what a real turn is actually about to do.
+    return {"ok": True, "provider": tool_calling_provider(), **driver_state()}
 
 
 @app.get("/api/plugins")
@@ -582,6 +596,16 @@ async def _execute_and_continue(
         domain = result.payload.get("domain")
         if isinstance(domain, str) and domain:
             _touch_capability_domains(session, frozenset({domain}))
+    elif call.tool_id == "unload_capability" and result.ok:
+        # Mirror of the load_capability branch above: immediate eviction
+        # instead of stamping a fresh decay-clock turn. Only ever pops from
+        # capability_unlocked_at_turn (the agent's own autonomously-loaded
+        # domains) — session["active_plugins"] (the frontend's own tab
+        # state) is a completely separate dict this never touches, same
+        # boundary _effective_capabilities already draws.
+        domain = result.payload.get("domain")
+        if isinstance(domain, str) and domain:
+            session.get("capability_unlocked_at_turn", {}).pop(domain, None)
     elif result.ok:
         # Any OTHER successful dispatch belonging to an already-unlocked
         # capability domain (e.g. list_directory while "os_tools" is

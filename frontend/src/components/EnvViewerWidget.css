@@ -1,0 +1,196 @@
+.env-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+
+.env-viewer__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.env-viewer__panel {
+  position: absolute;
+  top: 48px;
+  right: 16px;
+  width: 420px;
+  max-height: min(70vh, 560px);
+  display: flex;
+  flex-direction: column;
+  background: #1c1c1c;
+  border: 1px solid #2f2f2f;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.env-viewer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.env-viewer__header h2 {
+  font-size: 14px;
+  margin: 0;
+  font-weight: 600;
+}
+
+.env-viewer__close {
+  background: none;
+  border: none;
+  color: #aaa;
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.env-viewer__badges {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #2a2a2a;
+  flex-wrap: wrap;
+}
+
+.env-viewer__badge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: #888;
+  background: #242424;
+  border: 1px solid #333;
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+
+.env-viewer__badge-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #555;
+}
+
+.env-viewer__badge--on {
+  color: #9adf9a;
+  border-color: color-mix(in srgb, #34d399 40%, transparent);
+  background: color-mix(in srgb, #34d399 12%, transparent);
+}
+
+.env-viewer__badge--on .env-viewer__badge-dot {
+  background: #34d399;
+}
+
+.env-viewer__save {
+  display: flex;
+  gap: 6px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.env-viewer__save-select {
+  background: #141414;
+  border: 1px solid #333;
+  color: #ddd;
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 5px 6px;
+}
+
+.env-viewer__save-input {
+  flex: 1;
+  min-width: 0;
+  background: #141414;
+  border: 1px solid #333;
+  color: #ddd;
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 5px 8px;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+}
+
+.env-viewer__save-btn {
+  background: #2a3f2a;
+  border: 1px solid #3d5c3d;
+  color: #b7f0b7;
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.env-viewer__save-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.env-viewer__save-result {
+  padding: 6px 14px;
+  font-size: 11.5px;
+  color: #9adf9a;
+}
+
+.env-viewer__save-result--bad {
+  color: #f87171;
+}
+
+.env-viewer__list {
+  overflow-y: auto;
+  padding: 4px 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.env-viewer__empty,
+.env-viewer__error {
+  padding: 12px;
+  color: #888;
+  font-size: 13px;
+  text-align: center;
+}
+
+.env-viewer__error {
+  color: #f87171;
+}
+
+.env-viewer__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 6px;
+  border-radius: 6px;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
+.env-viewer__row:hover {
+  background: #242424;
+}
+
+.env-viewer__key {
+  flex-shrink: 0;
+  color: #93c5fd;
+  white-space: nowrap;
+}
+
+.env-viewer__value {
+  min-width: 0;
+  color: #ccc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.env-viewer__footer {
+  padding: 8px 12px;
+  border-top: 1px solid #2a2a2a;
+  background: #191919;
+  color: #777;
+  font-size: 11px;
+  text-align: center;
+}

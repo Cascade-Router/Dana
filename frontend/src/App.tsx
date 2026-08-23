@@ -1,6 +1,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
 import { ChatSidebar } from "./components/ChatSidebar";
+import { EnvViewerWidget } from "./components/EnvViewerWidget";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { PluginProvider, usePlugins } from "./plugins/PluginContext";
 import { SecretsProvider, useSecrets } from "./secrets/SecretsContext";
@@ -17,9 +18,30 @@ import {
 import "./App.css";
 
 function AppShell() {
-  const { plugins, activePluginId, activatePlugin, openInWindow } = usePlugins();
+  const { plugins, activePluginId, activatePlugin } = usePlugins();
   const { entries } = useSecrets();
   const [secretsOpen, setSecretsOpen] = useState(false);
+  const [envViewerOpen, setEnvViewerOpen] = useState(false);
+
+  // Split-view (❐): "split" is today's existing chat+plugin layout (now at
+  // an explicit 45/55 ratio instead of the old fixed sidebar width) —
+  // "full" hides the chat pane entirely so the active plugin alone fills
+  // app__body. Persists across tab switches (switching from CAD to Coder
+  // while in "full" keeps Coder full too) rather than resetting per-tab,
+  // since that's the simpler, more predictable default and nothing in the
+  // spec calls for per-tab memory.
+  const [paneMode, setPaneMode] = useState<"split" | "full">("split");
+  const toggleSplitView = useCallback(
+    (id: (typeof plugins)[number]["id"]) => {
+      if (activePluginId !== id) {
+        activatePlugin(id);
+        setPaneMode("split");
+        return;
+      }
+      setPaneMode((m) => (m === "split" ? "full" : "split"));
+    },
+    [activePluginId, activatePlugin]
+  );
 
   // BYOK: the backend session only ever sees the value for known,
   // non-"custom" services (openai/anthropic/elevenlabs) — dana.api.server
@@ -92,6 +114,33 @@ function AppShell() {
   } = useChatSocket(apiKeys, activePlugins, requestedSessionId, initialMessages);
 
   const activePlugin = plugins.find((p) => p.id === activePluginId) ?? null;
+  const isPluginFullScreen = activePlugin !== null && paneMode === "full";
+
+  // Model indicator badge: polls the exact same source of truth
+  // _call_llm_once resolves its own provider from (dana.core.model_provider.
+  // tool_calling_provider, surfaced on /api/health as "provider") — a
+  // status display, never a second guess at what a turn will actually do.
+  const [provider, setProvider] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const poll = () => {
+      fetch(resolveApiUrl("/api/health"))
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!cancelled && data) setProvider(typeof data.provider === "string" ? data.provider : null);
+        })
+        .catch(() => {
+          if (!cancelled) setProvider(null);
+        });
+    };
+    poll();
+    const interval = window.setInterval(poll, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
+  const providerLabel = provider === "gateway" ? "Cascade Proxy: Active" : provider ? `${provider}: Active` : "Offline";
 
   // Single broadcast point: any plugin/orb window currently open re-renders
   // from this payload the instant it changes. Nothing downstream reaches
@@ -128,7 +177,7 @@ function AppShell() {
   }, [activateOrb]);
 
   return (
-    <div className={`app ${activePlugin ? "app--with-plugin" : ""}`}>
+    <div className={`app ${activePlugin ? "app--with-plugin" : ""} ${isPluginFullScreen ? "app--plugin-fullscreen" : ""}`}>
       <div className="app__topbar">
         <button
           type="button"
@@ -150,35 +199,52 @@ function AppShell() {
             </button>
             <button
               type="button"
-              className="app__pop-out"
-              title={`Open ${plugin.name} in its own window`}
-              onClick={() => openInWindow(plugin.id)}
+              className={`app__split-toggle ${activePluginId === plugin.id && paneMode === "full" ? "app__split-toggle--full" : ""}`}
+              title={
+                activePluginId === plugin.id && paneMode === "full"
+                  ? `Show split view (Chat + ${plugin.name})`
+                  : `Full-screen ${plugin.name}`
+              }
+              onClick={() => toggleSplitView(plugin.id)}
             >
-              ⧉
+              ❐
             </button>
           </div>
         ))}
         <div className="app__topbar-spacer" />
+        <div className="app__model-badge" title={`Active tool-calling provider: ${provider ?? "unknown"}`}>
+          ⚡ {providerLabel}
+        </div>
+        <button
+          type="button"
+          className="app__secrets-btn"
+          title="Environment Variables"
+          onClick={() => setEnvViewerOpen(true)}
+        >
+          🔑
+        </button>
         <button type="button" className="app__secrets-btn" title="Secrets" onClick={() => setSecretsOpen(true)}>
           ⚙
         </button>
       </div>
 
       <div className="app__body">
-        <div className="app__left">
-          <ChatSidebar activeSessionId={sessionId} onNewChat={startNewChat} onSelectSession={openSession} />
-          <div className="app__chat-column">
-            <ChatPanel
-              connection={connection}
-              messages={messages}
-              liveActivity={liveActivity}
-              turnActive={turnActive}
-              onSend={sendMessage}
-              onAbort={abortTurn}
-              onHitlRespond={respondHitl}
-            />
+        {!isPluginFullScreen && (
+          <div className="app__left">
+            <ChatSidebar activeSessionId={sessionId} onNewChat={startNewChat} onSelectSession={openSession} />
+            <div className="app__chat-column">
+              <ChatPanel
+                connection={connection}
+                messages={messages}
+                liveActivity={liveActivity}
+                turnActive={turnActive}
+                onSend={sendMessage}
+                onAbort={abortTurn}
+                onHitlRespond={respondHitl}
+              />
+            </div>
           </div>
-        </div>
+        )}
         {activePlugin && (
           <div className="app__right">
             <Suspense fallback={<div className="app__plugin-loading">Loading {activePlugin.name}…</div>}>
@@ -194,6 +260,7 @@ function AppShell() {
       </div>
 
       {secretsOpen && <SecretsMenu onClose={() => setSecretsOpen(false)} />}
+      {envViewerOpen && <EnvViewerWidget onClose={() => setEnvViewerOpen(false)} />}
       <TerminalDrawer log={log} />
     </div>
   );

@@ -1,0 +1,95 @@
+.cad-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #2a2a2a;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.cad-toolbar__btn {
+  background: #1c1c1c;
+  border: 1px solid #303030;
+  color: #ddd;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cad-toolbar__btn:hover {
+  background: #242424;
+  border-color: #3b82f6;
+}
+
+.cad-toolbar__btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.cad-toolbar__export {
+  position: relative;
+}
+
+.cad-toolbar__export-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 220px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: #1a1a1a;
+  border: 1px solid #303030;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 20;
+  padding: 4px;
+}
+
+.cad-toolbar__export-empty {
+  padding: 8px 10px;
+  color: #888;
+  font-size: 12px;
+}
+
+.cad-toolbar__export-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: #ddd;
+  font-size: 12px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.cad-toolbar__export-item:hover {
+  background: #262626;
+}
+
+.cad-toolbar__export-format {
+  font-size: 10px;
+  font-weight: 700;
+  color: #4f8ff7;
+  background: color-mix(in srgb, #4f8ff7 18%, transparent);
+  border-radius: 4px;
+  padding: 2px 5px;
+  flex-shrink: 0;
+}
+
+.cad-toolbar__export-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cad-toolbar__error {
+  color: #f87171;
+  font-size: 11.5px;
+}

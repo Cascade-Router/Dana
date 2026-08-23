@@ -87,7 +87,10 @@ def test_load_capability_unlocks_os_tools() -> None:
         "stop_background_service",
         "write_file",
     ]
-    assert "list_directory" in result["message"]
+    # Message is deliberately concise now (no per-tool-name enumeration —
+    # see _tool_load_capability's own comment); unlocked_tools above is
+    # already the authoritative, programmatically-checked list.
+    assert str(len(result["unlocked_tools"])) in result["message"]
 
 
 def test_load_capability_unknown_domain_reports_error_not_a_crash() -> None:

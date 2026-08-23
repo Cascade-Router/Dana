@@ -195,6 +195,32 @@ def delete_session_endpoint(session_id: str) -> dict[str, Any]:
     return {"ok": True, "deleted": delete_session(session_id)}
 
 
+@router.post("/{session_id}/reset")
+def reset_session_endpoint(session_id: str) -> dict[str, Any]:
+    """Clears an EXISTING session's persisted transcript in place (same id,
+    title reset to "New chat", empty messages) — distinct from "+ New Chat"
+    in the frontend, which already achieves a full reset (fresh tool
+    accumulation, fresh capability/turn state, fresh token budget) by simply
+    reconnecting the websocket with no ``session_id`` at all, letting the
+    server mint a brand-new one; that in-memory turn state
+    (``dana.api.server``'s per-websocket session dict — react_state,
+    capability_unlocked_at_turn, turn_counter, ...) isn't reachable from a
+    stateless REST call in the first place, since it lives on whichever
+    live websocket connection owns it, not in this on-disk store. This
+    endpoint exists for the separate, real case of clearing a SPECIFIC
+    already-saved session's history without abandoning its id (e.g. a
+    "clear this chat" action from the sidebar rather than starting a
+    brand-new one).
+    """
+    if not is_valid_session_id(session_id):
+        raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+    existing = load_session(session_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"session not found: {session_id!r}")
+    record = save_session(session_id, title="New chat", created_at=existing["created_at"], messages=[])
+    return {"ok": True, "session": record}
+
+
 __all__ = (
     "SESSIONS_DIR",
     "delete_session",

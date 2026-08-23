@@ -19,6 +19,7 @@ import base64
 import json
 import time
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -257,6 +258,51 @@ def test_next_react_turn_uses_explicit_raw_text_not_latest_message(monkeypatch: 
     ]
     turn = asyncio.run(rd.next_react_turn(messages, selection, raw_text="add a box here"))
     assert turn.call.arguments["target_position"] == [4.0, 5.0, 6.0]
+
+
+def test_next_react_turn_prunes_stale_tool_output_before_calling_the_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Integration proof for the Groq-429 fix: next_react_turn -> _call_llm_once
+    must actually apply dana.core.context_manager.prune_tool_output_history to
+    the payload it hands the model, not just have the pure function exist.
+    A long-ago tool result gets truncated; message count/order (the strict
+    tool_calls/tool-result pairing OpenAI/Groq require) stays identical."""
+    fake = _mock_llm(monkeypatch, content="done")
+    stale_output = "OLDSTUFF-" * 200  # 1800 chars, well past the truncation threshold
+    fresh_output = "NEWSTUFF-" * 200
+
+    def _tool_cycle(call_id: str, content: str) -> list[dict]:
+        return [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": call_id, "type": "function", "function": {"name": "search_codebase", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": call_id, "content": content},
+        ]
+
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
+    messages += _tool_cycle("call_1", stale_output)
+    messages += _tool_cycle("call_2", stale_output)
+    messages += _tool_cycle("call_3", fresh_output)
+
+    asyncio.run(rd.next_react_turn(messages))
+
+    sent_messages = fake.calls[0]["messages"]
+    assert len(sent_messages) == len(messages)  # count never changes
+    sent_tool_contents = [m["content"] for m in sent_messages if m["role"] == "tool"]
+    # Default keep_recent=1 -> call_1 and call_2 (everything but the single
+    # most recent tool result) are stale; only call_3 stays intact.
+    assert sent_tool_contents[0] != stale_output
+    assert sent_tool_contents[0].startswith("[Pruned to save context]")
+    assert sent_tool_contents[1] != stale_output
+    assert sent_tool_contents[1].startswith("[Pruned to save context]")
+    assert sent_tool_contents[2] == fresh_output  # most recent tool result untouched
+
+    # The caller's own messages list must never be mutated in place.
+    assert messages[3]["content"] == stale_output
+    assert messages[5]["content"] == stale_output
 
 
 def test_next_react_turn_unknown_tool_id_yields_final(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1407,22 +1453,28 @@ def test_llm_tools_schema_with_no_plugins_active_is_core_only() -> None:
 
 
 def test_llm_tools_schema_with_freecad_active_matches_core_plus_freecad() -> None:
-    """"freecad" active is core + FreeCAD's own (native + manifest-extended)
-    tools — no longer the same thing as rd._LLM_TOOL_IDS now that "os_tools"
-    (autonomous semantic routing's mock domain) is a separate,
-    independently-activatable set.
+    """"freecad" active is core + a TOKEN-BUDGET-CAPPED subset of FreeCAD's
+    own (native + manifest-extended) tools — no longer the full ~26-tool set
+    unconditionally. "freecad" was deliberately dropped from
+    _NARROWING_EXEMPT_DOMAINS (same TPM-overflow reasoning as
+    "freecad_full"), and _cap_schemas_by_token_budget is a hard backstop on
+    top of that even when narrowing itself is a no-op (empty query text, as
+    here). "list_directory" (os_tools) staying absent still proves domain
+    gating itself is untouched — capping only ever trims WITHIN what's
+    already eligible, never adds a different domain's tools."""
+    import json
 
-    "freecad" also includes modify_existing_freecad_document/
-    execute_freecad_script — dana/plugins/freecad/manifest.json's two
-    genuinely-new tool ids (no native handler collision), unioned into the
-    domain by refresh_plugin_tools() rather than skipped wholesale the way
-    a manifest declaring an already-hardcoded domain name used to be."""
+    import tiktoken
+
     schema = rd._llm_tools_schema(frozenset({"freecad"}))
     names = {t["function"]["name"] for t in schema}
-    assert names == rd._CORE_TOOL_IDS | rd._FREECAD_TOOL_IDS | {
+    assert rd._CORE_TOOL_IDS <= names  # core always survives capping
+    assert names < (rd._CORE_TOOL_IDS | rd._FREECAD_TOOL_IDS | {
         "modify_existing_freecad_document", "execute_freecad_script",
-    }
+    })  # strictly fewer than the full set — capping actually did something
     assert "list_directory" not in names
+    enc = tiktoken.get_encoding("cl100k_base")
+    assert len(enc.encode(json.dumps(schema))) <= rd._TOOL_TOKEN_BUDGET
 
 
 # --------------------------------------------------------------------------
@@ -1450,6 +1502,88 @@ def test_freecad_manifest_new_tools_are_mutating_by_default() -> None:
     other unannotated tool gets."""
     assert rd.is_mutating_tool("modify_existing_freecad_document") is True
     assert rd.is_mutating_tool("execute_freecad_script") is True
+
+
+# --------------------------------------------------------------------------
+# _wrap_plugin_handler — regression for the "'dict' object has no attribute
+# 'strip'" bug: execute_freecad_script(python_script_str: str) was getting
+# the WHOLE arguments dict bound to its one parameter (fn(args) called a
+# freecad-style, individually-named-parameters function exactly like it
+# would call a coder_plugin-style single-dict-parameter one), so
+# `(python_script_str or "").strip()` ran .strip() on a dict, not a string.
+# --------------------------------------------------------------------------
+
+
+def test_wrap_plugin_handler_passes_whole_dict_for_coder_plugin_style_single_args_param() -> None:
+    """A function whose one parameter is literally named 'args' (coder_
+    plugin's convention — search_codebase/analyze_codebase/execute_code_task/
+    run_verification_command all do their own args.get(...) extraction
+    internally) must receive the dict itself, unpacked as nothing."""
+
+    def fake_coder_tool(args: dict[str, Any]) -> dict[str, Any]:
+        return {"received": args}
+
+    handler = rd._wrap_plugin_handler(fake_coder_tool)
+    result = handler({"regex_pattern": "def foo"}, None, None)
+    assert result == {"received": {"regex_pattern": "def foo"}}
+
+
+def test_wrap_plugin_handler_unpacks_dict_as_kwargs_for_named_parameters() -> None:
+    """The actual bug: a function with individually-named parameters (the
+    freecad manifest convention, matching each manifest 'parameters' entry
+    by name) must get the dict unpacked as **kwargs, NOT passed as one
+    positional dict — passing the dict positionally would silently bind the
+    whole dict to the first parameter instead of raising, exactly how
+    execute_freecad_script ended up calling .strip() on a dict."""
+
+    def fake_freecad_tool(python_script_str: str) -> str:
+        return python_script_str  # returns whatever it was actually bound to
+
+    handler = rd._wrap_plugin_handler(fake_freecad_tool)
+    result = handler({"python_script_str": "import FreeCAD"}, None, None)
+    assert result == "import FreeCAD"
+    assert isinstance(result, str)  # regression: used to be the whole dict
+
+
+def test_wrap_plugin_handler_unpacks_multiple_named_parameters() -> None:
+    """modify_existing_document(filepath, modification_script) — the OTHER
+    genuinely-new freecad manifest tool id with the same multi-named-
+    parameter convention as execute_freecad_script."""
+
+    def fake_modify_tool(filepath: str, modification_script: str) -> dict[str, str]:
+        return {"filepath": filepath, "modification_script": modification_script}
+
+    handler = rd._wrap_plugin_handler(fake_modify_tool)
+    result = handler(
+        {"filepath": "/tmp/model.FCStd", "modification_script": "doc.recompute()"}, None, None
+    )
+    assert result == {"filepath": "/tmp/model.FCStd", "modification_script": "doc.recompute()"}
+
+
+def test_execute_freecad_script_end_to_end_through_tool_handlers_dispatch() -> None:
+    """Full-stack regression: dispatching execute_freecad_script through the
+    REAL TOOL_HANDLERS entry (as dispatch_tool_call would) with a realistic
+    tool-call arguments dict must reach FreeCAD's own engine.execute_freecad_
+    script with the script as a plain string, not crash on `.strip()`.
+    FreeCADCmd itself is mocked out (dana.plugins.freecad.engine.
+    _run_freecad_script) so this test doesn't depend on a real FreeCAD
+    install."""
+    from dana.plugins.freecad import engine as freecad_engine
+
+    with patch.object(
+        freecad_engine, "_run_freecad_script", return_value={"ok": True, "stdout": "done", "stderr": ""}
+    ) as mock_run:
+        handler = rd.TOOL_HANDLERS["execute_freecad_script"]
+        result = handler({"python_script_str": "import FreeCAD as App"}, None, None)
+
+    # execute_freecad_script returns a JSON-encoded string (engine._ok), not
+    # a dict — the regression this guards against ("'dict' object has no
+    # attribute 'strip'") crashed BEFORE ever reaching this return, so
+    # merely getting a well-formed ok:true payload back proves the fix.
+    assert json.loads(result)["ok"] is True
+    # The script text actually reached FreeCADCmd as a string, not a dict.
+    script_arg = mock_run.call_args.args[0]
+    assert script_arg == "import FreeCAD as App"
 
 
 def test_freecad_manifest_colliding_tool_ids_still_use_native_handler() -> None:
@@ -1663,6 +1797,151 @@ def test_llm_tools_schema_keeps_newly_unlocked_tools_sticky_across_narrowing() -
     assert "execute_code_task" in names
 
 
+def test_load_capability_freecad_full_unlock_stays_under_budget() -> None:
+    """Regression for the reported 8,966-token 413: load_capability(domain=
+    "freecad_full") unlocks ~24 tools via its own unlocked_tools payload —
+    _sticky_tool_ids_from_messages used to fold ALL of them into must_keep,
+    which _cap_schemas_by_token_budget never trims, so the very next turn's
+    schema blew far past _TOOL_TOKEN_BUDGET on its own. The unlocked set must
+    now be ranked/capped the same way a large keyword-suggested domain is."""
+    raw_text = "create a box, cut a circular hole through it, export as STEP"
+    unlock_result = rd._tool_load_capability({"domain": "freecad_full"}, None, None)
+    assert unlock_result["ok"] is True
+    assert len(unlock_result["unlocked_tools"]) > rd._KEYWORD_DOMAIN_NARROW_MIN
+
+    messages = [
+        {"role": "user", "content": raw_text},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "load_capability", "arguments": '{"domain": "freecad_full"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": json.dumps(unlock_result)},
+    ]
+    sticky = rd._sticky_tool_ids_from_messages(messages, raw_text)
+    # load_capability itself (already-invoked) plus a capped top-K slice of
+    # the unlocked domain — never the whole ~24-tool set.
+    assert len(sticky) <= rd._KEYWORD_DOMAIN_TOP_K + 1
+
+    schema = rd._llm_tools_schema(
+        frozenset({"freecad_full"}), query=raw_text, sticky_ids=sticky, force_include=sticky
+    )
+    schema_tokens = rd._count_tokens(json.dumps(schema))
+    # Well under Groq's 8000 TPM ceiling once system prompt + conversation
+    # history are added on top (~800-1000 tokens) — the old behavior alone
+    # measured at 6,605+ tokens for this same scenario.
+    assert schema_tokens < 4000
+
+
+# --- Layer 3: Lazy Loading (search_tool_catalog / load_specific_tool) ------
+
+
+def test_search_tool_catalog_returns_lightweight_matches_only() -> None:
+    result = rd._tool_search_tool_catalog({"query": "read a webpage"}, None, None)
+    assert result["ok"] is True
+    assert result["matches"], "expected at least one match for a webpage-reading query"
+    for match in result["matches"]:
+        assert set(match) == {"tool_id", "description"}
+        assert isinstance(match["tool_id"], str) and match["tool_id"]
+        assert isinstance(match["description"], str) and match["description"]
+
+
+def test_search_tool_catalog_requires_a_query() -> None:
+    result = rd._tool_search_tool_catalog({}, None, None)
+    assert result["ok"] is False
+
+
+def test_load_specific_tool_unlocks_a_known_tool_id() -> None:
+    result = rd._tool_load_specific_tool({"tool_id": "read_webpage"}, None, None)
+    assert result["ok"] is True
+    assert result["unlocked_tools"] == ["read_webpage"]
+
+
+def test_load_specific_tool_rejects_an_unknown_tool_id() -> None:
+    result = rd._tool_load_specific_tool({"tool_id": "not_a_real_tool"}, None, None)
+    assert result["ok"] is False
+    assert "error" in result
+
+
+def test_search_tool_catalog_and_load_specific_tool_are_core_and_have_handlers() -> None:
+    assert {"search_tool_catalog", "load_specific_tool"} <= rd._CORE_TOOL_IDS
+    assert rd.TOOL_HANDLERS["search_tool_catalog"] is rd._tool_search_tool_catalog
+    assert rd.TOOL_HANDLERS["load_specific_tool"] is rd._tool_load_specific_tool
+
+
+def test_load_specific_tool_bypasses_the_capability_gate_next_turn() -> None:
+    """End-to-end Layer 3 regression: load_specific_tool's own tool-result
+    message must make its tool_id reachable on the VERY NEXT turn even when
+    NO active domain covers it at all — "read_webpage" only otherwise lives
+    under "web_tools", which is not active here."""
+    messages = [
+        {"role": "user", "content": "grab that one tool for me"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "load_specific_tool", "arguments": '{"tool_id": "read_webpage"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": json.dumps({"ok": True, "tool_id": "read_webpage", "unlocked_tools": ["read_webpage"]}),
+        },
+    ]
+    force_include_ids = rd._sticky_tool_ids_from_messages(messages)
+    assert "read_webpage" in force_include_ids
+
+    # No domain active at all — "web_tools" (the only domain that owns
+    # read_webpage) is absent, so without force_include this must be a
+    # core-only schema and read_webpage must be unreachable.
+    baseline = rd._llm_tools_schema(frozenset(), query="grab that one tool for me")
+    assert "read_webpage" not in {t["function"]["name"] for t in baseline}
+
+    schema = rd._llm_tools_schema(
+        frozenset(),
+        query="grab that one tool for me",
+        sticky_ids=force_include_ids,
+        force_include=force_include_ids,
+    )
+    assert "read_webpage" in {t["function"]["name"] for t in schema}
+
+
+def test_keyword_suggested_domains_covers_os_tools() -> None:
+    assert "os_tools" in rd._keyword_suggested_domains("please read file config.json for me")
+
+
+def test_keyword_suggested_tool_ids_narrows_large_domains_but_not_small_ones() -> None:
+    """Regression for the must_keep-defeats-the-budget bug: a CAD prompt used
+    to make _keyword_suggested_tool_ids return the ENTIRE ~24-tool "freecad"
+    domain, which _cap_schemas_by_token_budget's must_keep NEVER trims even
+    when it alone exceeds _TOOL_TOKEN_BUDGET — so a keyword-matched large
+    domain silently defeated the whole budget instead of just surviving
+    narrowing within it. The suggested set must now be a narrowed (small)
+    subset of the full domain, while a small curated domain (software_engineering,
+    at/under _MIN_TOOLS_TO_NARROW) is still returned whole, unchanged."""
+    cad_prompt = (
+        "Use the FreeCAD tools to create a box, then cut a circular hole through "
+        "it, then export the result as a STEP file."
+    )
+    freecad_suggested = rd._keyword_suggested_tool_ids(cad_prompt)
+    assert freecad_suggested, "expected at least some freecad tools suggested"
+    assert freecad_suggested < rd._CAPABILITY_TOOL_IDS["freecad"]  # proper subset, not the whole domain
+    assert len(freecad_suggested) <= 8
+
+    coder_prompt = "refactor foo.py to fix the bug in the function signature"
+    coder_suggested = rd._keyword_suggested_tool_ids(coder_prompt)
+    # software_engineering has 4 tools, at/under _MIN_TOOLS_TO_NARROW (8) —
+    # narrowing is a no-op for it, so the whole small domain still survives.
+    assert coder_suggested == rd._CAPABILITY_TOOL_IDS["software_engineering"]
+
+
 def test_build_system_prompt_with_no_plugins_active_omits_engineering_rules() -> None:
     prompt = rd.build_system_prompt(None, active_plugins=frozenset())
     assert "Engineering Rules" not in prompt
@@ -1730,20 +2009,107 @@ def test_next_react_turn_core_tool_allowed_with_no_plugins_active(monkeypatch: p
 
 
 # --------------------------------------------------------------------------
-# Turn-level timeout ceiling / provider attribution — a real Groq 429 TPM
-# throttle asking for a legitimate ~24-25s sleep (openai_tool_bridge's own
-# throttle-and-retry loop) used to get aborted mid-sleep by this module's
-# OWN, shorter (22s) outer timeout, then blamed on "the local model" in the
-# user-facing apology even though Groq (a cloud provider) was the one that
-# actually missed its deadline.
+# _keyword_suggested_domains — Turn-0 pre-warming so a plain-chat session
+# with NO plugin active doesn't have to waste a whole turn on
+# load_capability before search_codebase/analyze_codebase/create_freecad_*/
+# search_web/analyze_workspace_image are even offered.
 # --------------------------------------------------------------------------
 
 
-def test_local_tool_call_timeout_exceeds_tpm_retry_ceiling() -> None:
-    from dana.core.openai_tool_bridge import _MAX_REASONABLE_RETRY_AFTER_SEC
+def test_keyword_suggested_domains_detects_software_engineering_intent() -> None:
+    assert rd._keyword_suggested_domains("please refactor this function in utils.py") == frozenset(
+        {"software_engineering"}
+    )
+    assert rd._keyword_suggested_domains("can you run pytest on this?") == frozenset({"software_engineering"})
+    assert rd._keyword_suggested_domains("there's a traceback I need help with") == frozenset(
+        {"software_engineering"}
+    )
 
-    assert rd._LOCAL_TOOL_CALL_TIMEOUT_SEC >= _MAX_REASONABLE_RETRY_AFTER_SEC + 1.0
-    assert rd._LOCAL_TOOL_CALL_TIMEOUT_SEC == _MAX_REASONABLE_RETRY_AFTER_SEC + 15.0
+
+def test_keyword_suggested_domains_detects_cad_intent() -> None:
+    assert rd._keyword_suggested_domains("create a cylinder with radius 10") == frozenset({"freecad"})
+
+
+def test_keyword_suggested_domains_detects_web_intent() -> None:
+    assert rd._keyword_suggested_domains("please search the web for this") == frozenset({"web_tools"})
+
+
+def test_keyword_suggested_domains_detects_vision_intent() -> None:
+    assert rd._keyword_suggested_domains("take a screenshot and tell me what's there") == frozenset(
+        {"vision_tools"}
+    )
+
+
+def test_keyword_suggested_domains_can_suggest_multiple_domains_at_once() -> None:
+    result = rd._keyword_suggested_domains("take a screenshot of my code and fix the bug in it")
+    assert result == frozenset({"vision_tools", "software_engineering"})
+
+
+def test_keyword_suggested_domains_empty_for_ordinary_chat() -> None:
+    assert rd._keyword_suggested_domains("how's the weather today?") == frozenset()
+    assert rd._keyword_suggested_domains("") == frozenset()
+
+
+def test_next_react_turn_offers_coder_tools_on_turn_zero_without_load_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exact Turn-0 overhead this pre-warming eliminates: a code-related
+    prompt must already offer search_codebase/analyze_codebase in THIS
+    turn's schema — active_plugins starts EMPTY (nothing manually activated,
+    no prior load_capability call in this messages history) — so the model
+    can call search_codebase directly instead of spending Turn 0 on
+    load_capability(domain="software_engineering") first."""
+    fake = _mock_llm(monkeypatch, tool_calls=[ToolCall(tool_id="search_codebase", arguments={"regex_pattern": "def foo"})])
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "refactor the foo function to fix the bug"},
+    ]
+
+    turn = asyncio.run(
+        rd.next_react_turn(
+            messages, raw_text="refactor the foo function to fix the bug", active_plugins=frozenset()
+        )
+    )
+
+    assert turn.kind == "tool_call"
+    assert turn.call.tool_id == "search_codebase"
+    offered = {t["function"]["name"] for t in fake.calls[0]["tools"]}
+    assert "search_codebase" in offered
+    assert "analyze_codebase" in offered
+    # load_capability must still be present too — a backwards-compatible
+    # fallback for whatever the keyword heuristic doesn't catch, never
+    # replaced by pre-warming.
+    assert "load_capability" in offered
+
+
+def test_next_react_turn_does_not_prewarm_software_engineering_for_unrelated_chat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _mock_llm(monkeypatch, content="Partly cloudy, 72 degrees.")
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "how's the weather today?"}]
+
+    turn = asyncio.run(
+        rd.next_react_turn(messages, raw_text="how's the weather today?", active_plugins=frozenset())
+    )
+
+    assert turn.kind == "final"
+    offered = {t["function"]["name"] for t in fake.calls[0]["tools"]}
+    assert "search_codebase" not in offered
+    assert "analyze_codebase" not in offered
+
+
+# --------------------------------------------------------------------------
+# Turn-level timeout ceiling / provider attribution. Cloud tool-calling now
+# routes through the local Cascade-Router gateway, which cascades
+# groq -> gemini -> openai on 429/5xx upstream in milliseconds, so
+# openai_tool_bridge no longer sleeps out a Groq TPM retry-after hint —
+# a 429/5xx fails this call fast instead. This timeout only needs to bound
+# a genuinely stalling connection now.
+# --------------------------------------------------------------------------
+
+
+def test_local_tool_call_timeout_is_positive_and_bounded() -> None:
+    assert 0 < rd._LOCAL_TOOL_CALL_TIMEOUT_SEC < 90.0
 
 
 def test_timeout_apology_text_attributes_local_provider_correctly() -> None:

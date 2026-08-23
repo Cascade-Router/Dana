@@ -69,7 +69,7 @@ body {
   color: var(--tab-accent);
 }
 
-.app__pop-out {
+.app__split-toggle {
   background: none;
   border: none;
   color: #777;
@@ -79,13 +79,31 @@ body {
   border-radius: 6px;
 }
 
-.app__pop-out:hover {
+.app__split-toggle:hover {
   background: #202020;
-  color: #ddd;
+  color: #4f8ff7;
+}
+
+.app__split-toggle--full {
+  color: #4f8ff7;
+  background: color-mix(in srgb, #4f8ff7 14%, transparent);
 }
 
 .app__topbar-spacer {
   flex: 1;
+}
+
+.app__model-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: #9adf9a;
+  background: color-mix(in srgb, #34d399 12%, transparent);
+  border: 1px solid color-mix(in srgb, #34d399 30%, transparent);
+  padding: 4px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 .app__secrets-btn {
@@ -111,7 +129,11 @@ body {
 }
 
 .app--with-plugin .app__body {
-  grid-template-columns: minmax(320px, 380px) 1fr;
+  grid-template-columns: 45% 55%;
+}
+
+.app--with-plugin.app--plugin-fullscreen .app__body {
+  grid-template-columns: 1fr;
 }
 
 .app__left {

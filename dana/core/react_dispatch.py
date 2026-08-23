@@ -14,21 +14,22 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import inspect
 import json
 import re
 import sys
 import time
 import traceback
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from functools import lru_cache
 from typing import Any
 
-from dana.core.context_manager import prune_message_history
+from dana.core.context_manager import prune_message_history, prune_tool_output_history
 from dana.core.model_provider import ModelProvider, tool_calling_provider
-from dana.core.openai_tool_bridge import _MAX_REASONABLE_RETRY_AFTER_SEC
 from dana.core.skill_loader import delete_skill, load_user_skills, read_skill_source, save_skill
 from dana.core.tool_retrieval import narrow_tool_ids_by_query
+from dana.tools.registry import get_tool_registry
 from dana.paths import CAPTURES_DIR
 from dana.platform import factory as platform_factory
 from dana.platform import get_cad_engine, get_control_plane
@@ -150,14 +151,13 @@ def _tool_load_capability(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[
     # "freecad" defaults to the trimmed essential set (see
     # _FREECAD_ESSENTIAL_TOOL_IDS) rather than all 24 FreeCAD tools — the
     # full set is heavy enough (~30KB of schemas) to blow a free-tier cloud
-    # model's tokens-per-minute budget on the very next turn. This ONLY
-    # affects the agent's own autonomous load_capability calls: the
-    # frontend's explicit CAD-plugin activation goes through
-    # dana.api.server's active_plugins union instead, never through this
-    # function, so a real CAD-panel session is unaffected. "freecad_full"
-    # is the explicit escalation domain — the agent can call this again
-    # with domain="freecad_full" any time a task genuinely needs the
-    # heavier tools (patterns, assembly mates, blueprints, standard parts,
+    # model's tokens-per-minute budget on the very next turn. This covers the
+    # agent's own autonomous load_capability calls; the frontend's CAD-tab
+    # activation is routed to "freecad_essential" too now (see
+    # dana.api.server._PLUGIN_ID_TO_CAPABILITY), so both paths share the same
+    # trimmed default. "freecad_full" is the explicit escalation domain —
+    # callable again any time a task genuinely needs the heavier tools
+    # (patterns, assembly mates, blueprints, standard parts,
     # engineering-standard lookups, camera control).
     resolved_domain = "freecad_essential" if domain == "freecad" else domain
     unlocked = _CAPABILITY_TOOL_IDS.get(resolved_domain)
@@ -167,19 +167,126 @@ def _tool_load_capability(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[
             "error": f"Unknown capability domain {domain!r}. Available: {sorted(_CAPABILITY_TOOL_IDS)}",
         }
     tools = sorted(unlocked)
-    message = f"Loaded '{resolved_domain}' — newly available tools: {', '.join(tools)}."
+    # Message deliberately stays short — it's re-sent verbatim as this tool
+    # call's own history on every later turn (dana.core.context_manager only
+    # exempts the single MOST recent tool result from truncation), so
+    # spelling out every tool name here was pure repeated token cost on top
+    # of the already-compact `unlocked_tools` list below, which is what
+    # dana.api.server/tests actually read programmatically. A large domain's
+    # FULL tool set is still reported (nothing is hidden from the model or
+    # from a caller inspecting `unlocked_tools`); only the wordy prose
+    # enumeration is gone.
+    message = f"Loaded '{resolved_domain}' — {len(tools)} tool(s) now available."
     if resolved_domain == "freecad_essential":
         message += (
-            " This is the essential FreeCAD set (basic shapes, one boolean op, one edge op, "
-            "parameter tweaks, bounding-box checks, export). If this task needs a heavier tool "
-            "(patterns, assembly mates, blueprints, standard parts, engineering-standard lookup, "
-            "camera control), call load_capability again with domain='freecad_full'."
+            " Essential FreeCAD set. Call load_capability again with domain='freecad_full' "
+            "if a heavier tool is needed."
         )
     return {
         "ok": True,
         "domain": resolved_domain,
         "unlocked_tools": tools,
         "message": message,
+    }
+
+
+def _tool_unload_capability(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    """Explicit release valve for autonomous semantic routing: lets the
+    agent drop a capability domain it just finished using THIS session,
+    instead of always waiting up to _CAPABILITY_DECAY_TURNS turns of disuse
+    for it to decay out on its own (dana.api.server._effective_capabilities).
+    Only ever affects a domain the agent unlocked via load_capability —
+    never the frontend's own active_plugins (an open CAD/Coder tab stays
+    under the human's explicit control and is untouched by this tool), the
+    same boundary _effective_capabilities/_touch_capability_domains already
+    draw between the two capability sources.
+
+    Stateless, like _tool_load_capability: dana.api.server is what actually
+    pops the domain from session["capability_unlocked_at_turn"] once
+    dispatch_tool_call reports success (see server.py's
+    _execute_and_continue) — this handler has no session object to mutate.
+    """
+    domain = str(args.get("domain") or "").strip()
+    if domain not in _CAPABILITY_TOOL_IDS:
+        return {
+            "ok": False,
+            "error": f"Unknown capability domain {domain!r}. Available: {sorted(_CAPABILITY_TOOL_IDS)}",
+        }
+    return {
+        "ok": True,
+        "domain": domain,
+        "message": (
+            f"Unloaded '{domain}' — if it was only active via load_capability, its tools "
+            "won't be sent starting next turn (call load_capability again if it's needed later). "
+            "If it's also active as a frontend tab, it stays available until that tab closes."
+        ),
+    }
+
+
+def _first_sentence(text: str, limit: int = 200) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    first = re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0]
+    return first[:limit].rstrip()
+
+
+def _tool_search_tool_catalog(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    """Lazy Loading, discovery half: searches the ENTIRE global tool
+    registry (``dana.tools.registry.get_tool_registry`` — every tool from
+    ``tools.json`` plus every plugin manifest, regardless of which
+    capability domains are currently active) for ``query``, returning only
+    a lightweight tool_id + one-sentence description per match — never a
+    full schema, so a broad discovery search never itself costs the token
+    budget the way actually loading a tool would. Pair with
+    ``load_specific_tool`` to make a returned match callable.
+    """
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return {"ok": False, "error": "query is required"}
+    registry = get_tool_registry()
+    matches = [
+        {"tool_id": entry.name, "description": _first_sentence(entry.description) or entry.name}
+        for entry in registry.retrieve(query, k=10)
+    ]
+    return {
+        "ok": True,
+        "query": query,
+        "matches": matches,
+        "message": (
+            f"Found {len(matches)} tool(s) matching {query!r}. Call load_specific_tool with a "
+            "tool_id above to make it callable next turn."
+            if matches
+            else f"No tools matched {query!r}."
+        ),
+    }
+
+
+def _tool_load_specific_tool(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    """Lazy Loading, fetch half: explicitly injects one specific tool_id's
+    full schema into the active session for the NEXT turn, bypassing both
+    the capability-domain gate (``_tool_ids_for_plugins``) and Pillar 1's
+    semantic narrowing — see ``_sticky_tool_ids_from_messages`` (recognizes
+    this tool's own ``unlocked_tools`` payload, same shape as
+    ``load_capability``'s) and ``_call_llm_once``'s ``force_include`` wiring.
+    Stateless, like ``_tool_load_capability``: this handler only validates
+    the id exists somewhere in the global registry and reports it back; the
+    actual schema-injection happens when ``_call_llm_once`` reads this call's
+    own tool-result message back out of the running chain next turn.
+    """
+    tool_id = str(args.get("tool_id") or "").strip()
+    if not tool_id:
+        return {"ok": False, "error": "tool_id is required"}
+    if get_tool_registry().get(tool_id) is None:
+        return {
+            "ok": False,
+            "error": f"Unknown tool_id {tool_id!r} — call search_tool_catalog first to find a valid one.",
+        }
+    return {
+        "ok": True,
+        "tool_id": tool_id,
+        "unlocked_tools": [tool_id],
+        "message": f"Loaded '{tool_id}' — it will be available starting next turn.",
     }
 
 
@@ -1036,6 +1143,9 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "system_state": _tool_system_state,
     "check_plugin_registry": _tool_check_plugin_registry,
     "load_capability": _tool_load_capability,
+    "unload_capability": _tool_unload_capability,
+    "search_tool_catalog": _tool_search_tool_catalog,
+    "load_specific_tool": _tool_load_specific_tool,
     "update_core_memory": _tool_update_core_memory,
     "create_plan": _tool_create_plan,
     "mark_task_completed": _tool_mark_task_completed,
@@ -1326,6 +1436,12 @@ _CORE_TOOL_IDS = frozenset(
         "check_plugin_registry",  # keeping this global matches the task's explicit instruction.
         "load_capability",  # autonomous semantic routing — see below; always available so the
         # agent can retrieve a domain it wasn't handed, without needing a frontend plugin for it.
+        "unload_capability",  # its explicit release valve — always available for the same reason,
+        # so the agent can drop a domain it's done with without waiting out the decay clock.
+        "search_tool_catalog",  # Lazy Loading, Layer 3 — discovery half; always available so the
+        # agent can find a tool outside load_capability's fixed domain list without ever stalling.
+        "load_specific_tool",  # Lazy Loading, Layer 3 — fetch half; always available for the same
+        # reason, and it's the only way a tool found via search_tool_catalog becomes callable.
         "update_core_memory",  # persistent Core Memory — see dana.plugins.memory.core_memory;
         # always available so the agent can save a durable note in ANY session, plugin or not.
         "save_new_skill",  # Autonomous Skill Acquisition — see dana.core.skill_loader;
@@ -1370,12 +1486,15 @@ _FREECAD_TOOL_IDS = frozenset(
     }
 )
 
-# Trimmed default for the AGENT'S OWN autonomous `load_capability` call
-# (never for the frontend's explicit CAD-plugin activation: dana.api.server's
-# "cad"/"freecad" plugin-id mapping is untouched, so a real CAD-panel
-# session still activates domain "freecad" directly -> the FULL
-# _FREECAD_TOOL_IDS above, exactly as before this change). Root cause
-# of the parse-0/parse-1 failure this addresses: sending all 24 FreeCAD tool
+# Trimmed default shared by BOTH the agent's own autonomous
+# `load_capability` call (via _tool_load_capability's "freecad" ->
+# "freecad_essential" redirect above) and the frontend's CAD-tab activation
+# (dana.api.server._PLUGIN_ID_TO_CAPABILITY maps "cad" -> "freecad_essential"
+# directly). The raw "freecad" domain name still exists and still resolves
+# to the full _FREECAD_TOOL_IDS set below — for whichever caller passes it
+# explicitly, or for "freecad_full"'s own definition — it's just no longer
+# what either normal activation path reaches by default. Root cause of the
+# parse-0/parse-1 failure this addresses: sending all 24 FreeCAD tool
 # schemas (~30KB / ~6.8-6.9k tokens serialized, confirmed by direct probe
 # against Groq) as `tools=` on the VERY NEXT turn after load_capability
 # reliably blows a free/on-demand-tier Groq model's tokens-per-minute
@@ -1590,17 +1709,55 @@ def list_user_skills() -> dict[str, dict[str, Any]]:
 
 
 def _wrap_plugin_handler(
-    fn: Callable[[dict[str, Any]], dict[str, Any]],
+    fn: Callable[..., dict[str, Any]],
 ) -> Callable[[dict[str, Any], Any, Any], dict[str, Any]]:
-    """Adapts a manifest.json plugin's 1-argument ``fn(args)`` entrypoint to
-    ``TOOL_HANDLERS``'s uniform ``(arguments, engine, control_plane)``
-    signature — identical reasoning to ``_wrap_skill_handler`` above: a
-    generic plugin (a codebase search, a shell wrapper, ...) has no business
+    """Adapts a manifest.json plugin's entrypoint to ``TOOL_HANDLERS``'s
+    uniform ``(arguments, engine, control_plane)`` signature — identical
+    reasoning to ``_wrap_skill_handler`` above: a generic plugin (a codebase
+    search, a shell wrapper, a FreeCAD script runner, ...) has no business
     touching the CAD engine or control plane.
+
+    Two different manifest-plugin calling conventions exist in this
+    codebase, and this wrapper must serve both:
+      - ``dana.plugins.coder_plugin.engine``'s functions each take exactly
+        ONE parameter, literally named ``args`` (a dict), and do their own
+        ``args.get(...)`` extraction internally.
+      - ``dana/plugins/freecad/manifest.json``'s genuinely-new tool ids
+        (``execute_freecad_script``, ``modify_existing_document``) instead
+        take one named parameter PER manifest ``"parameters"`` entry — the
+        same convention this module's own native FreeCAD handlers already
+        use (e.g. ``_tool_create_box`` unpacking into
+        ``engine.create_box(length=..., width=..., ...)``).
+
+    Always calling ``fn(args)`` (passing the whole dict positionally) used
+    to silently bind that dict to a freecad-style function's FIRST named
+    parameter instead of raising — Python allows a dict as any type's
+    positional argument — which is exactly how ``execute_freecad_script``
+    ended up calling ``.strip()`` on a dict rather than the script string:
+    ``execute_freecad_script({"python_script_str": "..."})`` bound the
+    entire arguments dict to its one parameter, ``python_script_str``.
+
+    Inspecting the wrapped function's OWN signature here (once, at
+    registration time, not per call) resolves this for every current and
+    future plugin instead of special-casing one tool id: a function
+    declaring exactly one parameter literally named ``args`` gets the whole
+    dict passed positionally (coder_plugin's convention); every other shape
+    gets the dict unpacked as keyword arguments matching each parameter by
+    name (freecad's, and any future plugin's, convention) — a missing
+    required key or an unexpected extra one then raises a normal
+    ``TypeError``, which ``dispatch_tool_call``'s existing try/except +
+    ``digest_error`` already turns into a structured, LLM-actionable
+    failure payload exactly like any other handler exception.
     """
+    try:
+        takes_single_args_dict = list(inspect.signature(fn).parameters) == ["args"]
+    except (TypeError, ValueError):  # a builtin/C-extension callable with no inspectable signature
+        takes_single_args_dict = False
 
     def _handler(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
-        return fn(args)
+        if takes_single_args_dict:
+            return fn(args)
+        return fn(**args)
 
     return _handler
 
@@ -1731,11 +1888,49 @@ def _llm_tools_schema_cached(tool_ids: frozenset[str]) -> tuple[dict[str, Any], 
     return tuple(openai_tools_schema(_llm_tool_registry_cache, tool_ids=tool_ids))
 
 
+# Explicitly-activated, CURATED-SMALL domains (dana.api.server.
+# _PLUGIN_ID_TO_CAPABILITY — a human's own tab choice) whose tool set is
+# small enough that per-turn semantic narrowing only ever misfires against
+# it, never actually saves meaningful tokens. Confirmed live for both: an
+# off-topic query (e.g. "hello") while only "software_engineering" (4 tools,
+# coder_plugin) or "freecad_essential" (7 tools) was active narrowed EVERY
+# domain tool away, silently breaking the Coder/CAD tab for that turn — the
+# curated sets are already well under Groq's TPM ceiling on their own, so
+# exempting them from narrowing costs nothing and fixes a real "context
+# drop" bug, not a workaround for a token problem that still exists after
+# the exemption.
+#
+# Deliberately does NOT include "freecad" (raw, ~26 tools) or "freecad_full"
+# (the explicit heavy-tool escalation domain, same ~26): unlike the curated
+# sets here, unioning either of these on top of an already-active
+# "freecad_essential" (as load_capability(domain="freecad_full") does the
+# moment a task needs one heavier tool) is exactly the "8000+ token" TPM
+# failure this whole essential/full split exists to prevent — measured live:
+# freecad_essential ∪ freecad_full = 6,131 tokens of tool schema alone, before
+# the system prompt or any conversation history. Narrowing "freecad_full" by
+# query relevance (same mechanism web_tools/vision_tools already get) still
+# leaves the ONE relevant heavy tool reachable for the turn that actually
+# asked for it — it just stops serializing all 26 at once for a domain that,
+# unlike the curated sets here, was never meant to be small.
+#
+# "os_tools" (11 tools) was added alongside the two above once
+# _TOOL_TOKEN_BUDGET was tightened from 4000 to 2000 (see that constant's own
+# history) — at 4000 its full set plus core always fit comfortably so this
+# never mattered in practice, but a tighter budget exposed the exact same
+# "activated tab silently loses tools" bug the original two domains were
+# exempted to prevent (list_directory — about as basic an os_tools call as
+# exists — dropping out on a query-less/off-topic turn). Same size class as
+# freecad_essential/software_engineering, same justification; not the
+# same-order-of-magnitude case "freecad"/"freecad_full" above are excluded for.
+_NARROWING_EXEMPT_DOMAINS = ("freecad_essential", "software_engineering", "os_tools")
+
+
 def _llm_tools_schema(
     active_plugins: frozenset[str] | None = None,
     *,
     query: str = "",
     sticky_ids: frozenset[str] = frozenset(),
+    force_include: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Build this turn's ``tools=`` payload — capability-gated tool ids,
     optionally narrowed by semantic relevance to ``query`` (Pillar 1:
@@ -1750,31 +1945,49 @@ def _llm_tools_schema(
     create-then-boolean-op never loses access to the tool it's already
     mid-sequence with just because the query text alone wouldn't have
     scored it highly.
+
+    ``force_include`` (Lazy Loading, Layer 3 — tool ids explicitly unlocked
+    via ``load_specific_tool``) is unioned directly into the capability-gated
+    ``tool_ids`` itself, BEFORE narrowing — unlike ``sticky_ids`` (which only
+    protects an already-eligible id from being narrowed back out),
+    ``force_include`` makes an id eligible in the first place even when no
+    active domain covers it. Callers should also fold ``force_include`` into
+    ``sticky_ids`` so the same id survives the token-budget cap below, not
+    just domain gating.
     """
-    tool_ids = _tool_ids_for_plugins(active_plugins)
+    tool_ids = _tool_ids_for_plugins(active_plugins) | force_include
+    # Populated below only for a capability-aware caller with a narrowing-
+    # exempt domain active; also folded into the FINAL token-budget's
+    # must_keep (not just narrowing's always_include) below — a domain
+    # exempted from narrowing because it's a hand-curated, human-activated
+    # tab (see _NARROWING_EXEMPT_DOMAINS's own docstring) must stay exempt
+    # from the budget cut too, or a tight budget silently reintroduces the
+    # exact "context drop" bug the exemption exists to prevent.
+    protected: frozenset[str] = frozenset()
     if active_plugins is not None:  # None = legacy "not capability-aware" caller — full set, no narrowing
-        # The frontend's explicit "freecad"/"freecad_full" activation is
-        # deliberately exempt from narrowing, same as it's exempt from the
-        # older essential/full split (see _FREECAD_ESSENTIAL_TOOL_IDS's own
-        # comment) — a real CAD-panel session gets the FULL tool set,
-        # unchanged, exactly as before Pillar 1 existed. Narrowing still
-        # applies to every other simultaneously-active domain (os_tools,
-        # web_tools, vision_tools, user_skills, and any future plugin) —
-        # that's where "scales to dozens of plugins" actually matters, since
-        # CAD is the one domain a human already hand-tuned.
+        # Domains in _NARROWING_EXEMPT_DOMAINS (see its own docstring above)
+        # are deliberately exempt from query-relevance narrowing — a real
+        # CAD/Coder-panel session gets its FULL activated set, unchanged,
+        # exactly as before Pillar 1 existed. Narrowing still applies to
+        # every other simultaneously-active domain (os_tools, web_tools,
+        # vision_tools, user_skills, and any future plugin) — that's where
+        # "scales to dozens of plugins" actually matters, since these are
+        # the domains a human already hand-tuned.
         #
-        # Reads _CAPABILITY_TOOL_IDS live (not the bare _FREECAD_TOOL_IDS
-        # literal) — "freecad" can grow past its original 24 at runtime via
-        # refresh_plugin_tools()'s manifest.json union (e.g.
-        # dana/plugins/freecad/manifest.json's modify_existing_freecad_
-        # document/execute_freecad_script). Protecting only the ORIGINAL
-        # literal left those manifest-added tools unprotected, so Pillar 1
-        # could silently narrow them back out on the very query that most
-        # needed a full, hand-tuned CAD domain — the exact "context drop"
-        # bug class sticky_ids exists to prevent elsewhere in this module.
+        # Reads _CAPABILITY_TOOL_IDS live (not a frozen literal) — "freecad"
+        # can grow past its original 24 at runtime via refresh_plugin_tools()'s
+        # manifest.json union (e.g. dana/plugins/freecad/manifest.json's
+        # modify_existing_freecad_document/execute_freecad_script). Protecting
+        # only an original literal would leave those manifest-added tools
+        # unprotected, so Pillar 1 could silently narrow them back out on the
+        # very query that most needed a full, hand-tuned domain — the exact
+        # "context drop" bug class sticky_ids exists to prevent elsewhere in
+        # this module.
         protected = (
-            (_CAPABILITY_TOOL_IDS.get("freecad", frozenset()) | _CAPABILITY_TOOL_IDS.get("freecad_full", frozenset()))
-            if (active_plugins & {"freecad", "freecad_full"})
+            frozenset().union(
+                *(_CAPABILITY_TOOL_IDS.get(name, frozenset()) for name in _NARROWING_EXEMPT_DOMAINS)
+            )
+            if (active_plugins & set(_NARROWING_EXEMPT_DOMAINS))
             else frozenset()
         )
         narrowed = narrow_tool_ids_by_query(
@@ -1792,7 +2005,132 @@ def _llm_tools_schema(
     # into _PLUGIN_TOOL_SCHEMAS by refresh_plugin_tools) — same "not in
     # tools.json, merge in uncached" reasoning as the user-skill step above.
     schemas.extend(schema for tool_id, schema in _PLUGIN_TOOL_SCHEMAS.items() if tool_id in tool_ids)
-    return minify_tool_schemas(schemas)
+    minified = minify_tool_schemas(schemas)
+    if active_plugins is None:
+        # Same "legacy, not capability-aware caller" bypass narrowing itself
+        # already honors above — the token cap is conceptually part of the
+        # same Pillar 1 system, so it follows the same contract: None means
+        # the full, pre-capability-routing set, unconditionally.
+        return minified
+    return _cap_schemas_by_token_budget(minified, query, must_keep=_CORE_TOOL_IDS | sticky_ids | protected)
+
+
+# --- Hard per-turn token ceiling, on top of domain-level narrowing above ---
+#
+# The narrowing above already trims WITHIN a single non-exempt domain
+# (top-K by relevance) but has no ceiling ACROSS everything a turn could
+# simultaneously assemble: _CORE_TOOL_IDS (always included), every domain in
+# _NARROWING_EXEMPT_DOMAINS that happens to be active (each fully protected,
+# by design), and narrowing's own top-K remainder from whatever else is
+# eligible. Today that tops out well under Groq's TPM ceiling in practice —
+# but "in practice, today" isn't a guarantee, and it stops being one the
+# moment a session has the CAD tab open (protects freecad_essential) AND the
+# agent has separately unlocked software_engineering (protects that too) AND
+# narrowing pulls in a few more from a third domain. This is the actual
+# backstop: measured on the REAL, already-minified schema bytes about to be
+# sent (a tool-COUNT cap is a leaky proxy — a handful of parameter-heavy
+# FreeCAD schemas can cost as much as a dozen simple ones), it caps the
+# final payload at _TOOL_TOKEN_BUDGET tokens no matter how many domains fed
+# into it.
+_TOOL_TOKEN_BUDGET = 2000
+
+# Secondary, purely defensive ceiling alongside the token budget — without
+# it, a turn with many cheap/trivial schemas (rare, but not impossible) could
+# stay under the token budget while still handing the model an unwieldy
+# number of tools. In every measured scenario the token budget binds first;
+# this just guarantees it always eventually does.
+_MAX_ACTIVE_TOOLS = 30
+
+_token_encoder: Any = None
+_TOKEN_ENCODER_UNAVAILABLE = object()
+
+
+def _count_tokens(text: str) -> int:
+    """cl100k_base token count when tiktoken is importable; otherwise a
+    deliberately conservative char-based estimate (//3, not //4 — JSON's
+    quotes/braces/commas tokenize denser than prose) so the budget above
+    stays a real ceiling even without tiktoken installed, just a slightly
+    more conservative one."""
+    global _token_encoder
+    if _token_encoder is None:
+        try:
+            import tiktoken
+
+            _token_encoder = tiktoken.get_encoding("cl100k_base")
+        except Exception:  # noqa: BLE001
+            _token_encoder = _TOKEN_ENCODER_UNAVAILABLE
+    if _token_encoder is _TOKEN_ENCODER_UNAVAILABLE:
+        return max(1, len(text) // 3)
+    return len(_token_encoder.encode(text))
+
+
+def _schema_tool_id(schema: dict[str, Any]) -> str:
+    return str((schema.get("function") or {}).get("name") or "")
+
+
+def _rank_by_relevance(tool_ids: Iterable[str], query: str) -> list[str]:
+    """``tool_ids`` ordered by descending semantic relevance to ``query`` —
+    reuses the SAME embedding registry narrowing already uses, over-fetching
+    generously so the ranking covers the whole candidate pool, not just a
+    small top-K slice of it. Falls back to a stable alphabetical order
+    (never an arbitrary one) whenever there's no query text or retrieval
+    itself fails — this is strictly a tie-breaking preference for WHICH
+    tools fill the remaining budget, never a correctness requirement."""
+    pool = list(tool_ids)
+    query = (query or "").strip()
+    if not query or not pool:
+        return sorted(pool)
+    try:
+        registry = get_tool_registry()
+        ranked_all = [entry.name for entry in registry.retrieve(query, k=len(pool) + 20)]
+        wanted = set(pool)
+        ranked = [t for t in ranked_all if t in wanted]
+        ranked.extend(sorted(wanted - set(ranked)))  # unindexed tools, deterministic order
+        return ranked
+    except Exception:  # noqa: BLE001 — ranking is a pure optimization, never worth failing a turn over
+        return sorted(pool)
+
+
+def _cap_schemas_by_token_budget(
+    schemas: list[dict[str, Any]], query: str, must_keep: frozenset[str]
+) -> list[dict[str, Any]]:
+    """Final ceiling on this turn's serialized ``tools=`` payload — see the
+    module comment above ``_TOOL_TOKEN_BUDGET`` for why this exists on top
+    of domain-level narrowing.
+
+    ``must_keep`` (``_CORE_TOOL_IDS`` union this turn's ``sticky_ids``) is
+    NEVER dropped, even in the pathological case where it alone exceeded the
+    budget — a response the agent has no tools to act on at all is worse
+    than one slightly over budget. Every other candidate is ranked by
+    semantic relevance to ``query`` and added back, highest first, until the
+    budget (or ``_MAX_ACTIVE_TOOLS``) is spent.
+    """
+    if len(schemas) <= 1:
+        return schemas
+    by_id = {_schema_tool_id(s): s for s in schemas if _schema_tool_id(s)}
+
+    def _list_cost(ids: list[str]) -> int:
+        # Measures the ACTUAL serialized list — summing each schema's own
+        # individually-measured cost would miss the array's own structural
+        # overhead (the `[`/`]`/`, ` separators, and any tokenizer merging
+        # across adjacent schemas' boundaries), which is exactly the gap
+        # between an approximate and a genuinely exact budget.
+        return _count_tokens(json.dumps([by_id[t] for t in ids]))
+
+    kept_ids = [t for t in by_id if t in must_keep]
+    remaining = [t for t in by_id if t not in must_keep]
+    if remaining and len(kept_ids) < _MAX_ACTIVE_TOOLS and _list_cost(kept_ids) < _TOOL_TOKEN_BUDGET:
+        for tool_id in _rank_by_relevance(remaining, query):
+            if len(kept_ids) >= _MAX_ACTIVE_TOOLS:
+                break
+            if _list_cost([*kept_ids, tool_id]) > _TOOL_TOKEN_BUDGET:
+                continue  # doesn't fit — a smaller, lower-ranked tool still might
+            kept_ids.append(tool_id)
+    # Preserve `schemas`' original relative order rather than kept_ids'
+    # append order, so output ordering stays stable/deterministic run to
+    # run (matters for _llm_tools_schema_cached callers diffing turns).
+    kept = set(kept_ids)
+    return [s for s in schemas if _schema_tool_id(s) in kept]
 
 
 _CORE_SYSTEM_PROMPT = """\
@@ -1816,21 +2154,25 @@ then does the tool actually appear in your tool set and become callable.
 be routed through the `software_engineering` domain, in this order: \
 1) `load_capability(domain="software_engineering")`. \
 2) `search_codebase` (Locate) — a regex `git grep` to find the relevant \
-function/keyword by line number WITHOUT reading whole files. \
-3) `analyze_codebase` (Read) — read only the specific files `search_codebase` \
+function/keyword by line number WITHOUT reading whole files — or \
+`analyze_codebase` (Read) to read the specific files `search_codebase` \
 turned up. \
-4) `execute_code_task` (Edit) — make the actual edit once the change is \
-scoped and confirmed. \
-5) `run_verification_command` (Verify) — run pytest/flake8/mypy/`black \
---check` against what you just changed before ever presenting it as done.
-- If `run_verification_command` returns an error or a traceback, you MUST \
-NOT halt or summarize the task as finished. You MUST immediately call \
-`execute_code_task` again with that exact traceback pasted into \
-`task_description` so it can be fixed, then re-run `run_verification_command` \
-to confirm the fix — repeat this Edit-then-Verify cycle until it passes \
-before yielding the turn. Only stop early on the SAME error repeating twice \
-in a row (the existing "don't retry an identical failure a third time" rule \
-below still applies) and explain the terminal error instead.
+3) `execute_code_task` (Edit & Auto-Verify) — make the actual edit once the \
+change is scoped and confirmed. If a verification test already exists for \
+this change, pass it as `test_command` (e.g. "pytest tests/test_foo.py") so \
+the coding engine runs it and fixes any resulting traceback itself, inside \
+this one call, instead of a separate edit-verify-repair round trip. \
+4) Only fall back to a standalone `run_verification_command` call afterward \
+if no suitable `test_command` existed, or the change still needs confirming.
+- If a standalone `run_verification_command` call (step 4) returns an error \
+or a traceback, you MUST NOT halt or summarize the task as finished. You MUST \
+immediately call `execute_code_task` again with that exact traceback pasted \
+into `task_description` (reusing the same `test_command` if you have one) so \
+it can be fixed, then re-run `run_verification_command` to confirm the fix — \
+repeat this Edit-then-Verify cycle until it passes before yielding the turn. \
+Only stop early on the SAME error repeating twice in a row (the existing \
+"don't retry an identical failure a third time" rule below still applies) and \
+explain the terminal error instead.
 - Only fall back to explaining what's missing if load_capability itself \
 reports the domain doesn't exist or fails.
 
@@ -2096,15 +2438,22 @@ def _finalize_call_arguments(call: ToolCall, active_selection: dict[str, Any] | 
 # turn stuck at 60-90s is already a broken user experience even if it
 # would have succeeded eventually.
 #
-# MUST stay above openai_tool_bridge's own TPM throttle-and-retry sleep
-# ceiling (_MAX_REASONABLE_RETRY_AFTER_SEC + the 1s pad it adds — see
-# complete_openai_with_tools) — this used to be a bare 22.0 and a real
-# Groq 429 asking for a legitimate ~24-25s sleep got aborted mid-sleep by
-# THIS timeout, logged as "primary model timed out", even though the
-# bridge was behaving exactly as designed. Derived from that constant
-# (rather than a second independent magic number) so the two can never
-# drift out of sync like that again.
-_LOCAL_TOOL_CALL_TIMEOUT_SEC = _MAX_REASONABLE_RETRY_AFTER_SEC + 15.0
+# No longer derived from openai_tool_bridge's own TPM throttle-and-retry
+# sleep ceiling — that sleep/retry loop was removed once the cloud
+# tool-calling path moved behind the local Cascade-Router gateway (see
+# dana.core.model_provider.gateway_base_url), which already cascades
+# groq -> gemini -> openai on 429/5xx upstream in milliseconds. A 429/5xx
+# now fails this call fast instead of sleeping, so this timeout only needs
+# to bound a genuinely stalling connection (local Ollama or the gateway
+# itself), not a legitimate multi-second rate-limit wait.
+#
+# Raised 30s -> 45s: the Cascade-Router gateway is now a Docker container
+# (see start_dana.py) that can still be finishing its own warm-up (loading
+# router_weights.json / ONNX artifacts if ENABLE_ML=1) for a few seconds
+# after `docker compose up -d` returns and its /health check first passes —
+# 30s was tight enough to occasionally clip that window and trigger the
+# apology fallback for a request that would have succeeded at 35-40s.
+_LOCAL_TOOL_CALL_TIMEOUT_SEC = 45.0
 
 # Separate, shorter ceiling for the fallback apology itself — this must
 # never be allowed to hang the turn a second time, so it gets its own tight
@@ -2189,7 +2538,7 @@ async def _call_llm_timeout_fallback(
     return {"content": _timeout_apology_text(primary_provider), "tool_calls": [], "provider": "fallback:static"}
 
 
-def _sticky_tool_ids_from_messages(messages: list[dict[str, Any]]) -> frozenset[str]:
+def _sticky_tool_ids_from_messages(messages: list[dict[str, Any]], raw_text: str = "") -> frozenset[str]:
     """Tool ids that must survive Pillar 1's semantic-relevance narrowing
     regardless of how they score against this turn's query, because THIS
     turn's ReAct chain already has a concrete claim on them:
@@ -2199,17 +2548,37 @@ def _sticky_tool_ids_from_messages(messages: list[dict[str, Any]]) -> frozenset[
        ``build_assistant_tool_call_message``) — so a multi-step sequence
        (e.g. create_freecad_box then perform_freecad_boolean referencing
        it) never loses a tool it's already mid-sequence with.
-    2. Every tool id a ``load_capability`` call already unlocked earlier in
-       this chain (read back from that call's own tool-result message,
-       matched by ``tool_call_id`` so a same-shaped payload from an
-       unrelated tool is never mistaken for one) — without this, the tool
-       ``load_capability`` exists ONLY to unlock (e.g. ``execute_code_task``
-       right after ``load_capability(domain="software_engineering")``) has
-       itself never been "already invoked", so narrowing was free to drop
-       it again on the very next turn: the one turn it's overwhelmingly
-       likely to actually get called. ``load_capability``'s own handler
-       (``_tool_load_capability``) is what puts ``unlocked_tools`` in the
-       result payload in the first place.
+    2. Every tool id a ``load_capability`` OR ``load_specific_tool`` call
+       already unlocked earlier in this chain (read back from that call's
+       own tool-result message, matched by ``tool_call_id`` so a
+       same-shaped payload from an unrelated tool is never mistaken for
+       one) — without this, the tools ``load_capability``/
+       ``load_specific_tool`` exist ONLY to unlock (e.g. ``execute_code_task``
+       right after ``load_capability(domain="software_engineering")``, or
+       any single tool right after ``load_specific_tool``) have themselves
+       never been "already invoked", so narrowing was free to drop them
+       again on the very next turn: the one turn they're overwhelmingly
+       likely to actually get called. Both handlers
+       (``_tool_load_capability``/``_tool_load_specific_tool``) put
+       ``unlocked_tools`` in their result payload for exactly this reason.
+
+    A large ``unlocked_tools`` list (in practice only ``load_capability``'s
+    "freecad"/"freecad_full" domain-unlock, ~24-26 tools — ``load_specific_tool``
+    always unlocks exactly one) is ranked by relevance to ``raw_text`` and
+    capped to ``_KEYWORD_DOMAIN_TOP_K``, same treatment
+    ``_keyword_suggested_tool_ids`` gives a large keyword-matched domain and
+    for the identical reason: ``_cap_schemas_by_token_budget``'s ``must_keep``
+    is NEVER trimmed even when it alone exceeds the budget, so blindly
+    stickying an entire large domain the moment it's unlocked silently
+    defeated the whole token budget on the very next turn — measured live,
+    unlocking "freecad_full" this way alone produced an 8,966-token request.
+    The domain stays fully ELIGIBLE regardless (``dana.api.server``'s
+    ``_effective_capabilities`` keeps it in ``active_plugins`` from the
+    ``"domain"`` field alone, independent of ``unlocked_tools``) — only the
+    unconditional STICKINESS of every one of its tools is capped; ordinary
+    narrowing/the budget's own relevance-ranked greedy fill still reaches the
+    rest as normal. A small list (at/under the threshold) is kept whole,
+    exactly as before.
     """
     ids: set[str] = set()
     call_id_to_name: dict[str, str] = {}
@@ -2224,7 +2593,10 @@ def _sticky_tool_ids_from_messages(messages: list[dict[str, Any]]) -> frozenset[
     for message in messages:
         if message.get("role") != "tool":
             continue
-        if call_id_to_name.get(str(message.get("tool_call_id") or "")) != "load_capability":
+        if call_id_to_name.get(str(message.get("tool_call_id") or "")) not in (
+            "load_capability",
+            "load_specific_tool",
+        ):
             continue
         try:
             payload = json.loads(message.get("content") or "{}")
@@ -2232,9 +2604,11 @@ def _sticky_tool_ids_from_messages(messages: list[dict[str, Any]]) -> frozenset[
             continue
         if not isinstance(payload, dict):
             continue
-        for tool_id in payload.get("unlocked_tools") or ():
-            if isinstance(tool_id, str):
-                ids.add(tool_id)
+        unlocked = [t for t in (payload.get("unlocked_tools") or ()) if isinstance(t, str)]
+        if len(unlocked) > _KEYWORD_DOMAIN_NARROW_MIN:
+            ids.update(_rank_by_relevance(unlocked, raw_text)[:_KEYWORD_DOMAIN_TOP_K])
+        else:
+            ids.update(unlocked)
     return frozenset(ids)
 
 
@@ -2278,13 +2652,21 @@ async def _call_llm_once(
     special-casing needed here.
 
     ``messages`` is pruned (``dana.core.context_manager.
-    prune_message_history``) into a SEPARATE list right before this HTTP
-    call — older image attachments get replaced with a lightweight
-    placeholder so a long conversation doesn't re-send every image it ever
-    saw on every subsequent turn. The caller's own ``messages`` list (a
-    session's real conversation history, resumed across HITL suspends and
-    rendered turn-by-turn in the frontend) is never touched — only the
-    payload actually posted to the model shrinks.
+    prune_message_history`` + ``prune_tool_output_history``) into a SEPARATE
+    list right before this HTTP call — older image attachments get replaced
+    with a lightweight placeholder, and older tool-result messages (e.g. a
+    verbose ``search_codebase``/``execute_code_task`` result from several
+    turns back in this same ReAct chain) have their ``content`` truncated
+    once they're no longer among the most recent couple of tool executions —
+    so a long conversation, or a long multi-step ReAct chain, doesn't
+    re-send every image or every stale tool output it ever saw on every
+    subsequent turn. Message COUNT and ORDER are never changed by either
+    step (only a ``content`` payload is ever rewritten), which is what keeps
+    every tool_calls/tool-result pair OpenAI/Groq's API requires intact even
+    after pruning. The caller's own ``messages`` list (a session's real
+    conversation history, resumed across HITL suspends and rendered
+    turn-by-turn in the frontend) is never touched — only the payload
+    actually posted to the model shrinks.
 
     Hard timeout + fallback (P2 of the local-agent rescue plan): the
     primary call is capped at ``_LOCAL_TOOL_CALL_TIMEOUT_SEC`` — well short
@@ -2298,9 +2680,22 @@ async def _call_llm_once(
     genuine model/connection error.
     """
     provider = ModelProvider(api_keys=api_keys)
-    pruned_messages = prune_message_history(messages)
-    sticky_ids = _sticky_tool_ids_from_messages(messages)
-    tools = _llm_tools_schema(active_plugins, query=raw_text, sticky_ids=sticky_ids)
+    pruned_messages = prune_tool_output_history(prune_message_history(messages))
+    # _keyword_suggested_tool_ids folded in alongside the existing "already
+    # invoked"/"load_capability-unlocked" sticky sources — a domain the
+    # user's own words just named (see _keyword_suggested_domains, called
+    # again here on the exact same raw_text next_react_turn already used to
+    # widen active_plugins) needs its tools protected from narrowing too, or
+    # pre-warming the domain wouldn't guarantee its own tools actually reach
+    # this turn's schema.
+    # Layer 3 (Lazy Loading): tool ids explicitly unlocked via
+    # load_specific_tool (or load_capability) earlier in this chain must
+    # bypass the capability-domain gate itself, not just narrowing — see
+    # _llm_tools_schema's force_include param. Folded into sticky_ids too so
+    # the same ids also survive the token-budget cap once they're in.
+    force_include_ids = _sticky_tool_ids_from_messages(messages, raw_text)
+    sticky_ids = force_include_ids | _keyword_suggested_tool_ids(raw_text)
+    tools = _llm_tools_schema(active_plugins, query=raw_text, sticky_ids=sticky_ids, force_include=force_include_ids)
     # Temporary diagnostic for the Semantic RAG "context drop" bug — proves
     # a tool load_capability just unlocked (sticky via _sticky_tool_ids_from_
     # messages) actually survives Pillar 1's narrowing into THIS turn's
@@ -2378,19 +2773,9 @@ class ReactTurn:
 # "create a cylinder with radius 10" used to dead-end at "please enable the
 # CAD plugin" (load_capability's tools.json enum didn't even offer
 # "freecad" as a domain until this fix — see tools.json), or at best cost a
-# whole extra turn just calling load_capability before the real action.
-# This is a cheap, keyword-only pre-suggestion (never NLP/LLM-based) that
-# folds "freecad" into THIS turn's tool schema up front whenever the user's
-# own words plainly name a CAD/geometry action — so create_freecad_cylinder
-# is simply already there for the model to call directly. Purely additive
-# and ephemeral (recomputed fresh from raw_text every call, never written to
-# session state): a false positive just means a few extra tool defs were
-# offered for one turn; a false negative still leaves load_capability as a
-# working fallback per the system prompt's new "Self-Resolving Missing
-# Capabilities" section. If a suggested tool actually gets dispatched,
-# dana.api.server's _touch_capability_domains/domains_for_tool_id already
-# persists "freecad" into the session's real P1 decay tracking from that
-# point on — no extra plumbing needed here for it to stick across turns.
+# whole extra turn just calling load_capability before the real action. See
+# _keyword_suggested_domains below (this is one entry in its
+# _DOMAIN_INTENT_KEYWORDS table) for the general mechanism this now feeds.
 _CAD_INTENT_KEYWORDS = frozenset(
     {
         "cad",
@@ -2416,12 +2801,200 @@ _CAD_INTENT_KEYWORDS = frozenset(
     }
 )
 
+# Same reasoning as _CAD_INTENT_KEYWORDS, for coder_plugin's manifest-driven
+# "software_engineering" domain (search_codebase/analyze_codebase/
+# run_verification_command/execute_code_task) — a request like "refactor this
+# function to fix the bug in utils.py" used to dead-end into a wasted Turn 0
+# that only called load_capability(domain="software_engineering") before any
+# real action; this folds the domain in up front so search_codebase/
+# analyze_codebase are simply already there to call. Deliberately skips this
+# domain if coder_plugin never actually loaded (see the "software_engineering"
+# in _CAPABILITY_TOOL_IDS check in _keyword_suggested_domains below) — no
+# point suggesting a domain manifest loading failed to register.
+_SOFTWARE_ENGINEERING_INTENT_KEYWORDS = frozenset(
+    {
+        "refactor",
+        "codebase",
+        "traceback",
+        "stack trace",
+        "pytest",
+        "flake8",
+        "mypy",
+        "git diff",
+        "git commit",
+        "git status",
+        "syntax error",
+        "compile error",
+        "unit test",
+        "source code",
+        "function signature",
+        "fix the bug",
+        "fix this bug",
+        ".py",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        "python file",
+        "typescript file",
+        "javascript file",
+    }
+)
+
+# _WEB_TOOLS_TOOL_IDS ("search_web", "read_webpage") — narrow on purpose:
+# generic verbs like "search" or "look up" are common outside of an actual
+# web-search request, so these lean on phrases that name the web itself.
+_WEB_INTENT_KEYWORDS = frozenset(
+    {
+        "search the web",
+        "google",
+        "look it up online",
+        "browse to",
+        "webpage",
+        "website",
+        "http://",
+        "https://",
+        "www.",
+    }
+)
+
+# _VISION_TOOLS_TOOL_IDS ("analyze_workspace_image") — screen/image-specific
+# phrases only; a bare "look" or "see" is too generic to use alone.
+_VISION_INTENT_KEYWORDS = frozenset(
+    {
+        "screenshot",
+        "screen capture",
+        "what's on my screen",
+        "whats on my screen",
+        "look at my screen",
+        "analyze this image",
+        "analyze the image",
+        "what is on the screen",
+    }
+)
+
+# _OS_TOOLS_TOOL_IDS (filesystem/shell access) — the last of the four
+# curated domains to get pre-router coverage; without this, "read this file"/
+# "run this script" used to dead-end at a wasted Turn 0 the same way CAD/
+# coder requests once did, before load_capability got called autonomously.
+# "list" / "read" / "run" alone are too generic for everyday chat, so every
+# phrase here names the filesystem/process action explicitly.
+_OS_TOOLS_INTENT_KEYWORDS = frozenset(
+    {
+        "list directory",
+        "read file",
+        "write file",
+        "edit file",
+        "search files",
+        "run this script",
+        "run python script",
+        "terminal command",
+        "shell command",
+        "background service",
+        "file system",
+        "filesystem",
+    }
+)
+
+# Domain name (a _CAPABILITY_TOOL_IDS key) -> its keyword set. Checked live
+# against _CAPABILITY_TOOL_IDS in _keyword_suggested_domains rather than
+# assumed present, since "software_engineering" only exists once
+# refresh_plugin_tools() has actually loaded coder_plugin's manifest.json —
+# see _CAPABILITY_TOOL_IDS's own module-import-time refresh_plugin_tools()
+# call at the bottom of this file for why that's reliably true by the time
+# any real turn runs, without hardcoding the assumption here too.
+_DOMAIN_INTENT_KEYWORDS: dict[str, frozenset[str]] = {
+    "freecad": _CAD_INTENT_KEYWORDS,
+    "software_engineering": _SOFTWARE_ENGINEERING_INTENT_KEYWORDS,
+    "web_tools": _WEB_INTENT_KEYWORDS,
+    "vision_tools": _VISION_INTENT_KEYWORDS,
+    "os_tools": _OS_TOOLS_INTENT_KEYWORDS,
+}
+
 
 def _keyword_suggested_domains(raw_text: str) -> frozenset[str]:
+    """Cheap, keyword-only pre-suggestion (never NLP/LLM-based) unioning in
+    every domain in ``_DOMAIN_INTENT_KEYWORDS`` whose keywords plainly appear
+    in ``raw_text`` — purely additive and ephemeral (recomputed fresh from
+    ``raw_text`` on every call, never written to session state): a false
+    positive just means a few extra tool defs were offered for one turn (its
+    own tool ids are protected from Pillar 1's narrowing too — see
+    ``_keyword_suggested_tool_ids`` below — so a false positive costs a
+    handful of token defs, never a dropped tool), and a false negative still
+    leaves ``load_capability`` as a working fallback per the system prompt's
+    "Self-Resolving Missing Capabilities" section. If a suggested tool
+    actually gets dispatched, ``dana.api.server``'s
+    ``_touch_capability_domains``/``domains_for_tool_id`` already persists
+    the domain into the session's real P1 decay tracking from that point on
+    — no extra plumbing needed here for it to stick across turns.
+    """
     lowered = (raw_text or "").lower()
-    if any(keyword in lowered for keyword in _CAD_INTENT_KEYWORDS):
-        return frozenset({"freecad"})
-    return frozenset()
+    if not lowered:
+        return frozenset()
+    return frozenset(
+        domain
+        for domain, keywords in _DOMAIN_INTENT_KEYWORDS.items()
+        if domain in _CAPABILITY_TOOL_IDS and any(keyword in lowered for keyword in keywords)
+    )
+
+
+# Matches dana.core.tool_retrieval._MIN_TOOLS_TO_NARROW's own "not worth
+# narrowing a small pool" threshold, and _DEFAULT_TOP_K's own top-K size —
+# kept as separate constants (not imported) since this is a distinct
+# narrowing pass over one domain's own tool set, not Pillar 1's general
+# narrow_tool_ids_by_query call.
+_KEYWORD_DOMAIN_NARROW_MIN = 8
+_KEYWORD_DOMAIN_TOP_K = 6
+
+
+def _keyword_suggested_tool_ids(raw_text: str) -> frozenset[str]:
+    """Tool ids for every domain ``_keyword_suggested_domains`` flags for
+    ``raw_text`` — folded into ``_call_llm_once``'s ``sticky_ids`` so these
+    tools are GUARANTEED to survive Pillar 1's semantic-relevance narrowing
+    this turn, the same way an already-dispatched or ``load_capability``-
+    unlocked tool id is (see ``_sticky_tool_ids_from_messages``). Without
+    this, unioning a keyword-suggested domain into ``effective_plugins``
+    alone only makes its tools ELIGIBLE — narrowing could still score e.g.
+    ``search_codebase``/``analyze_codebase`` below the RAG top-K threshold
+    for a phrasing like "refactor this function to fix the bug" and drop
+    them anyway, defeating the entire point of pre-warming them for Turn 0.
+
+    A domain at or under ``_KEYWORD_DOMAIN_NARROW_MIN`` tool ids is included
+    WHOLE, same as before (software_engineering, freecad_essential, os_tools,
+    web_tools, vision_tools all qualify). A LARGER domain — in practice just
+    the raw "freecad" domain (~26 tools) — is trimmed to its ``_rank_by_
+    relevance``-ranked top ``_KEYWORD_DOMAIN_TOP_K`` first: measured live, a
+    CAD prompt's keyword match used to make the ENTIRE 26-tool domain sticky,
+    and ``_cap_schemas_by_token_budget``'s ``must_keep`` is NEVER trimmed even
+    when it alone exceeds the budget (by design — see that function's own
+    docstring) — so a large keyword-matched domain silently defeated the
+    whole token budget instead of merely being protected from narrowing
+    within it.
+
+    Deliberately reuses ``_rank_by_relevance`` (over-fetches
+    ``registry.retrieve(query, k=len(pool)+20)`` then filters/orders by
+    membership in ``pool``) rather than ``dana.core.tool_retrieval.
+    narrow_tool_ids_by_query`` here: that function's OWN top-K retrieval
+    (``registry.retrieve_specs(query, k=6)``) searches the GLOBAL tool index,
+    not scoped to this domain — for a domain that's a small fraction of the
+    full registry, a real top-6 measured live against "freecad" returned
+    ZERO tools actually IN the freecad domain, so its own empty-result
+    fallback (return the input unchanged, to avoid ever returning zero
+    tools) silently defeated narrowing entirely for exactly the large-domain
+    case this exists to fix. ``_rank_by_relevance``'s much wider over-fetch
+    (`len(pool)+20`, i.e. the domain's own full size plus slack) reliably
+    covers the whole domain regardless of embedding quality, and falls back
+    to a deterministic alphabetical order (never empty) if retrieval itself
+    fails.
+    """
+    ids: set[str] = set()
+    for domain in _keyword_suggested_domains(raw_text):
+        domain_ids = _CAPABILITY_TOOL_IDS.get(domain, frozenset())
+        if len(domain_ids) <= _KEYWORD_DOMAIN_NARROW_MIN:
+            ids |= domain_ids
+        else:
+            ids |= set(_rank_by_relevance(domain_ids, raw_text)[:_KEYWORD_DOMAIN_TOP_K])
+    return frozenset(ids)
 
 
 async def next_react_turn(
@@ -2440,8 +3013,9 @@ async def next_react_turn(
     latest tool result) — ``_finalize_call_arguments``'s selection-reference
     check ("this"/"here"/...) matches against what the user actually said,
     which may be several tool calls back in a multi-step chain. Also feeds
-    ``_keyword_suggested_domains`` below, folding "freecad" into THIS turn's
-    effective capability set when the user's own words plainly name a CAD
+    ``_keyword_suggested_domains`` below, folding any keyword-matched domain
+    (CAD, software engineering, web, vision, ...) into THIS turn's effective
+    capability set when the user's own words plainly name that kind of
     action — see that function's docstring for why.
 
     ``api_keys`` is the calling session's BYOK dict (``dana.api.server``'s

@@ -1319,136 +1319,6 @@
       }
     },
     {
-      "id": "dispatch_research_swarm",
-      "description_en": "Fire-and-forget deep research via a background LangGraph swarm thread (cloud LLM). Use for deep dives, comprehensive reports, or complex synthesis that must not block voice. Returns immediately; speaks a short summary when finished; full report at docs/latest_swarm_report.txt.",
-      "parameters": [
-        {
-          "name": "query",
-          "type": "string",
-          "required": true,
-          "description_en": "Research topic or question for the swarm.",
-          "description_fa": "     ."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "deep research",
-          "research this thoroughly",
-          "send to the swarm",
-          "dispatch research",
-          "investigate deeply",
-          "complex web research",
-          "background research",
-          "write a research brief"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          " ",
-          "  ",
-          " ‌",
-          "  "
-        ]
-      }
-    },
-    {
-      "id": "dispatch_jason_supervisor",
-      "description_en": "Jason/Titan conversational supervisor: read a prior Dana file (e.g. notes.txt), evaluate it, then hand off to Dana to write a Python script (e.g. scaling_metrics.py). Use when the user addresses Jason/Titan and asks him to read/evaluate then have Dana write code.",
-      "parameters": [
-        {
-          "name": "query",
-          "type": "string",
-          "required": true,
-          "description_en": "Full user utterance for Jason→Dana handoff.",
-          "description_fa": " ."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "hey jason read notes",
-          "hey titan read notes",
-          "jason supervisor handoff",
-          "dispatch jason supervisor",
-          "jason evaluate notes and have dana write"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "dispatch_jason_supervisor"
-        ]
-      }
-    },
-    {
-      "id": "dispatch_watchdog",
-      "description_en": "Use this to monitor the screen, watch for visual events, or run continuous background polling.",
-      "parameters": [
-        {
-          "name": "task",
-          "type": "string",
-          "required": true,
-          "description_en": "What to watch for (e.g. alert when Notepad opens, toast when a pixel region changes).",
-          "description_fa": "     (  Notepad    )."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "watch for",
-          "monitor the screen",
-          "keep an eye on",
-          "watchdog",
-          "alert me when",
-          "notify me when",
-          "background monitor",
-          "poll until",
-          "watch the screen for",
-          "titan initiative",
-          "titan protocol",
-          "activate titan",
-          "start the titan",
-          "vanguard protocol",
-          "self-improvement protocol"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          " ",
-          " ",
-          "   ",
-          " ‌",
-          ""
-        ]
-      }
-    },
-    {
-      "id": "kill_watchdog",
-      "description_en": "Stop a background Watchdog by ID when the user asks to cancel, stop monitoring, or kill a watchdog.",
-      "parameters": [
-        {
-          "name": "task_id",
-          "type": "string",
-          "required": true,
-          "description_en": "Watchdog ID from the deploy Observation or <active_watchdogs> context.",
-          "description_fa": "      <active_watchdogs>."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "stop the watchdog",
-          "kill watchdog",
-          "cancel the monitor",
-          "stop monitoring",
-          "cancel that watchdog"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "   ",
-          "   ",
-          "  "
-        ]
-      }
-    },
-    {
       "id": "save_script_to_library",
       "description_en": "Save a useful Watchdog or helper Python script into the sandboxed library at CAMGRASPER/execution_jail/library/ (never outside that folder).",
       "parameters": [
@@ -1500,35 +1370,6 @@
         "_intent": [
           "‌    ",
           "   ",
-          " "
-        ]
-      }
-    },
-    {
-      "id": "dispatch_titan_repair",
-      "description_en": "Run the Titan Repair swarm: read CAMGRASPER/tracker/bug_tracker.json, draft AST+security-reviewed patches into CAMGRASPER/tracker/pending_patches/ (no hot-patch of core source).",
-      "parameters": [
-        {
-          "name": "query",
-          "type": "string",
-          "required": false,
-          "description_en": "Optional focus; defaults to processing all open bugs.",
-          "description_fa": "  ‌  ‌ ."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "run titan repair",
-          "self heal",
-          "fix your bugs",
-          "repair bug tracker",
-          "autonomous bug tracker"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "‌   ",
-          " ",
           " "
         ]
       }
@@ -2392,6 +2233,34 @@
           "enum": ["software_engineering", "freecad", "freecad_full", "os_tools", "web_tools", "vision_tools", "user_skills"],
           "description_en": "The capability domain to load: 'software_engineering' (read/edit/refactor/debug code — search_codebase, analyze_codebase, execute_code_task, run_verification_command to verify), 'freecad' (CAD modeling — essential tools; only use 'freecad_full' if a heavier tool is genuinely needed), 'os_tools' (filesystem/shell access), 'web_tools' (web search/page fetch), 'vision_tools' (image analysis), 'user_skills' (previously self-taught skills)."
         }
+      ]
+    },
+    {
+      "id": "unload_capability",
+      "read_only": true,
+      "description_en": "Explicitly drops a capability domain you unlocked via load_capability once you're done with it THIS turn or task, instead of leaving it active for several more turns waiting for it to decay out on its own. Use this right after finishing a task that needed a domain you don't expect to need again soon (e.g. you just used 'os_tools' for a one-off file read and the rest of the conversation is unrelated) — it keeps the next turn's tool list smaller and avoids blowing a free-tier model's token budget. Never call this on a domain the FRONTEND itself activated (an open CAD/Coder tab) — it has no effect there; that stays under the user's own tab control. If you unload something you turn out to still need, just call load_capability again.",
+      "parameters": [
+        {
+          "name": "domain", "type": "string", "required": true,
+          "enum": ["software_engineering", "freecad", "freecad_full", "os_tools", "web_tools", "vision_tools", "user_skills"],
+          "description_en": "The capability domain to unload — same domain names load_capability accepts."
+        }
+      ]
+    },
+    {
+      "id": "search_tool_catalog",
+      "read_only": true,
+      "description_en": "Searches the ENTIRE global tool registry (every tool across every plugin/domain, including ones not currently in your tool set and not covered by load_capability's fixed domain list) for a plain-language query. Returns only a lightweight list of matching tool_ids with a one-sentence description each — never full schemas, so a broad discovery search never itself costs meaningful token budget. Use this when a request needs a capability you don't currently see and load_capability's domains don't obviously cover it; call load_specific_tool afterward with the matching tool_id to actually make it callable.",
+      "parameters": [
+        {"name": "query", "type": "string", "required": true, "description_en": "Plain-language description of the capability you're looking for, e.g. 'convert an image to grayscale' or 'query engineering standards'."}
+      ]
+    },
+    {
+      "id": "load_specific_tool",
+      "read_only": true,
+      "description_en": "Explicitly loads one specific tool_id (as returned by search_tool_catalog or check_plugin_registry) into your available tools starting the NEXT turn, bypassing both the normal capability-domain gate and semantic narrowing — the fine-grained, single-tool counterpart to load_capability's whole-domain unlock. Use this to fetch a tool you discovered via search_tool_catalog that isn't already reachable through an active domain.",
+      "parameters": [
+        {"name": "tool_id", "type": "string", "required": true, "description_en": "Exact tool_id to load, as returned by search_tool_catalog or check_plugin_registry."}
       ]
     },
     {
