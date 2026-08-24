@@ -49,10 +49,20 @@ with gr.Blocks(css=_CUSTOM_CSS) as _demo:
 # moved to /ui specifically so the two don't compete for "/".
 app = gr.mount_gradio_app(app, _demo, path="/")
 
+# Expose the Gradio instance to the root FastAPI app so the ZeroGPU scanner finds it
+app.blocks = _demo
+
 if __name__ == "__main__":
-    # HF's `sdk: gradio` runtime runs this file with a plain `python app.py`
-    # (it does not itself run uvicorn), so the entry point must bind the
-    # server — Spaces always expects port 7860.
+    # NOT "app:app" as an import string: uvicorn would resolve that by
+    # importing a second, distinct module literally named "app" (Python
+    # treats it as separate from "__main__" even though it's the same
+    # file), re-running everything above a second time and stacking a
+    # second "/" mount onto the shared dana.api.server.app singleton —
+    # measured locally: 1 mount after this file's own execution, 2 after
+    # uvicorn's internal re-import, with the *first* (orphaned) one
+    # actually answering requests since Starlette matches in registration
+    # order — while `app.blocks` above would point at the second, inert
+    # one. Passing the already-built object sidesteps that entirely.
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=7860)
