@@ -61,6 +61,7 @@ from dana.core.react_dispatch import (
 from dana.core.context_distiller import schedule_distillation
 from dana.paths import CAPTURES_DIR
 from dana.platform import get_cad_engine, get_control_plane
+from dana.platform.factory import IS_HF_SPACE
 from dana.plugins.freecad.call_log import CadCallLog
 from dana.plugins.freecad.py_export import write_macro_script
 from dana.plugins.os.desktop_vision import _capture_primary_monitor_jpeg_b64
@@ -1244,11 +1245,19 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
         _active_sessions.pop(websocket, None)
 
 
-# Serve the built React/Tauri web bundle, if present, at the app root. Mounted
-# last so it never shadows the /api or /ws routes above. Absent in a bare
+# Serve the built React/Tauri web bundle, if present. Mounted last so it
+# never shadows the /api or /ws routes above. Absent in a bare
 # `python -m dana.api.server` dev loop where only the API is being exercised.
+#
+# On a HF Space, app.py mounts Gradio at "/" itself (HF's readiness probe for
+# `sdk: gradio` Spaces polls GET /config at the Space root, which only exists
+# if Gradio owns "/") — so the frontend moves to /ui there instead, to avoid
+# both mounts competing for "/". Everywhere else (Tauri's bundled build,
+# a standalone Docker image) nothing polls /config, so it keeps serving at
+# the root as before.
+_FRONTEND_MOUNT_PATH = "/ui" if IS_HF_SPACE else "/"
 if _FRONTEND_DIST.is_dir():
-    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
+    app.mount(_FRONTEND_MOUNT_PATH, StaticFiles(directory=str(_FRONTEND_DIST), html=True), name="frontend")
 
 
 __all__ = ("app",)

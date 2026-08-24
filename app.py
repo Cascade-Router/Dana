@@ -2,14 +2,16 @@
 
 HF's free tier no longer offers `sdk: docker` for this account, but
 `sdk: gradio` is free and Gradio is itself built on FastAPI/Starlette — so
-this mounts a trivial Gradio app onto our real `dana.api.server:app` purely
-to satisfy the Space's Gradio health check, while the actual traffic (the
-React UI + REST/WS API) is served by the existing FastAPI app underneath.
+this mounts our real `dana.api.server:app` underneath a Gradio app.
 
-``dana.api.server`` already mounts the built ``frontend/dist`` at ``/`` when
-present (see its own ``_FRONTEND_DIST`` block) and already branches on
-``dana.platform.factory.IS_HF_SPACE`` to swap in mock CAD/control-plane
-drivers, so importing it here is enough to get the full app.
+HF's readiness probe for `sdk: gradio` Spaces polls GET /config at the
+Space's root, which only exists if a Gradio Blocks app owns "/" — so unlike
+a plain health-check stub, Gradio has to actually hold the root here. The
+real React UI lives at /ui instead (dana.api.server mounts frontend/dist
+there when IS_HF_SPACE — see its own _FRONTEND_MOUNT_PATH), shown full-screen
+via an iframe so a visitor still lands on the real product. REST/WS calls
+made from inside that iframe (/api/*, /ws/chat) hit dana.api.server directly,
+same-origin — unaffected by which path serves the HTML shell.
 """
 
 from __future__ import annotations
@@ -30,21 +32,20 @@ except ImportError:
 
 from dana.api.server import app
 
-_demo = gr.Blocks()
-with _demo:
-    gr.Markdown("# Dānā backend is running.\n\nThe app itself is served at the Space root.")
+_CUSTOM_CSS = """
+footer {display: none !important;}
+.gradio-container {padding: 0 !important; margin: 0 !important; max-width: 100% !important;}
+"""
 
-app = gr.mount_gradio_app(app, _demo, path="/gradio")
+with gr.Blocks(css=_CUSTOM_CSS) as _demo:
+    gr.HTML(
+        '<iframe src="/ui/" style="width:100vw; height:100vh; border:none; '
+        'margin:0; padding:0; overflow:hidden;"></iframe>'
+    )
 
-# `mount_gradio_app` appends the "/gradio" mount to the END of app.routes.
-# dana.api.server already mounts the built frontend at "/" (a catch-all that
-# matches every path, added when frontend/dist exists) — routes are matched
-# in list order, so as appended "/gradio" would sit AFTER that catch-all and
-# never be reached. Move it to just before the "/" mount so both are live.
-_routes = app.router.routes
-_gradio_route = _routes.pop()
-_root_index = next((i for i, r in enumerate(_routes) if getattr(r, "path", None) == ""), len(_routes))
-_routes.insert(_root_index, _gradio_route)
+# Safe to mount at the true root now: dana.api.server's own frontend mount
+# moved to /ui specifically so the two don't compete for "/".
+app = gr.mount_gradio_app(app, _demo, path="/")
 
 if __name__ == "__main__":
     # HF's `sdk: gradio` runtime runs this file with a plain `python app.py`

@@ -19,8 +19,12 @@ export default defineConfig({
     },
   },
   // Bundle a static web build the FastAPI server can serve directly
-  // (dana/api/server.py mounts frontend/dist/ at "/" when it exists),
-  // while `src-tauri` still points Tauri's own bundler at the same output.
+  // (dana/api/server.py mounts frontend/dist/ at "/" or "/ui" depending on
+  // platform), while `src-tauri` still points Tauri's own bundler at the
+  // same output. Relative base so the same build's asset URLs resolve
+  // correctly under either mount prefix, and under Tauri's own asset
+  // protocol (which serves dist/ at its own root, unrelated to FastAPI).
+  base: "./",
   build: {
     outDir: "dist",
     emptyOutDir: true,
