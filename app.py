@@ -17,20 +17,19 @@ same-origin — unaffected by which path serves the HTML shell.
 from __future__ import annotations
 
 import gradio as gr
-
-# Hugging Face ZeroGPU requires at least one function decorated with
-# @spaces.GPU, detected via an AST scan at startup — this app never needs a
-# GPU, so the decorator is just a no-op function to satisfy that check.
-try:
-    import spaces
-
-    @spaces.GPU
-    def _dummy_gpu_function():
-        pass
-except ImportError:
-    pass
+import spaces
 
 from dana.api.server import app
+
+
+# Hugging Face ZeroGPU's AST scan for @spaces.GPU usage only walks top-level
+# module statements — wrapped in try/except it's invisible to the scanner,
+# even though `spaces` (pinned in deploy/requirements-space.txt) always
+# imports fine at runtime. This app never needs a GPU; the decorator is only
+# here to satisfy that startup check.
+@spaces.GPU
+def _dummy_gpu_function():
+    pass
 
 _CUSTOM_CSS = """
 footer {display: none !important;}
