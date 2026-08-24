@@ -22,11 +22,13 @@ import spaces
 from dana.api.server import app
 
 
-# Hugging Face ZeroGPU's AST scan for @spaces.GPU usage only walks top-level
-# module statements — wrapped in try/except it's invisible to the scanner,
-# even though `spaces` (pinned in deploy/requirements-space.txt) always
-# imports fine at runtime. This app never needs a GPU; the decorator is only
-# here to satisfy that startup check.
+# ZeroGPU is only compatible with the Gradio SDK (per HF's own docs) and
+# ties into Gradio's *registered event handlers* — a @spaces.GPU function
+# that's never bound to a Gradio component/event never shows up in the
+# Blocks' own dependency list, so ZeroGPU's startup check can't find it even
+# though it's a plain top-level decorated function. Binding it to the page's
+# `load` event below (fires once per visitor, does nothing) is what actually
+# registers it. This app never needs a GPU otherwise.
 @spaces.GPU
 def _dummy_gpu_function():
     pass
@@ -41,6 +43,7 @@ with gr.Blocks(css=_CUSTOM_CSS) as _demo:
         '<iframe src="/ui/" style="width:100vw; height:100vh; border:none; '
         'margin:0; padding:0; overflow:hidden;"></iframe>'
     )
+    _demo.load(_dummy_gpu_function)
 
 # Safe to mount at the true root now: dana.api.server's own frontend mount
 # moved to /ui specifically so the two don't compete for "/".
