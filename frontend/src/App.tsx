@@ -7,7 +7,8 @@ import { PluginProvider, usePlugins } from "./plugins/PluginContext";
 import { SecretsProvider, useSecrets } from "./secrets/SecretsContext";
 import { SecretsMenu } from "./secrets/SecretsMenu";
 import { resolveApiUrl } from "./lib/apiBase";
-import { useChatSocket, type ChatMessage } from "./lib/useChatSocket";
+import { useChat } from "./lib/useChat";
+import type { ChatMessage } from "./lib/useChatSocket";
 import { useOrbActivation } from "./lib/useOrbActivation";
 import {
   useForwardedOrbActivate,
@@ -111,7 +112,7 @@ function AppShell() {
     respondHitl,
     requestListen,
     cancelListen,
-  } = useChatSocket(apiKeys, activePlugins, requestedSessionId, initialMessages);
+  } = useChat(apiKeys, activePlugins, requestedSessionId, initialMessages);
 
   const activePlugin = plugins.find((p) => p.id === activePluginId) ?? null;
   const isPluginFullScreen = activePlugin !== null && paneMode === "full";

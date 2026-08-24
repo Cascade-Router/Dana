@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { isTauri } from "@tauri-apps/api/core";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import type { SecretRecord, ServiceId } from "./types";
 
@@ -30,6 +31,15 @@ export function SecretsProvider({ children }: { children: ReactNode }) {
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
+    // tauri-plugin-store's `load()` throws synchronously (no
+    // window.__TAURI_INTERNALS__ to invoke) outside the desktop app — any
+    // plain-browser build (a static Vercel/GitHub Pages deploy, the HF
+    // Space's /ui iframe, this dev server) has no on-disk vault to read, so
+    // BYOK keys just start empty instead of ever loading.
+    if (!isTauri()) {
+      setLoaded(true);
+      return;
+    }
     let cancelled = false;
     load(STORE_FILE, { autoSave: true }).then(async (store) => {
       if (cancelled) return;

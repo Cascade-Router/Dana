@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isTauri } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { PluginDefinition, PluginId } from "../plugins/types";
 import type { CameraTarget, CanvasSelection, VoiceState } from "../lib/useChatSocket";
 import type { SecretRecord } from "../secrets/types";
 
+// Every exported function here is guarded with `if (!isTauri()) return` —
+// emit/listen/WebviewWindow throw synchronously (not a rejected promise a
+// .catch() would catch) when window.__TAURI_INTERNALS__ doesn't exist,
+// which is the case for every plain-browser build of this same frontend
+// (a static Vercel/GitHub Pages deploy, the HF Space's /ui iframe, or this
+// dev server) — only the actual Tauri desktop app has that global.
+//
 // Multi-window IPC contract. The main window is the single source of truth
 // (it owns the WebSocket to dana/api/server.py and the secrets store) —
 // plugin windows never open their own socket or store handle. Instead they
@@ -45,6 +53,7 @@ function pluginWindowLabel(pluginId: PluginId): string {
 
 /** Opens (or focuses, if already open) a plugin's own top-level window. */
 export async function openPluginWindow(plugin: PluginDefinition): Promise<void> {
+  if (!isTauri()) return; // no multi-window host outside the desktop app
   const label = pluginWindowLabel(plugin.id);
   const existing = await WebviewWindow.getByLabel(label);
   if (existing) {
@@ -72,10 +81,12 @@ export function useSyncBroadcaster(state: SyncPayload): void {
   stateRef.current = state;
 
   useEffect(() => {
+    if (!isTauri()) return;
     emit(SYNC_EVENT, state).catch(() => {});
   }, [state]);
 
   useEffect(() => {
+    if (!isTauri()) return;
     let unlisten: UnlistenFn | undefined;
     listen(CHILD_READY_EVENT, () => {
       emit(SYNC_EVENT, stateRef.current).catch(() => {});
@@ -92,6 +103,7 @@ export function useSyncBroadcaster(state: SyncPayload): void {
  */
 export function useForwardedPluginSelect(onSelect: (selection: CanvasSelection) => void): void {
   useEffect(() => {
+    if (!isTauri()) return;
     let unlisten: UnlistenFn | undefined;
     listen<CanvasSelection>(CAD_SELECT_EVENT, (event) => onSelect(event.payload)).then((fn) => {
       unlisten = fn;
@@ -105,6 +117,7 @@ export function usePluginWindowSync(): { payload: SyncPayload | null; sendSelect
   const [payload, setPayload] = useState<SyncPayload | null>(null);
 
   useEffect(() => {
+    if (!isTauri()) return;
     let unlisten: UnlistenFn | undefined;
     listen<SyncPayload>(SYNC_EVENT, (event) => setPayload(event.payload)).then((fn) => {
       unlisten = fn;
@@ -114,6 +127,7 @@ export function usePluginWindowSync(): { payload: SyncPayload | null; sendSelect
   }, []);
 
   const sendSelect = useCallback((selection: CanvasSelection) => {
+    if (!isTauri()) return;
     emit(CAD_SELECT_EVENT, selection).catch(() => {});
   }, []);
 
@@ -127,6 +141,7 @@ export function usePluginWindowSync(): { payload: SyncPayload | null; sendSelect
  */
 export function useForwardedOrbActivate(onActivate: () => void): void {
   useEffect(() => {
+    if (!isTauri()) return;
     let unlisten: UnlistenFn | undefined;
     listen(ORB_ACTIVATE_EVENT, () => onActivate()).then((fn) => {
       unlisten = fn;
@@ -140,6 +155,7 @@ export function useOrbWindowSync(): { voice: VoiceSyncState | null; activate: ()
   const [voice, setVoice] = useState<VoiceSyncState | null>(null);
 
   useEffect(() => {
+    if (!isTauri()) return;
     let unlisten: UnlistenFn | undefined;
     listen<SyncPayload>(SYNC_EVENT, (event) => setVoice(event.payload.voice)).then((fn) => {
       unlisten = fn;
@@ -149,6 +165,7 @@ export function useOrbWindowSync(): { voice: VoiceSyncState | null; activate: ()
   }, []);
 
   const activate = useCallback(() => {
+    if (!isTauri()) return;
     emit(ORB_ACTIVATE_EVENT).catch(() => {});
   }, []);
 

@@ -126,6 +126,10 @@ with gr.Blocks(css=_CUSTOM_CSS, title="Dānā") as demo:
         fn=_dana_chat,
         additional_inputs=[_session_state],
         additional_outputs=[_session_state],
+        # Stable REST/JS-client contract (frontend/src/lib/gradioChatClient.ts
+        # calls this by name) — the default would otherwise be the private,
+        # refactor-fragile "_dana_chat" (this function's own Python name).
+        api_name="chat",
         title="Dānā",
         description=(
             "Hugging Face Space build — text chat only. Desktop/vision actuators and real CAD "
