@@ -107,6 +107,14 @@ memory/
 !dana/memory/**/
 !dana/memory/**/*.py
 !tests/memory/
+# The bare `memory/` pattern above also matches the memory *plugin* dirs
+# (unrelated to the runtime memory/ data dir it was meant for) — exempt them too.
+!dana/plugins/memory/
+!dana/plugins/memory/**/
+!dana/plugins/memory/**/*.py
+!tests/plugins/memory/
+!tests/plugins/memory/**/
+!tests/plugins/memory/**/*.py
 !tests/memory/**/
 !tests/memory/**/*.py
 /tracker/
