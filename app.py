@@ -16,6 +16,18 @@ from __future__ import annotations
 
 import gradio as gr
 
+# Hugging Face ZeroGPU requires at least one function decorated with
+# @spaces.GPU, detected via an AST scan at startup — this app never needs a
+# GPU, so the decorator is just a no-op function to satisfy that check.
+try:
+    import spaces
+
+    @spaces.GPU
+    def _dummy_gpu_function():
+        pass
+except ImportError:
+    pass
+
 from dana.api.server import app
 
 _demo = gr.Blocks()
