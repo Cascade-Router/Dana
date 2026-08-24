@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { MouseEvent } from "react";
-import { resolveApiUrl } from "../lib/apiBase";
+import { IS_GRADIO_MODE, resolveApiUrl } from "../lib/apiBase";
 import "./ChatSidebar.css";
 
 type SessionMeta = { id: string; title: string; updated_at: string };
@@ -23,6 +23,7 @@ export function ChatSidebar({ activeSessionId, onNewChat, onSelectSession }: Pro
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => {
+    if (IS_GRADIO_MODE) return; // no /api/sessions on the pure-Gradio HF backend — see the static fallback below
     setError(null);
     fetch(resolveApiUrl("/api/sessions"))
       .then((res) => {
@@ -37,7 +38,7 @@ export function ChatSidebar({ activeSessionId, onNewChat, onSelectSession }: Pro
   // session's metadata (a brand-new row, or its updated_at bumping to the
   // top) is actually likely to have changed. No polling: a manual refresh
   // button covers the "another window just saved a turn" gap, matching the
-  // same lean convention WorkspacePlugin/MemoryPlugin already use.
+  // same lean convention WorkspacePlugin already uses.
   useEffect(() => {
     load();
   }, [load, activeSessionId]);
@@ -75,9 +76,11 @@ export function ChatSidebar({ activeSessionId, onNewChat, onSelectSession }: Pro
       <div className="chat-sidebar__header">
         <span>Chats</span>
         <div className="chat-sidebar__header-actions">
-          <button type="button" className="chat-sidebar__icon-btn" onClick={load} title="Refresh">
-            ↻
-          </button>
+          {!IS_GRADIO_MODE && (
+            <button type="button" className="chat-sidebar__icon-btn" onClick={load} title="Refresh">
+              ↻
+            </button>
+          )}
           <button
             type="button"
             className="chat-sidebar__icon-btn"
@@ -94,27 +97,40 @@ export function ChatSidebar({ activeSessionId, onNewChat, onSelectSession }: Pro
       </button>
 
       <div className="chat-sidebar__list">
-        {error && <div className="chat-sidebar__error">{error}</div>}
-        {!sessions && !error && <div className="chat-sidebar__placeholder">Loading…</div>}
-        {sessions && sessions.length === 0 && <div className="chat-sidebar__placeholder">No saved chats yet.</div>}
-        {sessions?.map((s) => (
+        {IS_GRADIO_MODE ? (
           <div
-            key={s.id}
-            className={`chat-sidebar__item ${s.id === activeSessionId ? "chat-sidebar__item--active" : ""}`}
-            onClick={() => onSelectSession(s.id)}
-            title={s.title}
+            className="chat-sidebar__item chat-sidebar__item--static"
+            title="History isn't available in cloud mode"
           >
-            <span className="chat-sidebar__item-title">{s.title}</span>
-            <button
-              type="button"
-              className="chat-sidebar__item-delete"
-              title="Delete this chat"
-              onClick={(e) => handleDelete(s.id, e)}
-            >
-              ×
-            </button>
+            <span className="chat-sidebar__item-title">Cloud Session (Active)</span>
           </div>
-        ))}
+        ) : (
+          <>
+            {error && <div className="chat-sidebar__error">{error}</div>}
+            {!sessions && !error && <div className="chat-sidebar__placeholder">Loading…</div>}
+            {sessions && sessions.length === 0 && (
+              <div className="chat-sidebar__placeholder">No saved chats yet.</div>
+            )}
+            {sessions?.map((s) => (
+              <div
+                key={s.id}
+                className={`chat-sidebar__item ${s.id === activeSessionId ? "chat-sidebar__item--active" : ""}`}
+                onClick={() => onSelectSession(s.id)}
+                title={s.title}
+              >
+                <span className="chat-sidebar__item-title">{s.title}</span>
+                <button
+                  type="button"
+                  className="chat-sidebar__item-delete"
+                  title="Delete this chat"
+                  onClick={(e) => handleDelete(s.id, e)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </>
+        )}
       </div>
     </div>
   );

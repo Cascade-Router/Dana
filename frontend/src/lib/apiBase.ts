@@ -18,6 +18,12 @@ function resolveHttpBase(): string {
   return `${protocol}//${hostname}${port ? `:${port}` : ""}`;
 }
 
+// True for the same build useChat.ts picks useGradioChat for (see
+// lib/useChat.ts) — the pure-Gradio HF backend (app.py) has no REST API at
+// all, so anything hitting /api/* directly (not through useChat's
+// abstraction) needs this same check to avoid a guaranteed failed fetch.
+export const IS_GRADIO_MODE = Boolean(import.meta.env.VITE_HF_SPACE_URL);
+
 export const API_HTTP_BASE = resolveHttpBase();
 
 export const API_WS_BASE = API_HTTP_BASE.replace(/^http/, "ws");

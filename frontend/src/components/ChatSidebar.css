@@ -102,6 +102,16 @@
   color: #fff;
 }
 
+.chat-sidebar__item--static {
+  cursor: default;
+  color: #888;
+  font-style: italic;
+}
+
+.chat-sidebar__item--static:hover {
+  background: none;
+}
+
 .chat-sidebar__item-title {
   flex: 1;
   min-width: 0;

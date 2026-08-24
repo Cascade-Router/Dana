@@ -6,7 +6,7 @@ import { TerminalDrawer } from "./components/TerminalDrawer";
 import { PluginProvider, usePlugins } from "./plugins/PluginContext";
 import { SecretsProvider, useSecrets } from "./secrets/SecretsContext";
 import { SecretsMenu } from "./secrets/SecretsMenu";
-import { resolveApiUrl } from "./lib/apiBase";
+import { IS_GRADIO_MODE, resolveApiUrl } from "./lib/apiBase";
 import { useChat } from "./lib/useChat";
 import type { ChatMessage } from "./lib/useChatSocket";
 import { useOrbActivation } from "./lib/useOrbActivation";
@@ -123,6 +123,9 @@ function AppShell() {
   // status display, never a second guess at what a turn will actually do.
   const [provider, setProvider] = useState<string | null>(null);
   useEffect(() => {
+    // No /api/health on the pure-Gradio HF backend — providerLabel below
+    // hardcodes a status for this mode instead of polling for one.
+    if (IS_GRADIO_MODE) return;
     let cancelled = false;
     const poll = () => {
       fetch(resolveApiUrl("/api/health"))
@@ -141,7 +144,13 @@ function AppShell() {
       window.clearInterval(interval);
     };
   }, []);
-  const providerLabel = provider === "gateway" ? "Cascade Proxy: Active" : provider ? `${provider}: Active` : "Offline";
+  const providerLabel = IS_GRADIO_MODE
+    ? "HF ZeroGPU: Online"
+    : provider === "gateway"
+      ? "Cascade Proxy: Active"
+      : provider
+        ? `${provider}: Active`
+        : "Offline";
 
   // Single broadcast point: any plugin/orb window currently open re-renders
   // from this payload the instant it changes. Nothing downstream reaches
