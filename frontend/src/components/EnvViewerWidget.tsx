@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { resolveApiUrl } from "../lib/apiBase";
+import { apiFetch } from "../lib/apiBase";
 import "./EnvViewerWidget.css";
 
 type EnvSnapshot = Record<string, string>;
@@ -26,7 +26,7 @@ export function EnvViewerWidget({ onClose }: { onClose: () => void }) {
   const [saveResult, setSaveResult] = useState<{ valid: boolean; detail: string } | null>(null);
 
   const refresh = useCallback(() => {
-    fetch(resolveApiUrl("/api/system/env"))
+    apiFetch("/api/system/env")
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
@@ -46,7 +46,7 @@ export function EnvViewerWidget({ onClose }: { onClose: () => void }) {
     if (!value) return;
     setSaving(true);
     setSaveResult(null);
-    fetch(resolveApiUrl("/api/system/env"), {
+    apiFetch("/api/system/env", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: saveKey, value }),

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { resolveApiUrl } from "../lib/apiBase";
+import { apiFetch, resolveApiUrl } from "../lib/apiBase";
 import "./CadToolbar.css";
 
 type Artifact = {
@@ -23,7 +23,7 @@ export function CadToolbar() {
   const [launchError, setLaunchError] = useState<string | null>(null);
 
   const refreshArtifacts = useCallback(() => {
-    fetch(resolveApiUrl("/api/cad/artifacts"))
+    apiFetch("/api/cad/artifacts")
       .then((res) => (res.ok ? res.json() : { artifacts: [] }))
       .then((data) => setArtifacts(data.artifacts ?? []))
       .catch(() => setArtifacts([]));
@@ -36,7 +36,7 @@ export function CadToolbar() {
   const launchDesktop = useCallback(() => {
     setLaunching(true);
     setLaunchError(null);
-    fetch(resolveApiUrl("/api/cad/open-desktop"), { method: "POST" })
+    apiFetch("/api/cad/open-desktop", { method: "POST" })
       .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
       .then(({ ok, data }) => {
         if (!ok) throw new Error(data.detail || "failed to open FreeCAD");

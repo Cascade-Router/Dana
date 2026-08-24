@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { MouseEvent } from "react";
-import { IS_GRADIO_MODE, resolveApiUrl } from "../lib/apiBase";
+import { apiFetch, IS_GRADIO_MODE } from "../lib/apiBase";
 import "./ChatSidebar.css";
 
 type SessionMeta = { id: string; title: string; updated_at: string };
@@ -25,7 +25,7 @@ export function ChatSidebar({ activeSessionId, onNewChat, onSelectSession }: Pro
   const load = useCallback(() => {
     if (IS_GRADIO_MODE) return; // no /api/sessions on the pure-Gradio HF backend — see the static fallback below
     setError(null);
-    fetch(resolveApiUrl("/api/sessions"))
+    apiFetch("/api/sessions")
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
@@ -46,7 +46,7 @@ export function ChatSidebar({ activeSessionId, onNewChat, onSelectSession }: Pro
   const handleDelete = useCallback(
     (id: string, event: MouseEvent) => {
       event.stopPropagation(); // never also trigger the row's own onSelectSession
-      fetch(resolveApiUrl(`/api/sessions/${id}`), { method: "DELETE" })
+      apiFetch(`/api/sessions/${id}`, { method: "DELETE" })
         .then(() => {
           if (id === activeSessionId) onNewChat();
           load();

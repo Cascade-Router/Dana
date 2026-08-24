@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { resolveApiUrl } from "../lib/apiBase";
+import { apiFetch, resolveApiUrl } from "../lib/apiBase";
 import type { PluginComponentProps } from "./types";
 import "./WorkspacePlugin.css";
 
@@ -114,7 +114,7 @@ export default function WorkspacePlugin(_props: PluginComponentProps) {
 
   const loadTree = useCallback(() => {
     setTreeError(null);
-    fetch(resolveApiUrl("/api/workspace/tree"))
+    apiFetch("/api/workspace/tree")
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
@@ -124,7 +124,7 @@ export default function WorkspacePlugin(_props: PluginComponentProps) {
   }, []);
 
   const loadMounts = useCallback(() => {
-    fetch(resolveApiUrl("/api/workspace/mounts"))
+    apiFetch("/api/workspace/mounts")
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
@@ -149,7 +149,7 @@ export default function WorkspacePlugin(_props: PluginComponentProps) {
     try {
       const selected = await open({ directory: true, multiple: false });
       if (!selected || Array.isArray(selected)) return; // cancelled, or an unexpected multi-select result
-      const res = await fetch(resolveApiUrl("/api/workspace/mount"), {
+      const res = await apiFetch("/api/workspace/mount", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: selected }),

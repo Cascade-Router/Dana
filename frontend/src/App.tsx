@@ -6,7 +6,7 @@ import { TerminalDrawer } from "./components/TerminalDrawer";
 import { PluginProvider, usePlugins } from "./plugins/PluginContext";
 import { SecretsProvider, useSecrets } from "./secrets/SecretsContext";
 import { SecretsMenu } from "./secrets/SecretsMenu";
-import { IS_GRADIO_MODE, resolveApiUrl } from "./lib/apiBase";
+import { apiFetch, IS_GRADIO_MODE } from "./lib/apiBase";
 import { useChat } from "./lib/useChat";
 import type { ChatMessage } from "./lib/useChatSocket";
 import { useOrbActivation } from "./lib/useOrbActivation";
@@ -75,7 +75,7 @@ function AppShell() {
   }, []);
 
   const openSession = useCallback((id: string) => {
-    fetch(resolveApiUrl(`/api/sessions/${id}`))
+    apiFetch(`/api/sessions/${id}`)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
@@ -128,7 +128,7 @@ function AppShell() {
     if (IS_GRADIO_MODE) return;
     let cancelled = false;
     const poll = () => {
-      fetch(resolveApiUrl("/api/health"))
+      apiFetch("/api/health")
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
           if (!cancelled && data) setProvider(typeof data.provider === "string" ? data.provider : null);
