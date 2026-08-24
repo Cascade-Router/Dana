@@ -5,7 +5,6 @@ on:
     branches: [ main ]
     paths:
       - 'dana/**'
-      - 'frontend/**'
       - 'deploy/**'
       - 'app.py'
       - 'packages.txt'
@@ -21,23 +20,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Build frontend
-        # sdk: gradio Spaces have no Docker frontend-build stage — the built
-        # dist/ (gitignored, never committed) has to be produced here and
-        # shipped in the staged payload instead.
-        working-directory: frontend
-        run: |
-          npm ci
-          npm run build
-
-      - name: Stage Gradio Space payload (app.py + dana/ + built frontend/)
+      - name: Stage Gradio Space payload (app.py + dana/)
         run: |
           set -e
           rm -rf _hf_deploy_stage
@@ -50,9 +33,6 @@ jobs:
           cp -r dana _hf_deploy_stage/dana
           find _hf_deploy_stage/dana -name "__pycache__" -type d -prune -exec rm -rf {} +
 
-          mkdir -p _hf_deploy_stage/frontend
-          cp -r frontend/dist _hf_deploy_stage/frontend/dist
-
       - name: Deploy staged payload to Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -64,5 +44,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -q -m "Deploy Dana Gradio Space (app.py + dana/ + frontend/) from ${{ github.sha }}"
+          git commit -q -m "Deploy Dana Gradio Space (app.py + dana/) from ${{ github.sha }}"
           git push -f "https://oauth2:$HF_TOKEN@huggingface.co/spaces/$HF_SPACE_NAME" HEAD:main
