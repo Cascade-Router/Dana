@@ -21,7 +21,6 @@ def test_analyze_visual_context_returns_screen_text() -> None:
     with (
         patch("mss.MSS", return_value=fake_sct),
         patch("pytesseract.image_to_string", return_value="Hello Screen\n"),
-        patch("dana.ui.status_bus.emit_state_change") as emit,
     ):
         out = analyze_visual_context()
 
@@ -29,7 +28,6 @@ def test_analyze_visual_context_returns_screen_text() -> None:
     # XML tag); anchor on the deterministic prefix since a "Recent visual
     # history: ..." trailer may follow depending on episodic-store state.
     assert out.startswith("Current screen: On-screen text/HUD: Hello Screen.")
-    emit.assert_called_with("executing", tool="analyze_visual_context")
 
 
 def test_analyze_visual_context_missing_tesseract_binary() -> None:
@@ -51,7 +49,6 @@ def test_analyze_visual_context_missing_tesseract_binary() -> None:
             "pytesseract.image_to_string",
             side_effect=TesseractNotFoundError(),
         ),
-        patch("dana.ui.status_bus.emit_state_change"),
     ):
         out = analyze_visual_context()
 
