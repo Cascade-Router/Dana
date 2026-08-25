@@ -30,15 +30,27 @@ export function connectGradioClient(spaceUrl: string): Promise<Client> {
 }
 
 // Everything the WebSocket path streams as separate events — dag_node_*,
-// tool_start/tool_complete, tool_result, camera_animate, mesh URLs, voice
-// state, HITL approval prompts — has no equivalent here: app.py's
-// _GradioSocket auto-resolves HITL/visual-capture suspensions server-side
-// and only ever surfaces the turn's FINAL reply. This isn't a smaller
-// version of the same protocol, it's a smaller feature set — callers get a
-// plain string back, nothing else.
-export async function sendGradioChatMessage(spaceUrl: string, message: string): Promise<string> {
+// tool_start/tool_complete, camera_animate, voice state, HITL approval
+// prompts — has no equivalent here: app.py's _GradioSocket auto-resolves
+// HITL/visual-capture suspensions server-side and only ever surfaces the
+// turn's final reply plus (since app.py moved to gr.Blocks with a
+// text_out/file_out pair) whatever mesh a CAD tool call produced this
+// turn. Still a much smaller surface than the WS protocol overall — no
+// live tool-activity feed, no DAG telemetry.
+export type GradioChatReply = {
+  text: string;
+  /** Absolute, fetchable URL to the turn's generated .stl, or null if this
+   * turn didn't produce one. Gradio's own file-serving endpoint — verified
+   * directly (curled it) to actually serve real STL bytes locally; CORS
+   * behavior on the real hosted Space is unverified from here, since a
+   * local dev instance showed no Access-Control-Allow-Origin header on a
+   * cross-origin request. Worth confirming against the live deployment. */
+  meshUrl: string | null;
+};
+
+export async function sendGradioChatMessage(spaceUrl: string, message: string): Promise<GradioChatReply> {
   const client = await connectGradioClient(spaceUrl);
   const result = await client.predict("/chat", { message });
-  const [reply] = result.data as [string];
-  return reply;
+  const [text, file] = result.data as [string, { url?: string } | null];
+  return { text, meshUrl: file?.url ?? null };
 }

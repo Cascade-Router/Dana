@@ -11,14 +11,18 @@ type ChatHookResult = ReturnType<typeof useChatSocket>;
 // The Gradio-backend counterpart to useChatSocket — same call signature and
 // return shape (see useChat.ts, which picks one or the other ONCE at module
 // load based on VITE_HF_SPACE_URL) so App.tsx never branches on which
-// protocol is live. What differs is real: app.py's plain gr.ChatInterface
-// has no BYOK routing, no plugin/capability routing, no session resume, no
-// CAD viewport/mesh export, no voice, no live tool-activity or DAG telemetry,
-// and no interactive HITL approval (auto-resolved server-side instead — see
+// protocol is live. What differs is real: app.py's plain gr.Blocks "chat"
+// endpoint has no BYOK routing, no plugin/capability routing, no session
+// resume, no voice, no live tool-activity or DAG telemetry, and no
+// interactive HITL approval (auto-resolved server-side instead — see
 // app.py's _GradioSocket). Everything for those is either ignored on the
-// way in or stays permanently empty/no-op on the way out; components that
-// already guard on e.g. `meshUrl != null` before rendering the CAD viewport
-// behave correctly here for free, they just never see it become non-null.
+// way in or stays permanently empty/no-op on the way out.
+//
+// meshUrl IS real here (unlike the rest of the above): app.py's "chat"
+// endpoint returns `(text, mesh_file)` per turn — see gradioChatClient.ts's
+// GradioChatReply — so this updates the exact same `meshUrl` state
+// useChatSocket exposes, and CadPlugin/Viewer3D pick it up completely
+// unchanged, the same way they already do for the WS path's mesh_url.
 export function useGradioChat(
   _apiKeys: ApiKeys = {},
   _activePlugins: string[] = [],
@@ -28,6 +32,7 @@ export function useGradioChat(
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [turnActive, setTurnActive] = useState(false);
+  const [meshUrl, setMeshUrl] = useState<string | null>(null);
   const spaceUrl = import.meta.env.VITE_HF_SPACE_URL as string;
 
   useEffect(() => {
@@ -55,7 +60,13 @@ export function useGradioChat(
       setTurnActive(true);
       sendGradioChatMessage(spaceUrl, trimmed)
         .then((reply) => {
-          setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
+          setMessages((prev) => [...prev, { role: "assistant", content: reply.text }]);
+          // Only overwrite on an actual new mesh — a turn that didn't touch
+          // CAD (meshUrl: null) shouldn't blank out whatever's already in
+          // the viewport, same expectation the WS path's tool_result
+          // handler has (it only ever calls setMeshUrl when mesh_url is
+          // truthy, never to explicitly clear it).
+          if (reply.meshUrl) setMeshUrl(reply.meshUrl);
         })
         .catch(() => {
           setMessages((prev) => [
@@ -79,7 +90,7 @@ export function useGradioChat(
     messages,
     log: [],
     driverState: null,
-    meshUrl: null,
+    meshUrl,
     cameraTarget: null,
     voiceState: { state: "idle" as const, transcript: "" },
     liveActivity: [],
