@@ -1,3 +1,5 @@
+// Add this at the very top of main.tsx or App.tsx
+import './lib/consoleCapture';
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";

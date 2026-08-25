@@ -1,0 +1,16 @@
+{
+  "id": "ca1d81b3-4b15-49b0-8638-51d08889192d",
+  "title": "build a box 60x40x20",
+  "created_at": "2026-08-25T00:39:28.249442+00:00",
+  "updated_at": "2026-08-25T00:39:28.249462+00:00",
+  "messages": [
+    {
+      "role": "user",
+      "content": "build a box 60x40x20"
+    },
+    {
+      "role": "assistant",
+      "content": "Built a 60x40x20 box."
+    }
+  ]
+}

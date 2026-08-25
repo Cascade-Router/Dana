@@ -1,0 +1,24 @@
+{
+  "id": "125a9a7e-9f34-4633-8c2b-a30675ab02a6",
+  "title": "first message",
+  "created_at": "2026-08-24T20:42:54.957412+00:00",
+  "updated_at": "2026-08-24T20:43:09.305604+00:00",
+  "messages": [
+    {
+      "role": "user",
+      "content": "first message"
+    },
+    {
+      "role": "assistant",
+      "content": "Request timed out. Please try again."
+    },
+    {
+      "role": "user",
+      "content": "second message"
+    },
+    {
+      "role": "assistant",
+      "content": "The cloud model (gateway) didn't respond in time \u2014 please try again shortly. This can happen during a provider-side rate-limit throttle or heavy load."
+    }
+  ]
+}

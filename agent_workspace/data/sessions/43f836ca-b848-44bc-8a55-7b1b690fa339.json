@@ -1,0 +1,16 @@
+{
+  "id": "43f836ca-b848-44bc-8a55-7b1b690fa339",
+  "title": "hello from playwright test",
+  "created_at": "2026-08-24T20:56:09.707470+00:00",
+  "updated_at": "2026-08-24T20:56:09.707478+00:00",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hello from playwright test"
+    },
+    {
+      "role": "assistant",
+      "content": "fast fake reply"
+    }
+  ]
+}

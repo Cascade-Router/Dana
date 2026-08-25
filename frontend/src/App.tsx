@@ -1,3 +1,5 @@
+// Add this at the very top of main.tsx or App.tsx
+import './lib/consoleCapture';
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
 import { ChatSidebar } from "./components/ChatSidebar";
