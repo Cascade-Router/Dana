@@ -42,7 +42,7 @@ must be set for the ReAct loop's tool-calling turn to reach anywhere at all
 | `DANA_CLOUD_PRIMARY` | Yes | `1` — routes tool-calling to cloud instead of a nonexistent local Ollama |
 | `DANA_CLOUD_PROVIDER` | Yes | `openrouter` (or `groq` / `gateway` / `gemini_openai` / `openai`) |
 | `OPENROUTER_API_KEY` | Yes, for OpenRouter | From [openrouter.ai/keys](https://openrouter.ai/keys) — `LLM_API_KEY` also works as a generic fallback name |
-| `DANA_OPENROUTER_MODEL` | No | Any OpenRouter model id, e.g. `meta-llama/llama-3.3-70b-instruct:free`, `google/gemini-2.0-flash-001`, `qwen/qwen-2.5-72b-instruct`. Defaults to `meta-llama/llama-3.3-70b-instruct:free` |
+| `DANA_OPENROUTER_MODEL` | No | Any OpenRouter model id, e.g. `meta-llama/llama-3.3-70b-instruct:free`, `google/gemini-2.0-flash-001`, `qwen/qwen-2.5-72b-instruct`. Defaults to `meta-llama/llama-3.3-70b-instruct:free`. Accepts a comma-separated list for automatic failover, e.g. `google/gemma-4-26b-a4b-it:free,openai/gpt-oss-120b:free,openrouter/free` — the first entry is the primary model, the rest are passed to OpenRouter as its native server-side `models` fallback cascade, so a 429 on the primary retries the next one upstream automatically |
 | `OPENROUTER_SITE_URL` | No | Sent as `HTTP-Referer` (OpenRouter's attribution header). Defaults to this Space's own URL if `HF_SPACE_URL` is set |
 | `OPENROUTER_APP_TITLE` | No | Sent as `X-Title`. Defaults to `Dana CAD Agent` |
 

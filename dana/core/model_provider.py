@@ -431,7 +431,7 @@ class ModelProvider:
         ``tools=``), so this has no dependency on the legacy
         ``dana.core.agent_loop`` stack's native ``/api/chat`` caller.
         """
-        key, base, _, _ = self._resolve_openai_endpoint("ollama")
+        key, base, _, _, _ = self._resolve_openai_endpoint("ollama")
         with llm_lock:
             raw = complete_openai_with_tools(
                 messages,
@@ -471,13 +471,15 @@ class ModelProvider:
             provider=provider,
         )
 
-    def _resolve_openai_endpoint(self, provider: str) -> tuple[str, str, str, dict[str, str]]:
-        """Return ``(api_key, base_url, model, extra_headers)`` for an
-        OpenAI-wire-compatible provider.
+    def _resolve_openai_endpoint(
+        self, provider: str
+    ) -> tuple[str, str, str, dict[str, str], list[str]]:
+        """Return ``(api_key, base_url, model, extra_headers, fallback_models)``
+        for an OpenAI-wire-compatible provider.
 
         Shared by the plain-text ``_complete_openai_compatible`` path and the
         tool-calling / vision bridge below — one place that knows how each
-        provider's env vars map to a key/base/model/headers quadruple.
+        provider's env vars map to a key/base/model/headers/fallbacks tuple.
         ``"ollama"`` targets the local Ollama daemon's own OpenAI-compatible
         ``/v1/chat/completions`` surface (distinct from the native
         ``/api/chat`` path used by ``_complete_local``), which needs no real
@@ -485,6 +487,12 @@ class ModelProvider:
         ``"openrouter"`` (its recommended, not required, HTTP-Referer/
         X-Title attribution headers) — kept out of ``openai_tool_bridge.py``
         on purpose, since that module has no per-provider knowledge at all.
+        ``fallback_models`` is ``[]`` for every provider except
+        ``"openrouter"``, which accepts a comma-separated ``DANA_OPENROUTER_MODEL``
+        list and forwards everything after the first entry as OpenRouter's
+        native server-side ``models`` fallback/cascade array, so a 429 on the
+        primary model retries the next one upstream in milliseconds instead
+        of round-tripping back to this process.
         """
         ensure_dotenv_loaded()
         if provider == "openrouter":
@@ -502,10 +510,12 @@ class ModelProvider:
                 (os.environ.get("OPENROUTER_API_BASE") or "").strip()
                 or "https://openrouter.ai/api/v1"
             )
-            model = (
+            raw_models = (
                 (os.environ.get("DANA_OPENROUTER_MODEL") or os.environ.get("OPENROUTER_MODEL") or "").strip()
-                or "meta-llama/llama-3.3-70b-instruct:free"
             )
+            model_list = [m.strip() for m in raw_models.split(",") if m.strip()]
+            model = model_list[0] if model_list else "meta-llama/llama-3.3-70b-instruct:free"
+            fallback_models = model_list[1:]
             if not key:
                 raise RuntimeError("No API key configured for cloud provider='openrouter'")
             headers = {
@@ -531,7 +541,7 @@ class ModelProvider:
                     fallback="Dana CAD Agent",
                 ),
             }
-            return key, base, model, headers
+            return key, base, model, headers, fallback_models
         if provider == "gateway":
             # Local Cascade-Router (C++ gateway) — holds every real provider
             # key itself and cascades groq -> gemini -> openai on 429/5xx
@@ -542,7 +552,7 @@ class ModelProvider:
             key = (self._api_keys.get("gateway") or os.environ.get("LLM_GATEWAY_API_KEY") or "").strip() or "gateway-local"
             base = gateway_base_url()
             model = gateway_model_name()
-            return key, base, model, {}
+            return key, base, model, {}, []
         if provider == "gemini_openai":
             # Google's OpenAI-compatible endpoint — distinct from the
             # "gemini"/"google" provider names in _NON_OPENAI_SCHEMA_PROVIDERS,
@@ -592,7 +602,7 @@ class ModelProvider:
             )
         if not key:
             raise RuntimeError(f"No API key configured for cloud provider={provider}")
-        return key, base, model, {}
+        return key, base, model, {}, []
 
     def _complete_openai_compatible(
         self,
@@ -616,7 +626,7 @@ class ModelProvider:
                 api_key=key,
             )
 
-        key, base, model, extra_headers = self._resolve_openai_endpoint(provider)
+        key, base, model, extra_headers, fallback_models = self._resolve_openai_endpoint(provider)
         # Serializes with every other LOCAL Ollama generation in this
         # process (dana.system_health.llm_lock) — running two generations
         # concurrently against the same local daemon is what doubles VRAM
@@ -634,6 +644,7 @@ class ModelProvider:
                 num_predict=num_predict,
                 temperature=temperature,
                 extra_headers=extra_headers,
+                fallback_models=fallback_models,
             )
         _log_ttft(model, raw.get("ttft_ms"))
         self.last_provider = f"cloud:{provider}"
@@ -665,7 +676,7 @@ class ModelProvider:
                 f"OpenAI tool-calling bridge does not support provider={resolved_provider!r} "
                 "(uses a non-OpenAI tool schema)"
             )
-        key, base, model, extra_headers = self._resolve_openai_endpoint(resolved_provider)
+        key, base, model, extra_headers, fallback_models = self._resolve_openai_endpoint(resolved_provider)
         # See the matching comment in _complete_openai_compatible above —
         # this is the ReAct loop's actual per-turn call site, so it's the
         # one that matters most both for VRAM-fragmentation-from-concurrent-
@@ -684,6 +695,7 @@ class ModelProvider:
                 num_predict=num_predict,
                 temperature=temperature,
                 extra_headers=extra_headers,
+                fallback_models=fallback_models,
             )
         # P1 metric — logged on the SAME line as ttft_ms (see _log_ttft) so
         # the two are directly correlatable turn over turn.
@@ -722,7 +734,7 @@ class ModelProvider:
                 f"complete_vision does not support provider={resolved_provider!r} "
                 "(uses a non-OpenAI image payload schema)"
             )
-        key, base, model, extra_headers = self._resolve_openai_endpoint(resolved_provider)
+        key, base, model, extra_headers, fallback_models = self._resolve_openai_endpoint(resolved_provider)
         messages = build_multimodal_messages(prompt, image_b64=image_b64, mime_type=mime_type)
         with llm_lock if resolved_provider == "ollama" else contextlib.nullcontext():
             raw = complete_openai_with_tools(
@@ -733,6 +745,7 @@ class ModelProvider:
                 num_predict=num_predict,
                 temperature=temperature,
                 extra_headers=extra_headers,
+                fallback_models=fallback_models,
             )
         _log_ttft(model, raw.get("ttft_ms"))
         self.last_provider = f"cloud:{resolved_provider}"

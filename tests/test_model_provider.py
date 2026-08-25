@@ -63,14 +63,14 @@ def test_complete_with_complexity_fallback_routes_to_cloud(
 def test_resolve_openai_endpoint_prefers_session_key_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")
     provider = ModelProvider(api_keys={"openai": "session-key"})
-    key, _base, _model, _headers = provider._resolve_openai_endpoint("openai")
+    key, _base, _model, _headers, _fallback_models = provider._resolve_openai_endpoint("openai")
     assert key == "session-key"
 
 
 def test_resolve_openai_endpoint_falls_back_to_env_when_no_session_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")
     provider = ModelProvider()
-    key, _base, _model, _headers = provider._resolve_openai_endpoint("openai")
+    key, _base, _model, _headers, _fallback_models = provider._resolve_openai_endpoint("openai")
     assert key == "env-key"
 
 
@@ -81,7 +81,7 @@ def test_resolve_openai_endpoint_session_key_does_not_leak_to_other_providers(
     provider's endpoint resolution just because a session dict exists."""
     monkeypatch.setenv("GROQ_API_KEY", "groq-env-key")
     provider = ModelProvider(api_keys={"openai": "session-key"})
-    key, _base, _model, _headers = provider._resolve_openai_endpoint("groq")
+    key, _base, _model, _headers, _fallback_models = provider._resolve_openai_endpoint("groq")
     assert key == "groq-env-key"
 
 
@@ -107,7 +107,7 @@ def test_resolve_openai_endpoint_gemini_openai_uses_expected_base_and_model(
     monkeypatch.delenv("GEMINI_API_BASE", raising=False)
     monkeypatch.delenv("DANA_GEMINI_MODEL", raising=False)
     provider = ModelProvider()
-    key, base, model, _headers = provider._resolve_openai_endpoint("gemini_openai")
+    key, base, model, _headers, _fallback_models = provider._resolve_openai_endpoint("gemini_openai")
     assert key == "test-gemini-key"
     assert base == "https://generativelanguage.googleapis.com/v1beta/openai/"
     assert model == "gemini-3.6-flash"
@@ -116,7 +116,7 @@ def test_resolve_openai_endpoint_gemini_openai_uses_expected_base_and_model(
 def test_resolve_openai_endpoint_gemini_openai_prefers_session_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GEMINI_API_KEY", "env-gemini-key")
     provider = ModelProvider(api_keys={"gemini": "session-gemini-key"})
-    key, _base, _model, _headers = provider._resolve_openai_endpoint("gemini_openai")
+    key, _base, _model, _headers, _fallback_models = provider._resolve_openai_endpoint("gemini_openai")
     assert key == "session-gemini-key"
 
 
@@ -125,7 +125,7 @@ def test_resolve_openai_endpoint_gemini_openai_respects_env_overrides(monkeypatc
     monkeypatch.setenv("GEMINI_API_BASE", "https://custom.example/v1beta/openai/")
     monkeypatch.setenv("DANA_GEMINI_MODEL", "gemini-9.9-ultra")
     provider = ModelProvider()
-    _key, base, model, _headers = provider._resolve_openai_endpoint("gemini_openai")
+    _key, base, model, _headers, _fallback_models = provider._resolve_openai_endpoint("gemini_openai")
     assert base == "https://custom.example/v1beta/openai/"
     assert model == "gemini-9.9-ultra"
 
@@ -154,7 +154,7 @@ def test_resolve_openai_endpoint_gateway_defaults_and_env_overrides(
     monkeypatch.delenv("DANA_GATEWAY_MODEL", raising=False)
     monkeypatch.delenv("LLM_GATEWAY_API_KEY", raising=False)
     provider = ModelProvider()
-    key, base, model, _headers = provider._resolve_openai_endpoint("gateway")
+    key, base, model, _headers, _fallback_models = provider._resolve_openai_endpoint("gateway")
     assert base == "http://localhost:8000/v1"
     assert model == "cascade-auto"
     assert key  # placeholder key when none configured — never empty
@@ -162,7 +162,7 @@ def test_resolve_openai_endpoint_gateway_defaults_and_env_overrides(
     monkeypatch.setenv("LLM_GATEWAY_URL", "http://localhost:9000/v1/")
     monkeypatch.setenv("DANA_GATEWAY_MODEL", "cascade-fast")
     monkeypatch.setenv("LLM_GATEWAY_API_KEY", "real-gateway-key")
-    key, base, model, _headers = provider._resolve_openai_endpoint("gateway")
+    key, base, model, _headers, _fallback_models = provider._resolve_openai_endpoint("gateway")
     assert base == "http://localhost:9000/v1"
     assert model == "cascade-fast"
     assert key == "real-gateway-key"
@@ -262,7 +262,7 @@ def test_resolve_openai_endpoint_openrouter_defaults(monkeypatch: pytest.MonkeyP
     monkeypatch.delenv("HF_SPACE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_APP_TITLE", raising=False)
     provider = ModelProvider()
-    key, base, model, headers = provider._resolve_openai_endpoint("openrouter")
+    key, base, model, headers, _fallback_models = provider._resolve_openai_endpoint("openrouter")
     assert key == "test-openrouter-key"
     assert base == "https://openrouter.ai/api/v1"
     assert model == "meta-llama/llama-3.3-70b-instruct:free"
@@ -273,7 +273,7 @@ def test_resolve_openai_endpoint_openrouter_defaults(monkeypatch: pytest.MonkeyP
 def test_resolve_openai_endpoint_openrouter_prefers_session_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "env-openrouter-key")
     provider = ModelProvider(api_keys={"openrouter": "session-openrouter-key"})
-    key, _base, _model, _headers = provider._resolve_openai_endpoint("openrouter")
+    key, _base, _model, _headers, _fallback_models = provider._resolve_openai_endpoint("openrouter")
     assert key == "session-openrouter-key"
 
 
@@ -290,7 +290,7 @@ def test_resolve_openai_endpoint_openrouter_falls_back_to_generic_llm_api_key(
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("LLM_API_KEY", "generic-llm-key")
     provider = ModelProvider()
-    key, _base, _model, _headers = provider._resolve_openai_endpoint("openrouter")
+    key, _base, _model, _headers, _fallback_models = provider._resolve_openai_endpoint("openrouter")
     assert key == "generic-llm-key"
 
 
@@ -301,11 +301,39 @@ def test_resolve_openai_endpoint_openrouter_respects_env_overrides(monkeypatch: 
     monkeypatch.setenv("OPENROUTER_SITE_URL", "https://my-space.hf.space")
     monkeypatch.setenv("OPENROUTER_APP_TITLE", "Custom Title")
     provider = ModelProvider()
-    _key, base, model, headers = provider._resolve_openai_endpoint("openrouter")
+    _key, base, model, headers, _fallback_models = provider._resolve_openai_endpoint("openrouter")
     assert base == "https://custom.example/api/v1"
     assert model == "google/gemini-2.0-flash-001"
     assert headers["HTTP-Referer"] == "https://my-space.hf.space"
     assert headers["X-Title"] == "Custom Title"
+
+
+def test_resolve_openai_endpoint_openrouter_single_model_has_no_fallbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+    monkeypatch.setenv("DANA_OPENROUTER_MODEL", "google/gemini-2.0-flash-001")
+    provider = ModelProvider()
+    _key, _base, model, _headers, fallback_models = provider._resolve_openai_endpoint("openrouter")
+    assert model == "google/gemini-2.0-flash-001"
+    assert fallback_models == []
+
+
+def test_resolve_openai_endpoint_openrouter_parses_comma_separated_fallbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DANA_OPENROUTER_MODEL accepts a comma-separated list for OpenRouter's
+    native server-side model cascade — the first entry is the primary
+    ``model``, the rest ride along as ``fallback_models``."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+    monkeypatch.setenv(
+        "DANA_OPENROUTER_MODEL",
+        "google/gemma-4-26b-a4b-it:free, openai/gpt-oss-120b:free ,openrouter/free",
+    )
+    provider = ModelProvider()
+    _key, _base, model, _headers, fallback_models = provider._resolve_openai_endpoint("openrouter")
+    assert model == "google/gemma-4-26b-a4b-it:free"
+    assert fallback_models == ["openai/gpt-oss-120b:free", "openrouter/free"]
 
 
 def test_resolve_openai_endpoint_openrouter_raises_without_any_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -325,7 +353,7 @@ def test_resolve_openai_endpoint_non_openrouter_providers_have_no_extra_headers(
     grew a 4th element."""
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")
     provider = ModelProvider()
-    _key, _base, _model, headers = provider._resolve_openai_endpoint("openai")
+    _key, _base, _model, headers, _fallback_models = provider._resolve_openai_endpoint("openai")
     assert headers == {}
 
 
@@ -369,7 +397,7 @@ def test_resolve_openai_endpoint_openrouter_sanitizes_non_ascii_title(
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
     monkeypatch.setenv("OPENROUTER_APP_TITLE", "Dānā CAD Agent")
     provider = ModelProvider()
-    _key, _base, _model, headers = provider._resolve_openai_endpoint("openrouter")
+    _key, _base, _model, headers, _fallback_models = provider._resolve_openai_endpoint("openrouter")
     assert headers["X-Title"] == "Dn CAD Agent"
     headers["X-Title"].encode("latin-1")  # must not raise UnicodeEncodeError
 
@@ -380,7 +408,7 @@ def test_resolve_openai_endpoint_openrouter_sanitizes_non_ascii_site_url(
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
     monkeypatch.setenv("OPENROUTER_SITE_URL", "https://my-space.hf.space/日本語")
     provider = ModelProvider()
-    _key, _base, _model, headers = provider._resolve_openai_endpoint("openrouter")
+    _key, _base, _model, headers, _fallback_models = provider._resolve_openai_endpoint("openrouter")
     headers["HTTP-Referer"].encode("latin-1")  # must not raise UnicodeEncodeError
 
 
@@ -392,5 +420,5 @@ def test_resolve_openai_endpoint_openrouter_all_non_ascii_title_falls_back(
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
     monkeypatch.setenv("OPENROUTER_APP_TITLE", "日本語")
     provider = ModelProvider()
-    _key, _base, _model, headers = provider._resolve_openai_endpoint("openrouter")
+    _key, _base, _model, headers, _fallback_models = provider._resolve_openai_endpoint("openrouter")
     assert headers["X-Title"] == "Dana CAD Agent"

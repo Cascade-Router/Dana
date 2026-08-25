@@ -373,3 +373,53 @@ def test_no_extra_headers_does_not_add_anything_extra(monkeypatch: pytest.Monkey
         model="qwen2.5-coder:7b",
     )
     assert set(captured["headers"]) == {"Content-type", "Authorization", "User-agent"}
+
+
+def test_fallback_models_are_added_as_models_array_in_request_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenRouter's native server-side cascade: passing ``fallback_models``
+    must land in the JSON body as ``"models"`` alongside the primary
+    ``"model"`` — the raw-HTTP equivalent of the OpenAI SDK's
+    ``extra_body={"models": [...]}``."""
+    _mock_response(monkeypatch, {"content": "hi", "tool_calls": []})
+    captured: dict[str, Any] = {}
+    real_request_cls = bridge.urllib.request.Request
+
+    def capturing_request(url, data=None, *a, **kw):
+        captured["payload"] = json.loads(data.decode("utf-8"))
+        return real_request_cls(url, data, *a, **kw)
+
+    monkeypatch.setattr(bridge.urllib.request, "Request", capturing_request)
+
+    bridge.complete_openai_with_tools(
+        [{"role": "user", "content": "hi"}],
+        api_key="k",
+        base_url="https://openrouter.ai/api/v1",
+        model="google/gemma-4-26b-a4b-it:free",
+        fallback_models=["openai/gpt-oss-120b:free", "openrouter/free"],
+    )
+    assert captured["payload"]["model"] == "google/gemma-4-26b-a4b-it:free"
+    assert captured["payload"]["models"] == ["openai/gpt-oss-120b:free", "openrouter/free"]
+
+
+def test_no_fallback_models_omits_models_key_from_request_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_response(monkeypatch, {"content": "hi", "tool_calls": []})
+    captured: dict[str, Any] = {}
+    real_request_cls = bridge.urllib.request.Request
+
+    def capturing_request(url, data=None, *a, **kw):
+        captured["payload"] = json.loads(data.decode("utf-8"))
+        return real_request_cls(url, data, *a, **kw)
+
+    monkeypatch.setattr(bridge.urllib.request, "Request", capturing_request)
+
+    bridge.complete_openai_with_tools(
+        [{"role": "user", "content": "hi"}],
+        api_key="k",
+        base_url="http://127.0.0.1:11434/v1",
+        model="qwen2.5-coder:7b",
+    )
+    assert "models" not in captured["payload"]

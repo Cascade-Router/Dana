@@ -155,6 +155,7 @@ def _complete_openai_with_tools_once(
     temperature: float = 0.1,
     timeout: float = 90.0,
     extra_headers: dict[str, str] | None = None,
+    fallback_models: list[str] | None = None,
 ) -> dict[str, Any]:
     """Stream one ``/chat/completions`` turn; return the assembled ``message``.
 
@@ -187,6 +188,15 @@ def _complete_openai_with_tools_once(
         payload["tools"] = tools
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
+    if fallback_models:
+        # OpenRouter's native server-side model cascade — equivalent to the
+        # official OpenAI SDK's ``extra_body={"models": [...]}`` for a
+        # ``chat.completions.create`` call, just written directly into this
+        # bridge's own raw JSON body since it has no SDK client underneath.
+        # ``payload["model"]`` stays the primary; on a 429/5xx OpenRouter
+        # itself retries each entry in ``models`` next, in order, with no
+        # round trip back to this process.
+        payload["models"] = list(fallback_models)
 
     url = base_url.rstrip("/") + "/chat/completions"
     headers = {
@@ -305,6 +315,7 @@ def complete_openai_with_tools(
     temperature: float = 0.1,
     timeout: float = 90.0,
     extra_headers: dict[str, str] | None = None,
+    fallback_models: list[str] | None = None,
 ) -> dict[str, Any]:
     """Public entry point every caller (``dana.core.model_provider``)
     actually uses. A plain passthrough to ``_complete_openai_with_tools_once``
@@ -314,6 +325,12 @@ def complete_openai_with_tools(
     (a plain ``RuntimeError``) rather than sleeping out a limit the gateway
     already tried to route around; whatever caller-side fallback exists for
     a real outage (e.g. routing to local Ollama) sees it right away.
+
+    ``fallback_models``, when given, rides in the request body as
+    OpenRouter's own ``models`` cascade array — a DIFFERENT fallback layer
+    than the gateway cascade above: this one runs entirely on OpenRouter's
+    servers for a single ``model=`` provider choice, so it also applies when
+    ``base_url`` targets OpenRouter directly (not through the gateway).
     """
     return _complete_openai_with_tools_once(
         messages,
@@ -326,6 +343,7 @@ def complete_openai_with_tools(
         temperature=temperature,
         timeout=timeout,
         extra_headers=extra_headers,
+        fallback_models=fallback_models,
     )
 
 
