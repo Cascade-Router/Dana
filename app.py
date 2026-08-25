@@ -272,4 +272,4 @@ with gr.Blocks(css=_CUSTOM_CSS, title="Dānā") as demo:
     demo.load(_dummy_gpu_function)
 
 if __name__ == "__main__":
-    demo.queue().launch(server_name="0.0.0.0", server_port=7860)
+    demo.queue().launch(server_name="0.0.0.0", server_port=7860, ssr_mode=False)
