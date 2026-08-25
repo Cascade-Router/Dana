@@ -128,6 +128,11 @@ docs/*.db
 /generated_tools/
 /dashboard.md
 docs/user_guide/dashboard.md
+# Per-turn chat session logs — churn constantly during local use, not source
+/agent_workspace/data/sessions/
+# Generated CAD output (.FCStd/.stl/.step/.FCBak) — regenerable, not source
+/exports/
+/freecad_output/
 .dana_workspace_migrated
 archive/legacy_donna/.donna_workspace_migrated
 archive/legacy_donna/donna_memory.enc

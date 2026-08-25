@@ -1,5 +1,11 @@
-// Add this at the very top of main.tsx or App.tsx
-import './lib/consoleCapture';
+// Imported first, before anything else in this bundle, so window.console is
+// patched (see consoleCapture.ts) before any other module's own top-level
+// console.log calls can run — this is the actual SPA entry point shared by
+// every window (main, orb, spawned plugin windows; see resolveRoot below),
+// so this is the one place a plain `import` here is guaranteed to cover all
+// of them, unlike importing it from App.tsx alone would (the orb/plugin-
+// window roots never import App.tsx at all).
+import "./lib/consoleCapture";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
