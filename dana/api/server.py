@@ -34,6 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from dana.api import artifacts_registry
 from dana.api.cad import router as _cad_router
 from dana.api.sessions import derive_title, is_valid_session_id, load_session, new_session_id, save_session
 from dana.api.sessions import router as _sessions_router
@@ -621,6 +622,31 @@ async def _execute_and_continue(
         if mesh.get("ok"):
             token = _register_mesh(mesh["path"])
             mesh_url = f"/api/mesh/{token}.stl"
+            artifacts_registry.register_artifact(mesh["path"], format="stl", source="generated")
+        # Best-effort STEP sibling — rule 6 of _FREECAD_SYSTEM_PROMPT asks
+        # the LLM to keep geometry recomputed for "the mesh pipeline"; this
+        # is that pipeline's other half, run automatically instead of
+        # waiting on the LLM to call export_freecad_model itself. Silently
+        # skipped (never surfaced as a tool error) when unsupported — the
+        # mock (trimesh) engine always reports ok=False here by design (no
+        # B-rep/STEP writer; see MockFreeCADEngine.export_model), which is
+        # an expected, honest limitation of that driver, not a failure of
+        # this turn's actual tool call.
+        try:
+            step = engine.export_model([result.payload["path"]], "step", result.payload.get("name") or "model")
+        except Exception:  # noqa: BLE001 — best-effort; a driver-level failure here must never fail the turn
+            step = {"ok": False}
+        if step.get("ok"):
+            artifacts_registry.register_artifact(step["path"], format="step", source="generated")
+    elif result.ok and call.tool_id == "export_freecad_model":
+        # An explicit LLM-invoked export — same registry, so the Export
+        # dropdown/Gradio "artifacts" endpoint see it alongside the
+        # automatic entries above regardless of which path produced it.
+        path = result.payload.get("path")
+        if isinstance(path, str) and path:
+            artifacts_registry.register_artifact(
+                path, format=str(result.payload.get("format") or "").lower(), source="exported"
+            )
 
     await _dag_complete(websocket, node_id, "success" if result.ok else "error", result.payload, result.duration_ms)
     await websocket.send_json(
@@ -655,6 +681,11 @@ async def _execute_and_continue(
         )
         return
 
+    print(
+        f"[ReAct] Continuing loop after '{call.tool_id}' -> iteration {loop_count + 1}",
+        file=sys.stderr,
+        flush=True,
+    )
     await _run_react_loop(websocket, session, messages, loop_count + 1, last_failure=current_failure)
 
 
@@ -868,6 +899,12 @@ async def _run_react_loop(
         return
 
     if is_mutating_tool(call.tool_id):
+        print(
+            f"[ReAct] '{call.tool_id}' is mutating -> suspending loop for HITL approval "
+            "(app.py's _GradioSocket auto-approves this immediately on the HF Space path)",
+            file=sys.stderr,
+            flush=True,
+        )
         request_id = uuid.uuid4().hex
         session["react_state"] = {
             "messages": messages,
@@ -912,8 +949,11 @@ async def _resolve_react_hitl(websocket: WebSocket, session: dict[str, Any], res
     if not response.get("approved"):
         # Never dispatched — no "tool_call"/dag node was ever opened for a
         # call awaiting approval, so there's nothing to dag-complete either.
+        print(f"[ReAct] HITL request for '{call.tool_id}' was rejected — turn ends here", file=sys.stderr, flush=True)
         await _finish_turn(websocket, session, state["messages"], "Cancelled — no changes were made.")
         return
+
+    print(f"[ReAct] HITL request for '{call.tool_id}' approved -> dispatching", file=sys.stderr, flush=True)
 
     override = response.get("parameters")
     if isinstance(override, dict):

@@ -41,10 +41,15 @@ export type GradioChatReply = {
   text: string;
   /** Absolute, fetchable URL to the turn's generated .stl, or null if this
    * turn didn't produce one. Gradio's own file-serving endpoint — verified
-   * directly (curled it) to actually serve real STL bytes locally; CORS
-   * behavior on the real hosted Space is unverified from here, since a
-   * local dev instance showed no Access-Control-Allow-Origin header on a
-   * cross-origin request. Worth confirming against the live deployment. */
+   * directly (curled it) to actually serve real STL bytes locally. A local
+   * dev instance shows no Access-Control-Allow-Origin header on a cross-
+   * origin request, but that's specific to `CustomCORSMiddleware` treating
+   * "localhost" as the app's own host (gradio/route_utils.py's
+   * `is_valid_origin`: it only requires the ORIGIN to also be a localhost
+   * alias when the HOST is one) — once actually deployed, the Space's host
+   * is a real hostname, not a localhost alias, so that same middleware
+   * allows any origin. Confirmed by reading Gradio 6.25's source; not
+   * re-verified against the live Space over the network from here. */
   meshUrl: string | null;
 };
 
@@ -53,4 +58,38 @@ export async function sendGradioChatMessage(spaceUrl: string, message: string): 
   const result = await client.predict("/chat", { message });
   const [text, file] = result.data as [string, { url?: string } | null];
   return { text, meshUrl: file?.url ?? null };
+}
+
+export type GradioArtifact = {
+  filename: string;
+  format: string;
+  url: string;
+  size_bytes: number;
+};
+
+type GradioFileData = { url?: string; path?: string; orig_name?: string; size?: number };
+
+// The Gradio-mode counterpart to dana.api.cad's REST GET /api/cad/artifacts
+// (apiBase.ts's IS_GRADIO_MODE blocks all /api/* calls here, since app.py
+// never mounts that FastAPI router — see this file's own header comment).
+// Bound to app.py's hidden "artifacts" api endpoint, which FileData-ifies
+// every path dana.api.artifacts_registry has recorded so far into a real
+// fetchable `.url` — no separate "resolve this path to a URL" round trip
+// needed, same as sendGradioChatMessage's mesh file above.
+export async function fetchGradioArtifacts(spaceUrl: string): Promise<GradioArtifact[]> {
+  const client = await connectGradioClient(spaceUrl);
+  const result = await client.predict("/artifacts", {});
+  const [file0] = result.data as [GradioFileData[] | null];
+  const files = file0 ?? [];
+  return files
+    .filter((f): f is GradioFileData & { url: string } => Boolean(f?.url))
+    .map((f) => {
+      const name = f.orig_name || f.path?.split(/[\\/]/).pop() || f.url.split(/[\\/]/).pop() || "file";
+      return {
+        filename: name,
+        format: name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "",
+        url: f.url,
+        size_bytes: f.size ?? 0,
+      };
+    });
 }

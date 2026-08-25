@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { apiFetch, resolveApiUrl } from "../lib/apiBase";
+import { apiFetch, IS_GRADIO_MODE, resolveApiUrl } from "../lib/apiBase";
+import { fetchGradioArtifacts } from "../lib/gradioChatClient";
 import "./CadToolbar.css";
 
 type Artifact = {
@@ -8,7 +9,13 @@ type Artifact = {
   size_bytes: number;
   modified_at: number;
   source: "generated" | "exported";
+  /** Only set in Gradio mode — a real fetchable URL to the file itself
+   * (Gradio's own FileData resolution), since there's no REST download
+   * endpoint (dana/api/cad.py) to build one from there. */
+  url?: string;
 };
+
+const _SPACE_URL = import.meta.env.VITE_HF_SPACE_URL as string;
 
 // CAD tab toolbar: launches the real FreeCAD desktop GUI on the most
 // recently generated document (dana.api.cad's open-desktop endpoint reuses
@@ -23,6 +30,25 @@ export function CadToolbar() {
   const [launchError, setLaunchError] = useState<string | null>(null);
 
   const refreshArtifacts = useCallback(() => {
+    if (IS_GRADIO_MODE) {
+      // No REST endpoint reachable at all in this build (see apiBase.ts) —
+      // list via app.py's hidden Gradio "artifacts" api instead.
+      fetchGradioArtifacts(_SPACE_URL)
+        .then((files) =>
+          setArtifacts(
+            files.map((f) => ({
+              filename: f.filename,
+              format: f.format,
+              size_bytes: f.size_bytes,
+              modified_at: 0,
+              source: "generated" as const,
+              url: f.url,
+            }))
+          )
+        )
+        .catch(() => setArtifacts([]));
+      return;
+    }
     apiFetch("/api/cad/artifacts")
       .then((res) => (res.ok ? res.json() : { artifacts: [] }))
       .then((data) => setArtifacts(data.artifacts ?? []))
@@ -45,21 +71,26 @@ export function CadToolbar() {
       .finally(() => setLaunching(false));
   }, []);
 
-  const download = useCallback((filename: string) => {
+  const download = useCallback((artifact: Artifact) => {
     // window.open (not an <a download>) — dev mode serves the frontend and
     // API from different origins (see apiBase.ts), and a cross-origin
     // "download" attribute is silently ignored by most browsers; the
     // backend's Content-Disposition: attachment header is what actually
-    // triggers the save either way.
-    window.open(resolveApiUrl(`/api/cad/artifacts/${encodeURIComponent(filename)}/download`), "_blank");
+    // triggers the save either way. In Gradio mode there's no REST download
+    // route at all — `artifact.url` is already the real, fetchable Gradio
+    // file URL (see refreshArtifacts/fetchGradioArtifacts).
+    const url = artifact.url ?? resolveApiUrl(`/api/cad/artifacts/${encodeURIComponent(artifact.filename)}/download`);
+    window.open(url, "_blank");
     setExportOpen(false);
   }, []);
 
   return (
     <div className="cad-toolbar">
-      <button type="button" className="cad-toolbar__btn" onClick={launchDesktop} disabled={launching}>
-        {launching ? "Launching…" : "🖥 Launch FreeCAD GUI"}
-      </button>
+      {!IS_GRADIO_MODE && (
+        <button type="button" className="cad-toolbar__btn" onClick={launchDesktop} disabled={launching}>
+          {launching ? "Launching…" : "🖥 Launch FreeCAD GUI"}
+        </button>
+      )}
 
       <div className="cad-toolbar__export">
         <button
@@ -82,7 +113,7 @@ export function CadToolbar() {
                 key={a.filename}
                 type="button"
                 className="cad-toolbar__export-item"
-                onClick={() => download(a.filename)}
+                onClick={() => download(a)}
               >
                 <span className="cad-toolbar__export-format">{a.format.toUpperCase()}</span>
                 <span className="cad-toolbar__export-name">{a.filename}</span>

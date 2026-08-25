@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
+from dana.api import artifacts_registry
 from dana.paths import DANA_WORKSPACE
 
 router = APIRouter(prefix="/api/cad", tags=["cad"])
@@ -61,15 +62,31 @@ def _list_artifacts() -> list[dict[str, Any]]:
                     "source": "generated" if directory == _FREECAD_OUTPUT_DIR else "exported",
                 }
             )
+    seen_filenames = {a["filename"] for a in out}
+    # dana.api.artifacts_registry covers what this directory scan structurally
+    # can't: MockFreeCADEngine (dana.platform.mock, used whenever
+    # dana.platform.factory.IS_HF_SPACE) writes every generated mesh to an
+    # arbitrary system-temp path via tempfile.mkstemp, never under either
+    # directory above. Registry entries win no priority over a same-named
+    # on-disk file — just fill in whatever the scan didn't already find.
+    for entry in artifacts_registry.list_artifacts():
+        if entry["filename"] in seen_filenames:
+            continue
+        seen_filenames.add(entry["filename"])
+        out.append({k: v for k, v in entry.items() if k != "path"})
     out.sort(key=lambda a: a["modified_at"], reverse=True)
     return out
 
 
 def _resolve_artifact(filename: str) -> Path:
-    """Only a bare filename (no path separators) matching a file that
-    ACTUALLY exists directly inside one of ``_ARTIFACT_DIRS`` is ever
-    returned — never resolved relative to an arbitrary/absolute caller
-    path, so ``../../whatever`` or an absolute path never matches anything.
+    """Only a bare filename (no path separators) matching either a file that
+    ACTUALLY exists directly inside one of ``_ARTIFACT_DIRS``, or one already
+    recorded in ``artifacts_registry`` (the mock engine's arbitrary temp-path
+    outputs — see ``_list_artifacts``), is ever returned — never resolved
+    relative to an arbitrary/absolute caller path, so ``../../whatever`` or
+    an absolute path never matches anything; the registry lookup is likewise
+    a match against paths THIS process itself already generated, never the
+    caller-supplied string used as a path directly.
     """
     name = Path(filename).name
     if name != filename or Path(name).suffix.lower() not in _ARTIFACT_EXTENSIONS:
@@ -78,6 +95,9 @@ def _resolve_artifact(filename: str) -> Path:
         candidate = directory / name
         if candidate.is_file():
             return candidate
+    for entry in artifacts_registry.list_artifacts():
+        if entry["filename"] == name:
+            return Path(entry["path"])
     raise HTTPException(status_code=404, detail=f"artifact not found: {filename!r}")
 
 

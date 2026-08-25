@@ -33,11 +33,14 @@ directly rather than converting it to a format nothing here produces.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any
 
 import gradio as gr
 import spaces
 
+from dana.api import artifacts_registry
 from dana.api.server import _MESH_REGISTRY, _process_user_text, _resolve_react_hitl, _resolve_visual_capture
 from dana.api.sessions import new_session_id
 from dana.plugins.freecad.call_log import CadCallLog
@@ -140,8 +143,23 @@ async def _respond(message: str, chatbot_history: list, session: dict[str, Any] 
     if not trimmed:
         yield "", None, chatbot_history, None, session
         return
-    if session is None:
+    # Session-persistence trace (item 3): `session` is whatever gr.State
+    # handed back for THIS browser tab's session_hash — a fresh dict only on
+    # the very first turn, the SAME dict object (by id()) every turn after,
+    # since Gradio round-trips gr.State's value for a given session_hash
+    # unchanged. If a mesh/tool created in turn 1 seems to "vanish" by turn
+    # 2, this line is what tells you whether it's actually a fresh session
+    # (a new session_id/id() each turn — a real state-loss bug) or a bug
+    # elsewhere despite the same session persisting correctly.
+    is_new_session = session is None
+    if is_new_session:
         session = _new_session()
+    print(
+        f"[app.py] Chat turn start. session_id={session['session_id']} "
+        f"new_session={is_new_session} session_obj_id={id(session)} turn={session['turn_counter']}",
+        file=sys.stderr,
+        flush=True,
+    )
 
     pending_history = chatbot_history + [
         {"role": "user", "content": trimmed},
@@ -156,7 +174,27 @@ async def _respond(message: str, chatbot_history: list, session: dict[str, Any] 
         {"role": "user", "content": trimmed},
         {"role": "assistant", "content": reply},
     ]
+    print(
+        f"[app.py] Chat turn complete. Exported mesh path: {socket.mesh_path}, "
+        f"Registry items: {len(artifacts_registry.list_artifacts())}",
+        file=sys.stderr,
+        flush=True,
+    )
     yield reply, socket.mesh_path, final_history, socket.mesh_path, session
+
+
+def _list_artifact_files() -> list[str]:
+    """Bound to the hidden "artifacts" api endpoint below — the Gradio-mode
+    equivalent of ``dana.api.cad``'s ``GET /api/cad/artifacts``, which the
+    Vercel frontend's CadToolbar can't reach here at all (see this file's own
+    docstring: no FastAPI app is mounted on this Space). Returns a plain list
+    of existing file paths so the bound ``gr.File`` output FileData-ifies
+    each one into a real fetchable URL (same mechanism ``_respond`` already
+    relies on for ``file_out``/``mesh_preview`` above) — the JS client reads
+    each entry's ``.url``/``.orig_name`` directly, no second round trip
+    needed to resolve a path into something fetchable.
+    """
+    return [a["path"] for a in artifacts_registry.list_artifacts() if Path(a["path"]).is_file()]
 
 
 # ZeroGPU is only compatible with the Gradio SDK (per HF's own docs) and
@@ -221,6 +259,15 @@ with gr.Blocks(css=_CUSTOM_CSS, title="Dānā") as demo:
     send_btn.click(_respond, inputs=[msg, chatbot, session_state], outputs=_outputs, api_name=False).then(
         lambda: "", None, msg
     )
+
+    # Hidden trigger for the "artifacts" api endpoint — CadToolbar.tsx (via
+    # gradioChatClient.ts's fetchGradioArtifacts) calls this by api_name
+    # exactly like `msg.submit`'s "chat" above, never by actually clicking
+    # it. gr.File FileData-ifies each returned path into a real fetchable
+    # URL, so the frontend needs no separate download endpoint either.
+    artifacts_trigger = gr.Button(visible=False)
+    artifacts_out = gr.File(visible=False, file_count="multiple")
+    artifacts_trigger.click(_list_artifact_files, None, artifacts_out, api_name="artifacts")
 
     demo.load(_dummy_gpu_function)
 

@@ -2259,7 +2259,9 @@ error to the user instead of guessing again.
 5. VISUALLY CONFIRM COMPLEX RESULTS. After assembling several mated parts, or \
 whenever you're not confident a sequence of edits looks right, call \
 `take_canvas_screenshot` to see the actual rendered result before telling \
-the user it's done or exporting it.\
+the user it's done or exporting it.
+6. After creating or modifying solid geometry, ensure the object is recomputed \
+so the mesh pipeline exports the updated geometry.\
 """
 
 
@@ -3052,6 +3054,7 @@ async def next_react_turn(
 
     tool_calls = result.get("tool_calls") or []
     if not tool_calls:
+        print("[ReAct] LLM finished with final response (no tool call)", file=sys.stderr, flush=True)
         return ReactTurn("final", content=result.get("content") or "")
     call = tool_calls[0]  # one tool per LLM turn — the loop itself is what allows chaining several
     allowed_tool_ids = _tool_ids_for_plugins(effective_plugins)
@@ -3078,6 +3081,11 @@ async def next_react_turn(
         call = retry_call
     call.raw_text = raw_text
     _finalize_call_arguments(call, active_selection)
+    print(
+        f"[ReAct] Tool call selected: {call.tool_id} with args: {call.arguments}",
+        file=sys.stderr,
+        flush=True,
+    )
     return ReactTurn("tool_call", call=call)
 
 
@@ -3298,6 +3306,10 @@ def dispatch_tool_call(
         message = "ok"
         if isinstance(payload, dict) and payload.get("name") and payload.get("path"):
             _OBJECT_PATH_REGISTRY[str(payload["name"])] = str(payload["path"])
+    if ok:
+        print(f"[ReAct] Tool {call.tool_id} executed successfully -> {payload}", file=sys.stderr, flush=True)
+    else:
+        print(f"[ReAct] Tool {call.tool_id} failed -> {message}", file=sys.stderr, flush=True)
     if call_log is not None:
         call_log.record(call.tool_id, call.arguments, ok=ok, result=payload if ok else {}, error=None if ok else message)
     return ToolResult(call.tool_id, ok, payload, message, duration_ms)
