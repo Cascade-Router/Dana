@@ -55,25 +55,48 @@ export type GradioChatReply = {
 
 type GradioFileData = { url?: string; path?: string; orig_name?: string; size?: number };
 
+// A bare, absolute filesystem path (e.g. "/tmp/dana_mock_Cylinder_t9vir1vy.stl"
+// — the mock CAD engine's own tempfile path INSIDE the HF Space's Docker
+// container) is meaningless to a browser on a different origin (Vercel):
+// there's no host to fetch it from. Turn it into the real, cross-origin-
+// fetchable URL Gradio itself would serve that same path at:
+// `${root}${api_prefix}/file=${path}` — using the CONNECTED client's own
+// resolved `config.root`/`api_prefix` (not a hardcoded ".hf.space"/"/file="
+// guess) so this stays correct whatever Space URL was actually passed to
+// connectGradioClient AND whatever route prefix that Gradio version uses
+// (older Gradio serves this at bare "/file=", 5.x+ moved it under
+// "/gradio_api/file=" — see @gradio/client's own upload() helper, which
+// builds files' URLs the exact same way after an upload).
+function resolveAbsoluteFileUrl(client: Client, rawPath: string): string {
+  const root = (client.config?.root ?? "").replace(/\/+$/, "");
+  const resolved = `${root}${client.api_prefix}/file=${rawPath}`;
+  console.log("[GradioClient] Resolved absolute mesh URL:", resolved);
+  return resolved;
+}
+
+function toAbsoluteUrl(client: Client, value: string): string {
+  if (/^https?:\/\//i.test(value)) return value;
+  return resolveAbsoluteFileUrl(client, value);
+}
+
 // `data[1]` (file_out, bound to a gr.Model3D output — see app.py's
 // _respond) is a Gradio FileData object `{url, path, orig_name, ...}` in
 // every version actually exercised here, but the exact client-side shape
 // depends on the @gradio/client version resolving/normalizing it — some
-// versions have been observed handing back the bare string path/URL a
-// component was given instead of the wrapped object. Handling both shapes
-// here means a client-library version bump can't silently turn a real mesh
-// into a dropped `null`.
-function parseMeshPayload(raw: unknown): string | null {
+// versions have been observed handing back the bare string path a
+// component was given instead of the wrapped object (confirmed live: the
+// raw in-container path, not a fetchable URL, reaching data[1] as-is).
+// Handling both shapes, and resolving a bare path in either shape to an
+// absolute URL, means neither a client-library version bump nor this quirk
+// can silently turn a real mesh into a dropped/unfetchable `null`.
+function parseMeshPayload(raw: unknown, client: Client): string | null {
   console.log("[GradioClient] Mesh payload received in data[1]:", raw);
-  if (typeof raw === "string") return raw || null;
+  if (typeof raw === "string") return raw ? toAbsoluteUrl(client, raw) : null;
   if (raw && typeof raw === "object") {
     const file = raw as GradioFileData;
-    // `.path` is a last-resort fallback — on a real deployed Space it's a
-    // server-side filesystem path, not something a browser can fetch, so
-    // it only helps when `.url` is missing but `.path` already happens to
-    // be an absolute URL (some client versions populate it that way for a
-    // same-origin app). `.url` is always tried first.
-    return file.url || file.path || null;
+    if (file.url) return toAbsoluteUrl(client, file.url);
+    if (file.path) return toAbsoluteUrl(client, file.path);
+    return null;
   }
   return null;
 }
@@ -82,7 +105,7 @@ export async function sendGradioChatMessage(spaceUrl: string, message: string): 
   const client = await connectGradioClient(spaceUrl);
   const result = await client.predict("/chat", { message });
   const [text, file] = result.data as [string, unknown];
-  return { text, meshUrl: parseMeshPayload(file) };
+  return { text, meshUrl: parseMeshPayload(file, client) };
 }
 
 export type GradioArtifact = {
@@ -106,14 +129,16 @@ export async function fetchGradioArtifacts(spaceUrl: string): Promise<GradioArti
   console.log("[GradioClient] Artifacts payload received:", file0);
   const files = file0 ?? [];
   return files
-    .filter((f): f is GradioFileData & { url: string } => Boolean(f?.url))
     .map((f) => {
-      const name = f.orig_name || f.path?.split(/[\\/]/).pop() || f.url.split(/[\\/]/).pop() || "file";
+      const rawLocation = f?.url || f?.path;
+      if (!rawLocation) return null;
+      const name = f.orig_name || f.path?.split(/[\\/]/).pop() || f.url?.split(/[\\/]/).pop() || "file";
       return {
         filename: name,
         format: name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : "",
-        url: f.url,
+        url: toAbsoluteUrl(client, rawLocation),
         size_bytes: f.size ?? 0,
       };
-    });
+    })
+    .filter((a): a is GradioArtifact => a !== null);
 }
