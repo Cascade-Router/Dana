@@ -58,10 +58,22 @@ build/
 dist/
 *.egg-info/
 
+# --- Node (frontend/, website/) ---
+# frontend/.gitignore and website/.gitignore already cover their own trees;
+# this bare pattern is a repo-wide backstop for any other Node project root.
+node_modules/
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+
 # Headless / login-startup debug logs
 dana_headless.log
-start_dana.bat
-start_donna.bat
+# Root-anchored (/) — the real, tracked launcher lives at
+# scripts/launchers/start_dana.bat; an unanchored pattern here would also
+# match that file by basename and untrack it too.
+/start_dana.bat
+/start_donna.bat
 
 # Regenerable pyreverse UML dumps (do not clutter production tree)
 dana_class_uml.md
@@ -130,9 +142,25 @@ docs/*.db
 docs/user_guide/dashboard.md
 # Per-turn chat session logs — churn constantly during local use, not source
 /agent_workspace/data/sessions/
-# Generated CAD output (.FCStd/.stl/.step/.FCBak) — regenerable, not source
+# Snapshot dumps from past repo-cleanup passes — never source
+/_offline_archive/
+
+# --- CAD / mesh exports — regenerable, never source ---
+# Extension-based (catches a stray export anywhere, not just the two dirs
+# below) plus the actual output directories themselves.
+*.step
+*.stp
+*.stl
+*.obj
+*.FCStd
+*.FCStd1
+*.FCBak
+*.brep
+*.gltf
+*.glb
 /exports/
 /freecad_output/
+/output/
 .dana_workspace_migrated
 archive/legacy_donna/.donna_workspace_migrated
 archive/legacy_donna/donna_memory.enc
