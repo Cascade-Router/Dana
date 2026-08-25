@@ -53,11 +53,36 @@ export type GradioChatReply = {
   meshUrl: string | null;
 };
 
+type GradioFileData = { url?: string; path?: string; orig_name?: string; size?: number };
+
+// `data[1]` (file_out, bound to a gr.Model3D output — see app.py's
+// _respond) is a Gradio FileData object `{url, path, orig_name, ...}` in
+// every version actually exercised here, but the exact client-side shape
+// depends on the @gradio/client version resolving/normalizing it — some
+// versions have been observed handing back the bare string path/URL a
+// component was given instead of the wrapped object. Handling both shapes
+// here means a client-library version bump can't silently turn a real mesh
+// into a dropped `null`.
+function parseMeshPayload(raw: unknown): string | null {
+  console.log("[GradioClient] Mesh payload received in data[1]:", raw);
+  if (typeof raw === "string") return raw || null;
+  if (raw && typeof raw === "object") {
+    const file = raw as GradioFileData;
+    // `.path` is a last-resort fallback — on a real deployed Space it's a
+    // server-side filesystem path, not something a browser can fetch, so
+    // it only helps when `.url` is missing but `.path` already happens to
+    // be an absolute URL (some client versions populate it that way for a
+    // same-origin app). `.url` is always tried first.
+    return file.url || file.path || null;
+  }
+  return null;
+}
+
 export async function sendGradioChatMessage(spaceUrl: string, message: string): Promise<GradioChatReply> {
   const client = await connectGradioClient(spaceUrl);
   const result = await client.predict("/chat", { message });
-  const [text, file] = result.data as [string, { url?: string } | null];
-  return { text, meshUrl: file?.url ?? null };
+  const [text, file] = result.data as [string, unknown];
+  return { text, meshUrl: parseMeshPayload(file) };
 }
 
 export type GradioArtifact = {
@@ -66,8 +91,6 @@ export type GradioArtifact = {
   url: string;
   size_bytes: number;
 };
-
-type GradioFileData = { url?: string; path?: string; orig_name?: string; size?: number };
 
 // The Gradio-mode counterpart to dana.api.cad's REST GET /api/cad/artifacts
 // (apiBase.ts's IS_GRADIO_MODE blocks all /api/* calls here, since app.py
@@ -80,6 +103,7 @@ export async function fetchGradioArtifacts(spaceUrl: string): Promise<GradioArti
   const client = await connectGradioClient(spaceUrl);
   const result = await client.predict("/artifacts", {});
   const [file0] = result.data as [GradioFileData[] | null];
+  console.log("[GradioClient] Artifacts payload received:", file0);
   const files = file0 ?? [];
   return files
     .filter((f): f is GradioFileData & { url: string } => Boolean(f?.url))

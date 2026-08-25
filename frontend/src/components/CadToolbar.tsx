@@ -46,7 +46,10 @@ export function CadToolbar() {
             }))
           )
         )
-        .catch(() => setArtifacts([]));
+        .catch((err) => {
+          console.error("[CadToolbar] fetchGradioArtifacts failed:", err);
+          setArtifacts([]);
+        });
       return;
     }
     apiFetch("/api/cad/artifacts")

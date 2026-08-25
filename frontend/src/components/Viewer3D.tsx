@@ -7,7 +7,21 @@ import type { CameraTarget, CanvasSelection } from "../lib/useChatSocket";
 import "./Viewer3D.css";
 
 function StlMesh({ url, onSelect }: { url: string; onSelect: (selection: CanvasSelection) => void }) {
-  const geometry = useLoader(STLLoader, url);
+  // Explicit rather than relying on Three.js's own default (which already
+  // is 'anonymous' as of the installed three version — see Loader.js).
+  // Note this specific property has no effect on STLLoader in particular:
+  // it loads through FileLoader, which fetches via `fetch()` using its own
+  // `withCredentials` flag (default 'same-origin' credentials), not the
+  // `crossOrigin` property at all — that property only matters for
+  // <img>-backed loaders (TextureLoader/ImageLoader). Whether a cross-
+  // origin Gradio mesh URL actually loads is governed entirely by the
+  // server's CORS response headers (see gradioChatClient.ts's own note on
+  // Gradio's CustomCORSMiddleware), not by anything set here. Kept anyway,
+  // set explicitly rather than left to Three.js's default, so the intent
+  // isn't silently dependent on an unannounced upstream default.
+  const geometry = useLoader(STLLoader, url, (loader) => {
+    loader.setCrossOrigin("anonymous");
+  });
   geometry.computeVertexNormals();
   geometry.center();
 
