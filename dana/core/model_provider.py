@@ -285,6 +285,25 @@ def is_complexity_reject(text: str) -> bool:
     )
 
 
+def _sanitize_header_value(value: str, *, fallback: str) -> str:
+    """Strip a header value down to what HTTP can actually transmit.
+
+    Real, observed crash: `OPENROUTER_APP_TITLE=Dānā CAD Agent` raised
+    ``UnicodeEncodeError: 'latin-1' codec can't encode character '\\u0101'``
+    — not at the point this dict gets built, but deep inside
+    ``http.client``/``urllib`` when the request actually goes out, since
+    header values are transmitted as latin-1 regardless of what a Python
+    ``str`` can hold. An env var feeding straight into a header value (this
+    provider's ``OPENROUTER_SITE_URL``/``OPENROUTER_APP_TITLE``) is user
+    input from this module's point of view, so it gets sanitized here
+    rather than trusted. Stripping non-ASCII bytes is lossy but never
+    crashes; falls back to ``fallback`` if that stripping empties the
+    string out entirely (e.g. a title that was ALL non-ASCII).
+    """
+    cleaned = value.encode("ascii", "ignore").decode("ascii").strip()
+    return cleaned or fallback
+
+
 class ModelProvider:
     """Unified chat completion for Spec Compiler / Meta-Broker planning."""
 
@@ -496,13 +515,21 @@ class ModelProvider:
                 # as anonymous. Both overridable; sensible defaults either
                 # way (HF_SPACE_URL and SPACE_ID are HF's own auto-set env
                 # vars, so this needs no Dana-specific config to be correct
-                # out of the box in a Space).
-                "HTTP-Referer": (
+                # out of the box in a Space). Sanitized (see
+                # _sanitize_header_value) since these two specifically come
+                # straight from env vars — a non-ASCII value crashes deep in
+                # http.client at request-send time, not here, which is
+                # exactly what happened with an early "Dānā"-branded title.
+                "HTTP-Referer": _sanitize_header_value(
                     (os.environ.get("OPENROUTER_SITE_URL") or "").strip()
                     or (os.environ.get("HF_SPACE_URL") or "").strip()
-                    or "https://github.com/"
+                    or "https://github.com/",
+                    fallback="https://github.com/",
                 ),
-                "X-Title": (os.environ.get("OPENROUTER_APP_TITLE") or "").strip() or "Dana CAD Agent",
+                "X-Title": _sanitize_header_value(
+                    (os.environ.get("OPENROUTER_APP_TITLE") or "").strip() or "Dana CAD Agent",
+                    fallback="Dana CAD Agent",
+                ),
             }
             return key, base, model, headers
         if provider == "gateway":

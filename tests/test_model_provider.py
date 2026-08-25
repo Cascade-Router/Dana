@@ -7,6 +7,7 @@ import pytest
 from dana.core import model_provider as model_provider_module
 from dana.core.model_provider import (
     ModelProvider,
+    _sanitize_header_value,
     cloud_fallback_enabled,
     complexity_reject_marker,
     is_complexity_reject,
@@ -137,6 +138,10 @@ def test_tool_calling_provider_defaults_to_gateway_when_cloud_primary_enabled(
     OpenAI directly — the gateway centrally holds every provider key and
     cascades groq -> gemini -> openai on 429/5xx upstream itself. Any single
     provider remains explicitly selectable via DANA_CLOUD_PROVIDER."""
+    # This repo's .env now sets DANA_CLOUD_PROVIDER=openrouter for local
+    # dev — silence ensure_dotenv_loaded() too, or it reloads that value
+    # right back into os.environ before the read below undoes the delenv.
+    monkeypatch.setattr(model_provider_module, "ensure_dotenv_loaded", lambda: None)
     monkeypatch.setenv("DANA_CLOUD_PRIMARY", "1")
     monkeypatch.delenv("DANA_CLOUD_PROVIDER", raising=False)
     assert tool_calling_provider() == "gateway"
@@ -244,6 +249,11 @@ def test_complete_with_complexity_fallback_stays_local_when_disabled(
 
 
 def test_resolve_openai_endpoint_openrouter_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    # This repo's .env now sets DANA_OPENROUTER_MODEL/OPENROUTER_SITE_URL/
+    # OPENROUTER_APP_TITLE for local dev — silence ensure_dotenv_loaded()
+    # too, or it reloads those values right back into os.environ before
+    # the delenv calls below take effect.
+    monkeypatch.setattr(model_provider_module, "ensure_dotenv_loaded", lambda: None)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
     monkeypatch.delenv("OPENROUTER_API_BASE", raising=False)
     monkeypatch.delenv("DANA_OPENROUTER_MODEL", raising=False)
@@ -273,6 +283,10 @@ def test_resolve_openai_endpoint_openrouter_falls_back_to_generic_llm_api_key(
     """LLM_API_KEY is the generic fallback name for anyone already using
     that convention (matching LLM_GATEWAY_URL/LLM_GATEWAY_API_KEY's own
     naming) — OPENROUTER_API_KEY still wins if both happen to be set."""
+    # This repo's .env now has a real OPENROUTER_API_KEY for local dev —
+    # silence ensure_dotenv_loaded() too, or it reloads that value right
+    # back into os.environ before the delenv below takes effect.
+    monkeypatch.setattr(model_provider_module, "ensure_dotenv_loaded", lambda: None)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("LLM_API_KEY", "generic-llm-key")
     provider = ModelProvider()
@@ -319,3 +333,64 @@ def test_tool_calling_provider_supports_openrouter_override(monkeypatch: pytest.
     monkeypatch.setenv("DANA_CLOUD_PRIMARY", "1")
     monkeypatch.setenv("DANA_CLOUD_PROVIDER", "openrouter")
     assert tool_calling_provider() == "openrouter"
+
+
+# --------------------------------------------------------------------------
+# Header sanitization — regression coverage for a real crash:
+# OPENROUTER_APP_TITLE="Dānā CAD Agent" raised UnicodeEncodeError deep in
+# http.client at request-send time (headers are transmitted as latin-1,
+# a stricter subset of what a Python str can hold), not at the point these
+# dicts get built — so nothing in this module's own code path ever saw an
+# exception, making it the kind of bug a plain "does this raise" test at
+# construction time wouldn't have caught either. These tests go through
+# the same _resolve_openai_endpoint("openrouter") call site a real request
+# does, not just the helper in isolation.
+# --------------------------------------------------------------------------
+
+
+def test_sanitize_header_value_strips_non_ascii() -> None:
+    assert _sanitize_header_value("Dānā CAD Agent", fallback="x") == "Dn CAD Agent"
+
+
+def test_sanitize_header_value_falls_back_when_stripping_empties_the_string() -> None:
+    assert _sanitize_header_value("日本語", fallback="Dana CAD Agent") == "Dana CAD Agent"
+
+
+def test_sanitize_header_value_passes_through_plain_ascii_unchanged() -> None:
+    assert _sanitize_header_value("Dana CAD Agent", fallback="x") == "Dana CAD Agent"
+
+
+def test_resolve_openai_endpoint_openrouter_sanitizes_non_ascii_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exact real-world trigger: a non-ASCII OPENROUTER_APP_TITLE must
+    never reach the returned headers dict un-sanitized, and resolving the
+    endpoint must not raise."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "Dānā CAD Agent")
+    provider = ModelProvider()
+    _key, _base, _model, headers = provider._resolve_openai_endpoint("openrouter")
+    assert headers["X-Title"] == "Dn CAD Agent"
+    headers["X-Title"].encode("latin-1")  # must not raise UnicodeEncodeError
+
+
+def test_resolve_openai_endpoint_openrouter_sanitizes_non_ascii_site_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+    monkeypatch.setenv("OPENROUTER_SITE_URL", "https://my-space.hf.space/日本語")
+    provider = ModelProvider()
+    _key, _base, _model, headers = provider._resolve_openai_endpoint("openrouter")
+    headers["HTTP-Referer"].encode("latin-1")  # must not raise UnicodeEncodeError
+
+
+def test_resolve_openai_endpoint_openrouter_all_non_ascii_title_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A title that's ENTIRELY non-ASCII strips down to nothing — must fall
+    back to the plain-ASCII default instead of sending an empty header."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+    monkeypatch.setenv("OPENROUTER_APP_TITLE", "日本語")
+    provider = ModelProvider()
+    _key, _base, _model, headers = provider._resolve_openai_endpoint("openrouter")
+    assert headers["X-Title"] == "Dana CAD Agent"
