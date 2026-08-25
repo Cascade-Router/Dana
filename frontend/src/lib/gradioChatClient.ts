@@ -1,4 +1,13 @@
 import { Client } from "@gradio/client";
+import { installConsoleCapture } from "./consoleCapture";
+
+// Idempotent — see consoleCapture.ts's own `installed` guard. Called here
+// too (not just from TerminalDrawer.tsx) so this module's own console.log
+// calls below (and every predict() call this module makes) are guaranteed
+// captured into the Debug Terminal panel regardless of which module a
+// given bundler/import order happens to evaluate first.
+installConsoleCapture();
+console.log("[DebugTerminal] Debug console initialized successfully");
 
 // Thin wrapper around the Hugging Face Space's pure-Gradio backend (see
 // app.py — a gr.ChatInterface, api_name="chat", registered because
