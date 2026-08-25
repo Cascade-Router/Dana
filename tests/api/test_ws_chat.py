@@ -453,15 +453,22 @@ def _capture_tool_names(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return captured
 
 
-def test_update_context_normalizes_cad_to_freecad_and_unlocks_full_tool_set(
+def test_update_context_normalizes_cad_to_freecad_essential_tool_set(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """"cad" (the frontend's plugin id) -> "freecad" (the capability
-    domain) unlocks core + FreeCAD's tools — NOT the same as
-    react_dispatch._LLM_TOOL_IDS now that "os_tools" (autonomous semantic
-    routing's mock domain, see test_autonomous_routing.py) is a separate,
-    independently-activatable capability the frontend never grants on its
-    own."""
+    """"cad" (the frontend's plugin id) -> "freecad_essential" (NOT the raw
+    "freecad" domain's full ~24-tool set) — dana.api.server._PLUGIN_ID_TO_CAPABILITY
+    routes the CAD tab's activation to the same trimmed 7-tool default the
+    agent's own autonomous load_capability("freecad") call already used, so
+    a real CAD-panel session doesn't blow a free-tier Groq model's 8000 TPM
+    ceiling on every turn (previously the one unmitigated path to the full
+    schema — see _FREECAD_ESSENTIAL_TOOL_IDS's docstring). The 2 manifest-only
+    extension tools (modify_existing_freecad_document/execute_freecad_script)
+    only ever unioned into the raw "freecad" domain, never into
+    "freecad_essential", so they're correctly absent here too — heavier,
+    load-on-demand tools, exactly what trimming the default is for. The
+    agent can still reach the full set (these two included) via
+    load_capability(domain="freecad") or "freecad_full"."""
     import dana.core.react_dispatch as react_dispatch
 
     captured = _capture_tool_names(monkeypatch)
@@ -471,9 +478,7 @@ def test_update_context_normalizes_cad_to_freecad_and_unlocks_full_tool_set(
         ws.send_json({"text": "hello"})
         _drain_until(ws, "assistant_message")
 
-    assert captured["tool_names"] == react_dispatch._CORE_TOOL_IDS | react_dispatch._FREECAD_TOOL_IDS | {
-        "modify_existing_freecad_document", "execute_freecad_script",
-    }
+    assert captured["tool_names"] == react_dispatch._CORE_TOOL_IDS | react_dispatch._FREECAD_ESSENTIAL_TOOL_IDS
 
 
 def test_no_active_plugins_yields_core_tools_only(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

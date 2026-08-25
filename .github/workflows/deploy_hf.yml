@@ -3,12 +3,6 @@ name: Sync to Hugging Face Spaces
 on:
   push:
     branches: [ main ]
-    paths:
-      - 'dana/**'
-      - 'deploy/**'
-      - 'app.py'
-      - 'packages.txt'
-      - '.github/workflows/deploy_hf.yml'
   workflow_dispatch:
 
 jobs:

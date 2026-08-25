@@ -1,7 +1,7 @@
 import type { ComponentType, LazyExoticComponent } from "react";
 import type { CameraTarget, CanvasSelection, ServerEvent } from "../lib/useChatSocket";
 
-export type PluginId = "cad" | "workspace" | "memory" | "skills" | "services" | "planner" | "coder";
+export type PluginId = "cad" | "workspace" | "coder";
 
 // Shared props every plugin component receives, whether it's rendered
 // inline in the main window or as the sole contents of a spawned window.

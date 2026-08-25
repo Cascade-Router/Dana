@@ -91,6 +91,34 @@ _ALLOWED_VERIFY_COMMANDS: dict[str, tuple[str, ...] | None] = {
 }
 
 
+def _validate_verify_command(raw_command: str) -> tuple[list[str] | None, str | None]:
+    """Parses ``raw_command`` (``shlex.split`` — never shell-interpreted) and
+    checks its base executable against ``_ALLOWED_VERIFY_COMMANDS``. Returns
+    ``(argv, None)`` on success or ``(None, error_message)`` on failure.
+    Shared by ``run_verification_command`` and ``execute_code_task``'s
+    optional ``test_command`` so both enforce the exact same allowlist —
+    aider's own ``--test-cmd`` subprocess must never become a second, looser
+    escape hatch around the one already established here.
+    """
+    try:
+        argv = shlex.split(raw_command)
+    except ValueError as exc:
+        return None, f"could not parse command: {exc}"
+    if not argv:
+        return None, "command must be non-empty"
+
+    base = argv[0]
+    if base not in _ALLOWED_VERIFY_COMMANDS:
+        return None, (
+            f"{base!r} is not a whitelisted verification command — only "
+            f"{sorted(_ALLOWED_VERIFY_COMMANDS)} are permitted"
+        )
+    required_prefix = _ALLOWED_VERIFY_COMMANDS[base]
+    if required_prefix and argv[1:2] != list(required_prefix):
+        return None, f"{base!r} may only be run as {base!r} followed by {' '.join(required_prefix)!r}"
+    return argv, None
+
+
 class PathEscapeError(ValueError):
     """A path argument resolved outside PROJECT_ROOT or hit the denylist."""
 
@@ -250,28 +278,9 @@ def run_verification_command(args: dict[str, Any]) -> dict[str, Any]:
     if not raw_command:
         return {"ok": False, "error": "run_verification_command requires a non-empty 'command'"}
 
-    try:
-        argv = shlex.split(raw_command)
-    except ValueError as exc:
-        return {"ok": False, "error": f"could not parse command: {exc}"}
-    if not argv:
-        return {"ok": False, "error": "run_verification_command requires a non-empty 'command'"}
-
-    base = argv[0]
-    required_prefix = _ALLOWED_VERIFY_COMMANDS.get(base, ())
-    if base not in _ALLOWED_VERIFY_COMMANDS:
-        return {
-            "ok": False,
-            "error": (
-                f"{base!r} is not a whitelisted verification command — only "
-                f"{sorted(_ALLOWED_VERIFY_COMMANDS)} are permitted"
-            ),
-        }
-    if required_prefix and argv[1:2] != list(required_prefix):
-        return {
-            "ok": False,
-            "error": f"{base!r} may only be run as {base!r} followed by {' '.join(required_prefix)!r}",
-        }
+    argv, error = _validate_verify_command(raw_command)
+    if error:
+        return {"ok": False, "error": error}
 
     try:
         completed = subprocess.run(  # noqa: S603 — argv from shlex.split, shell=False; base already allowlist-checked above
@@ -333,6 +342,15 @@ def execute_code_task(args: dict[str, Any]) -> dict[str, Any]:
     mode. MUTATING (manifest.json: ``read_only: false``) — dana.core.
     react_dispatch's generic plugin wiring HITL-gates this exactly like
     execute_terminal_command; this function only ever runs post-approval.
+
+    ``test_command``, when given, is validated against the exact same
+    ``_ALLOWED_VERIFY_COMMANDS`` allowlist ``run_verification_command`` uses
+    (via ``_validate_verify_command``) and passed through to aider's own
+    ``--test-cmd``/``--auto-test`` flags, so aider re-runs it and
+    self-repairs any failing traceback inside its own subprocess loop before
+    this call returns — collapsing the separate edit-verify-repair ReAct
+    turns into this one invocation. An invalid ``test_command`` fails the
+    call outright, before aider (or any subprocess) ever runs.
     """
     task_description = str(args.get("task_description") or "").strip()
     if not task_description:
@@ -341,6 +359,12 @@ def execute_code_task(args: dict[str, Any]) -> dict[str, Any]:
     raw_files = args.get("files")
     if not isinstance(raw_files, list) or not raw_files:
         return {"ok": False, "error": "execute_code_task requires a non-empty 'files' list"}
+
+    test_command = str(args.get("test_command") or "").strip()
+    if test_command:
+        _, error = _validate_verify_command(test_command)
+        if error:
+            return {"ok": False, "error": f"invalid test_command: {error}"}
 
     resolved_files: list[Path] = []
     for rel_path in raw_files:
@@ -362,8 +386,10 @@ def execute_code_task(args: dict[str, Any]) -> dict[str, Any]:
         "--edit-format", "diff",
         "--yes",  # auto-commit and accept all prompts — this IS headless mode
         "--no-stream",  # disable streaming output — see this plugin's own live verification
-        "--message", task_description,
-    ] + [str(p) for p in resolved_files]
+    ]
+    if test_command:
+        command += ["--test-cmd", test_command, "--auto-test"]
+    command += ["--message", task_description] + [str(p) for p in resolved_files]
 
     try:
         completed = subprocess.run(  # noqa: S603 — fixed argv, shell=False; task_description is one arg

@@ -364,6 +364,80 @@ def test_execute_code_task_missing_aider_binary_reported_cleanly(mock_run: Magic
 
 
 # ---------------------------------------------------------------------------
+# execute_code_task's optional test_command — native aider --test-cmd/
+# --auto-test wiring, validated against the exact same allowlist as
+# run_verification_command (via _validate_verify_command)
+# ---------------------------------------------------------------------------
+
+
+@patch("dana.plugins.coder_plugin.engine.subprocess.run")
+def test_execute_code_task_appends_test_cmd_and_auto_test_when_provided(mock_run: MagicMock) -> None:
+    mock_run.return_value = MagicMock(returncode=0, stdout="Applied edit. 1 passed", stderr="")
+    result = engine.execute_code_task(
+        {
+            "task_description": "Fix the bug",
+            "files": ["aider_test.txt"],
+            "test_command": "pytest tests/test_foo.py",
+        }
+    )
+    assert result["ok"] is True
+    command = mock_run.call_args.args[0]
+    assert "--test-cmd" in command
+    idx = command.index("--test-cmd")
+    assert command[idx + 1] == "pytest tests/test_foo.py"
+    assert command[idx + 2] == "--auto-test"
+    # --test-cmd/--auto-test must come BEFORE --message so aider parses the
+    # flags rather than swallowing them into the free-form task text.
+    assert idx < command.index("--message")
+
+
+@patch("dana.plugins.coder_plugin.engine.subprocess.run")
+def test_execute_code_task_omits_test_cmd_when_not_provided(mock_run: MagicMock) -> None:
+    mock_run.return_value = MagicMock(returncode=0, stdout="Applied edit.", stderr="")
+    engine.execute_code_task({"task_description": "x", "files": ["aider_test.txt"]})
+    command = mock_run.call_args.args[0]
+    assert "--test-cmd" not in command
+    assert "--auto-test" not in command
+
+
+@patch("dana.plugins.coder_plugin.engine.subprocess.run")
+def test_execute_code_task_rejects_non_whitelisted_test_command_without_calling_subprocess(
+    mock_run: MagicMock,
+) -> None:
+    result = engine.execute_code_task(
+        {"task_description": "x", "files": ["aider_test.txt"], "test_command": "rm -rf /"}
+    )
+    assert result["ok"] is False
+    assert "not a whitelisted verification command" in result["error"]
+    mock_run.assert_not_called()
+
+
+@patch("dana.plugins.coder_plugin.engine.subprocess.run")
+def test_execute_code_task_rejects_bare_black_test_command(mock_run: MagicMock) -> None:
+    result = engine.execute_code_task(
+        {"task_description": "x", "files": ["aider_test.txt"], "test_command": "black dana/foo.py"}
+    )
+    assert result["ok"] is False
+    assert "--check" in result["error"]
+    mock_run.assert_not_called()
+
+
+@patch("dana.plugins.coder_plugin.engine.subprocess.run")
+def test_execute_code_task_allows_black_check_test_command(mock_run: MagicMock) -> None:
+    mock_run.return_value = MagicMock(returncode=0, stdout="Applied edit.", stderr="")
+    result = engine.execute_code_task(
+        {
+            "task_description": "x",
+            "files": ["aider_test.txt"],
+            "test_command": "black --check dana/foo.py",
+        }
+    )
+    assert result["ok"] is True
+    command = mock_run.call_args.args[0]
+    assert command[command.index("--test-cmd") + 1] == "black --check dana/foo.py"
+
+
+# ---------------------------------------------------------------------------
 # Generic plugin dispatch wiring (dana.core.react_dispatch.refresh_plugin_tools)
 # — confirms manifest.json/engine.py are enough on their own, with zero
 # react_dispatch.py edits, for the tools to actually be reachable.

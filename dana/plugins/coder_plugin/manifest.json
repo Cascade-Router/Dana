@@ -95,7 +95,7 @@
       "id": "execute_code_task",
       "function": "execute_code_task",
       "read_only": false,
-      "description_en": "Hands a precise, already-verified coding task and its target files to Aider (gemini/gemini-3.6-flash, --edit-format diff so it emits SEARCH/REPLACE blocks rather than rewriting whole files) to implement and auto-commit. MUTATES real files and creates a real git commit — call search_codebase/analyze_codebase first to confirm the change is correct and scoped, and run_verification_command afterward to verify it before presenting the result for human approval; requires human approval before it ever runs.",
+      "description_en": "Hands a precise, already-verified coding task and its target files to Aider (gemini/gemini-3.6-flash, --edit-format diff so it emits SEARCH/REPLACE blocks rather than rewriting whole files) to implement and auto-commit. MUTATES real files and creates a real git commit — call search_codebase/analyze_codebase first to confirm the change is correct and scoped. If a verification test exists, supply test_command (e.g. 'pytest tests/test_foo.py') so the coding engine automatically runs tests and fixes tracebacks before completing, instead of a separate run_verification_command round-trip. Only fall back to a standalone run_verification_command afterward if no suitable test_command exists, or the result still needs confirming; requires human approval before it ever runs.",
       "description_fa": "سپردن یک وظیفهٔ کدنویسی دقیق و تأییدشده به Aider برای اعمال و کامیت خودکار — نیازمند تأیید انسانی.",
       "aliases_en": {
         "_intent": [
@@ -123,6 +123,12 @@
           "items_type": "string",
           "required": true,
           "description_en": "Repo-relative paths of every file this task should touch — must be non-empty."
+        },
+        {
+          "name": "test_command",
+          "type": "string",
+          "required": false,
+          "description_en": "Optional verification command to auto-run and auto-fix against, e.g. 'pytest tests/test_foo.py'. Only pytest, flake8, mypy, and `black --check` are permitted — anything else is rejected before aider ever runs. If a verification test exists, supply this so the coding engine automatically runs tests and fixes tracebacks before completing, instead of a separate run_verification_command round-trip."
         }
       ]
     }
