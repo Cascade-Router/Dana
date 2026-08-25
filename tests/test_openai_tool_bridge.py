@@ -242,90 +242,30 @@ def _tpm_http_error(retry_after_text: str) -> urllib.error.HTTPError:
     )
 
 
-def test_parse_retry_after_seconds_extracts_groq_hint() -> None:
-    body = json.dumps({"error": {"message": "Requested 3200. Please try again in 19.0725s. Visit ..."}})
-    assert bridge._parse_retry_after_seconds(body) == pytest.approx(19.0725)
-
-
-def test_parse_retry_after_seconds_returns_none_when_absent_or_unparseable() -> None:
-    assert bridge._parse_retry_after_seconds(json.dumps({"error": {"message": "no hint here"}})) is None
-    assert bridge._parse_retry_after_seconds("not json at all") is None
-    assert bridge._parse_retry_after_seconds(json.dumps({"error": {}})) is None
-
-
-def test_tpm_429_sleeps_per_groq_hint_then_retries_same_model_and_succeeds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-    success_lines = _sse_lines_for_message({"content": "ok", "tool_calls": []})
-
-    def fake_urlopen(request: Any, *_a: Any, **_k: Any) -> Any:
-        calls.append(request.full_url if hasattr(request, "full_url") else "?")
-        if len(calls) == 1:
-            raise _tpm_http_error("19.0725s")
-        return _FakeResponse(success_lines)
-
-    monkeypatch.setattr(bridge.urllib.request, "urlopen", fake_urlopen)
-    sleeps: list[float] = []
-    monkeypatch.setattr(bridge.time, "sleep", lambda s: sleeps.append(s))
-
-    result = bridge.complete_openai_with_tools(
-        [{"role": "user", "content": "hi"}],
-        api_key="k",
-        base_url="https://api.groq.com/openai/v1",
-        model="openai/gpt-oss-120b",
-    )
-    assert result["content"] == "ok"
-    assert len(calls) == 2  # first attempt (429) + one retry against the SAME model
-    assert sleeps == [pytest.approx(20.0725)]  # retry_after (19.0725) + 1
-
-
-def test_tpm_429_exhausts_max_retries_then_returns_degraded_summary(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_tpm_429_raises_immediately_without_sleeping(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cloud tool-calling now routes through the local Cascade-Router gateway,
+    which already cascades groq -> gemini -> openai on 429/5xx upstream in
+    milliseconds. A 429 reaching this bridge means that cascade was already
+    exhausted, so it must raise immediately as a standard failure — no
+    client-side sleep/retry loop."""
     call_count = {"n": 0}
 
     def fake_urlopen(*_a: Any, **_k: Any) -> Any:
         call_count["n"] += 1
-        raise _tpm_http_error("5s")
+        raise _tpm_http_error("19.0725s")
 
     monkeypatch.setattr(bridge.urllib.request, "urlopen", fake_urlopen)
     sleeps: list[float] = []
     monkeypatch.setattr(bridge.time, "sleep", lambda s: sleeps.append(s))
 
-    result = bridge.complete_openai_with_tools(
-        [{"role": "user", "content": "hi"}],
-        api_key="k",
-        base_url="https://api.groq.com/openai/v1",
-        model="openai/gpt-oss-120b",
-    )
-    assert result == bridge._degraded_summary_response()
-    # Initial attempt + _MAX_TPM_RETRIES retries, never more.
-    assert call_count["n"] == bridge._MAX_TPM_RETRIES + 1
-    assert len(sleeps) == bridge._MAX_TPM_RETRIES
-
-
-def test_tpm_429_with_unreasonably_long_retry_after_degrades_without_sleeping(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    call_count = {"n": 0}
-
-    def fake_urlopen(*_a: Any, **_k: Any) -> Any:
-        call_count["n"] += 1
-        raise _tpm_http_error("120s")  # >= _MAX_REASONABLE_RETRY_AFTER_SEC
-
-    monkeypatch.setattr(bridge.urllib.request, "urlopen", fake_urlopen)
-    sleeps: list[float] = []
-    monkeypatch.setattr(bridge.time, "sleep", lambda s: sleeps.append(s))
-
-    result = bridge.complete_openai_with_tools(
-        [{"role": "user", "content": "hi"}],
-        api_key="k",
-        base_url="https://api.groq.com/openai/v1",
-        model="openai/gpt-oss-120b",
-    )
-    assert result == bridge._degraded_summary_response()
-    assert call_count["n"] == 1  # never retries on an unreasonable hint
+    with pytest.raises(RuntimeError):
+        bridge.complete_openai_with_tools(
+            [{"role": "user", "content": "hi"}],
+            api_key="k",
+            base_url="https://api.groq.com/openai/v1",
+            model="openai/gpt-oss-120b",
+        )
+    assert call_count["n"] == 1
     assert sleeps == []
 
 
@@ -375,3 +315,61 @@ def test_5xx_error_is_not_retried_or_throttled(monkeypatch: pytest.MonkeyPatch) 
             model="openai/gpt-oss-120b",
         )
     assert sleeps == []
+
+
+# --------------------------------------------------------------------------
+# extra_headers — provider-specific headers (e.g. OpenRouter's HTTP-Referer/
+# X-Title attribution); this module's only knowledge of any specific
+# provider is accepting whatever dict the caller (dana.core.model_provider)
+# hands it.
+# --------------------------------------------------------------------------
+
+
+def test_extra_headers_are_merged_into_the_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_response(monkeypatch, {"content": "hi", "tool_calls": []})
+    captured: dict[str, Any] = {}
+    real_request_cls = bridge.urllib.request.Request
+
+    def capturing_request(url, *a, **kw):
+        req = real_request_cls(url, *a, **kw)
+        captured["headers"] = dict(req.headers)
+        return req
+
+    monkeypatch.setattr(bridge.urllib.request, "Request", capturing_request)
+
+    bridge.complete_openai_with_tools(
+        [{"role": "user", "content": "hi"}],
+        api_key="k",
+        base_url="https://openrouter.ai/api/v1",
+        model="meta-llama/llama-3.3-70b-instruct:free",
+        extra_headers={"Http-referer": "https://my-space.hf.space", "X-title": "Dana CAD Agent"},
+    )
+    # urllib.request.Request title-cases header names it's given verbatim
+    # keys through, so this asserts on the exact keys this bridge sets them
+    # with (see _complete_openai_with_tools_once) rather than re-deriving
+    # urllib's own casing convention here.
+    assert captured["headers"]["Http-referer"] == "https://my-space.hf.space"
+    assert captured["headers"]["X-title"] == "Dana CAD Agent"
+    # The bridge's own standard headers must still be present alongside them.
+    assert captured["headers"]["Authorization"] == "Bearer k"
+
+
+def test_no_extra_headers_does_not_add_anything_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_response(monkeypatch, {"content": "hi", "tool_calls": []})
+    captured: dict[str, Any] = {}
+    real_request_cls = bridge.urllib.request.Request
+
+    def capturing_request(url, *a, **kw):
+        req = real_request_cls(url, *a, **kw)
+        captured["headers"] = dict(req.headers)
+        return req
+
+    monkeypatch.setattr(bridge.urllib.request, "Request", capturing_request)
+
+    bridge.complete_openai_with_tools(
+        [{"role": "user", "content": "hi"}],
+        api_key="k",
+        base_url="http://127.0.0.1:11434/v1",
+        model="qwen2.5-coder:7b",
+    )
+    assert set(captured["headers"]) == {"Content-type", "Authorization", "User-agent"}
