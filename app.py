@@ -181,7 +181,18 @@ with gr.Blocks(css=_CUSTOM_CSS, title="Dānā") as demo:
         "# Dānā\n\nHeadless HF backend — the real UI is the Vercel-hosted React app, "
         "talking to this Space's `chat` API. This page is a plain smoke-test surface."
     )
-    chatbot = gr.Chatbot(label="Dānā", height=420)
+    # type="messages" is load-bearing, not the modern default it looks like:
+    # the Space's pinned sdk_version (deploy/space_README.md) is Gradio
+    # 5.49.1, where an unset `type` silently falls back to the legacy
+    # "tuples" format (confirmed directly in that version's source) — then
+    # chokes on the {"role": ..., "content": ...} dicts _respond below
+    # yields, with exactly this crash: "Data incompatible with tuples
+    # format. Each message should be a list of length 2." Newer Gradio
+    # (installed locally during dev) dropped `type` entirely because
+    # messages-format became the only option, which is exactly how this
+    # went unnoticed in local testing — dev and the deployed Space were on
+    # different major versions the whole time.
+    chatbot = gr.Chatbot(label="Dānā", height=420, type="messages")
     mesh_preview = gr.Model3D(label="Generated mesh (.stl)")
     # label="message" is load-bearing, not cosmetic (show_label=False hides
     # it visually only): frontend/src/lib/gradioChatClient.ts already calls
