@@ -115,6 +115,12 @@ def _tool_create_cylinder(args: dict[str, Any], engine: Any, _cp: Any) -> dict[s
     )
 
 
+def _tool_query_geometry_properties(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    from dana.tools.geometry_analyzer import query_geometry_properties
+
+    return query_geometry_properties(str(args.get("mesh_path") or ""))
+
+
 def _tool_generate_urdf_assembly(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
     from dana.tools.urdf_builder import generate_urdf_assembly
 
@@ -1145,6 +1151,7 @@ def _tool_insert_standard_part(args: dict[str, Any], _engine: Any, _cp: Any) -> 
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] = {
     "create_freecad_box": _tool_create_box,
     "generate_urdf_assembly": _tool_generate_urdf_assembly,
+    "query_geometry_properties": _tool_query_geometry_properties,
     "create_freecad_cylinder": _tool_create_cylinder,
     "create_freecad_pyramid": _tool_create_freecad_pyramid,
     "create_freecad_star_prism": _tool_create_freecad_star_prism,
@@ -1513,6 +1520,8 @@ _FREECAD_TOOL_IDS = frozenset(
         # .stl parts into a kinematic URDF — same "freecad"/"freecad_full" domain as the
         # CAD primitives it consumes, not a separate "robotics" domain (which would need
         # its own load_capability/frontend wiring nothing currently activates).
+        "query_geometry_properties",  # Spatial Awareness — the precise-joint-origin
+        # companion to generate_urdf_assembly above; same domain for the same reason.
     }
 )
 

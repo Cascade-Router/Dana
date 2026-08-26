@@ -2384,6 +2384,14 @@
       ]
     },
     {
+      "id": "query_geometry_properties",
+      "read_only": true,
+      "description_en": "Reads a generated mesh's (.stl artifact) REAL geometric properties — bounding box, dimensions, and centroid — via pure-Python mesh analysis (no FreeCAD document needed). Spatial Awareness: use this BEFORE calling generate_urdf_assembly to mathematically calculate precise joint origin_xyz offsets and mating-surface positions between parts (e.g. read one part's bounding box x_max and the next part's centroid to place their connecting joint exactly where the two surfaces should meet), instead of guessing coordinates. Read-only — does not modify anything.",
+      "parameters": [
+        {"name": "mesh_path", "type": "string", "required": true, "description_en": "Path to a previously-generated .stl mesh artifact to analyze."}
+      ]
+    },
+    {
       "id": "generate_urdf_assembly",
       "description_en": "Assembles previously-generated CAD parts (.stl mesh artifacts from create_freecad_*/export operations) into a single kinematic URDF (Unified Robot Description Format) robot model — the universal interchange hub for ROS2, Gazebo, and Isaac Sim. Each part becomes a URDF link (optionally carrying its mesh as visual+collision geometry); each connection between two links becomes a URDF joint (fixed, revolute, or continuous). Saves '<robot_name>.urdf' to the workspace.",
       "parameters": [
