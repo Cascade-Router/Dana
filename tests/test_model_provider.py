@@ -155,7 +155,7 @@ def test_resolve_openai_endpoint_gateway_defaults_and_env_overrides(
     monkeypatch.delenv("LLM_GATEWAY_API_KEY", raising=False)
     provider = ModelProvider()
     key, base, model, _headers, _fallback_models = provider._resolve_openai_endpoint("gateway")
-    assert base == "http://localhost:8000/v1"
+    assert base == "http://localhost:8080/v1"
     assert model == "cascade-auto"
     assert key  # placeholder key when none configured — never empty
 

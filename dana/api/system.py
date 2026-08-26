@@ -195,3 +195,25 @@ def save_system_env(body: SaveEnvKeyRequest) -> dict[str, Any]:
 
     valid, detail = _validate_key(key, value)
     return {"ok": True, "key": key, "valid": valid, "detail": detail, "env": _env_snapshot()}
+
+
+class ValidateEnvKeyRequest(BaseModel):
+    key: str
+
+
+@router.post("/api/system/env/validate")
+def validate_system_env(body: ValidateEnvKeyRequest) -> dict[str, Any]:
+    """Re-runs ``_validate_key`` against whatever value is CURRENTLY live in
+    ``os.environ`` for ``key`` — powers the Environment panel's per-provider
+    Valid/Invalid badges on open (and on manual re-check) without ever
+    round-tripping a raw secret back to the frontend a second time, unlike
+    ``POST /api/system/env`` which necessarily receives one to save it.
+    """
+    key = body.key.strip()
+    if key not in _SENSITIVE_VARS:
+        raise HTTPException(status_code=400, detail=f"{key!r} is not a recognized credential key")
+    value = os.environ.get(key, "").strip()
+    if not value:
+        return {"ok": True, "key": key, "configured": False, "valid": False, "detail": "not configured"}
+    valid, detail = _validate_key(key, value)
+    return {"ok": True, "key": key, "configured": True, "valid": valid, "detail": detail}

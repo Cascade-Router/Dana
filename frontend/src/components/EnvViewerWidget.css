@@ -61,11 +61,17 @@
   align-items: center;
   gap: 5px;
   font-size: 11.5px;
+  font-family: inherit;
   color: #888;
   background: #242424;
   border: 1px solid #333;
   border-radius: 999px;
   padding: 3px 9px;
+  cursor: pointer;
+}
+
+.env-viewer__badge:disabled {
+  cursor: default;
 }
 
 .env-viewer__badge-dot {
@@ -73,16 +79,69 @@
   height: 7px;
   border-radius: 50%;
   background: #555;
+  flex-shrink: 0;
 }
 
-.env-viewer__badge--on {
+/* Configured but not (yet) validated — a value is saved, no live check has
+   run against it yet (or this is Gradio mode, which has no server to ask). */
+.env-viewer__badge--configured {
   color: #9adf9a;
   border-color: color-mix(in srgb, #34d399 40%, transparent);
   background: color-mix(in srgb, #34d399 12%, transparent);
 }
 
-.env-viewer__badge--on .env-viewer__badge-dot {
+.env-viewer__badge--configured .env-viewer__badge-dot {
   background: #34d399;
+}
+
+/* Live-validated: the provider actually accepted the key just now. */
+.env-viewer__badge--valid {
+  color: #86efac;
+  border-color: color-mix(in srgb, #22c55e 55%, transparent);
+  background: color-mix(in srgb, #22c55e 16%, transparent);
+}
+
+.env-viewer__badge--valid .env-viewer__badge-dot {
+  background: #22c55e;
+  box-shadow: 0 0 6px color-mix(in srgb, #22c55e 70%, transparent);
+}
+
+/* Rejected (401/403) or the last live check otherwise failed. */
+.env-viewer__badge--invalid {
+  color: #fca5a5;
+  border-color: color-mix(in srgb, #ef4444 55%, transparent);
+  background: color-mix(in srgb, #ef4444 14%, transparent);
+}
+
+.env-viewer__badge--invalid .env-viewer__badge-dot {
+  background: #ef4444;
+}
+
+.env-viewer__badge--checking {
+  color: #fbbf24;
+  border-color: color-mix(in srgb, #fbbf24 45%, transparent);
+  background: color-mix(in srgb, #fbbf24 10%, transparent);
+}
+
+.env-viewer__badge--checking .env-viewer__badge-dot {
+  background: #fbbf24;
+  animation: env-viewer-pulse 1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .env-viewer__badge--checking .env-viewer__badge-dot {
+    animation: none;
+  }
+}
+
+@keyframes env-viewer-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .env-viewer__save {

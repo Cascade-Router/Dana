@@ -4,6 +4,7 @@ import { maskSecret } from "../secrets/types";
 import "./EnvViewerWidget.css";
 
 type EnvSnapshot = Record<string, string>;
+type ValidationState = { valid: boolean; detail: string; checking?: boolean };
 
 const PROVIDERS: { key: string; label: string }[] = [
   { key: "GROQ_API_KEY", label: "Groq" },
@@ -54,11 +55,46 @@ function writeCloudKeys(keys: EnvSnapshot): void {
 export function EnvViewerWidget({ onClose }: { onClose: () => void }) {
   const [env, setEnv] = useState<EnvSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [validation, setValidation] = useState<Record<string, ValidationState>>({});
 
   const [saveKey, setSaveKey] = useState(PROVIDERS[0].key);
   const [saveValue, setSaveValue] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<{ valid: boolean; detail: string } | null>(null);
+
+  // Re-pings the provider for whichever key is CURRENTLY live in
+  // os.environ server-side (dana/api/system.py's POST /api/system/env/validate)
+  // without ever resending the secret itself — the badges' Green/Red state,
+  // separate from "configured" (has some value) vs "unconfigured" (none).
+  // Gradio mode has no server to ask, so badges there only ever reflect
+  // "present in localStorage," never a real validity check.
+  const validateProvider = useCallback((key: string) => {
+    if (IS_GRADIO_MODE) return;
+    setValidation((prev) => ({ ...prev, [key]: { valid: false, detail: "", checking: true } }));
+    apiFetch("/api/system/env/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data.configured) {
+          setValidation((prev) => {
+            const next = { ...prev };
+            delete next[key];
+            return next;
+          });
+          return;
+        }
+        setValidation((prev) => ({ ...prev, [key]: { valid: Boolean(data.valid), detail: String(data.detail || "") } }));
+      })
+      .catch((err) => {
+        setValidation((prev) => ({
+          ...prev,
+          [key]: { valid: false, detail: String(err instanceof Error ? err.message : err) },
+        }));
+      });
+  }, []);
 
   const refresh = useCallback(() => {
     if (IS_GRADIO_MODE) {
@@ -73,9 +109,16 @@ export function EnvViewerWidget({ onClose }: { onClose: () => void }) {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
-      .then((data) => setEnv(data.env ?? {}))
+      .then((data) => {
+        const nextEnv: EnvSnapshot = data.env ?? {};
+        setEnv(nextEnv);
+        // Live-validate every already-configured provider on open — this is
+        // what makes the badges reflect actual current validity rather than
+        // just "a value is saved," which could be a stale/revoked key.
+        PROVIDERS.filter((p) => Boolean(nextEnv[p.key])).forEach((p) => validateProvider(p.key));
+      })
       .catch((err) => setError(String(err instanceof Error ? err.message : err)));
-  }, []);
+  }, [validateProvider]);
 
   useEffect(() => {
     refresh();
@@ -107,7 +150,11 @@ export function EnvViewerWidget({ onClose }: { onClose: () => void }) {
       .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
       .then(({ ok, data }) => {
         if (!ok) throw new Error(data.detail || "save failed");
-        setSaveResult({ valid: Boolean(data.valid), detail: String(data.detail || "") });
+        const result = { valid: Boolean(data.valid), detail: String(data.detail || "") };
+        setSaveResult(result);
+        // The save response already ran a live probe — reuse it for the
+        // badge instead of an extra round trip to /validate right after.
+        setValidation((prev) => ({ ...prev, [saveKey]: result }));
         setSaveValue("");
         setEnv(data.env ?? null);
       })
@@ -129,11 +176,49 @@ export function EnvViewerWidget({ onClose }: { onClose: () => void }) {
         <div className="env-viewer__badges">
           {PROVIDERS.map((p) => {
             const configured = Boolean(env?.[p.key]);
+            const state = validation[p.key];
+            // Desktop/REST mode: Green = live-validated, Red = the provider
+            // rejected the key or the last check failed, amber "…" = a
+            // check is in flight, neutral = configured but not yet checked
+            // (or nothing saved). Gradio mode never has a real check to run
+            // (see validateProvider) — "configured" is as specific as its
+            // badge ever gets, same as before.
+            const status = !configured
+              ? "unconfigured"
+              : IS_GRADIO_MODE
+                ? "configured"
+                : state?.checking
+                  ? "checking"
+                  : state
+                    ? state.valid
+                      ? "valid"
+                      : "invalid"
+                    : "configured";
+            const title = IS_GRADIO_MODE
+              ? configured
+                ? "Saved in this browser"
+                : "Not configured"
+              : status === "checking"
+                ? "Checking…"
+                : status === "valid"
+                  ? "Valid — provider accepted the key"
+                  : status === "invalid"
+                    ? state?.detail || "Invalid or rate-limited"
+                    : configured
+                      ? "Click to check validity"
+                      : "Not configured";
             return (
-              <div key={p.key} className={`env-viewer__badge ${configured ? "env-viewer__badge--on" : ""}`}>
+              <button
+                key={p.key}
+                type="button"
+                className={`env-viewer__badge env-viewer__badge--${status}`}
+                onClick={() => configured && validateProvider(p.key)}
+                disabled={!configured || IS_GRADIO_MODE}
+                title={title}
+              >
                 <span className="env-viewer__badge-dot" />
                 {p.label}
-              </div>
+              </button>
             );
           })}
         </div>
