@@ -73,6 +73,15 @@
   background: #262626;
 }
 
+.cad-toolbar__export-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cad-toolbar__export-item:disabled:hover {
+  background: none;
+}
+
 .cad-toolbar__export-format {
   font-size: 10px;
   font-weight: 700;

@@ -10,7 +10,7 @@ import "./CadPlugin.css";
 export default function CadPlugin({ meshUrl, cameraTarget, onSelect, log }: PluginComponentProps) {
   return (
     <div className="cad-plugin">
-      <CadToolbar />
+      <CadToolbar meshUrl={meshUrl} />
       <div className="cad-plugin__viewport">
         <Viewer3D meshUrl={meshUrl} cameraTarget={cameraTarget} onSelect={onSelect} />
         <DAGMonitor log={log} />

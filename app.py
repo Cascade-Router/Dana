@@ -228,8 +228,11 @@ footer {display: none !important;}
 
 with gr.Blocks(css=_CUSTOM_CSS, title="Dānā") as demo:
     gr.Markdown(
-        "# Dānā\n\nHeadless HF backend — the real UI is the Vercel-hosted React app, "
-        "talking to this Space's `chat` API. This page is a plain smoke-test surface."
+        "# ⚙️ Dana AI Copilot (Headless Backend)\n\n"
+        "⚠️ **Demo Purposes Only:** This interface is the headless backend for Dana. "
+        "The actual application UI is hosted externally on Vercel. You can interact "
+        "with the agent here for testing, but the full 3D viewport, workspace, and "
+        "execution graph are only available on the main client."
     )
     # type="messages" is load-bearing, not the modern default it looks like:
     # the Space's pinned sdk_version (deploy/space_README.md) is Gradio

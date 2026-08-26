@@ -23,11 +23,20 @@ const _SPACE_URL = import.meta.env.VITE_HF_SPACE_URL as string;
 // focus/never-duplicate logic already used automatically after every
 // create_freecad_*/perform_freecad_boolean tool call), and a dropdown to
 // download the latest generated .FCStd/.stl or exported .step/.stl.
-export function CadToolbar() {
+type Props = {
+  /** The mesh currently shown in Viewer3D — a plain, already-resolved URL in
+   * both modes (resolveMeshUrl() for WS/Desktop, the raw Gradio FileData URL
+   * for Gradio — see useChatSocket.ts/useGradioChat.ts), so one fetch+blob
+   * download path covers both without a mode branch. */
+  meshUrl: string | null;
+};
+
+export function CadToolbar({ meshUrl }: Props) {
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
+  const [exportingMesh, setExportingMesh] = useState(false);
 
   const refreshArtifacts = useCallback(() => {
     if (IS_GRADIO_MODE) {
@@ -87,6 +96,39 @@ export function CadToolbar() {
     setExportOpen(false);
   }, []);
 
+  // The live viewport mesh (Viewer3D's meshUrl) isn't in the artifacts list
+  // above — it's the in-progress geometry, not yet a saved file on either
+  // backend. Fetching it as a blob (rather than window.open, which the
+  // artifact download() above uses) works identically cross-origin in dev
+  // and same-origin in prod, and lets us force a filename since neither
+  // mode's mesh URL carries orig_name (see gradioChatClient.ts's
+  // GradioFileData — that's only populated for the artifacts endpoint).
+  const exportMesh = useCallback(async () => {
+    if (!meshUrl) return;
+    setExportingMesh(true);
+    setLaunchError(null);
+    try {
+      const res = await fetch(meshUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status} fetching mesh`);
+      const blob = await res.blob();
+      const nameFromUrl = meshUrl.split(/[\\/]/).pop()?.split("?")[0];
+      const filename = nameFromUrl && nameFromUrl.includes(".") ? nameFromUrl : "export.stl";
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (err) {
+      setLaunchError(String(err instanceof Error ? err.message : err));
+    } finally {
+      setExportingMesh(false);
+      setExportOpen(false);
+    }
+  }, [meshUrl]);
+
   return (
     <div className="cad-toolbar">
       {!IS_GRADIO_MODE && (
@@ -108,6 +150,17 @@ export function CadToolbar() {
         </button>
         {exportOpen && (
           <div className="cad-toolbar__export-menu">
+            <button
+              type="button"
+              className="cad-toolbar__export-item"
+              onClick={exportMesh}
+              disabled={!meshUrl || exportingMesh}
+            >
+              <span className="cad-toolbar__export-format">STL</span>
+              <span className="cad-toolbar__export-name">
+                {exportingMesh ? "Exporting…" : "Current mesh (viewport)"}
+              </span>
+            </button>
             {artifacts.length === 0 && (
               <div className="cad-toolbar__export-empty">No artifacts generated yet.</div>
             )}

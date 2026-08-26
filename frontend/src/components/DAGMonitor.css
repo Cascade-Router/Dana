@@ -29,6 +29,26 @@
 .dag-monitor__canvas {
   flex: 1;
   min-width: 0;
+  position: relative;
+}
+
+.dag-monitor__fit-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 10;
+  background: #1a1a1a;
+  border: 1px solid #303030;
+  color: #ddd;
+  font-size: 11px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.dag-monitor__fit-btn:hover {
+  background: #242424;
+  border-color: #3b82f6;
 }
 
 .dag-monitor__inspector {

@@ -222,9 +222,14 @@ function AppShell() {
           </div>
         ))}
         <div className="app__topbar-spacer" />
-        <div className="app__model-badge" title={`Active tool-calling provider: ${provider ?? "unknown"}`}>
+        <button
+          type="button"
+          className="app__model-badge"
+          title={`Active tool-calling provider: ${provider ?? "unknown"} — click to configure environment`}
+          onClick={() => setEnvViewerOpen(true)}
+        >
           ⚡ {providerLabel}
-        </div>
+        </button>
         <button
           type="button"
           className="app__secrets-btn"

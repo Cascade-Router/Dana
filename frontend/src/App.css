@@ -104,6 +104,12 @@ body {
   padding: 4px 9px;
   border-radius: 999px;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.app__model-badge:hover {
+  background: color-mix(in srgb, #34d399 22%, transparent);
+  border-color: color-mix(in srgb, #34d399 45%, transparent);
 }
 
 .app__secrets-btn {

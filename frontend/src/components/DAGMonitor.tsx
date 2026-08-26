@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Background, Controls, ReactFlow, type Edge, type Node } from "@xyflow/react";
+import { useEffect, useMemo, useState } from "react";
+import { Background, Controls, ReactFlow, ReactFlowProvider, useReactFlow, type Edge, type Node } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { ServerEvent } from "../lib/useChatSocket";
 import "./DAGMonitor.css";
@@ -86,6 +86,50 @@ function buildGraph(log: ServerEvent[]): { nodes: Node<DagNodeData>[]; edges: Ed
   return { nodes: Array.from(nodeMap.values()), edges };
 }
 
+type GraphCanvasProps = {
+  nodes: Node<DagNodeData>[];
+  edges: Edge[];
+  onNodeClick: (node: Node<DagNodeData>) => void;
+};
+
+// Split out from DAGMonitor so useReactFlow() has a <ReactFlowProvider>
+// ancestor (the hook throws outside one) without wrapping the whole
+// collapsed/expanded shell — the provider only needs to surround <ReactFlow>
+// itself.
+function GraphCanvas({ nodes, edges, onNodeClick }: GraphCanvasProps) {
+  const { fitView } = useReactFlow();
+
+  // Long ReAct chains (10+ steps) push new nodes past the initial fitView,
+  // off-screen below the fold — re-fit every time the node count grows so
+  // the newest node (appended by either the WS log or Gradio's dagEvents,
+  // see buildGraph above) is always in view.
+  useEffect(() => {
+    if (nodes.length === 0) return;
+    fitView({ duration: 800, padding: 0.2 });
+  }, [nodes.length, fitView]);
+
+  return (
+    <ReactFlow
+      nodes={nodes}
+      edges={edges}
+      onNodeClick={(_e, node) => onNodeClick(node as Node<DagNodeData>)}
+      fitView
+      proOptions={{ hideAttribution: true }}
+    >
+      <Background />
+      <Controls showInteractive={false} />
+      <button
+        type="button"
+        className="dag-monitor__fit-btn"
+        title="Re-center graph"
+        onClick={() => fitView({ duration: 800, padding: 0.2 })}
+      >
+        ⤢ Fit View
+      </button>
+    </ReactFlow>
+  );
+}
+
 type Props = {
   log: ServerEvent[];
 };
@@ -103,16 +147,9 @@ export function DAGMonitor({ log }: Props) {
       {open && (
         <div className="dag-monitor__body">
           <div className="dag-monitor__canvas">
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              onNodeClick={(_e, node) => setSelected(node as Node<DagNodeData>)}
-              fitView
-              proOptions={{ hideAttribution: true }}
-            >
-              <Background />
-              <Controls showInteractive={false} />
-            </ReactFlow>
+            <ReactFlowProvider>
+              <GraphCanvas nodes={nodes} edges={edges} onNodeClick={setSelected} />
+            </ReactFlowProvider>
           </div>
           {selected && (
             <div className="dag-monitor__inspector">
