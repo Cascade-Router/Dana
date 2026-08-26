@@ -1509,6 +1509,10 @@ _FREECAD_TOOL_IDS = frozenset(
         "get_active_display",
         "prevent_focus_steal",
         "query_engineering_standard",
+        "generate_urdf_assembly",  # Phase 2 Robotics: assembles create_freecad_*-generated
+        # .stl parts into a kinematic URDF — same "freecad"/"freecad_full" domain as the
+        # CAD primitives it consumes, not a separate "robotics" domain (which would need
+        # its own load_capability/frontend wiring nothing currently activates).
     }
 )
 

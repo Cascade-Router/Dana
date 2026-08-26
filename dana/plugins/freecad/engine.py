@@ -33,6 +33,19 @@ import psutil
 from dana.paths import DANA_WORKSPACE
 from dana.security.dry_run import is_dry_run_enabled
 
+# Re-exported (not implemented here — dana.tools.urdf_builder needs no
+# FreeCADCmd subprocess at all, pure XML generation) purely so
+# dana/plugins/freecad/manifest.json's "generate_urdf_assembly" entry can
+# resolve a callable via getattr(this module, "generate_urdf_assembly") —
+# see dana.plugins.plugin_manager._load_plugin_full. The manifest
+# declaration only feeds introspection (plugin_registry_view/
+# check_plugin_registry and the semantic tool registry); actual dispatch is
+# still the native dana.core.react_dispatch.TOOL_HANDLERS entry, which
+# refresh_plugin_tools() leaves authoritative by design whenever a plugin
+# tool id collides with an existing native one — the exact same shadowing
+# every create_freecad_* tool below already relies on.
+from dana.tools.urdf_builder import generate_urdf_assembly  # noqa: F401
+
 # One FreeCADCmd process at a time — mirrors the single foreground-owner
 # discipline used for physical desktop actuators (dana.middleware.actuator_executor).
 _lock = threading.Lock()
