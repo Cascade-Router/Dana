@@ -176,3 +176,65 @@
   margin: auto;
   object-fit: contain;
 }
+
+/* Gradio-mode generated-artifacts list (no REST tree/mounts available) */
+.workspace-plugin--gradio {
+  flex-direction: column;
+  width: 100%;
+}
+
+.workspace-plugin__artifacts {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+
+.workspace-plugin__artifact-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #232323;
+}
+
+.workspace-plugin__artifact-row:hover {
+  background: #1c1c1c;
+}
+
+.workspace-plugin__artifact-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.workspace-plugin__artifact-name {
+  font-size: 12.5px;
+  color: #eee;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-plugin__artifact-meta {
+  font-size: 11px;
+  color: #888;
+}
+
+.workspace-plugin__artifact-download {
+  flex-shrink: 0;
+  background: #2a3f2a;
+  border: 1px solid #3d5c3d;
+  color: #b7f0b7;
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.workspace-plugin__artifact-download:hover {
+  background: #35513a;
+}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { apiFetch, resolveApiUrl } from "../lib/apiBase";
+import { apiFetch, IS_GRADIO_MODE, resolveApiUrl } from "../lib/apiBase";
+import { fetchGradioArtifacts, type GradioArtifact } from "../lib/gradioChatClient";
 import type { PluginComponentProps } from "./types";
 import "./WorkspacePlugin.css";
 
@@ -21,6 +22,88 @@ function isImagePath(path: string): boolean {
 function workspaceFileUrl(path: string): string {
   const encoded = path.split("/").map(encodeURIComponent).join("/");
   return resolveApiUrl(`/api/workspace/file/${encoded}`);
+}
+
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(2)} ${units[unitIndex]}`;
+}
+
+const _SPACE_URL = import.meta.env.VITE_HF_SPACE_URL as string;
+
+// Gradio mode has no REST API at all (see apiBase.ts's IS_GRADIO_MODE) —
+// the tree/mount browser below is entirely REST-backed and would just show
+// perpetual "Failed to load" errors there, so this tab shows the SAME
+// generated-artifact list app.py's hidden "artifacts" endpoint already
+// exposes to CadToolbar's Export dropdown (fetchGradioArtifacts), just
+// hydrated as a proper list here instead of a dropdown menu.
+function GradioWorkspaceArtifacts() {
+  const [artifacts, setArtifacts] = useState<GradioArtifact[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    fetchGradioArtifacts(_SPACE_URL)
+      .then((files) => setArtifacts(files))
+      .catch((err) => {
+        console.error("[WorkspacePlugin] fetchGradioArtifacts failed:", err);
+        setError(String(err instanceof Error ? err.message : err));
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  return (
+    <div className="workspace-plugin workspace-plugin--gradio">
+      <div className="workspace-plugin__sidebar-header">
+        <span>Generated Artifacts</span>
+        <button type="button" className="workspace-plugin__refresh" onClick={refresh} title="Refresh">
+          ↻
+        </button>
+      </div>
+      <div className="workspace-plugin__artifacts">
+        {loading && artifacts.length === 0 && <div className="workspace-plugin__placeholder-text">Loading…</div>}
+        {error && <div className="workspace-plugin__error">Failed to load: {error}</div>}
+        {!loading && !error && artifacts.length === 0 && (
+          <div className="workspace-plugin__placeholder-text">No artifacts generated yet.</div>
+        )}
+        {artifacts.map((a) => (
+          <div key={a.url} className="workspace-plugin__artifact-row">
+            <div className="workspace-plugin__artifact-info">
+              <span className="workspace-plugin__artifact-name" title={a.filename}>
+                {a.filename}
+              </span>
+              <span className="workspace-plugin__artifact-meta">
+                {a.format ? a.format.toUpperCase() : "FILE"} · {formatFileSize(a.size_bytes)}
+              </span>
+            </div>
+            <a
+              className="workspace-plugin__artifact-download"
+              href={a.url}
+              target="_blank"
+              rel="noreferrer"
+              download={a.filename}
+            >
+              ⬇ Download
+            </a>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 type TreeRowProps = {
@@ -94,6 +177,18 @@ function TreeRow({ node, depth, selectedPath, collapsed, onToggle, onSelectFile 
 // path here at all; every actual file mutation goes through the agent's
 // own os_tools ReAct tools (write_file, run_python_script), never this UI.
 export default function WorkspacePlugin(_props: PluginComponentProps) {
+  // IS_GRADIO_MODE is a build-time constant (import.meta.env.VITE_HF_SPACE_URL
+  // never changes across a render — see useChat.ts's identical reasoning),
+  // so branching before any hooks run below is safe: this condition can
+  // never flip within one running build, unlike a normal conditional hook
+  // call would be.
+  if (IS_GRADIO_MODE) {
+    return <GradioWorkspaceArtifacts />;
+  }
+  return <RestWorkspaceTree />;
+}
+
+function RestWorkspaceTree() {
   const [tree, setTree] = useState<WorkspaceNode | null>(null);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
