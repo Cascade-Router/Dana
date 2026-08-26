@@ -1144,12 +1144,16 @@ def _tool_insert_standard_part(args: dict[str, Any], _engine: Any, _cp: Any) -> 
     part_type = str(args.get("part_type") or "").strip()
     if not part_type:
         return {"ok": False, "error": "insert_standard_part requires part_type"}
+    length = args.get("length")
     return json.loads(
         insert_standard_part(
             part_type,
             specification=str(args.get("specification") or ""),
             name=str(args.get("name") or "").strip() or None,
             placement=_extract_placement(args),
+            fastener_type=str(args.get("fastener_type") or ""),
+            size=str(args.get("size") or ""),
+            length=float(length) if length is not None else None,
         )
     )
 
@@ -1401,7 +1405,10 @@ def describe_tool_call(call: ToolCall) -> str:
         return f"Create a {pattern} pattern of `{source}` ({count} total copies) in FreeCAD."
     if call.tool_id == "insert_standard_part":
         part_type = call.arguments.get("part_type", "?")
-        spec = call.arguments.get("specification")
+        if part_type == "fastener":
+            spec = f"{call.arguments.get('fastener_type', '?')} {call.arguments.get('size', '?')}x{call.arguments.get('length', '?')}"
+        else:
+            spec = call.arguments.get("specification")
         suffix = f" ({spec})" if spec else ""
         return f"Insert a standard `{part_type}`{suffix} in FreeCAD."
     if call.tool_id == "resync_workspace":

@@ -47,6 +47,22 @@ from dana.security.dry_run import is_dry_run_enabled
 from dana.tools.geometry_analyzer import query_geometry_properties  # noqa: F401
 from dana.tools.urdf_builder import generate_urdf_assembly  # noqa: F401
 
+
+def insert_standard_part(*args: Any, **kwargs: Any) -> str:
+    """Re-exported for dana/plugins/freecad/manifest.json's entry-point
+    resolution (same reasoning as the two plain re-exports above), but as a
+    lazy-import wrapper rather than a top-level ``from ... import`` —
+    ``dana.plugins.freecad.standard_parts`` itself imports several names
+    FROM this module at its own top level (``_BBOX_PRINT``, ``_OK_MARKER``,
+    etc.), so a top-level re-export here would be a genuine circular
+    import: whichever of the two modules starts importing first, the other
+    isn't finished initializing yet. Deferring the import to call time
+    means both modules are already fully loaded by the time this runs.
+    """
+    from dana.plugins.freecad.standard_parts import insert_standard_part as _impl
+
+    return _impl(*args, **kwargs)
+
 # One FreeCADCmd process at a time — mirrors the single foreground-owner
 # discipline used for physical desktop actuators (dana.middleware.actuator_executor).
 _lock = threading.Lock()

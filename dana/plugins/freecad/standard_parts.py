@@ -18,6 +18,7 @@ built from scratch) / file-out (one ``.FCStd``), exactly like every
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from dana.plugins.freecad.engine import (
@@ -39,7 +40,18 @@ from dana.plugins.freecad.engineering_standards import (
 from dana.platform.factory import IS_HF_SPACE
 from dana.security.dry_run import is_dry_run_enabled
 
-_PART_TYPES = frozenset({"nema17_motor", "socket_head_screw", "ball_bearing"})
+_PART_TYPES = frozenset({"nema17_motor", "socket_head_screw", "ball_bearing", "fastener"})
+
+# Loose enough to cover real designations across standards bodies
+# ("ISO4017", "DIN912", "ANSI-B18.2.1") and thread sizes ("M6", "M8x1.25")
+# without a hand-maintained enum — FreeCAD's own Fasteners workbench is the
+# actual source of truth for which combinations exist, not this module.
+# Restricting to this charset is a clean-error convenience (a malformed
+# designation fails here with an actionable message instead of a cryptic
+# FreeCAD-side one) — NOT an injection guard: every value below is embedded
+# into the generated script via `!r` (repr), which is injection-safe for
+# any string regardless of content.
+_FASTENER_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 
 # A square-bodied placeholder (matching NEMA 17's actual square mounting
 # face) + a cylindrical pilot boss + a shaft — a Part::Compound rather than
@@ -115,6 +127,70 @@ print("{marker} path=" + {out_path!r})
 """
 
 
+# Generates via FreeCAD's own community "Fasteners" workbench
+# (https://github.com/shaise/FreeCAD_FastenersWorkbench) instead of this
+# module's own hand-built compound-of-primitives approach the other three
+# part types use above — real ISO/DIN/ANSI thread geometry (including
+# actual helical threads, not a cylinder placeholder), so it needs the
+# workbench installed in the target FreeCAD environment. `import Fasteners`
+# is guarded with its own clean, actionable stdout message (caught by
+# `_run_freecad_script`'s stdout/stderr fail_msg fallback) rather than
+# letting a bare ImportError traceback reach the agent — same reasoning as
+# every other guarded import in this codebase.
+#
+# `Fasteners.makeFastener(fastener_type, size, length)` is the call this
+# was specified against; the exact public API has shifted across Fasteners
+# workbench versions (some expose per-family maker functions instead of one
+# generic entry point). Wrapped in its own try/except so a version mismatch
+# degrades to a clean, catchable error (surfaced as `ok: False` with the
+# real exception text) rather than a bare traceback — verify against the
+# FreeCAD + Fasteners version actually installed before relying on this in
+# production, and adjust the call below if that version exposes a
+# different entry point.
+_FASTENER_SCRIPT = """\
+import sys
+import FreeCAD as App
+import Part
+
+try:
+    import Fasteners
+except ImportError:
+    # flush=True: subprocess.run's captured stdout is a pipe, not a TTY —
+    # CPython block-buffers writes to a pipe rather than line-buffering
+    # them. FreeCAD's own sys.exit() handling terminates the process
+    # without running normal Python interpreter shutdown/flush, so an
+    # un-flushed message here is silently lost (confirmed directly against
+    # this project's own installed FreeCADCmd — the message never reached
+    # the parent process's captured stdout without this).
+    print(
+        "FASTENERS_WORKBENCH_MISSING: The FreeCAD Fasteners workbench is not "
+        "installed in this FreeCAD environment. Install it via Tools -> Addon "
+        "Manager -> 'Fasteners' (by shaise), then restart FreeCADCmd.",
+        flush=True,
+    )
+    sys.exit(1)
+
+doc = App.newDocument("DanaModel")
+try:
+    fastener_obj = Fasteners.makeFastener({fastener_type!r}, {size!r}, {length})
+except Exception as exc:
+    print("FASTENERS_API_ERROR: " + str(exc), flush=True)
+    sys.exit(1)
+
+obj = doc.addObject("Part::Feature", {name!r})
+obj.Shape = fastener_obj.Shape
+try:
+    doc.removeObject(fastener_obj.Name)
+except Exception:
+    pass
+""" + _PLACEMENT_SNIPPET + """\
+doc.recompute()
+doc.saveAs({out_path!r})
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {out_path!r})
+"""
+
+
 def _resolve_nema17(name: str | None) -> tuple[str, str, dict[str, Any], dict[str, float]]:
     dims = get_nema17_dimensions()
     resolved_name = name or "NEMA17Motor"
@@ -152,22 +228,58 @@ def _resolve_bearing(specification: str, name: str | None) -> tuple[str, str, di
     return resolved_name, _BEARING_SCRIPT, fmt_kwargs, geo
 
 
+def _resolve_fastener(
+    fastener_type: str, size: str, length: float | None, name: str | None
+) -> tuple[str, str, dict[str, Any], dict[str, float | str]]:
+    ft = (fastener_type or "").strip()
+    sz = (size or "").strip()
+    if not ft or not _FASTENER_TOKEN_RE.match(ft):
+        raise ValueError(
+            f"fastener_type must be a standard designation like 'ISO4017' or 'DIN912', got {fastener_type!r}"
+        )
+    if not sz or not _FASTENER_TOKEN_RE.match(sz):
+        raise ValueError(f"size must be a thread designation like 'M6' or 'M8x1.25', got {size!r}")
+    if length is None:
+        raise ValueError("length (mm) is required for part_type='fastener'")
+    try:
+        length_f = float(length)
+    except (TypeError, ValueError):
+        raise ValueError(f"length must be a number, got {length!r}") from None
+    if length_f <= 0:
+        raise ValueError("length must be a positive number")
+
+    resolved_name = name or f"Fastener_{ft}_{sz}"
+    fmt_kwargs = {"fastener_type": ft, "size": sz, "length": length_f}
+    dims_out: dict[str, float | str] = {"fastener_type": ft, "size": sz, "length_mm": length_f}
+    return resolved_name, _FASTENER_SCRIPT, fmt_kwargs, dims_out
+
+
 def insert_standard_part(
     part_type: str,
     specification: str = "",
     name: str | None = None,
     placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    fastener_type: str = "",
+    size: str = "",
+    length: float | None = None,
 ) -> str:
-    """Generate an exact standard-hardware solid from
-    ``engineering_standards.py``'s dimension tables — never a hallucinated
+    """Generate an exact standard-hardware solid — never a hallucinated
     guess. ``part_type``:
 
     - ``"nema17_motor"``: a NEMA 17 motor placeholder (square body + pilot
-      boss + shaft), ``specification`` unused.
-    - ``"socket_head_screw"``: ``specification`` is a spec string like
-      ``"M3x12"`` (M<diameter>x<length_mm>).
-    - ``"ball_bearing"``: ``specification`` is a bearing designation like
-      ``"608"``.
+      boss + shaft), from ``engineering_standards.py``'s dimension table;
+      ``specification`` unused.
+    - ``"socket_head_screw"``: from ``engineering_standards.py``'s
+      dimension table; ``specification`` is a spec string like ``"M3x12"``
+      (M<diameter>x<length_mm>).
+    - ``"ball_bearing"``: from ``engineering_standards.py``'s dimension
+      table; ``specification`` is a bearing designation like ``"608"``.
+    - ``"fastener"``: real ISO/DIN/ANSI hardware (hex bolts, nuts, socket
+      screws, ...) via FreeCAD's own Fasteners workbench — ``fastener_type``
+      is a standard designation (e.g. ``"ISO4017"`` for a hex bolt,
+      ``"ISO4032"`` for a hex nut), ``size`` is a thread designation (e.g.
+      ``"M6"``, ``"M8"``), ``length`` is the fastener length in mm (unused
+      for nuts, but still required — pass any positive value).
     """
     if IS_HF_SPACE:
         # Unlike every create_* op in engine.py, this function never goes
@@ -186,8 +298,10 @@ def insert_standard_part(
             resolved_name, script_template, fmt_kwargs, dims_out = _resolve_nema17(name)
         elif pt == "socket_head_screw":
             resolved_name, script_template, fmt_kwargs, dims_out = _resolve_screw(specification, name)
-        else:  # ball_bearing
+        elif pt == "ball_bearing":
             resolved_name, script_template, fmt_kwargs, dims_out = _resolve_bearing(specification, name)
+        else:  # fastener
+            resolved_name, script_template, fmt_kwargs, dims_out = _resolve_fastener(fastener_type, size, length, name)
     except ValueError as exc:
         return _error(f"insert_standard_part: {exc}")
 

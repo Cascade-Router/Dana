@@ -223,6 +223,61 @@
       "aliases_fa": {
         "_intent": []
       }
+    },
+    {
+      "id": "insert_standard_part",
+      "function": "insert_standard_part",
+      "description_en": "Generates an exact standard-hardware solid — a NEMA 17 motor placeholder, a socket head cap screw, a ball bearing, or (via FreeCAD's own Fasteners workbench) real ISO/DIN/ANSI hardware like hex bolts and nuts — from a reference dimension table or the Fasteners workbench, instead of sketching/extruding a hallucinated approximation. Always prefer this over hand-modeling a named standard part. Use part_type='fastener' to spawn exact hardware like an M8x30 ISO4017 hex bolt (fastener_type='ISO4017', size='M8', length=30) instead of trying to manually extrude threads.",
+      "parameters": [
+        {
+          "name": "part_type",
+          "type": "string",
+          "required": true,
+          "enum": ["nema17_motor", "socket_head_screw", "ball_bearing", "fastener"],
+          "description_en": "Which standard part to generate. Use 'fastener' for real ISO/DIN/ANSI hardware (hex bolts, nuts, socket screws) via the Fasteners workbench."
+        },
+        {
+          "name": "specification",
+          "type": "string",
+          "required": false,
+          "description_en": "Required for 'socket_head_screw' (a spec like 'M3x12', meaning M3 thread x 12mm length) and 'ball_bearing' (a designation like '608'). Unused for 'nema17_motor' and 'fastener'."
+        },
+        {
+          "name": "fastener_type",
+          "type": "string",
+          "required": false,
+          "description_en": "Required for part_type='fastener' — a standard designation, e.g. 'ISO4017' for a hex bolt, 'ISO4032' for a hex nut, 'DIN912' for a socket head cap screw."
+        },
+        {
+          "name": "size",
+          "type": "string",
+          "required": false,
+          "description_en": "Required for part_type='fastener' — a thread designation, e.g. 'M6', 'M8', 'M10x1.25'."
+        },
+        {
+          "name": "length",
+          "type": "number",
+          "required": false,
+          "description_en": "Required for part_type='fastener' — fastener length in mm, e.g. 20, 30, 50. Unused for nuts, but still required — pass any positive value."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Object/document name. Defaults to a name derived from part_type/specification (or fastener_type/size for 'fastener')."
+        }
+      ],
+      "aliases_en": {
+        "_intent": [
+          "insert a hex bolt",
+          "add a nut",
+          "spawn a standard fastener",
+          "insert_standard_part"
+        ]
+      },
+      "aliases_fa": {
+        "_intent": []
+      }
     }
   ]
 }
