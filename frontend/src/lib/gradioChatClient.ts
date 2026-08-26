@@ -153,19 +153,26 @@ export async function sendGradioChatMessage(spaceUrl: string, message: string): 
   // @gradio/client types `result.data` loosely (not as a real array), so
   // every access below goes through this one cast rather than sprinkling
   // `as unknown[]`/`as unknown` at each call site.
-  const dataArr = result.data as unknown[] | undefined;
-  // Temporary trace (per the current debugging pass) — the Execution
-  // Graph reads data[5], so seeing its actual runtime type/value here is
-  // the fastest way to tell a deploy-lag/stale-client-config problem
-  // (data.length < 6, or data[5] undefined) apart from a real parsing bug
-  // (data[5] present but the wrong shape) directly from the browser console.
+  const dataArr = (result.data as unknown[] | undefined) ?? [];
   console.log(
     "[GradioClient] Raw data array length and types:",
-    dataArr?.length,
-    dataArr?.map((d: unknown) => typeof d)
+    dataArr.length,
+    dataArr.map((d: unknown) => typeof d)
   );
-  console.log("[GradioClient] Raw data[5]:", dataArr?.[5]);
-  const [text, file, , , , graph] = (dataArr ?? []) as [string, unknown, unknown, unknown, unknown, unknown];
+  // app.py's Python-side _outputs list is
+  // [text_out, file_out, chatbot, mesh_preview, session_state, graph_out]
+  // — 6 entries — but session_state (a gr.State) never reaches the client
+  // at all: gr.State.skip_api is hardcoded True in Gradio's own source
+  // (gradio/components/state.py), so the client-visible `data` array is
+  // only 5 elements, with graph_out shifted down to index 4, not 5.
+  // Verified directly against a live capture (dataArr.length === 5). Read
+  // graph_out as the LAST element rather than a hardcoded index so this
+  // can't silently break again the same way if any other State component
+  // is ever added/removed from _outputs.
+  const text = dataArr[0] as string;
+  const file = dataArr[1];
+  const graph = dataArr[dataArr.length - 1];
+  console.log("[GradioClient] Raw graph_out (last element):", graph);
   const dagEvents = parseDagEvents(graph);
   console.log("[GradioClient] Parsed dagEvents:", dagEvents.length, dagEvents);
   return { text, meshUrl: parseMeshPayload(file, client), dagEvents };
