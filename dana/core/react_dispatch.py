@@ -27,7 +27,6 @@ from typing import Any
 
 from dana.core.context_manager import prune_message_history, prune_tool_output_history
 from dana.core.model_provider import ModelProvider, tool_calling_provider
-from dana.core.provider_cascade import CASCADABLE_TARGETS, complete_with_tool_calls_cascading
 from dana.core.skill_loader import delete_skill, load_user_skills, read_skill_source, save_skill
 from dana.core.tool_retrieval import narrow_tool_ids_by_query
 from dana.tools.registry import get_tool_registry
@@ -2778,19 +2777,14 @@ async def _call_llm_once(
     # wrong one (a real Groq TPM stall previously got logged/apologized
     # for as if it were "the local model").
     target_provider = tool_calling_provider()
-    # Cascade Router (P1): cloud-primary turns route through the
-    # groq -> gemini -> openai -> anthropic failover ladder instead of a
-    # single pinned provider — see dana.core.provider_cascade's module
-    # docstring for why "gateway" (tool_calling_provider()'s own default
-    # once DANA_CLOUD_PRIMARY is on) is included here too. Local Ollama
-    # turns are unaffected — there's no rate-limit/cascade concept for a
-    # local daemon.
-    if target_provider in CASCADABLE_TARGETS:
-        def _run_completion() -> dict[str, Any]:
-            return complete_with_tool_calls_cascading(provider, pruned_messages, tools=tools)
-    else:
-        def _run_completion() -> dict[str, Any]:
-            return provider.complete_with_tool_calls(pruned_messages, tools=tools, provider=target_provider)
+    # Cloud-primary turns route through the native Cascade-Router gateway
+    # (dana.platform.proxy_launcher.start_cascade_proxy, provider "gateway"
+    # — see model_provider.gateway_base_url) which itself cascades
+    # groq -> gemini -> openai upstream, so this bridge just targets
+    # whichever single provider tool_calling_provider() resolved instead of
+    # retrying a ladder in-process.
+    def _run_completion() -> dict[str, Any]:
+        return provider.complete_with_tool_calls(pruned_messages, tools=tools, provider=target_provider)
 
     try:
         return await asyncio.wait_for(

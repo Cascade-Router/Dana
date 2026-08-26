@@ -43,6 +43,7 @@ import spaces
 from dana.api import artifacts_registry
 from dana.api.server import _MESH_REGISTRY, _process_user_text, _resolve_react_hitl, _resolve_visual_capture
 from dana.api.sessions import new_session_id
+from dana.platform.proxy_launcher import start_cascade_proxy, stop_cascade_proxy
 from dana.plugins.freecad.call_log import CadCallLog
 
 
@@ -293,4 +294,12 @@ with gr.Blocks(css=_CUSTOM_CSS, title="Dānā") as demo:
     demo.load(_dummy_gpu_function)
 
 if __name__ == "__main__":
-    demo.queue().launch(server_name="0.0.0.0", server_port=7860, ssr_mode=False)
+    # Cloud-primary turns (tool_calling_provider() -> "gateway") route through
+    # this native Cascade-Router subprocess (bin/cascade-router-linux on a
+    # Space) rather than an in-process provider ladder — see
+    # dana.platform.proxy_launcher.
+    _cascade_proxy = start_cascade_proxy()
+    try:
+        demo.queue().launch(server_name="0.0.0.0", server_port=7860, ssr_mode=False)
+    finally:
+        stop_cascade_proxy(_cascade_proxy)

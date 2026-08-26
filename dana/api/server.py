@@ -21,6 +21,7 @@ both the API and the static React app.
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import sys
 import time
 import uuid
@@ -42,6 +43,7 @@ from dana.api.system import router as _system_router
 from dana.api.workspace import load_mounted_directories
 from dana.api.workspace import router as _workspace_router
 from dana.core.model_provider import tool_calling_provider
+from dana.platform.proxy_launcher import start_cascade_proxy, stop_cascade_proxy
 from dana.core.react_dispatch import (
     ToolResult,
     build_assistant_tool_call_message,
@@ -197,6 +199,7 @@ def _touch_capability_domains(session: dict[str, Any], domains: frozenset[str]) 
 _active_sessions: dict[WebSocket, dict[str, Any]] = {}
 _voice_service: VoiceService | None = None
 _event_loop: asyncio.AbstractEventLoop | None = None
+_cascade_proxy: subprocess.Popen | None = None
 
 
 async def _broadcast(message: dict[str, Any]) -> None:
@@ -284,8 +287,12 @@ def _on_voice_state(state: VoiceState, transcript: str) -> None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    global _voice_service, _event_loop
+    global _voice_service, _event_loop, _cascade_proxy
     _event_loop = asyncio.get_running_loop()
+    # Cloud-primary turns (tool_calling_provider() -> "gateway") route
+    # through this native Cascade-Router subprocess rather than an
+    # in-process provider ladder — see dana.platform.proxy_launcher.
+    _cascade_proxy = start_cascade_proxy()
     _voice_service = VoiceService(on_state=_on_voice_state)
     _voice_service.start()
     original_stdout, original_stderr = sys.stdout, sys.stderr
@@ -299,6 +306,7 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         sys.stdout, sys.stderr = original_stdout, original_stderr
         if _voice_service is not None:
             _voice_service.stop()
+        stop_cascade_proxy(_cascade_proxy)
 
 
 app = FastAPI(title="Dana API", lifespan=_lifespan)
