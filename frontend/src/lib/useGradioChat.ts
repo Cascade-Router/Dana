@@ -78,7 +78,14 @@ export function useGradioChat(
           // FULL session history (it re-derives turn numbering from
           // "parse-N" node ids across the whole log), the same way the WS
           // path's `log` only ever grows across a session.
-          if (reply.dagEvents.length > 0) setLog((prev) => [...prev, ...reply.dagEvents]);
+          console.log("[useGradioChat] reply.dagEvents received:", reply.dagEvents.length, reply.dagEvents);
+          if (reply.dagEvents.length > 0) {
+            setLog((prev) => {
+              const next = [...prev, ...reply.dagEvents];
+              console.log("[useGradioChat] log state updated:", prev.length, "->", next.length);
+              return next;
+            });
+          }
         })
         .catch(() => {
           setMessages((prev) => [

@@ -124,11 +124,24 @@ function parseMeshPayload(raw: unknown, client: Client): string | null {
 // for the full output ordering) is a plain JSON array round-tripped
 // through _GradioSocket.dag_events, so its entries already carry the exact
 // `{type: "dag_node_start"|"dag_node_complete", ...}` shape ServerEvent
-// expects — this only guards against a malformed/missing value rather
-// than actually reshaping anything.
+// expects in EVERY case actually observed so far. Still handles a
+// stringified JSON array defensively (JSON.parse, guarded) — gr.JSON's
+// exact wire representation has been known to vary by Gradio version, and
+// a bare `!Array.isArray(raw)` bail-out would otherwise silently turn a
+// real (but string-encoded) payload into a permanently empty graph with
+// no error anywhere.
 function parseDagEvents(raw: unknown): ServerEvent[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.filter(
+  let value: unknown = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch (err) {
+      console.warn("[GradioClient] data[5] was a string but not valid JSON — dropping:", err);
+      return [];
+    }
+  }
+  if (!Array.isArray(value)) return [];
+  return value.filter(
     (e): e is ServerEvent =>
       !!e && typeof e === "object" && (e.type === "dag_node_start" || e.type === "dag_node_complete")
   );
@@ -137,8 +150,25 @@ function parseDagEvents(raw: unknown): ServerEvent[] {
 export async function sendGradioChatMessage(spaceUrl: string, message: string): Promise<GradioChatReply> {
   const client = await connectGradioClient(spaceUrl);
   const result = await client.predict("/chat", { message });
-  const [text, file, , , , graph] = result.data as [string, unknown, unknown, unknown, unknown, unknown];
-  return { text, meshUrl: parseMeshPayload(file, client), dagEvents: parseDagEvents(graph) };
+  // @gradio/client types `result.data` loosely (not as a real array), so
+  // every access below goes through this one cast rather than sprinkling
+  // `as unknown[]`/`as unknown` at each call site.
+  const dataArr = result.data as unknown[] | undefined;
+  // Temporary trace (per the current debugging pass) — the Execution
+  // Graph reads data[5], so seeing its actual runtime type/value here is
+  // the fastest way to tell a deploy-lag/stale-client-config problem
+  // (data.length < 6, or data[5] undefined) apart from a real parsing bug
+  // (data[5] present but the wrong shape) directly from the browser console.
+  console.log(
+    "[GradioClient] Raw data array length and types:",
+    dataArr?.length,
+    dataArr?.map((d: unknown) => typeof d)
+  );
+  console.log("[GradioClient] Raw data[5]:", dataArr?.[5]);
+  const [text, file, , , , graph] = (dataArr ?? []) as [string, unknown, unknown, unknown, unknown, unknown];
+  const dagEvents = parseDagEvents(graph);
+  console.log("[GradioClient] Parsed dagEvents:", dagEvents.length, dagEvents);
+  return { text, meshUrl: parseMeshPayload(file, client), dagEvents };
 }
 
 export type GradioArtifact = {
