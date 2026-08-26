@@ -5,39 +5,92 @@ import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import URDFLoader, { type URDFRobot } from "urdf-loader";
 import * as THREE from "three";
 import type { CameraTarget, CanvasSelection } from "../lib/useChatSocket";
-import { resolveApiUrl } from "../lib/apiBase";
+import { apiFetch, IS_GRADIO_MODE, resolveApiUrl } from "../lib/apiBase";
+import { fetchGradioArtifacts } from "../lib/gradioChatClient";
 import "./Viewer3D.css";
 
 function isUrdfUrl(url: string): boolean {
   return /\.urdf(?:[?#].*)?$/i.test(url);
 }
 
-// A URDF's <mesh filename="..."> is always a bare artifact filename, never
-// a real path (see dana/tools/urdf_builder.py — it deliberately writes only
-// the basename) — there's no directory of sibling files to resolve it
-// against relative to the URDF's own opaque /api/mesh/{token}.urdf URL, so
-// this ignores whatever prefix URDFLoader's own resolvePath prepended and
-// re-fetches the bare filename through the same REST download route the
-// CAD tab's Export dropdown already uses (dana/api/cad.py's
-// /api/cad/artifacts/{filename}/download, which resolves a bare filename
-// against the artifact registry the same way).
+const _SPACE_URL = import.meta.env.VITE_HF_SPACE_URL as string;
+
+// The live, fetchable URL for one previously-generated artifact — same
+// {filename, url} shape in both transports, just sourced differently below.
+type MeshArtifact = { filename: string; url: string };
+
+// A URDF's <mesh filename="..."> can arrive as a bare filename, a
+// "package://robot/meshes/wheel.stl" ROS path, or any other relative form
+// dana/tools/urdf_builder.py (or a future non-Dana source) chooses to write
+// — never a real, directly-fetchable URL: this project's meshes are served
+// from HF Spaces/Vercel-hosted artifact storage, whose URLs are opaque and
+// unrelated to whatever path string ended up in the XML. Rather than trust
+// URDFLoader's own resolvePath (which just concatenates its `workingPath`
+// onto the raw string — meaningless here, there's no real directory of
+// sibling files at the URDF's own URL), this strips to the bare basename
+// and looks it up directly against the CURRENT workspace artifacts list —
+// the same list CadToolbar's Export dropdown already renders — matching by
+// filename (Gradio's own `orig_name`, normalized into `.filename` below by
+// fetchMeshArtifacts) to find that artifact's real, live `.url`.
 function loadUrdfMesh(
   path: string,
   manager: THREE.LoadingManager,
-  onLoad: (obj: THREE.Object3D, err?: Error) => void
+  onLoad: (obj: THREE.Object3D | null, err?: Error) => void,
+  artifacts: MeshArtifact[]
 ) {
-  const filename = path.split("/").pop() || path;
-  const url = resolveApiUrl(`/api/cad/artifacts/${encodeURIComponent(filename)}/download`);
+  const filename = path.split(/[\\/]/).pop() || path;
+  const artifact = artifacts.find((a) => a.filename === filename);
+  if (!artifact) {
+    console.warn(`[Viewer3D] no matching workspace artifact found for URDF mesh reference: ${filename}`);
+    onLoad(null);
+    return;
+  }
   new STLLoader(manager).load(
-    url,
+    artifact.url,
     (geometry) => {
       geometry.computeVertexNormals();
       const material = new THREE.MeshStandardMaterial({ color: "#4f8ff7", metalness: 0.15, roughness: 0.55 });
       onLoad(new THREE.Mesh(geometry, material));
     },
     undefined,
-    () => onLoad(new THREE.Object3D(), new Error(`failed to load URDF mesh: ${filename}`))
+    () => onLoad(null, new Error(`failed to load URDF mesh: ${filename} (${artifact.url})`))
   );
+}
+
+// Mirrors CadToolbar's own refreshArtifacts — same two data sources (no
+// shared cache between the two components; each fetches its own copy, the
+// existing convention this codebase already follows for
+// CadToolbar/WorkspacePlugin's Gradio artifact lists), normalized to one
+// {filename, url} shape so loadUrdfMesh above never has to branch on
+// transport. Gradio mode has no REST API at all (see apiBase.ts) — its
+// artifacts already carry a real, live, cross-origin-fetchable `.url`
+// (app.py FileData-ifies every registered path). REST mode's artifacts have
+// no `.url` of their own, so one is built from the same
+// /api/cad/artifacts/{filename}/download route CadToolbar's download()
+// falls back to.
+async function fetchMeshArtifacts(): Promise<MeshArtifact[]> {
+  if (IS_GRADIO_MODE) {
+    try {
+      const files = await fetchGradioArtifacts(_SPACE_URL);
+      return files.map((f) => ({ filename: f.filename, url: f.url }));
+    } catch (err) {
+      console.warn("[Viewer3D] fetchGradioArtifacts failed while resolving URDF meshes:", err);
+      return [];
+    }
+  }
+  try {
+    const res = await apiFetch("/api/cad/artifacts");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const list: { filename: string }[] = Array.isArray(data.artifacts) ? data.artifacts : [];
+    return list.map((a) => ({
+      filename: a.filename,
+      url: resolveApiUrl(`/api/cad/artifacts/${encodeURIComponent(a.filename)}/download`),
+    }));
+  } catch (err) {
+    console.warn("[Viewer3D] fetching /api/cad/artifacts failed while resolving URDF meshes:", err);
+    return [];
+  }
 }
 
 // URDFLoader has no shared r3f `useLoader` cache to clear (unlike StlMesh
@@ -251,26 +304,40 @@ export function Viewer3D({ meshUrl, cameraTarget, onSelect }: Props) {
     }
 
     let cancelled = false;
-    const loader = new URDFLoader();
-    loader.loadMeshCb = loadUrdfMesh;
-    loader.load(
-      meshUrl,
-      (robot) => {
-        if (cancelled) {
-          disposeUrdfRobot(robot);
-          return;
-        }
-        const sliders = jointSlidersFor(robot);
-        setUrdfRobot((current) => {
-          if (current) disposeUrdfRobot(current);
-          return robot;
-        });
-        setJointDefs(sliders);
-        setJointValues(Object.fromEntries(sliders.map((s) => [s.name, 0])));
-      },
-      undefined,
-      (err) => console.error("[Viewer3D] failed to load URDF assembly:", err)
-    );
+    // Resolved BEFORE loader.load() starts (not raced against it) — every
+    // mesh reference inside the URDF needs this list already in hand the
+    // moment URDFLoader's parser reaches it, since loadUrdfMesh's lookup is
+    // synchronous from its own caller's perspective (it has no way to tell
+    // URDFLoader "wait, let me go fetch something first").
+    fetchMeshArtifacts().then((artifacts) => {
+      if (cancelled) return;
+      const loader = new URDFLoader();
+      // urdf-loader's own MeshLoadDoneFunc type demands a non-null
+      // Object3D; loadUrdfMesh's `null` (no matching artifact/load failure)
+      // becomes a harmless empty placeholder here instead — same as what
+      // reaches it on any other load error, and URDFLoader's own parser
+      // already guards with `else if (obj)` before adding it to the scene.
+      loader.loadMeshCb = (meshPath, manager, onComplete) =>
+        loadUrdfMesh(meshPath, manager, (obj, err) => onComplete(obj ?? new THREE.Object3D(), err), artifacts);
+      loader.load(
+        meshUrl,
+        (robot) => {
+          if (cancelled) {
+            disposeUrdfRobot(robot);
+            return;
+          }
+          const sliders = jointSlidersFor(robot);
+          setUrdfRobot((current) => {
+            if (current) disposeUrdfRobot(current);
+            return robot;
+          });
+          setJointDefs(sliders);
+          setJointValues(Object.fromEntries(sliders.map((s) => [s.name, 0])));
+        },
+        undefined,
+        (err) => console.error("[Viewer3D] failed to load URDF assembly:", err)
+      );
+    });
 
     return () => {
       cancelled = true;
