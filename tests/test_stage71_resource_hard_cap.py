@@ -39,14 +39,8 @@ def test_apply_torch_vram_half_cap_smoke() -> None:
     assert ok in {True, False}
 
 
-def test_vision_poller_imports_resource_cap() -> None:
-    import dana.middleware.vision_poller as vp
-
-    assert hasattr(vp, "apply_cpu_half_affinity")
-    assert hasattr(vp, "apply_torch_vram_half_cap")
-
-
-def test_actuator_imports_resource_cap() -> None:
-    import dana.middleware.actuator_executor as ae
-
-    assert hasattr(ae, "apply_cpu_half_affinity")
+# test_vision_poller_imports_resource_cap / test_actuator_imports_resource_cap
+# used to live here, checking that dana/middleware/vision_poller.py and
+# actuator_executor.py re-exported this module's functions. Both removed as
+# dead legacy code (zero live callers — see the 2026-08-26 connectivity
+# audit); resource_cap.py itself is untouched and still live.

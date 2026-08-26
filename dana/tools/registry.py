@@ -538,15 +538,30 @@ _registry_lock = threading.Lock()
 
 
 def get_tool_registry(*, reload: bool = False) -> ToolRegistry:
-    """Process-wide ToolRegistry singleton (lazy-loads tools.json once)."""
+    """Process-wide ToolRegistry singleton (lazy-loads tools.json once).
+
+    ``load_general_tools_from_disk`` is called AFTER releasing
+    ``_registry_lock`` below (not from inside the ``with`` block) for two
+    reasons: it calls ``get_tool_registry()`` itself to fetch the registry
+    to load into, and ``_registry_lock`` is a plain, non-reentrant
+    ``threading.Lock`` — re-entering it from the same thread would deadlock.
+    ``_registry_singleton`` is already assigned by the time it's called, so
+    that nested call just returns the singleton immediately rather than
+    recursing into another full build.
+    """
     global _registry_singleton
+    just_built = False
     with _registry_lock:
         if _registry_singleton is None or reload:
             reg = ToolRegistry()
             reg.load_from_tools_json(TOOLS_JSON)
             reg.load_from_plugin_manager()
             _registry_singleton = reg
-        return _registry_singleton
+            just_built = True
+        result = _registry_singleton
+    if just_built:
+        load_general_tools_from_disk()
+    return result
 
 
 def load_security_policy(path: str | Path | None = None) -> dict[str, Any]:

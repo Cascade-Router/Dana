@@ -115,6 +115,12 @@ def _tool_create_cylinder(args: dict[str, Any], engine: Any, _cp: Any) -> dict[s
     )
 
 
+def _tool_read_system_architecture(_args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    from dana.architecture import read_system_architecture
+
+    return read_system_architecture()
+
+
 def _tool_query_geometry_properties(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
     from dana.tools.geometry_analyzer import query_geometry_properties
 
@@ -1152,6 +1158,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "create_freecad_box": _tool_create_box,
     "generate_urdf_assembly": _tool_generate_urdf_assembly,
     "query_geometry_properties": _tool_query_geometry_properties,
+    "read_system_architecture": _tool_read_system_architecture,
     "create_freecad_cylinder": _tool_create_cylinder,
     "create_freecad_pyramid": _tool_create_freecad_pyramid,
     "create_freecad_star_prism": _tool_create_freecad_star_prism,
@@ -1467,6 +1474,9 @@ _CORE_TOOL_IDS = frozenset(
         "take_canvas_screenshot",  # "core capabilities like visual inspection stay global" — even
         "system_state",  # though the canvas it screenshots is the CAD plugin's own viewport,
         "check_plugin_registry",  # keeping this global matches the task's explicit instruction.
+        "read_system_architecture",  # self-description (docs/architecture.md + tool schema
+        # summary) — same "core capability with no plugin active at all" reasoning as
+        # check_plugin_registry directly above; complements it rather than duplicating it.
         "load_capability",  # autonomous semantic routing — see below; always available so the
         # agent can retrieve a domain it wasn't handed, without needing a frontend plugin for it.
         "unload_capability",  # its explicit release valve — always available for the same reason,

@@ -2377,6 +2377,12 @@
       ]
     },
     {
+      "id": "read_system_architecture",
+      "read_only": true,
+      "description_en": "Reads Dana's own architecture documentation (docs/architecture.md) plus a summary of every registered tool's schema (id, description, parameters) — use this to understand your own capabilities, explain to the user what you can do, or look up a tool's exact parameter names before calling it. Summarize for the user rather than dumping the raw markdown verbatim. Read-only.",
+      "parameters": []
+    },
+    {
       "id": "analyze_desktop_screen",
       "description_en": "Captures the user's ACTUAL primary monitor (their real desktop — not a sandboxed image file) and uses a vision-language model to answer a question about what's currently on screen, e.g. reading an error message in an external IDE, describing an open schematic, or checking what application is in the foreground. Requires the 'os_tools' capability domain to be loaded first via load_capability. This is a HIGH-PRIVACY action — capturing the user's real screen may reveal unrelated open windows or sensitive content — so this is a MUTATING action: the user must explicitly approve each capture before it happens.",
       "parameters": [

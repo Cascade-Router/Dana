@@ -1,40 +1,15 @@
-"""Stage 4.4 — middleware QoS (priority + toast async)."""
+"""Stage 4.4 — middleware QoS (toast async).
+
+The priority/torch-thread tests that used to live here (daemon-module nice()
+side effect, vision_poller's torch thread cap) tested
+dana/middleware/actuator_executor.py and dana/middleware/vision_poller.py,
+both removed as dead legacy code (zero live callers — see the 2026-08-26
+connectivity audit). Only the still-live toast_notify coverage remains.
+"""
 
 from __future__ import annotations
 
-import os
 import time
-
-import psutil
-
-
-def test_daemon_modules_apply_below_normal_priority() -> None:
-    # Importing the daemon modules runs the Stage 4.4 nice() side effect.
-    import dana.middleware.actuator_executor  # noqa: F401
-    import dana.middleware.vision_poller  # noqa: F401
-
-    nice = psutil.Process(os.getpid()).nice()
-    # On Windows, BELOW_NORMAL is typically an int enum / priority class value.
-    assert nice in {
-        psutil.BELOW_NORMAL_PRIORITY_CLASS,
-        getattr(psutil, "BELOW_NORMAL_PRIORITY_CLASS", nice),
-        nice,  # already-applied identity
-    }
-    # Soft assert: priority is not HIGH/REALTIME.
-    high = getattr(psutil, "HIGH_PRIORITY_CLASS", None)
-    realtime = getattr(psutil, "REALTIME_PRIORITY_CLASS", None)
-    if high is not None:
-        assert nice != high
-    if realtime is not None:
-        assert nice != realtime
-
-
-def test_vision_poller_limits_torch_threads() -> None:
-    import torch
-
-    import dana.middleware.vision_poller  # noqa: F401
-
-    assert int(torch.get_num_threads()) <= 2
 
 
 def test_toast_async_returns_immediately(monkeypatch) -> None:  # noqa: ANN001
