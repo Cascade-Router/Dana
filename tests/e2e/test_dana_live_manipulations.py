@@ -1,4 +1,4 @@
-"""Live e2e suite: OS write/exec, screen OCR, and Playwright fetch via real actuators.
+"""Live e2e suite: OS write/exec and screen OCR via real actuators.
 
 Mirrors ``core_agent`` tool-handler binding (same underlying actuators) without
 importing the full agent monolith.
@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from dana.tools.actuators import execute_command, write_to_file
-from dana.tools.browser import fetch_webpage
 from dana.tools.powershell import execute_powershell
 from dana.tools.schema import ToolCall
 from dana.tools.vision import analyze_visual_context
@@ -60,11 +59,6 @@ def _invoke_live_tool(tool_id: str, **arguments: object) -> str:
         return execute_command(str(command), timeout=timeout_sec)
     if tool_id == "analyze_visual_context":
         return analyze_visual_context()
-    if tool_id == "fetch_webpage":
-        url = call.arguments.get("url")
-        if url is None or not str(url).strip():
-            return "ERROR: missing url"
-        return fetch_webpage(str(url))
     return f"ERROR: unknown live tool {tool_id!r}"
 
 
@@ -77,20 +71,6 @@ def _desktop_os_test_dir() -> Path:
 
 def _powershell_available() -> bool:
     return shutil.which("powershell") is not None
-
-
-def _chromium_available() -> bool:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return False
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            browser.close()
-        return True
-    except Exception:  # noqa: BLE001
-        return False
 
 
 def _tesseract_available() -> bool:
@@ -189,14 +169,3 @@ def test_vision_manipulation() -> None:
             root.destroy()
         except Exception:  # noqa: BLE001
             pass
-
-
-@pytest.mark.skipif(
-    not _chromium_available(),
-    reason="Live Playwright fetch requires Chromium installed",
-)
-def test_playwright_manipulation() -> None:
-    """Fetch example.com via real Playwright actuator; assert Example Domain text."""
-    out = _invoke_live_tool("fetch_webpage", url="https://example.com")
-    assert not out.startswith("ERROR:"), out
-    assert "Example Domain" in out

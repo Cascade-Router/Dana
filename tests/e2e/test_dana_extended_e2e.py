@@ -1,4 +1,4 @@
-"""Extended live e2e: vault ingest/search, chained OS write, web scrape titles.
+"""Extended live e2e: vault ingest/search, chained OS write.
 
 Mirrors ``core_agent`` tool-handler binding (same underlying actuators) without
 importing the full agent monolith / LLM router.
@@ -14,7 +14,6 @@ import pytest
 
 from dana.memory.vault import FakeEmbeddings, ingest_local_directory, search_vault
 from dana.tools.actuators import execute_command, write_to_file
-from dana.tools.browser import fetch_webpage
 from dana.tools.powershell import execute_powershell
 from dana.tools.schema import ToolCall
 
@@ -91,46 +90,11 @@ def _invoke_live_tool(tool_id: str, **arguments: object) -> str:
         return search_vault(
             str(query).strip(), n_results=n_results, **kwargs  # type: ignore[arg-type]
         )
-    if tool_id == "fetch_webpage":
-        url = call.arguments.get("url")
-        if url is None or not str(url).strip():
-            return "ERROR: missing url"
-        selector = call.arguments.get("selector")
-        limit = call.arguments.get("limit")
-        extract_hn = call.arguments.get("extract_hn_titles", False)
-        extract_hn_titles = bool(extract_hn) and str(extract_hn).strip().lower() not in (
-            "0",
-            "false",
-            "no",
-            "",
-        )
-        kwargs = {}
-        if selector is not None and str(selector).strip():
-            kwargs["selector"] = str(selector).strip()
-        if limit is not None:
-            kwargs["limit"] = limit
-        if extract_hn_titles:
-            kwargs["extract_hn_titles"] = True
-        return fetch_webpage(str(url), **kwargs)  # type: ignore[arg-type]
     return f"ERROR: unknown live tool {tool_id!r}"
 
 
 def _powershell_available() -> bool:
     return shutil.which("powershell") is not None
-
-
-def _chromium_available() -> bool:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return False
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            browser.close()
-        return True
-    except Exception:  # noqa: BLE001
-        return False
 
 
 def _desktop_or_temp() -> Path:
@@ -216,35 +180,3 @@ def test_chained_os_manipulation(tmp_path: Path) -> None:
                 diag.unlink()
             except OSError:
                 pass
-
-
-@pytest.mark.skipif(
-    not _chromium_available(),
-    reason="Live Playwright fetch requires Chromium installed",
-)
-def test_dynamic_web_scrape() -> None:
-    """Fetch HN (or example.com fallback) and assert >= 3 non-empty title strings."""
-    titles: list[str] = []
-
-    out = _invoke_live_tool(
-        "fetch_webpage",
-        url="https://news.ycombinator.com/",
-        extract_hn_titles=True,
-        limit=5,
-    )
-    if not out.startswith("ERROR:"):
-        titles = [ln.strip() for ln in out.splitlines() if ln.strip()]
-
-    if len(titles) < 3:
-        # Flaky HN / blocked: fall back to example.com + multi-line selector extract.
-        out = _invoke_live_tool(
-            "fetch_webpage",
-            url="https://example.com",
-            selector="h1, p",
-            limit=5,
-        )
-        assert not out.startswith("ERROR:"), out
-        titles = [ln.strip() for ln in out.splitlines() if ln.strip()]
-
-    assert len(titles) >= 3, titles
-    assert all(isinstance(t, str) and t for t in titles[:3])

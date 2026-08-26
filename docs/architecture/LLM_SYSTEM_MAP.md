@@ -1,5 +1,17 @@
 # Dānā LLM System Map
 
+> **STALE — CORRECTED 2026-08-25:** This entire document maps the legacy
+> `run.py` → `dana.core_agent.main()` → `DanaGUI`/broker/LangGraph stack,
+> which no longer exists in the working tree (`dana/ui/`, `dana/agentic*.py`,
+> `dana/core/agent_loop.py`, `dana/core/app_runtime.py`, `dana/graph/`,
+> `dana/swarm/`, `dana/tools/broker.py` are all gone). The current live stack
+> is Tauri/React ↔ `dana/api/server.py` (FastAPI/WebSocket) ↔
+> `dana/core/react_dispatch.py`'s `TOOL_HANDLERS` — see
+> `docs/SYSTEM_ARCHITECTURE_AUDIT.md`'s own correction banner for the same
+> note. `dana.tools.browser.fetch_webpage` (row below) and `dana.mcp` have
+> since been deleted as dead code; treat every module path below as a
+point-in-time historical record, not current fact.
+
 Dense topology for LLM / agent reasoning. Paths and symbols match current code (2026-08). No invented APIs.
 
 ---

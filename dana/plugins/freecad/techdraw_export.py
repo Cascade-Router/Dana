@@ -41,6 +41,7 @@ from dana.plugins.freecad.engine import (
     _run_freecad_script,
     _safe_name,
 )
+from dana.platform.factory import IS_HF_SPACE
 from dana.security.dry_run import is_dry_run_enabled
 
 # Direction = viewing direction (camera -> object); XDirection = which way
@@ -150,6 +151,12 @@ def generate_2d_blueprint(
     object in ``source_path`` onto a standard drawing page and exports a
     PDF. No auto-dimensioning — clean projected geometry only.
     """
+    if IS_HF_SPACE:
+        # Same bypass as standard_parts.py's insert_standard_part (see this
+        # module's own docstring) — never goes through get_cad_engine()'s
+        # Mock/Real switch, always a real FreeCADCmd subprocess. Gated here,
+        # at the shell-out itself, regardless of caller.
+        return _error("generate_2d_blueprint is disabled in the hosted cloud demo — it requires the real FreeCAD engine.")
     target = Path(source_path)
     if not target.is_file():
         return _error(f"generate_2d_blueprint: source_path not found: {source_path}")

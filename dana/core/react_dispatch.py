@@ -444,9 +444,17 @@ def _tool_read_file(
     return _fs_read_file(str(args.get("path") or ""), allowed_mounts)
 
 
+_CLOUD_SECURITY_RESTRICTION = {
+    "ok": False,
+    "error": "Security restriction: OS-level commands are disabled in the cloud demo environment.",
+}
+
+
 def _tool_write_file(
     args: dict[str, Any], _engine: Any, _cp: Any, *, allowed_mounts: list[str] | None = None
 ) -> dict[str, Any]:
+    if platform_factory.IS_HF_SPACE:
+        return _CLOUD_SECURITY_RESTRICTION
     return _fs_write_file(str(args.get("path") or ""), str(args.get("content") or ""), allowed_mounts)
 
 
@@ -468,6 +476,8 @@ def _tool_search_files(
 
 
 def _tool_run_python_script(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    if platform_factory.IS_HF_SPACE:
+        return _CLOUD_SECURITY_RESTRICTION
     raw_args = args.get("args")
     script_args = [str(a) for a in raw_args] if isinstance(raw_args, list) else None
     return _fs_run_python_script(str(args.get("script_path") or ""), script_args)
@@ -476,6 +486,8 @@ def _tool_run_python_script(args: dict[str, Any], _engine: Any, _cp: Any) -> dic
 def _tool_execute_terminal_command(
     args: dict[str, Any], _engine: Any, _cp: Any, *, allowed_mounts: list[str] | None = None
 ) -> dict[str, Any]:
+    if platform_factory.IS_HF_SPACE:
+        return _CLOUD_SECURITY_RESTRICTION
     return _fs_execute_terminal_command(
         str(args.get("command") or ""), str(args.get("working_dir") or "."), allowed_mounts
     )

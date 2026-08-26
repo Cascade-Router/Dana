@@ -1,5 +1,25 @@
 # Dana System Architecture Audit
 
+> **STALE — CORRECTED 2026-08-25:** This document's central claim (§ below and
+> throughout §3.1/§3.8) that the "legacy stack" is "not dead" / "fully live"
+> is **no longer true**. A 2026-08-25 codebase audit confirmed `dana/ui/`,
+> `dana/agentic.py`, `dana/agentic_react_graph.py`, `dana/core/agent_loop.py`,
+> `dana/core/app_runtime.py`, `dana/graph/`, `dana/swarm/`, and
+> `dana/tools/broker.py` no longer exist in the working tree — the legacy
+> CustomTkinter voice-agent stack has since been fully removed. One
+> consequence: the OS-automation tool surface it used to dispatch through
+> `dana/tools/broker.py` (keyboard/mouse/clipboard actuators,
+> `dana/tools/browser.py`, `dana/mcp/`, vault-memory tools) is now orphaned
+> relative to the live `dana/core/react_dispatch.py` `TOOL_HANDLERS` table —
+> some of that surface (`dana/tools/browser.py`, `dana/mcp/`,
+> `dana/core/command_classifiers.py`) has since been deleted as dead code;
+> the rest (keyboard/mouse actuators, the vault tool-calling surface) remains
+> on disk pending a decision, since parts of it (e.g. `kill_switch`,
+> `json_schema_retry`, `idle_monitor`, `resource_cap`) are still live
+> dependencies of the current stack and were not touched. The rest of this
+> document is left as a historical record of that point in time; treat any
+> "fully live"/"not dead" claim about the legacy stack below as superseded.
+
 **Scope:** Full repository — Python backend (`dana/`), Tauri/React frontend (`frontend/`), tool registry/plugins, test suite, and configuration.
 **Method:** Direct inspection (this session's own prior work on `dana/core/react_dispatch.py`, `model_provider.py`, `openai_tool_bridge.py`, `coder_plugin`, `error_digest.py`) plus four parallel research passes covering `dana/core`+`dana/api`, `dana/plugins`+`dana/tools`, `frontend/**`, and tests/dead-code/circular-imports.
 

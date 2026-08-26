@@ -36,6 +36,7 @@ from dana.plugins.freecad.engineering_standards import (
     get_nema17_dimensions,
     parse_screw_spec,
 )
+from dana.platform.factory import IS_HF_SPACE
 from dana.security.dry_run import is_dry_run_enabled
 
 _PART_TYPES = frozenset({"nema17_motor", "socket_head_screw", "ball_bearing"})
@@ -168,6 +169,13 @@ def insert_standard_part(
     - ``"ball_bearing"``: ``specification`` is a bearing designation like
       ``"608"``.
     """
+    if IS_HF_SPACE:
+        # Unlike every create_* op in engine.py, this function never goes
+        # through get_cad_engine()'s Mock/Real switch (see this module's own
+        # docstring) — it always shells out to a real FreeCADCmd subprocess.
+        # Gated here, at the shell-out itself, so it's closed regardless of
+        # which caller reaches it.
+        return _error("insert_standard_part is disabled in the hosted cloud demo — it requires the real FreeCAD engine.")
     pt = (part_type or "").strip().lower()
     if pt not in _PART_TYPES:
         return _error(f"insert_standard_part: unknown part_type '{part_type}' — must be one of {', '.join(sorted(_PART_TYPES))}")
