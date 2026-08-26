@@ -2382,6 +2382,21 @@
       "parameters": [
         {"name": "query", "type": "string", "required": true, "description_en": "What to ask about the captured screen, e.g. 'What error is shown in this stack trace?' or 'Describe the diagram on screen.'"}
       ]
+    },
+    {
+      "id": "generate_urdf_assembly",
+      "description_en": "Assembles previously-generated CAD parts (.stl mesh artifacts from create_freecad_*/export operations) into a single kinematic URDF (Unified Robot Description Format) robot model — the universal interchange hub for ROS2, Gazebo, and Isaac Sim. Each part becomes a URDF link (optionally carrying its mesh as visual+collision geometry); each connection between two links becomes a URDF joint (fixed, revolute, or continuous). Saves '<robot_name>.urdf' to the workspace.",
+      "parameters": [
+        {"name": "robot_name", "type": "string", "required": true, "description_en": "Name of the robot assembly; also used as the output filename (<robot_name>.urdf)."},
+        {
+          "name": "links", "type": "array", "required": true,
+          "description_en": "Ordered list of link objects, each: {\"name\": str, \"mesh_path\": optional str — a previously-generated .stl artifact path or filename to attach as this link's visual+collision geometry; omit for a purely kinematic frame with no geometry, \"origin_xyz\": optional [x, y, z] offset applied to the mesh geometry}."
+        },
+        {
+          "name": "joints", "type": "array", "required": true,
+          "description_en": "Ordered list of joint objects connecting two links, each: {\"name\": optional str, \"parent\": str link name, \"child\": str link name, \"type\": \"fixed\"|\"revolute\"|\"continuous\", \"origin_xyz\": optional [x, y, z] — the child frame's offset from the parent, \"axis\": optional [x, y, z] — the rotation axis for revolute/continuous joints, defaults to [0, 0, 1]}."
+        }
+      ]
     }
   ]
 }

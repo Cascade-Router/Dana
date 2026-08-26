@@ -1,10 +1,90 @@
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Canvas, useFrame, useLoader, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Grid, OrbitControls } from "@react-three/drei";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
+import URDFLoader, { type URDFRobot } from "urdf-loader";
 import * as THREE from "three";
 import type { CameraTarget, CanvasSelection } from "../lib/useChatSocket";
+import { resolveApiUrl } from "../lib/apiBase";
 import "./Viewer3D.css";
+
+function isUrdfUrl(url: string): boolean {
+  return /\.urdf(?:[?#].*)?$/i.test(url);
+}
+
+// A URDF's <mesh filename="..."> is always a bare artifact filename, never
+// a real path (see dana/tools/urdf_builder.py — it deliberately writes only
+// the basename) — there's no directory of sibling files to resolve it
+// against relative to the URDF's own opaque /api/mesh/{token}.urdf URL, so
+// this ignores whatever prefix URDFLoader's own resolvePath prepended and
+// re-fetches the bare filename through the same REST download route the
+// CAD tab's Export dropdown already uses (dana/api/cad.py's
+// /api/cad/artifacts/{filename}/download, which resolves a bare filename
+// against the artifact registry the same way).
+function loadUrdfMesh(
+  path: string,
+  manager: THREE.LoadingManager,
+  onLoad: (obj: THREE.Object3D, err?: Error) => void
+) {
+  const filename = path.split("/").pop() || path;
+  const url = resolveApiUrl(`/api/cad/artifacts/${encodeURIComponent(filename)}/download`);
+  new STLLoader(manager).load(
+    url,
+    (geometry) => {
+      geometry.computeVertexNormals();
+      const material = new THREE.MeshStandardMaterial({ color: "#4f8ff7", metalness: 0.15, roughness: 0.55 });
+      onLoad(new THREE.Mesh(geometry, material));
+    },
+    undefined,
+    () => onLoad(new THREE.Object3D(), new Error(`failed to load URDF mesh: ${filename}`))
+  );
+}
+
+// URDFLoader has no shared r3f `useLoader` cache to clear (unlike StlMesh
+// below) — robots are instantiated directly in a plain useEffect (see
+// Viewer3D's urdfRobot state), so this traversal is the ONLY teardown path
+// for their geometry/material GPU buffers. Needed because <primitive>
+// swaps (a new meshUrl replacing an old URDF while the Canvas itself stays
+// mounted) don't go through react-three-fiber's own unmount-disposal walk
+// the same way a whole-Canvas teardown does — this is exactly the WebGL
+// context leak class this project fixed once before (see the lifecycle
+// notes on the Viewer3D component itself).
+function disposeUrdfRobot(robot: THREE.Object3D) {
+  robot.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (mesh.geometry) mesh.geometry.dispose();
+    const material = mesh.material as THREE.Material | THREE.Material[] | undefined;
+    if (material) (Array.isArray(material) ? material : [material]).forEach((m) => m.dispose());
+  });
+}
+
+type JointSliderDef = { name: string; type: "revolute" | "continuous"; lower: number; upper: number };
+
+// Only revolute/continuous joints are actuatable (fixed/prismatic/planar/
+// floating are either rigid or have no single-scalar slider representation
+// worth building yet) — the same movable-joint set dana/tools/urdf_builder.py
+// tallies as movable_joint_count.
+function jointSlidersFor(robot: URDFRobot): JointSliderDef[] {
+  return Object.entries(robot.joints)
+    .filter(([, joint]) => joint.jointType === "revolute" || joint.jointType === "continuous")
+    .map(([name, joint]) => {
+      const hasRealLimit =
+        joint.jointType === "revolute" &&
+        Number.isFinite(joint.limit?.lower) &&
+        Number.isFinite(joint.limit?.upper) &&
+        joint.limit.upper > joint.limit.lower;
+      return {
+        name,
+        type: joint.jointType as "revolute" | "continuous",
+        // "continuous" has no URDF-mandated limit (it rotates freely) — a
+        // slider still needs finite bounds, so it gets the same +/-pi
+        // default a revolute joint with a malformed/missing <limit> falls
+        // back to.
+        lower: hasRealLimit ? joint.limit.lower : -Math.PI,
+        upper: hasRealLimit ? joint.limit.upper : Math.PI,
+      };
+    });
+}
 
 function StlMesh({ url, onSelect }: { url: string; onSelect: (selection: CanvasSelection) => void }) {
   // Explicit rather than relying on Three.js's own default (which already
@@ -148,6 +228,68 @@ type Props = {
 export function Viewer3D({ meshUrl, cameraTarget, onSelect }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [contextLost, setContextLost] = useState(false);
+  const isUrdf = !!meshUrl && isUrdfUrl(meshUrl);
+
+  const [urdfRobot, setUrdfRobot] = useState<URDFRobot | null>(null);
+  const [jointDefs, setJointDefs] = useState<JointSliderDef[]>([]);
+  const [jointValues, setJointValues] = useState<Record<string, number>>({});
+
+  // Parses a fresh URDF whenever meshUrl points at one, and always tears
+  // down whatever robot this effect previously built — on a new URL, on
+  // unmount, and even if meshUrl flips to null or to a plain .stl mid-load
+  // (the `cancelled` flag stops a late load() callback from installing a
+  // robot for a URL that's no longer current).
+  useEffect(() => {
+    if (!isUrdf || !meshUrl) {
+      setUrdfRobot((current) => {
+        if (current) disposeUrdfRobot(current);
+        return null;
+      });
+      setJointDefs([]);
+      setJointValues({});
+      return;
+    }
+
+    let cancelled = false;
+    const loader = new URDFLoader();
+    loader.loadMeshCb = loadUrdfMesh;
+    loader.load(
+      meshUrl,
+      (robot) => {
+        if (cancelled) {
+          disposeUrdfRobot(robot);
+          return;
+        }
+        const sliders = jointSlidersFor(robot);
+        setUrdfRobot((current) => {
+          if (current) disposeUrdfRobot(current);
+          return robot;
+        });
+        setJointDefs(sliders);
+        setJointValues(Object.fromEntries(sliders.map((s) => [s.name, 0])));
+      },
+      undefined,
+      (err) => console.error("[Viewer3D] failed to load URDF assembly:", err)
+    );
+
+    return () => {
+      cancelled = true;
+      setUrdfRobot((current) => {
+        if (current) disposeUrdfRobot(current);
+        return null;
+      });
+      setJointDefs([]);
+      setJointValues({});
+    };
+  }, [meshUrl, isUrdf]);
+
+  const handleJointChange = useCallback(
+    (name: string, value: number) => {
+      urdfRobot?.setJointValue(name, value);
+      setJointValues((prev) => ({ ...prev, [name]: value }));
+    },
+    [urdfRobot]
+  );
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -188,12 +330,36 @@ export function Viewer3D({ meshUrl, cameraTarget, onSelect }: Props) {
         <OrbitControls makeDefault />
         <CameraRig cameraTarget={cameraTarget} />
         <Suspense fallback={null}>
-          {meshUrl && !contextLost && <StlMesh key={meshUrl} url={meshUrl} onSelect={onSelect} />}
+          {meshUrl && !isUrdf && !contextLost && <StlMesh key={meshUrl} url={meshUrl} onSelect={onSelect} />}
         </Suspense>
+        {urdfRobot && !contextLost && (
+          <primitive key={urdfRobot.uuid} object={urdfRobot} rotation={[-Math.PI / 2, 0, 0]} />
+        )}
       </Canvas>
       {contextLost && <div className="viewer3d__placeholder">Recovering 3D view…</div>}
       {!contextLost && !meshUrl && (
         <div className="viewer3d__placeholder">No geometry yet — ask Dana to build something.</div>
+      )}
+      {!contextLost && jointDefs.length > 0 && (
+        <div className="viewer3d__joint-panel">
+          <div className="viewer3d__joint-panel-title">Joints</div>
+          {jointDefs.map((joint) => (
+            <label key={joint.name} className="viewer3d__joint-row">
+              <span className="viewer3d__joint-name" title={joint.name}>
+                {joint.name}
+              </span>
+              <input
+                type="range"
+                min={joint.lower}
+                max={joint.upper}
+                step={(joint.upper - joint.lower) / 200 || 0.01}
+                value={jointValues[joint.name] ?? 0}
+                onChange={(event) => handleJointChange(joint.name, parseFloat(event.target.value))}
+              />
+              <span className="viewer3d__joint-value">{(jointValues[joint.name] ?? 0).toFixed(2)}</span>
+            </label>
+          ))}
+        </div>
       )}
     </div>
   );

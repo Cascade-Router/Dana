@@ -357,6 +357,22 @@ def get_mesh(token: str) -> FileResponse:
     return FileResponse(path, media_type="model/stl", filename=f"{token}.stl")
 
 
+@app.get("/api/mesh/{token}.urdf")
+def get_urdf(token: str) -> FileResponse:
+    """Same opaque-token registry/route shape as ``get_mesh`` above, one
+    extension over — reused so ``tool_result.mesh_url`` stays the single
+    field Viewer3D watches regardless of whether a turn produced a plain
+    mesh or a full URDF assembly; the frontend picks the loader by the
+    URL's own file extension (see Viewer3D.tsx).
+    """
+    path = _MESH_REGISTRY.get(token)
+    if path is None or not path.is_file():
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="urdf not found")
+    return FileResponse(path, media_type="application/xml", filename=f"{token}.urdf")
+
+
 @app.get("/api/audio/{token}.wav")
 def get_audio(token: str) -> FileResponse:
     path = _AUDIO_REGISTRY.get(token)
@@ -400,7 +416,7 @@ _CAD_CREATE_TOOLS = frozenset(
 def _node_type_for(tool_id: str) -> str:
     if tool_id in ("execute_vision_analysis", "take_canvas_screenshot"):
         return "vision"
-    if tool_id in _CAD_CREATE_TOOLS:
+    if tool_id in _CAD_CREATE_TOOLS or tool_id == "generate_urdf_assembly":
         return "tool"
     return "agent"
 
@@ -647,6 +663,17 @@ async def _execute_and_continue(
             artifacts_registry.register_artifact(
                 path, format=str(result.payload.get("format") or "").lower(), source="exported"
             )
+    elif result.ok and call.tool_id == "generate_urdf_assembly":
+        # The .urdf IS the artifact here (unlike _CAD_CREATE_TOOLS, there's
+        # no separate FreeCAD document to tessellate) — register it and
+        # push it straight to the live viewer the same way, reusing the
+        # mesh_url field/get_urdf route above; Viewer3D picks URDFLoader vs
+        # STLLoader off the URL's own file extension.
+        path = result.payload.get("path")
+        if isinstance(path, str) and path:
+            artifacts_registry.register_artifact(path, format="urdf", source="generated")
+            token = _register_mesh(path)
+            mesh_url = f"/api/mesh/{token}.urdf"
 
     await _dag_complete(websocket, node_id, "success" if result.ok else "error", result.payload, result.duration_ms)
     await websocket.send_json(

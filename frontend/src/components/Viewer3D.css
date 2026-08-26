@@ -19,3 +19,50 @@
   font-size: 0.9rem;
   pointer-events: none;
 }
+
+.viewer3d__joint-panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 220px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  background: rgba(17, 17, 17, 0.82);
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #e5e7eb;
+  font-size: 0.78rem;
+  pointer-events: auto;
+}
+
+.viewer3d__joint-panel-title {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #9ca3af;
+  margin-bottom: 8px;
+}
+
+.viewer3d__joint-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 3px;
+  margin-bottom: 10px;
+}
+
+.viewer3d__joint-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewer3d__joint-row input[type="range"] {
+  width: 100%;
+  margin: 0;
+}
+
+.viewer3d__joint-value {
+  color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+}

@@ -115,6 +115,18 @@ def _tool_create_cylinder(args: dict[str, Any], engine: Any, _cp: Any) -> dict[s
     )
 
 
+def _tool_generate_urdf_assembly(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    from dana.tools.urdf_builder import generate_urdf_assembly
+
+    return json.loads(
+        generate_urdf_assembly(
+            str(args.get("robot_name") or "Robot"),
+            list(args.get("links") or []),
+            list(args.get("joints") or []),
+        )
+    )
+
+
 def _tool_resync_workspace(_args: dict[str, Any], _engine: Any, cp: Any) -> dict[str, Any]:
     return cp.resync_workspace()
 
@@ -1132,6 +1144,7 @@ def _tool_insert_standard_part(args: dict[str, Any], _engine: Any, _cp: Any) -> 
 
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] = {
     "create_freecad_box": _tool_create_box,
+    "generate_urdf_assembly": _tool_generate_urdf_assembly,
     "create_freecad_cylinder": _tool_create_cylinder,
     "create_freecad_pyramid": _tool_create_freecad_pyramid,
     "create_freecad_star_prism": _tool_create_freecad_star_prism,
