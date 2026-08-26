@@ -1,5 +1,6 @@
 import { Client } from "@gradio/client";
 import { installConsoleCapture } from "./consoleCapture";
+import type { ServerEvent } from "./useChatSocket";
 
 // Idempotent — see consoleCapture.ts's own `installed` guard. Called here
 // too (not just from TerminalDrawer.tsx) so this module's own console.log
@@ -38,14 +39,18 @@ export function connectGradioClient(spaceUrl: string): Promise<Client> {
   return clientPromise;
 }
 
-// Everything the WebSocket path streams as separate events — dag_node_*,
+// Everything the WebSocket path streams as separate events — tool_call,
 // tool_start/tool_complete, camera_animate, voice state, HITL approval
 // prompts — has no equivalent here: app.py's _GradioSocket auto-resolves
 // HITL/visual-capture suspensions server-side and only ever surfaces the
 // turn's final reply plus (since app.py moved to gr.Blocks with a
-// text_out/file_out pair) whatever mesh a CAD tool call produced this
-// turn. Still a much smaller surface than the WS protocol overall — no
-// live tool-activity feed, no DAG telemetry.
+// text_out/file_out/graph_out set) whatever mesh a CAD tool call produced
+// this turn AND this turn's dag_node_start/dag_node_complete events
+// (dagEvents — app.py's _GradioSocket DOES capture these now, unlike the
+// rest of the WS-only telemetry list above). Still a smaller surface than
+// the WS protocol overall — no live tool-activity feed, no per-event
+// streaming (the whole turn's dagEvents arrive at once, after the turn
+// finishes, rather than one at a time as each tool actually runs).
 export type GradioChatReply = {
   text: string;
   /** Absolute, fetchable URL to the turn's generated .stl, or null if this
@@ -60,6 +65,11 @@ export type GradioChatReply = {
    * allows any origin. Confirmed by reading Gradio 6.25's source; not
    * re-verified against the live Space over the network from here. */
   meshUrl: string | null;
+  /** This turn's dag_node_start/dag_node_complete events, in the same
+   * shape DAGMonitor.tsx's buildGraph() already consumes over WS — see
+   * app.py's _GradioSocket.dag_events / graph_out. Empty when the turn
+   * never called a tool (a plain-text reply). */
+  dagEvents: ServerEvent[];
 };
 
 type GradioFileData = { url?: string; path?: string; orig_name?: string; size?: number };
@@ -110,11 +120,25 @@ function parseMeshPayload(raw: unknown, client: Client): string | null {
   return null;
 }
 
+// data[5] (graph_out, a gr.JSON output — see app.py's _respond docstring
+// for the full output ordering) is a plain JSON array round-tripped
+// through _GradioSocket.dag_events, so its entries already carry the exact
+// `{type: "dag_node_start"|"dag_node_complete", ...}` shape ServerEvent
+// expects — this only guards against a malformed/missing value rather
+// than actually reshaping anything.
+function parseDagEvents(raw: unknown): ServerEvent[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (e): e is ServerEvent =>
+      !!e && typeof e === "object" && (e.type === "dag_node_start" || e.type === "dag_node_complete")
+  );
+}
+
 export async function sendGradioChatMessage(spaceUrl: string, message: string): Promise<GradioChatReply> {
   const client = await connectGradioClient(spaceUrl);
   const result = await client.predict("/chat", { message });
-  const [text, file] = result.data as [string, unknown];
-  return { text, meshUrl: parseMeshPayload(file, client) };
+  const [text, file, , , , graph] = result.data as [string, unknown, unknown, unknown, unknown, unknown];
+  return { text, meshUrl: parseMeshPayload(file, client), dagEvents: parseDagEvents(graph) };
 }
 
 export type GradioArtifact = {

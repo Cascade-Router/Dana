@@ -90,15 +90,22 @@ class _GradioSocket:
     dict — _register_mesh populates it synchronously before that event is
     even sent) resolves it back to the real local file path instead.
 
-    Every other event type (dag_node_start/tool_call/tool_start/
-    tool_complete/camera_animate/...) is streaming UI telemetry with no
-    consumer here — this chat only surfaces the final reply and mesh path.
+    dag_node_start/dag_node_complete ARE also captured now (into
+    `dag_events`, in arrival order) — this is exactly what frontend/src/
+    components/DAGMonitor.tsx's buildGraph() consumes to render the
+    Execution Graph over the WS path; without this the Gradio-mode
+    frontend hook (useGradioChat.ts) had no source for it at all and the
+    graph stayed permanently empty ("(0)"), even though dana.api.server's
+    ReAct loop was emitting these events into this same _GradioSocket the
+    whole time. tool_call/tool_start/tool_complete/camera_animate/... are
+    still discarded — no consumer for those on this text-only chat.
     """
 
     def __init__(self, session: dict[str, Any]) -> None:
         self._session = session
         self.final_reply: str | None = None
         self.mesh_path: str | None = None
+        self.dag_events: list[dict[str, Any]] = []
 
     async def send_json(self, payload: dict[str, Any]) -> None:
         kind = payload.get("type")
@@ -111,6 +118,8 @@ class _GradioSocket:
                 path = _MESH_REGISTRY.get(token)
                 if path is not None:
                     self.mesh_path = str(path)
+        elif kind in ("dag_node_start", "dag_node_complete"):
+            self.dag_events.append(payload)
         elif kind == "hitl_approval_required":
             request_id = payload["payload"]["request_id"]
             await _resolve_react_hitl(self, self._session, {"request_id": request_id, "approved": True})
@@ -125,12 +134,14 @@ class _GradioSocket:
 
 async def _respond(message: str, chatbot_history: list, session: dict[str, Any] | None):
     """Bound to `api_name="chat"` below. Outputs are ordered
-    `(text_out, file_out, chatbot, mesh_preview, session_state)` —
-    text_out/file_out FIRST specifically so a REST/JS caller's
+    `(text_out, file_out, chatbot, mesh_preview, session_state, graph_out)`
+    — text_out/file_out FIRST specifically so a REST/JS caller's
     `result.data[0]`/`[1]` are the plain reply string and mesh path,
     never this function's internal chatbot-message-list bookkeeping
     (frontend/src/lib/gradioChatClient.ts already reads `data[0]` as a
-    plain string; reordering these would silently break it).
+    plain string; reordering these would silently break it). `graph_out`
+    is appended LAST rather than inserted earlier for the same reason —
+    every existing positional read stays valid.
 
     This yields twice, not once — but that's an honest "show a pending
     state, then the real one" UI improvement, not a token-level LLM
@@ -141,7 +152,7 @@ async def _respond(message: str, chatbot_history: list, session: dict[str, Any] 
     """
     trimmed = (message or "").strip()
     if not trimmed:
-        yield "", None, chatbot_history, None, session
+        yield "", None, chatbot_history, None, session, []
         return
     # Session-persistence trace (item 3): `session` is whatever gr.State
     # handed back for THIS browser tab's session_hash — a fresh dict only on
@@ -165,7 +176,7 @@ async def _respond(message: str, chatbot_history: list, session: dict[str, Any] 
         {"role": "user", "content": trimmed},
         {"role": "assistant", "content": "…"},
     ]
-    yield "…", None, pending_history, None, session
+    yield "…", None, pending_history, None, session, []
 
     socket = _GradioSocket(session)
     await _process_user_text(socket, session, trimmed)
@@ -176,11 +187,12 @@ async def _respond(message: str, chatbot_history: list, session: dict[str, Any] 
     ]
     print(
         f"[app.py] Chat turn complete. Exported mesh path: {socket.mesh_path}, "
-        f"Registry items: {len(artifacts_registry.list_artifacts())}",
+        f"Registry items: {len(artifacts_registry.list_artifacts())}, "
+        f"DAG events: {len(socket.dag_events)}",
         file=sys.stderr,
         flush=True,
     )
-    yield reply, socket.mesh_path, final_history, socket.mesh_path, session
+    yield reply, socket.mesh_path, final_history, socket.mesh_path, session, socket.dag_events
 
 
 def _list_artifact_files() -> list[str]:
@@ -247,8 +259,14 @@ with gr.Blocks(css=_CUSTOM_CSS, title="Dānā") as demo:
     # come first in the bound outputs list below.
     text_out = gr.Textbox(visible=False)
     file_out = gr.Model3D(visible=False)
+    # This turn's dag_node_start/dag_node_complete events (see
+    # _GradioSocket), as plain JSON — gradioChatClient.ts reads this as
+    # `data[5]` and feeds it straight into DAGMonitor.tsx's buildGraph(),
+    # the same shape the WS path already produces. Appended last in
+    # _outputs so it doesn't renumber any existing positional read.
+    graph_out = gr.JSON(visible=False)
 
-    _outputs = [text_out, file_out, chatbot, mesh_preview, session_state]
+    _outputs = [text_out, file_out, chatbot, mesh_preview, session_state, graph_out]
 
     msg.submit(_respond, inputs=[msg, chatbot, session_state], outputs=_outputs, api_name="chat").then(
         lambda: "", None, msg

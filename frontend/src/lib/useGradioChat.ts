@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { connectGradioClient, sendGradioChatMessage } from "./gradioChatClient";
-import { type ApiKeys, type ChatMessage, type ConnectionState, useChatSocket } from "./useChatSocket";
+import { type ApiKeys, type ChatMessage, type ConnectionState, type ServerEvent, useChatSocket } from "./useChatSocket";
 
 // Forces a compile error the moment this hook's return shape drifts from
 // useChatSocket's — useChat.ts's `cond ? useGradioChat : useChatSocket`
@@ -23,6 +23,12 @@ type ChatHookResult = ReturnType<typeof useChatSocket>;
 // GradioChatReply — so this updates the exact same `meshUrl` state
 // useChatSocket exposes, and CadPlugin/Viewer3D pick it up completely
 // unchanged, the same way they already do for the WS path's mesh_url.
+//
+// `log` IS real too now, for the same reason: app.py's _GradioSocket
+// captures dag_node_start/dag_node_complete into graph_out (data[5]) —
+// gradioChatClient.ts's GradioChatReply.dagEvents — so DAGMonitor.tsx's
+// buildGraph(log) renders the Execution Graph here exactly like it does
+// for the WS path, instead of staying permanently empty ("(0)").
 export function useGradioChat(
   _apiKeys: ApiKeys = {},
   _activePlugins: string[] = [],
@@ -33,6 +39,7 @@ export function useGradioChat(
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [turnActive, setTurnActive] = useState(false);
   const [meshUrl, setMeshUrl] = useState<string | null>(null);
+  const [log, setLog] = useState<ServerEvent[]>([]);
   const spaceUrl = import.meta.env.VITE_HF_SPACE_URL as string;
 
   useEffect(() => {
@@ -67,6 +74,11 @@ export function useGradioChat(
           // handler has (it only ever calls setMeshUrl when mesh_url is
           // truthy, never to explicitly clear it).
           if (reply.meshUrl) setMeshUrl(reply.meshUrl);
+          // Append, never replace — DAGMonitor's buildGraph() expects the
+          // FULL session history (it re-derives turn numbering from
+          // "parse-N" node ids across the whole log), the same way the WS
+          // path's `log` only ever grows across a session.
+          if (reply.dagEvents.length > 0) setLog((prev) => [...prev, ...reply.dagEvents]);
         })
         .catch(() => {
           setMessages((prev) => [
@@ -88,7 +100,7 @@ export function useGradioChat(
   return {
     connection,
     messages,
-    log: [],
+    log,
     driverState: null,
     meshUrl,
     cameraTarget: null,

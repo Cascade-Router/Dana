@@ -36,12 +36,18 @@ function buildGraph(log: ServerEvent[]): { nodes: Node<DagNodeData>[]; edges: Ed
 
   for (const event of log) {
     if (event.type === "dag_node_start") {
-      if (event.node_id === "parse") {
+      // dana/api/server.py's _run_react_loop sends this turn's parse node
+      // as `f"parse-{loop_count}"` (e.g. "parse-0", "parse-1", ...) — never
+      // the bare string "parse" — so an exact match here never fired,
+      // `turn` stayed stuck at -1 forever, and every node in every turn
+      // landed on the exact same (column, y) position, fully overlapping.
+      const isParseNode = event.node_id.startsWith("parse-");
+      if (isParseNode) {
         turn += 1;
         lastKeyInTurn = null;
       }
       const key = `${turn}:${event.node_id}`;
-      const column = event.node_id === "parse" ? 0 : 1;
+      const column = isParseNode ? 0 : 1;
       nodeMap.set(key, {
         id: key,
         position: { x: column * 260, y: turn * 130 },
