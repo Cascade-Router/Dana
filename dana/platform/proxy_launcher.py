@@ -1,10 +1,11 @@
 """Native subprocess launcher for the Cascade-Router LLM gateway.
 
-Supersedes ``start_dana.py``'s Docker-based ``start_gateway()`` for the
-actual production entry points (``app.py``, ``dana/api/server.py``): both
-the Windows desktop build and the Linux Hugging Face Space ship a prebuilt
-Cascade-Router binary under ``bin/`` instead of requiring a Docker daemon,
-so the same launcher works unmodified on both targets.
+Used by every entry point that needs the gateway running — the production
+targets (``app.py``, ``dana/api/server.py``) and the dev orchestrator
+(``start_dana.py``, which used to shell out to Docker Compose for this).
+Both the Windows desktop build and the Linux Hugging Face Space ship a
+prebuilt Cascade-Router binary under ``bin/`` instead of requiring a Docker
+daemon, so the same launcher works unmodified on every target.
 
 ``dana.core.model_provider.gateway_base_url()`` already defaults to
 ``http://localhost:8080/v1`` and the ``"gateway"`` provider target already

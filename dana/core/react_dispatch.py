@@ -2510,12 +2510,12 @@ def _finalize_call_arguments(call: ToolCall, active_selection: dict[str, Any] | 
 # to bound a genuinely stalling connection (local Ollama or the gateway
 # itself), not a legitimate multi-second rate-limit wait.
 #
-# Raised 30s -> 45s: the Cascade-Router gateway is now a Docker container
-# (see start_dana.py) that can still be finishing its own warm-up (loading
-# router_weights.json / ONNX artifacts if ENABLE_ML=1) for a few seconds
-# after `docker compose up -d` returns and its /health check first passes —
-# 30s was tight enough to occasionally clip that window and trigger the
-# apology fallback for a request that would have succeeded at 35-40s.
+# Raised 30s -> 45s: the Cascade-Router gateway (native subprocess, see
+# dana.platform.proxy_launcher) can still be finishing its own warm-up
+# (loading router_weights.json / ONNX artifacts if ENABLE_ML=1) for a few
+# seconds after its /health check first passes — 30s was tight enough to
+# occasionally clip that window and trigger the apology fallback for a
+# request that would have succeeded at 35-40s.
 _LOCAL_TOOL_CALL_TIMEOUT_SEC = 45.0
 
 # Separate, shorter ceiling for the fallback apology itself — this must
