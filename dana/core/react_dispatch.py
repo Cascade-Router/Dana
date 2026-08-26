@@ -1558,11 +1558,11 @@ _FREECAD_TOOL_IDS = frozenset(
 # minute (TPM): Limit 8000, Used 6895, Requested 6842" on
 # openai/gpt-oss-120b) — a 400 "too many tools" was the original
 # hypothesis, but the actual failure is TPM exhaustion; cutting the
-# schema payload is still the correct fix either way. These 7 cover the
+# schema payload is still the correct fix either way. These 8 cover the
 # overwhelming majority of "make me a basic part" requests (box/cylinder,
 # one boolean op, one edge op, a parameter tweak, a bounding-box check,
-# export) without the model ever seeing the heavier/rarer schemas
-# (patterns, assembly mates, blueprints, standard-parts lookup, camera
+# export, standard hardware) without the model ever seeing the
+# heavier/rarer schemas (patterns, assembly mates, blueprints, camera
 # control). The agent can still reach the full set any time a task
 # genuinely needs it by calling load_capability again with
 # domain="freecad_full".
@@ -1575,6 +1575,12 @@ _FREECAD_ESSENTIAL_TOOL_IDS = frozenset(
         "modify_freecad_parameter",
         "get_freecad_bounding_box",
         "export_freecad_model",
+        "insert_standard_part",  # frequently needed for basic hardware (bolts/nuts/
+        # bearings/fasteners) and previously essential-only via a load_capability
+        # ("freecad_full") hunt — the agent would spend several turns trying to reach it
+        # (or give up) before ever calling it. Its own tools.json description already
+        # says "Always prefer this over hand-modeling a named standard part," so it
+        # needs to be reachable from turn one, same as the other essential primitives.
     }
 )
 

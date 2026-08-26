@@ -12,6 +12,12 @@ export default function CadPlugin({ meshUrl, cameraTarget, onSelect, log }: Plug
     <div className="cad-plugin">
       <CadToolbar meshUrl={meshUrl} />
       <div className="cad-plugin__viewport">
+        {/* Viewer3D — and the <Canvas>/WebGLRenderer inside it — is always
+            rendered here, never gated behind meshUrl or an artifact list's
+            length. A conditional mount would tear down and recreate the
+            renderer on every intermediate ReAct step where the mesh
+            payload is transiently null/[], exhausting the browser's WebGL
+            context budget (see Viewer3D's own lifecycle notes). */}
         <Viewer3D meshUrl={meshUrl} cameraTarget={cameraTarget} onSelect={onSelect} />
         <DAGMonitor log={log} />
       </div>

@@ -267,9 +267,12 @@ type Props = {
 //   `gl.renderLists.dispose()`, and recursively disposes every
 //   attached geometry/material in the scene graph — verified directly
 //   against the installed @react-three/fiber source
-//   (events-*.cjs.dev.js's unmountComponentAtNode/removeChild). Adding
-//   our own renderer.dispose()/geometry.dispose() calls on top of that
-//   would double-dispose objects r3f already tore down.
+//   (events-*.cjs.dev.js's unmountComponentAtNode/removeChild). An
+//   explicit `gl.forceContextLoss()`/`gl.dispose()` pair also runs from
+//   this component's own unmount effect below, as a belt-and-suspenders
+//   safety net — both calls are idempotent in Three.js, so this never
+//   double-frees anything; it just guarantees the context is released
+//   even if r3f's own internals ever change.
 // - Resize: <Canvas> sizes itself via react-use-measure, which is a thin
 //   ResizeObserver wrapper — the scene is never re-initialized on resize,
 //   only the renderer/camera dimensions are updated.
@@ -280,7 +283,29 @@ type Props = {
 // lifecycle) — that's handled explicitly below.
 export function Viewer3D({ meshUrl, cameraTarget, onSelect }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const glRef = useRef<THREE.WebGLRenderer | null>(null);
   const [contextLost, setContextLost] = useState(false);
+
+  // Explicit safety-net teardown on THIS component's own unmount, on top of
+  // react-three-fiber's automatic one (see the lifecycle notes above) —
+  // belt-and-suspenders, not a replacement: r3f's unmountComponentAtNode
+  // already calls forceContextLoss()/dispose() and recursively disposes the
+  // scene graph, and both calls below are idempotent in Three.js (a no-op
+  // if the context is already gone), so this never double-frees anything.
+  // It exists so a lost/leaked WebGL context is guaranteed to be released
+  // even if r3f's own internals ever change, or some edge case (a fast
+  // repeated mount/unmount, a hot-reload) skips that automatic path — the
+  // exact class of bug "THREE.WebGLRenderer: Context Lost" reports.
+  useEffect(() => {
+    return () => {
+      const gl = glRef.current;
+      if (!gl) return;
+      gl.forceContextLoss();
+      gl.dispose();
+      glRef.current = null;
+    };
+  }, []);
+
   const isUrdf = !!meshUrl && isUrdfUrl(meshUrl);
 
   const [urdfRobot, setUrdfRobot] = useState<URDFRobot | null>(null);
@@ -388,9 +413,26 @@ export function Viewer3D({ meshUrl, cameraTarget, onSelect }: Props) {
     };
   }, []);
 
+  // `<Canvas>` itself is ALWAYS rendered below — never gated behind
+  // `meshUrl`/`urdfRobot`/an artifact-array length, and Viewer3D is in turn
+  // rendered unconditionally by CadPlugin (see its own comment). Only what
+  // goes INSIDE the canvas (StlMesh, the URDF <primitive>) is conditional.
+  // This is deliberate, not incidental: a `{someArray.length > 0 &&
+  // <Canvas>}`-style gate would remount the whole WebGLRenderer on every
+  // intermediate ReAct step where the mesh payload is transiently null/[]
+  // (e.g. a non-CAD tool call mid-turn) — exactly the repeated
+  // create/destroy cycle that exhausts the browser's finite WebGL context
+  // limit and surfaces as "THREE.WebGLRenderer: Context Lost". Keep the
+  // canvas mounted and toggle content/placeholders instead, as done here.
   return (
     <div className="viewer3d">
-      <Canvas ref={canvasRef} camera={{ position: [80, 80, 80], fov: 45 }}>
+      <Canvas
+        ref={canvasRef}
+        camera={{ position: [80, 80, 80], fov: 45 }}
+        onCreated={({ gl }) => {
+          glRef.current = gl;
+        }}
+      >
         <ambientLight intensity={0.6} />
         <directionalLight position={[100, 150, 100]} intensity={1.1} />
         <Grid args={[400, 400]} cellColor="#333" sectionColor="#555" fadeDistance={400} />
