@@ -129,78 +129,86 @@ print("{marker} path=" + {out_path!r})
 
 
 # Generates via FreeCAD's own community "Fasteners" workbench
-# (https://github.com/shaise/FreeCAD_FastenersWorkbench) instead of this
-# module's own hand-built compound-of-primitives approach the other three
-# part types use above — real ISO/DIN/ANSI thread geometry (including
-# actual helical threads, not a cylinder placeholder), so it needs the
-# workbench installed in the target FreeCAD environment. `import Fasteners`
-# is guarded with its own clean, actionable stdout message (caught by
-# `_run_freecad_script`'s stdout/stderr fail_msg fallback) rather than
-# letting a bare ImportError traceback reach the agent — same reasoning as
-# every other guarded import in this codebase.
+# (https://github.com/shaise/FreeCAD_FastenersWB) instead of this module's
+# own hand-built compound-of-primitives approach the other three part types
+# use above — real ISO/DIN/ANSI thread geometry (including actual helical
+# threads, not a cylinder placeholder), so it needs the workbench installed
+# in the target FreeCAD environment.
 #
-# `Fasteners.makeFastener(fastener_type, size, length)` is the call this
-# was specified against; the exact public API has shifted across Fasteners
-# workbench versions (some expose per-family maker functions instead of one
-# generic entry point). Wrapped in its own try/except so a version mismatch
-# degrades to a clean, catchable error (surfaced as `ok: False` with the
-# real exception text) rather than a bare traceback — verify against the
-# FreeCAD + Fasteners version actually installed before relying on this in
-# production, and adjust the call below if that version exposes a
-# different entry point.
+# There is no top-level `Fasteners.makeFastener(type, size, length)` — that
+# was this call's original, never-verified guess. Verified against the real
+# installed workbench (FreeCAD 1.1.3 + shaise/FreeCAD_FastenersWB, both via
+# a direct FreeCADCmd probe and reading FastenersCmd.py/ScrewMaker.py): the
+# addon has no `__init__.py` (an implicit namespace package) and its
+# internal modules do flat sibling imports (`import FastenerBase`, not
+# `from fasteners import FastenerBase`), so BOTH the Mod directory AND the
+# `fasteners/` (or `Fasteners/`) directory inside it must be on sys.path —
+# not just the Mod directory alone. The actual generation path mirrors what
+# FastenersCmd.py's own "Add Screw" GUI command does when invoked with no
+# attach-to selection: build a Part::FeaturePython object, hand it to
+# FastenersCmd.FSScrewObject(obj, type, None) (None = freestanding, not
+# attached to a face — the GUI command instead loops over a live selection,
+# which doesn't exist headlessly), then set Diameter and Length as
+# ``App::PropertyEnumeration`` STRING values (never a raw float — confirmed
+# live: setting Length before a Diameter-triggered recompute, or as '30.0'
+# instead of '30', both raise "not part of the enumeration"). Diameter must
+# be recomputed before Length is set: FSScrewObject only refreshes Length's
+# valid enum options (ScrewMaker.GetAllLengths) reactively inside its own
+# execute() hook, which a doc.recompute() call is what actually triggers.
+# `FreeCADGui` importing cleanly in headless FreeCADCmd (confirmed live,
+# despite FastenerBase.py importing it at module level) is what makes this
+# whole approach viable without a display.
 _FASTENER_SCRIPT = """\
 import sys
 import os
+import glob
 _dana_mod_path = os.environ.get('DANA_FREECAD_MOD_PATH')
-if _dana_mod_path and _dana_mod_path not in sys.path:
-    sys.path.append(_dana_mod_path)
+if _dana_mod_path:
+    if _dana_mod_path not in sys.path:
+        sys.path.append(_dana_mod_path)
+    for _cand in glob.glob(os.path.join(_dana_mod_path, '*')):
+        if os.path.isdir(_cand) and os.path.basename(_cand).lower() == 'fasteners' and _cand not in sys.path:
+            sys.path.append(_cand)
 import FreeCAD as App
 import Part
 
 try:
-    import Fasteners
+    import FastenersCmd
 except ImportError:
-    try:
-        # FreeCAD 1.0+'s Addon Manager installs this workbench's directory
-        # as lowercase `fasteners` — confirmed directly against a real
-        # install on this machine (.../FreeCAD/v1-1/Mod/fasteners). NTFS's
-        # own case-insensitive path lookups (which is why
-        # fasteners_bootstrap.py's is_dir() check against "Fasteners"
-        # already finds it) do NOT extend to Python's import machinery:
-        # importlib's FileFinder matches module names against directory
-        # entries case-sensitively regardless of filesystem, confirmed by
-        # direct test — `import Fasteners` genuinely raises ModuleNotFoundError
-        # against an on-disk `fasteners/` even on Windows.
-        import fasteners as Fasteners
-    except ImportError:
-        # flush=True: subprocess.run's captured stdout is a pipe, not a TTY —
-        # CPython block-buffers writes to a pipe rather than line-buffering
-        # them. FreeCAD's own sys.exit() handling terminates the process
-        # without running normal Python interpreter shutdown/flush, so an
-        # un-flushed message here is silently lost (confirmed directly against
-        # this project's own installed FreeCADCmd — the message never reached
-        # the parent process's captured stdout without this).
-        print(
-            "FASTENERS_WORKBENCH_MISSING: The FreeCAD Fasteners workbench is not "
-            "installed in this FreeCAD environment. Install it via Tools -> Addon "
-            "Manager -> 'Fasteners' (by shaise), then restart FreeCADCmd.",
-            flush=True,
-        )
-        sys.exit(1)
+    # flush=True: subprocess.run's captured stdout is a pipe, not a TTY —
+    # CPython block-buffers writes to a pipe rather than line-buffering
+    # them. FreeCAD's own sys.exit() handling terminates the process
+    # without running normal Python interpreter shutdown/flush, so an
+    # un-flushed message here is silently lost (confirmed directly against
+    # this project's own installed FreeCADCmd — the message never reached
+    # the parent process's captured stdout without this).
+    print(
+        "FASTENERS_WORKBENCH_MISSING: The FreeCAD Fasteners workbench is not "
+        "installed in this FreeCAD environment. Install it via Tools -> Addon "
+        "Manager -> 'Fasteners' (by shaise), then restart FreeCADCmd.",
+        flush=True,
+    )
+    sys.exit(1)
 
 doc = App.newDocument("DanaModel")
 try:
-    fastener_obj = Fasteners.makeFastener({fastener_type!r}, {size!r}, {length})
+    obj = doc.addObject("Part::FeaturePython", {name!r})
+    FastenersCmd.FSScrewObject(obj, {fastener_type!r}, None)
+    obj.Diameter = {size!r}
+    doc.recompute()  # refresh Length's enum options (if any) to match the new Diameter
+    if hasattr(obj, "Length"):
+        # Not every fastener_type has one — nuts/washers have no Length
+        # property at all (confirmed live: ISO4032 raises AttributeError on
+        # a bare obj.Length assignment), so `length` is genuinely a no-op
+        # for those, exactly as insert_standard_part's own docstring already
+        # documents ("length ... unused for nuts, but still required").
+        obj.Length = {length_token!r}
+    doc.recompute()  # generate the actual geometry at this Diameter/Length
+    if obj.Shape is None or obj.Shape.isNull():
+        raise RuntimeError("generated fastener has an empty/null Shape")
 except Exception as exc:
     print("FASTENERS_API_ERROR: " + str(exc), flush=True)
     sys.exit(1)
-
-obj = doc.addObject("Part::Feature", {name!r})
-obj.Shape = fastener_obj.Shape
-try:
-    doc.removeObject(fastener_obj.Name)
-except Exception:
-    pass
 """ + _PLACEMENT_SNIPPET + """\
 doc.recompute()
 doc.saveAs({out_path!r})
@@ -267,7 +275,14 @@ def _resolve_fastener(
         raise ValueError("length must be a positive number")
 
     resolved_name = name or f"Fastener_{ft}_{sz}"
-    fmt_kwargs = {"fastener_type": ft, "size": sz, "length": length_f}
+    # The Fasteners workbench's Length property is an App::PropertyEnumeration
+    # of plain integer-looking strings ('16', '20', '25', '30', .... see
+    # ScrewMaker.GetAllLengths) — never a float string like '30.0', which
+    # FreeCAD rejects outright as "not part of the enumeration". Formatted
+    # here (Dana's own process) rather than in the FreeCADCmd script so the
+    # script template only ever does a plain {length_token!r} substitution.
+    length_token = str(int(length_f)) if length_f == int(length_f) else str(length_f)
+    fmt_kwargs = {"fastener_type": ft, "size": sz, "length_token": length_token}
     dims_out: dict[str, float | str] = {"fastener_type": ft, "size": sz, "length_mm": length_f}
     return resolved_name, _FASTENER_SCRIPT, fmt_kwargs, dims_out
 
@@ -341,10 +356,12 @@ def insert_standard_part(
         # subprocess via DANA_FREECAD_MOD_PATH — NOT PYTHONPATH, which
         # FreeCADCmd.exe's embedded Python interpreter ignores on Windows
         # (confirmed live). _FASTENER_SCRIPT's own preamble reads this var
-        # and does the sys.path.append itself instead. The script's `import
-        # Fasteners` (with its FASTENERS_WORKBENCH_MISSING fallback message)
-        # is unchanged either way, so a resolution failure here degrades to
-        # exactly the same clean error as before this existed.
+        # and does the sys.path.append itself instead (also locating the
+        # actual fasteners/ subdirectory itself, since the workbench's
+        # internal modules need that on sys.path too — see the script's own
+        # comment). The script's `import FastenersCmd` (with its
+        # FASTENERS_WORKBENCH_MISSING fallback message) degrades to exactly
+        # the same clean error whether or not this resolves anything.
         mod_dir = ensure_fasteners_workbench()
         if mod_dir is not None:
             extra_env = {"DANA_FREECAD_MOD_PATH": str(mod_dir)}
