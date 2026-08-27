@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import os
 
-from dana.tools.registry import get_tool_registry
+from dana.core.tool_retriever import FastToolRetriever
+from dana.tools.registry import ToolRegistry, get_tool_registry
 
 # Below this many allowed tools, narrowing adds latency/risk for no real
 # token savings — the whole point is trimming a LARGE eligible set (e.g. 24
@@ -33,6 +34,33 @@ from dana.tools.registry import get_tool_registry
 _MIN_TOOLS_TO_NARROW = 8
 
 _DEFAULT_TOP_K = 6
+
+# DANA_TOOL_RAG_BACKEND=inverted_index swaps the scoring engine below from
+# ToolRegistry's default hash-embedding vector search to FastToolRetriever's
+# pure-Python inverted-index + heapq.nlargest ranking (dana.core.
+# tool_retriever) — same narrowing CONTRACT (still only narrows within
+# `allowed_ids`, still unions `always_include`, still passes through
+# unindexed ids), different scoring math, no FAISS/NumPy dependency for the
+# query-time path. Defaults to "embedding" (today's already-live, already-
+# tuned behavior) rather than switching the default — this is an opt-in
+# alternative until it's been run against real traffic, not a replacement.
+_DEFAULT_BACKEND = "embedding"
+
+# One retriever per ToolRegistry instance (keyed by id() — the registry is
+# normally a process-wide singleton, but tests construct fresh ones), lazily
+# rebuilt whenever the registry's tool-id set changes (a new skill saved via
+# save_new_skill, a forge/custom tool, etc.) rather than on every call.
+_fast_retrievers: dict[int, tuple[frozenset[str], FastToolRetriever]] = {}
+
+
+def _fast_retriever_for(registry: ToolRegistry) -> FastToolRetriever:
+    current_ids = frozenset(registry.tools)
+    cached = _fast_retrievers.get(id(registry))
+    if cached is not None and cached[0] == current_ids:
+        return cached[1]
+    retriever = FastToolRetriever(registry)
+    _fast_retrievers[id(registry)] = (current_ids, retriever)
+    return retriever
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -52,6 +80,11 @@ def _env_int(name: str, default: int) -> int:
 
 def tool_rag_enabled() -> bool:
     return _env_flag("DANA_TOOL_RAG", True)
+
+
+def tool_rag_backend() -> str:
+    raw = (os.environ.get("DANA_TOOL_RAG_BACKEND") or "").strip().lower()
+    return raw or _DEFAULT_BACKEND
 
 
 def narrow_tool_ids_by_query(
@@ -86,13 +119,18 @@ def narrow_tool_ids_by_query(
     try:
         registry = get_tool_registry()
         top_k = k if k is not None else _env_int("DANA_TOOL_RAG_TOP_K", _DEFAULT_TOP_K)
-        specs = registry.retrieve_specs(query, k=top_k, always_include=always_include)
+        if tool_rag_backend() == "inverted_index":
+            retriever = _fast_retriever_for(registry)
+            matched_ids = frozenset(retriever.get_top_k_tools(query, k=top_k))
+        else:
+            specs = registry.retrieve_specs(query, k=top_k, always_include=always_include)
+            matched_ids = frozenset(specs)
         known_ids = frozenset(registry.as_spec_dict())
         unindexed = allowed_ids - known_ids
-        narrowed = (frozenset(specs) & allowed_ids) | (always_include & allowed_ids) | unindexed
+        narrowed = (matched_ids & allowed_ids) | (always_include & allowed_ids) | unindexed
         return narrowed if narrowed else allowed_ids
     except Exception:  # noqa: BLE001 — retrieval is a pure optimization, never worth failing a turn over
         return allowed_ids
 
 
-__all__ = ("narrow_tool_ids_by_query", "tool_rag_enabled")
+__all__ = ("narrow_tool_ids_by_query", "tool_rag_backend", "tool_rag_enabled")
