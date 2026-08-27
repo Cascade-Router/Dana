@@ -483,6 +483,33 @@ async def _speak_reply(websocket: WebSocket, text: str) -> None:
 # re-deciding to call tools (a hallucination loop) can't run forever.
 _MAX_REACT_ITERATIONS = 13
 
+# Permanently HITL-exempt, every session, no prior approval needed —
+# narrow parametric FreeCAD geometry CRUD (create/modify/boolean/pattern/
+# align a primitive, insert a standard part) that only ever touches its own
+# generated .FCStd output. Explicit tool_id list, NOT a tool_id substring
+# match: a "contains freecad" check would also silently exempt
+# execute_freecad_script and modify_existing_freecad_document — both run an
+# ARBITRARY caller-supplied Python/FreeCAD script, not a parametric
+# geometry op, so both stay behind is_mutating_tool's normal HITL gate
+# (session-allowlist-eligible, but never permanently pre-approved) no
+# matter how this set changes.
+_HITL_ALWAYS_APPROVED_TOOLS: frozenset[str] = frozenset(
+    {
+        "create_freecad_box",
+        "create_freecad_cylinder",
+        "create_freecad_pyramid",
+        "create_freecad_star_prism",
+        "create_freecad_extrusion",
+        "create_freecad_pipe",
+        "create_freecad_sketch_extrude",
+        "perform_freecad_boolean",
+        "perform_freecad_edge_operation",
+        "modify_freecad_parameter",
+        "align_freecad_objects",
+        "insert_standard_part",
+    }
+)
+
 # P3 of the local-agent rescue plan — a suspended react_state/visual_state
 # (a mutating tool awaiting HITL approval, or take_canvas_screenshot
 # awaiting the frontend's R3F capture) normally resumes the instant the
@@ -492,7 +519,12 @@ _MAX_REACT_ITERATIONS = 13
 # for the user short of reconnecting. _sweep_stale_suspensions is the
 # wall-clock backstop: any suspension older than this is auto-cancelled
 # with a synthetic failure reply instead of hanging indefinitely.
-_SUSPENDED_TURN_TIMEOUT_SEC = 60.0
+#
+# Raised 60s -> 300s: 60s was killing real CAD-review HITL turns outright
+# (auto-"Cancelled" mid-review) whenever a user actually paused to read a
+# non-trivial approval card instead of clicking immediately — this is a
+# dead-frontend backstop, not meant to rush a genuinely-present user.
+_SUSPENDED_TURN_TIMEOUT_SEC = 300.0
 
 # How often the sweep checks every connected session — cheap (a dict scan
 # over at most a handful of local sessions), so this can run often without
@@ -937,7 +969,15 @@ async def _run_react_loop(
     # session (see _resolve_react_hitl, which populates it on approval)
     # skips the prompt for every subsequent call to that SAME tool_id — the
     # gate is still per tool_id, not "approve everything from now on".
-    if is_mutating_tool(call.tool_id) and call.tool_id not in session.get("hitl_approved_tools", set()):
+    # _HITL_ALWAYS_APPROVED_TOOLS is the same idea, permanently, for a small
+    # explicit set of narrow geometry-CRUD tools (see its own comment for
+    # why execute_freecad_script/modify_existing_freecad_document are
+    # deliberately never in it).
+    if (
+        is_mutating_tool(call.tool_id)
+        and call.tool_id not in _HITL_ALWAYS_APPROVED_TOOLS
+        and call.tool_id not in session.get("hitl_approved_tools", set())
+    ):
         print(
             f"[ReAct] '{call.tool_id}' is mutating -> suspending loop for HITL approval "
             "(app.py's _GradioSocket auto-approves this immediately on the HF Space path)",

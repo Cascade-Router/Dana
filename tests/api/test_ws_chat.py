@@ -56,6 +56,26 @@ def _mock_platform(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server_module, "get_control_plane", lambda: MockControlPlane())
 
 
+# Captured once, before any test clears the live attribute below — the real
+# production set, for the dedicated whitelist tests to restore explicitly.
+_REAL_HITL_ALWAYS_APPROVED_TOOLS = frozenset(server_module._HITL_ALWAYS_APPROVED_TOOLS)
+
+
+@pytest.fixture(autouse=True)
+def _disable_permanent_hitl_whitelist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every existing test in this file uses create_freecad_box as its
+    representative "a mutating tool" fixture — written before
+    dana.api.server._HITL_ALWAYS_APPROVED_TOOLS permanently exempted
+    FreeCAD's geometry-CRUD tools (create_freecad_box included) from HITL
+    approval. Cleared here so those tests keep exercising generic HITL
+    protocol mechanics (approve/reject/modify/timeout/DAG lifecycle)
+    unaffected by that later, unrelated feature. The tests that actually
+    verify the whitelist restore _REAL_HITL_ALWAYS_APPROVED_TOOLS
+    explicitly instead of relying on this fixture's default.
+    """
+    monkeypatch.setattr(server_module, "_HITL_ALWAYS_APPROVED_TOOLS", frozenset())
+
+
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(server_module.app)
@@ -176,6 +196,64 @@ def test_mutating_tool_requires_hitl_approval_then_proceeds(
         # since only one turn was queued, and terminates cleanly.
         assistant = _drain_until(ws, "assistant_message")
         assert assistant["content"] == "Done."
+
+
+def test_hitl_always_approved_tools_skip_approval_entirely(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real _HITL_ALWAYS_APPROVED_TOOLS set (restored here — see
+    _disable_permanent_hitl_whitelist's own docstring for why it's cleared
+    by default in this file) must let create_freecad_box dispatch with NO
+    hitl_approval_required at all, on the very first call this session —
+    distinct from the session allowlist feature, which only skips a SECOND
+    call after an explicit first approval."""
+    monkeypatch.setattr(server_module, "_HITL_ALWAYS_APPROVED_TOOLS", _REAL_HITL_ALWAYS_APPROVED_TOOLS)
+    _mock_llm(monkeypatch, [ToolCall(tool_id="create_freecad_box", arguments={"length": 10, "width": 10, "height": 10})])
+    with client.websocket_connect("/ws/chat") as ws:
+        ws.receive_json()  # ready
+        _activate_freecad(ws)
+        ws.send_json({"text": "build a small box"})
+
+        seen_types = []
+        for _ in range(6):
+            msg = ws.receive_json()
+            seen_types.append(msg["type"])
+            if msg["type"] == "tool_call":
+                assert msg["tool_id"] == "create_freecad_box"
+                break
+        assert "hitl_approval_required" not in seen_types, f"expected no approval prompt, got: {seen_types}"
+
+        tool_result = _drain_until(ws, "tool_result")
+        assert tool_result["ok"] is True
+
+
+def test_hitl_whitelist_never_covers_script_execution_tools(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Security-critical regression guard: execute_freecad_script and
+    modify_existing_freecad_document run an ARBITRARY caller-supplied
+    script — dana.api.server._HITL_ALWAYS_APPROVED_TOOLS deliberately
+    never exempts either, no matter how that set is edited in the future.
+    Rejects rather than approves once the prompt is confirmed, so this
+    stays hermetic (no real FreeCADCmd/file I/O needed)."""
+    monkeypatch.setattr(server_module, "_HITL_ALWAYS_APPROVED_TOOLS", _REAL_HITL_ALWAYS_APPROVED_TOOLS)
+    for tool_id, arguments in (
+        ("execute_freecad_script", {"python_script_str": "print('hi')"}),
+        ("modify_existing_freecad_document", {"filepath": "C:/tmp/whatever.FCStd", "modification_script": "pass"}),
+    ):
+        _mock_llm(monkeypatch, [ToolCall(tool_id=tool_id, arguments=arguments)])
+        with client.websocket_connect("/ws/chat") as ws:
+            ws.receive_json()  # ready
+            _activate_freecad(ws)
+            ws.send_json({"text": "run it"})
+
+            approval = _drain_until(ws, "hitl_approval_required")
+            assert approval["payload"]["action_name"] == tool_id
+            ws.send_json(
+                {"type": "hitl_response", "payload": {"request_id": approval["payload"]["request_id"], "approved": False}}
+            )
+            assistant = _drain_until(ws, "assistant_message")
+            assert "Cancelled" in assistant["content"]
 
 
 def test_hitl_session_allowlist_skips_approval_on_repeat_tool(
