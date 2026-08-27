@@ -66,6 +66,13 @@ def _new_session() -> dict[str, Any]:
         "working_memory": {"summary": "", "turn": 0},
         "turn_counter": 0,
         "abort_requested": False,
+        # Unused on this path in practice — _GradioSocket.send_json below
+        # auto-approves every hitl_approval_required unconditionally — but
+        # _resolve_react_hitl is shared code that reads/writes this key
+        # regardless of caller, so it's initialized here too for the same
+        # "same shape as ws_chat's session dict" contract this docstring
+        # already promises.
+        "hitl_approved_tools": set(),
     }
 
 

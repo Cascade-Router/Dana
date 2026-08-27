@@ -933,7 +933,11 @@ async def _run_react_loop(
         await websocket.send_json({"type": "visual_capture_request", "payload": {"request_id": request_id}})
         return
 
-    if is_mutating_tool(call.tool_id):
+    # Session HITL allowlist: a tool_id the user already approved once this
+    # session (see _resolve_react_hitl, which populates it on approval)
+    # skips the prompt for every subsequent call to that SAME tool_id — the
+    # gate is still per tool_id, not "approve everything from now on".
+    if is_mutating_tool(call.tool_id) and call.tool_id not in session.get("hitl_approved_tools", set()):
         print(
             f"[ReAct] '{call.tool_id}' is mutating -> suspending loop for HITL approval "
             "(app.py's _GradioSocket auto-approves this immediately on the HF Space path)",
@@ -989,6 +993,12 @@ async def _resolve_react_hitl(websocket: WebSocket, session: dict[str, Any], res
         return
 
     print(f"[ReAct] HITL request for '{call.tool_id}' approved -> dispatching", file=sys.stderr, flush=True)
+    # Remembered for the rest of this session only (session dict, never
+    # persisted) — the next call to THIS SAME tool_id skips the approval
+    # prompt entirely (see the is_mutating_tool check in _run_react_loop).
+    # A "Modify" approval (an edited-parameters override) still counts as
+    # approving the tool itself, not just this one call's specific args.
+    session.setdefault("hitl_approved_tools", set()).add(call.tool_id)
 
     override = response.get("parameters")
     if isinstance(override, dict):
@@ -1206,6 +1216,13 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
         # abort_turn that arrived just after its turn already finished
         # can never bleed into wrongly cancelling the NEXT, unrelated turn.
         "abort_requested": False,
+        # Session-scoped HITL allowlist — tool_ids the user has already
+        # approved once this session (see _run_react_loop's is_mutating_tool
+        # check and _resolve_react_hitl, which adds to this on approval).
+        # In-memory only, never persisted to disk/chat_history — a fresh
+        # connection (even resuming the same on-disk chat) starts empty, so
+        # this never silently skips approval on a brand-new session.
+        "hitl_approved_tools": set(),
     }
     _active_sessions[websocket] = session
     try:

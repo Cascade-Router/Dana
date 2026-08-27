@@ -178,6 +178,61 @@ def test_mutating_tool_requires_hitl_approval_then_proceeds(
         assert assistant["content"] == "Done."
 
 
+def test_hitl_session_allowlist_skips_approval_on_repeat_tool(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Approving create_freecad_box once must let a LATER, SEPARATE turn's
+    call to that same tool_id skip hitl_approval_required entirely — the
+    session["hitl_approved_tools"] allowlist populated by _resolve_react_hitl
+    on approval, checked in _run_react_loop's is_mutating_tool gate.
+
+    Note the LLM queue has THREE entries, not two: after the first box is
+    approved and dispatched, the ReAct loop calls the LLM again WITHIN THE
+    SAME turn to decide the next step (_execute_and_continue recurses back
+    into _run_react_loop) — so a plain "Done." has to be queued there to
+    end turn 1, or the second ToolCall would be consumed by that same-turn
+    continuation instead of by the second user message below.
+    """
+    _mock_llm(
+        monkeypatch,
+        [ToolCall(tool_id="create_freecad_box", arguments={"length": 60, "width": 40, "height": 20})],
+        "Done.",
+        [ToolCall(tool_id="create_freecad_box", arguments={"length": 10, "width": 10, "height": 10})],
+    )
+    with client.websocket_connect("/ws/chat") as ws:
+        ws.receive_json()  # ready
+        _activate_freecad(ws)
+        ws.send_json({"text": "build a box 60x40x20"})
+
+        approval = _drain_until(ws, "hitl_approval_required")
+        request_id = approval["payload"]["request_id"]
+        ws.send_json({"type": "hitl_response", "payload": {"request_id": request_id, "approved": True}})
+
+        _drain_until(ws, "tool_call")
+        _drain_until(ws, "tool_result")
+        assistant = _drain_until(ws, "assistant_message")
+        assert assistant["content"] == "Done."
+
+        # Second, separate turn — same tool_id. No hitl_approval_required
+        # this time: it must go straight to tool_call/tool_result.
+        ws.send_json({"text": "now build a small 10x10x10 box"})
+
+        seen_types = []
+        for _ in range(6):
+            msg = ws.receive_json()
+            seen_types.append(msg["type"])
+            if msg["type"] == "tool_call":
+                assert msg["tool_id"] == "create_freecad_box"
+                break
+        assert "hitl_approval_required" not in seen_types, (
+            f"expected no second approval prompt, got message sequence: {seen_types}"
+        )
+        assert "tool_call" in seen_types, f"never saw a tool_call, got: {seen_types}"
+
+        tool_result = _drain_until(ws, "tool_result")
+        assert tool_result["ok"] is True
+
+
 def test_mutating_tool_cancelled_when_not_approved(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     _mock_llm(monkeypatch, [ToolCall(tool_id="create_freecad_box", arguments={"length": 60, "width": 40, "height": 20})])
     with client.websocket_connect("/ws/chat") as ws:
