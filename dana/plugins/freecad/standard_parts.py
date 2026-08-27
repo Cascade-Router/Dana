@@ -18,7 +18,6 @@ built from scratch) / file-out (one ``.FCStd``), exactly like every
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Any
 
@@ -151,26 +150,43 @@ print("{marker} path=" + {out_path!r})
 # different entry point.
 _FASTENER_SCRIPT = """\
 import sys
+import os
+_dana_mod_path = os.environ.get('DANA_FREECAD_MOD_PATH')
+if _dana_mod_path and _dana_mod_path not in sys.path:
+    sys.path.append(_dana_mod_path)
 import FreeCAD as App
 import Part
 
 try:
     import Fasteners
 except ImportError:
-    # flush=True: subprocess.run's captured stdout is a pipe, not a TTY —
-    # CPython block-buffers writes to a pipe rather than line-buffering
-    # them. FreeCAD's own sys.exit() handling terminates the process
-    # without running normal Python interpreter shutdown/flush, so an
-    # un-flushed message here is silently lost (confirmed directly against
-    # this project's own installed FreeCADCmd — the message never reached
-    # the parent process's captured stdout without this).
-    print(
-        "FASTENERS_WORKBENCH_MISSING: The FreeCAD Fasteners workbench is not "
-        "installed in this FreeCAD environment. Install it via Tools -> Addon "
-        "Manager -> 'Fasteners' (by shaise), then restart FreeCADCmd.",
-        flush=True,
-    )
-    sys.exit(1)
+    try:
+        # FreeCAD 1.0+'s Addon Manager installs this workbench's directory
+        # as lowercase `fasteners` — confirmed directly against a real
+        # install on this machine (.../FreeCAD/v1-1/Mod/fasteners). NTFS's
+        # own case-insensitive path lookups (which is why
+        # fasteners_bootstrap.py's is_dir() check against "Fasteners"
+        # already finds it) do NOT extend to Python's import machinery:
+        # importlib's FileFinder matches module names against directory
+        # entries case-sensitively regardless of filesystem, confirmed by
+        # direct test — `import Fasteners` genuinely raises ModuleNotFoundError
+        # against an on-disk `fasteners/` even on Windows.
+        import fasteners as Fasteners
+    except ImportError:
+        # flush=True: subprocess.run's captured stdout is a pipe, not a TTY —
+        # CPython block-buffers writes to a pipe rather than line-buffering
+        # them. FreeCAD's own sys.exit() handling terminates the process
+        # without running normal Python interpreter shutdown/flush, so an
+        # un-flushed message here is silently lost (confirmed directly against
+        # this project's own installed FreeCADCmd — the message never reached
+        # the parent process's captured stdout without this).
+        print(
+            "FASTENERS_WORKBENCH_MISSING: The FreeCAD Fasteners workbench is not "
+            "installed in this FreeCAD environment. Install it via Tools -> Addon "
+            "Manager -> 'Fasteners' (by shaise), then restart FreeCADCmd.",
+            flush=True,
+        )
+        sys.exit(1)
 
 doc = App.newDocument("DanaModel")
 try:
@@ -321,17 +337,17 @@ def insert_standard_part(
     if pt == "fastener":
         # Auto-provision the Fasteners workbench into FreeCAD's user Mod
         # directory if it isn't already installed there (see
-        # fasteners_bootstrap.py), then make it importable inside the
-        # FreeCADCmd subprocess via PYTHONPATH — the script's own `import
+        # fasteners_bootstrap.py), then hand its path to the FreeCADCmd
+        # subprocess via DANA_FREECAD_MOD_PATH — NOT PYTHONPATH, which
+        # FreeCADCmd.exe's embedded Python interpreter ignores on Windows
+        # (confirmed live). _FASTENER_SCRIPT's own preamble reads this var
+        # and does the sys.path.append itself instead. The script's `import
         # Fasteners` (with its FASTENERS_WORKBENCH_MISSING fallback message)
         # is unchanged either way, so a resolution failure here degrades to
         # exactly the same clean error as before this existed.
         mod_dir = ensure_fasteners_workbench()
         if mod_dir is not None:
-            existing_path = os.environ.get("PYTHONPATH", "")
-            extra_env = {
-                "PYTHONPATH": os.pathsep.join([str(mod_dir), existing_path]) if existing_path else str(mod_dir)
-            }
+            extra_env = {"DANA_FREECAD_MOD_PATH": str(mod_dir)}
 
     result = _run_freecad_script(script, extra_env=extra_env)
     if not result["ok"]:

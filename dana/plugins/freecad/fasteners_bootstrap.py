@@ -14,12 +14,16 @@ inside the templated FreeCADCmd script: ``_FASTENER_SCRIPT`` is rendered via
 ordinary Python full of ``{``/``}`` (f-strings, dict/set literals) — embedding
 it there would mean escaping every brace as ``{{``/``}}``, fragile and hard
 to review. Instead, ``ensure_fasteners_workbench()`` runs here, and the
-resolved Mod directory is passed to the FreeCADCmd subprocess as
-``PYTHONPATH`` (see ``standard_parts.py``'s ``insert_standard_part`` and
-``engine.py``'s ``_run_freecad_script`` ``extra_env`` param) — the script's
-own ``import Fasteners`` (already guarded with its own
-``FASTENERS_WORKBENCH_MISSING`` message for the case this can't resolve
-anything) is untouched.
+resolved Mod directory is passed to the FreeCADCmd subprocess as the
+``DANA_FREECAD_MOD_PATH`` env var (see ``standard_parts.py``'s
+``insert_standard_part`` and ``engine.py``'s ``_run_freecad_script``
+``extra_env`` param) — NOT ``PYTHONPATH``, which FreeCADCmd.exe's embedded
+Python interpreter ignores on Windows (confirmed live). ``_FASTENER_SCRIPT``'s
+own preamble reads that var and does the ``sys.path.append`` itself, in
+plain statements with no ``{``/``}`` at all, so it's safe inside the
+``.format()``-rendered template. The script's own ``import Fasteners``
+(already guarded with its own ``FASTENERS_WORKBENCH_MISSING`` message for
+the case this can't resolve anything) is untouched.
 """
 
 from __future__ import annotations

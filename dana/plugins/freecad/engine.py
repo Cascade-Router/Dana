@@ -433,11 +433,16 @@ def _run_freecad_script(
     arbitrary caller-supplied script defines its own notion of success.
 
     ``extra_env``, when given, is layered on top of a copy of this
-    process's own environment (e.g. ``{"PYTHONPATH": "..."}`` so a script's
-    ``import`` of an addon workbench not on FreeCADCmd's default sys.path
-    can still resolve it — see ``standard_parts.py``'s ``insert_standard_part``
-    for the fastener-workbench case). ``None`` (the default) means "inherit
-    this process's environment unchanged", identical to every other caller
+    process's own environment (e.g. ``{"DANA_FREECAD_MOD_PATH": "..."}`` so
+    a script's own preamble can ``sys.path.append`` an addon workbench
+    directory not on FreeCADCmd's default sys.path — see
+    ``standard_parts.py``'s ``insert_standard_part``/``_FASTENER_SCRIPT``
+    for that exact case. Deliberately NOT ``PYTHONPATH``: FreeCADCmd.exe's
+    embedded Python interpreter ignores it on Windows (confirmed live), so
+    a script that needs an extra sys.path entry has to add it itself, from
+    an env var of its own choosing, rather than relying on this env dict
+    alone). ``None`` (the default) means "inherit this process's
+    environment unchanged", identical to every other caller
     here that never passed an ``env`` at all before this parameter existed.
     """
     try:
