@@ -1537,12 +1537,21 @@ def test_wrap_plugin_handler_unpacks_dict_as_kwargs_for_named_parameters() -> No
     execute_freecad_script ended up calling .strip() on a dict."""
 
     def fake_freecad_tool(python_script_str: str) -> str:
-        return python_script_str  # returns whatever it was actually bound to
+        # JSON-encoded, mirroring the real FreeCAD-engine convention
+        # (engine._ok/_error) that _wrap_plugin_handler now parses back
+        # into a dict (see its own docstring/comment) — wraps whatever was
+        # actually bound to python_script_str so the assertion below can
+        # still tell "bound correctly as the string" apart from the
+        # regression this guards against.
+        return json.dumps({"bound_value": python_script_str})
 
     handler = rd._wrap_plugin_handler(fake_freecad_tool)
     result = handler({"python_script_str": "import FreeCAD"}, None, None)
-    assert result == "import FreeCAD"
-    assert isinstance(result, str)  # regression: used to be the whole dict
+    # regression: used to silently bind the WHOLE args dict positionally to
+    # python_script_str instead of unpacking as a kwarg — python_script_str
+    # would then BE {"python_script_str": "import FreeCAD"}, not the string.
+    assert result == {"bound_value": "import FreeCAD"}
+    assert isinstance(result["bound_value"], str)
 
 
 def test_wrap_plugin_handler_unpacks_multiple_named_parameters() -> None:
@@ -1576,11 +1585,16 @@ def test_execute_freecad_script_end_to_end_through_tool_handlers_dispatch() -> N
         handler = rd.TOOL_HANDLERS["execute_freecad_script"]
         result = handler({"python_script_str": "import FreeCAD as App"}, None, None)
 
-    # execute_freecad_script returns a JSON-encoded string (engine._ok), not
-    # a dict — the regression this guards against ("'dict' object has no
-    # attribute 'strip'") crashed BEFORE ever reaching this return, so
-    # merely getting a well-formed ok:true payload back proves the fix.
-    assert json.loads(result)["ok"] is True
+    # engine.execute_freecad_script itself returns a JSON-encoded string
+    # (engine._ok) — _wrap_plugin_handler now parses that into a real dict
+    # before it reaches dispatch_tool_call (see its own docstring/comment:
+    # dispatch_tool_call's payload.get("ok", True) used to crash with
+    # AttributeError on the raw string, confirmed live against
+    # modify_existing_freecad_document, the other tool sharing this exact
+    # convention). The earlier, unrelated regression this test also guards
+    # against ("'dict' object has no attribute 'strip'") crashed BEFORE ever
+    # reaching this return, so a well-formed ok:true dict proves both fixes.
+    assert result["ok"] is True
     # The script text actually reached FreeCADCmd as a string, not a dict.
     script_arg = mock_run.call_args.args[0]
     assert script_arg == "import FreeCAD as App"

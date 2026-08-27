@@ -1816,9 +1816,23 @@ def _wrap_plugin_handler(
         takes_single_args_dict = False
 
     def _handler(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
-        if takes_single_args_dict:
-            return fn(args)
-        return fn(**args)
+        result = fn(args) if takes_single_args_dict else fn(**args)
+        # dana.plugins.freecad.engine's functions (e.g. modify_existing_document,
+        # execute_freecad_script — the two manifest.json tool ids that don't
+        # collide with a native handler and so actually reach this wrapper at
+        # runtime) return a JSON-encoded STRING, per that module's own "All
+        # public functions return a JSON string" contract — built for the
+        # older tool-broker stack, not this dict-expecting one.
+        # dispatch_tool_call's payload.get("ok", True) crashes with
+        # AttributeError on a raw string (confirmed live:
+        # modify_existing_freecad_document), so parse it here, the one place
+        # every manifest-plugin result already flows through, rather than in
+        # every individual FreeCAD-engine function or at the dispatch
+        # chokepoint itself. Left untouched for a plugin (e.g. coder_plugin)
+        # whose functions already return a real dict.
+        if isinstance(result, str):
+            result = json.loads(result)
+        return result
 
     return _handler
 
