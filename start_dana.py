@@ -6,7 +6,7 @@ Starts, in order:
      production entry points use (``dana.platform.proxy_launcher``), which
      runs the compiled ``proxy_server`` binary out of the sibling
      ``../cascade-router`` checkout's ``cpp_core/build/`` — no Docker
-     daemon required. Blocks until ``GET http://127.0.0.1:8000/health``
+     daemon required. Blocks until ``GET http://127.0.0.1:8080/health``
      returns 200 before continuing, since the FastAPI backend routes every
      cloud LLM call through it (see ``dana.core.model_provider.
      gateway_base_url``).

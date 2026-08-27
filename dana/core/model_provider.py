@@ -29,7 +29,7 @@ _COMPLEXITY_REJECT = "REJECT: Task too complex for local model"
 # manages provider API keys and cascades groq -> gemini -> openai on
 # HTTP 429/5xx upstream, in milliseconds, so this bridge no longer needs to
 # hold its own provider keys or retry logic for the cloud tool-calling path.
-_DEFAULT_GATEWAY_URL = "http://localhost:8000/v1"
+_DEFAULT_GATEWAY_URL = "http://localhost:8080/v1"
 _DEFAULT_GATEWAY_MODEL = "cascade-auto"
 
 
