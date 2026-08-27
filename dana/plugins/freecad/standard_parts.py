@@ -18,6 +18,7 @@ built from scratch) / file-out (one ``.FCStd``), exactly like every
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -32,6 +33,7 @@ from dana.plugins.freecad.engine import (
     _output_path,
     _run_freecad_script,
 )
+from dana.plugins.freecad.fasteners_bootstrap import ensure_fasteners_workbench
 from dana.plugins.freecad.engineering_standards import (
     get_bearing_geometry,
     get_nema17_dimensions,
@@ -314,7 +316,24 @@ def insert_standard_part(
     script = script_template.format(
         name=resolved_name, placement=placement, out_path=str(out_path), marker=_OK_MARKER, **fmt_kwargs
     )
-    result = _run_freecad_script(script)
+
+    extra_env: dict[str, str] | None = None
+    if pt == "fastener":
+        # Auto-provision the Fasteners workbench into FreeCAD's user Mod
+        # directory if it isn't already installed there (see
+        # fasteners_bootstrap.py), then make it importable inside the
+        # FreeCADCmd subprocess via PYTHONPATH — the script's own `import
+        # Fasteners` (with its FASTENERS_WORKBENCH_MISSING fallback message)
+        # is unchanged either way, so a resolution failure here degrades to
+        # exactly the same clean error as before this existed.
+        mod_dir = ensure_fasteners_workbench()
+        if mod_dir is not None:
+            existing_path = os.environ.get("PYTHONPATH", "")
+            extra_env = {
+                "PYTHONPATH": os.pathsep.join([str(mod_dir), existing_path]) if existing_path else str(mod_dir)
+            }
+
+    result = _run_freecad_script(script, extra_env=extra_env)
     if not result["ok"]:
         return _error(f"insert_standard_part failed: {result['error']}")
     return _ok(

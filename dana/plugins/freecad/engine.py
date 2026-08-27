@@ -419,7 +419,11 @@ def _extract_spatial(stdout: str) -> list[Any] | None:
 
 
 def _run_freecad_script(
-    script_text: str, *, timeout: float = _DEFAULT_TIMEOUT_S, require_marker: bool = True
+    script_text: str,
+    *,
+    timeout: float = _DEFAULT_TIMEOUT_S,
+    require_marker: bool = True,
+    extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Write ``script_text`` to a temp file and execute it via FreeCADCmd.
 
@@ -427,6 +431,14 @@ def _run_freecad_script(
     (the parametric helpers below print it only after ``saveAs`` succeeds).
     ``execute_freecad_script`` passes ``require_marker=False`` since an
     arbitrary caller-supplied script defines its own notion of success.
+
+    ``extra_env``, when given, is layered on top of a copy of this
+    process's own environment (e.g. ``{"PYTHONPATH": "..."}`` so a script's
+    ``import`` of an addon workbench not on FreeCADCmd's default sys.path
+    can still resolve it — see ``standard_parts.py``'s ``insert_standard_part``
+    for the fastener-workbench case). ``None`` (the default) means "inherit
+    this process's environment unchanged", identical to every other caller
+    here that never passed an ``env`` at all before this parameter existed.
     """
     try:
         cmd_path = get_freecadcmd_path()
@@ -439,6 +451,8 @@ def _run_freecad_script(
         tmp.write(script_text)
         script_path = tmp.name
 
+    env = {**os.environ, **extra_env} if extra_env else None
+
     try:
         with _lock:
             proc = subprocess.run(
@@ -447,6 +461,7 @@ def _run_freecad_script(
                 text=True,
                 timeout=timeout,
                 check=False,
+                env=env,
             )
     except subprocess.TimeoutExpired as exc:
         return {
