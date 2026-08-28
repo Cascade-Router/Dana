@@ -14,7 +14,29 @@ from typing import Any
 
 from dana.platform.base import BaseCADEngine, BaseControlPlane
 
-_CAD_WINDOW_HINTS = ("freecad", "autocad", "acad")
+# Exact owning-process executable names, NOT a title substring — a title
+# substring match (the previous approach) false-positives on any unrelated
+# window whose title text happens to mention one of these words, e.g. a code
+# editor with this repo open (a title like "engine.py - dana/plugins/freecad
+# - Visual Studio Code" contains "freecad") gets forcibly relocated to the
+# secondary monitor right along with the real FreeCAD window. Matching the
+# actual process image name scopes this to the real CAD application
+# regardless of what any window happens to have in its title bar — same
+# convention dana.plugins.freecad.engine._is_freecad_gui_running already
+# uses for "is FreeCAD running" (exact "freecad.exe", not a substring).
+_CAD_WINDOW_PROCESS_NAMES = frozenset({"freecad.exe", "acad.exe"})
+
+
+def _process_exe_name(pid: int) -> str:
+    """Best-effort: the owning process's executable filename, lowercased.
+    Returns "" if the pid is gone/inaccessible by the time we look it up —
+    never raises, since a window can close between EnumWindows and here."""
+    try:
+        import psutil
+
+        return (psutil.Process(pid).name() or "").lower()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 class Win32ControlPlane(BaseControlPlane):
@@ -35,8 +57,7 @@ class Win32ControlPlane(BaseControlPlane):
 
         moved: list[dict[str, Any]] = []
         for win in get_active_windows():
-            title = str(win.get("title") or "").lower()
-            if not any(hint in title for hint in _CAD_WINDOW_HINTS):
+            if _process_exe_name(int(win["pid"])) not in _CAD_WINDOW_PROCESS_NAMES:
                 continue
             ok = move_window_no_activate(int(win["hwnd"]), x, y, width, height)
             moved.append({"hwnd": win["hwnd"], "title": win["title"], "moved": ok})
