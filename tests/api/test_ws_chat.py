@@ -169,6 +169,31 @@ def test_no_tool_call_yields_plain_fallback_message(client: TestClient, monkeypa
         assert "tool call" in assistant["content"] or "action" in assistant["content"]
 
 
+def test_llm_proxy_error_replies_gracefully_with_the_specific_failure(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cloud gateway 502/400 (dana.core.openai_tool_bridge already turns
+    this into a RuntimeError, never a crash) must still end the turn with a
+    reply that names the actual failure — not just a bare "try again" that
+    throws away exactly the detail (which provider, which HTTP code) needed
+    to tell a real outage apart from an unrelated hiccup."""
+    import dana.core.react_dispatch as react_dispatch
+
+    class _FailingProvider:
+        def complete_with_tool_calls(self, *_a: Any, **_k: Any) -> dict:
+            raise RuntimeError("cloud HTTP 502: Bad Gateway -- <html>upstream unavailable</html>")
+
+    monkeypatch.setattr(react_dispatch, "ModelProvider", lambda **_kwargs: _FailingProvider())
+
+    with client.websocket_connect("/ws/chat") as ws:
+        ws.receive_json()  # ready
+        ws.send_json({"text": "hello"})
+
+        assistant = _drain_until(ws, "assistant_message")
+        assert "cloud HTTP 502" in assistant["content"]
+        assert "Bad Gateway" in assistant["content"]
+
+
 def test_mutating_tool_requires_hitl_approval_then_proceeds(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

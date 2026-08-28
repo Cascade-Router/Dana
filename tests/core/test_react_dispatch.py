@@ -366,13 +366,45 @@ def test_build_assistant_tool_call_message_ids_are_unique() -> None:
 
 
 def test_build_tool_result_message_success() -> None:
+    """create_freecad_box is a _GEOMETRY_RESULT_TOOL_IDS tool, so its result
+    is slimmed to _GEOMETRY_RESULT_KEEP_KEYS before entering the LLM-facing
+    message — the absolute .FCStd path is dropped (the model only ever needs
+    the object's `name`, resolved server-side via _OBJECT_PATH_REGISTRY for
+    any later tool call, never a raw path)."""
     result = rd.ToolResult("create_freecad_box", True, {"ok": True, "name": "Box", "path": "x.FCStd"}, "ok", 5)
     message = rd.build_tool_result_message("call_abc", result)
     assert message == {
         "role": "tool",
         "tool_call_id": "call_abc",
-        "content": json.dumps({"ok": True, "name": "Box", "path": "x.FCStd"}),
+        "content": json.dumps({"ok": True, "name": "Box"}),
     }
+
+
+def test_build_tool_result_message_non_geometry_tool_is_never_slimmed() -> None:
+    """A tool outside _GEOMETRY_RESULT_TOOL_IDS keeps its full payload shape
+    untouched — the geometry allowlist would otherwise gut e.g. a bounding-box
+    query's z_max, a search result's matches, or a skill's own traceback."""
+    result = rd.ToolResult("get_freecad_bounding_box", True, {"ok": True, "z_max": 30.0, "path": "x.FCStd"}, "ok", 5)
+    message = rd.build_tool_result_message("call_abc", result)
+    assert json.loads(message["content"]) == {"ok": True, "z_max": 30.0, "path": "x.FCStd"}
+
+
+def test_build_tool_result_message_geometry_failure_keeps_diagnostic_fields() -> None:
+    """A failed geometry-tool call goes through digest_error's structured
+    shape (status/reason/suggestion/raw_error/tool_id, no top-level "error"
+    key at all) — the slim-down must preserve these so the model can still
+    tell WHY it failed, not just that it did."""
+    digested_payload = {
+        "ok": False,
+        "status": "error",
+        "tool_id": "perform_freecad_boolean",
+        "reason": "Boolean operation produced a non-manifold result",
+        "suggestion": "Check that the tool object actually overlaps the base",
+        "raw_error": "OCC kernel: BRepAlgoAPI_Cut failed",
+    }
+    result = rd.ToolResult("perform_freecad_boolean", False, digested_payload, "reason text", 5)
+    message = rd.build_tool_result_message("call_abc", result)
+    assert json.loads(message["content"]) == digested_payload
 
 
 def test_build_tool_result_message_failure_reports_error() -> None:

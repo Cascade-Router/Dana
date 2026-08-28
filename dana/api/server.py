@@ -920,9 +920,24 @@ async def _run_react_loop(
 
     if turn.kind == "error":
         await _dag_complete(websocket, node_id, "error", {"matched": False}, parse_ms)
-        await _finish_turn(
-            websocket, session, messages, "I ran into a problem talking to the model — please try again."
-        )
+        # dana.core.openai_tool_bridge already catches urllib.error.HTTPError
+        # (502s, 400s, any status) and urllib.error.URLError (stalled/refused
+        # connections), so a proxy/network failure never crashes this process
+        # — it surfaces here as next_react_turn's ReactTurn("error", content=
+        # the specific failure, e.g. "cloud HTTP 502: Bad Gateway -- ...").
+        # That detail used to be discarded in favor of a bare generic apology.
+        # `messages` itself is NOT the right place to record it: a fresh
+        # `messages` list is built from scratch for every new user turn (see
+        # _handle_user_message above), so anything appended to THIS turn's
+        # list is discarded the moment this function returns — the only
+        # thing that actually survives into future turns is whatever string
+        # is handed to _finish_turn below, which both replies to the user now
+        # AND feeds dana.core.context_distiller's working-memory summary that
+        # every later turn's system prompt is built from. So the fix is to
+        # put the real failure IN that string, not to mutate `messages`.
+        error_detail = turn.content or "no further detail available"
+        reply = f"I ran into a problem talking to the model — please try again. (proxy/network error: {error_detail})"
+        await _finish_turn(websocket, session, messages, reply)
         return
 
     if turn.kind == "final":

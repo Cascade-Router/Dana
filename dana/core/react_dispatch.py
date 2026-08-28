@@ -3319,6 +3319,80 @@ def build_assistant_tool_call_message(call: ToolCall) -> tuple[dict[str, Any], s
     return message, call_id
 
 
+# Tools whose result payload always comes from engine.py's own `_ok(name=,
+# type=, bounding_box=, ...)` helper — the same uniform geometry-result shape
+# dana.api.server._CAD_CREATE_TOOLS scopes its own mesh/artifact handling to
+# (mirrored here, not imported, since dana.api.server already imports FROM
+# this module — importing back would cycle). Every OTHER tool (search_codebase,
+# execute_code_task, read_file, a user skill, resync_workspace, ...) has a
+# completely different, unrelated result shape that _GEOMETRY_RESULT_KEEP_KEYS
+# would gut if applied to it (e.g. execute_code_task's stdout/stderr, a user
+# skill's own traceback, resync_workspace's "moved" list) — this allowlist is
+# deliberately scoped to ONLY these tools.
+_GEOMETRY_RESULT_TOOL_IDS = frozenset(
+    {
+        "create_freecad_box",
+        "create_freecad_cylinder",
+        "create_freecad_extrusion",
+        "create_freecad_pyramid",
+        "create_freecad_star_prism",
+        "perform_freecad_boolean",
+        "perform_freecad_edge_operation",
+        "modify_freecad_parameter",
+        "create_freecad_pipe",
+        "align_freecad_objects",
+        "create_assembly_mate",
+        "create_freecad_sketch_extrude",
+        "batch_pattern_array",
+        "insert_standard_part",
+    }
+)
+
+_GEOMETRY_RESULT_KEEP_KEYS = frozenset(
+    {
+        "ok",
+        "name",
+        "type",
+        "dimensions",
+        "placement",
+        "bounding_box",
+        "error",
+        # A failed geometry-tool payload has no top-level "error" key at all —
+        # dispatch_tool_call replaces it with digest_error's own structured
+        # shape ({status, tool_id, reason, suggestion, raw_error}) specifically
+        # so the model can tell WHY it failed and how to fix it. Dropping
+        # these to match the plain success-shape allowlist above would blind
+        # the model to every failure's cause, defeating error_digest.py's
+        # entire purpose.
+        "status",
+        "tool_id",
+        "reason",
+        "suggestion",
+        "raw_error",
+    }
+)
+
+
+def _slim_geometry_tool_result(tool_id: str, payload: Any) -> Any:
+    """Drop every key outside ``_GEOMETRY_RESULT_KEEP_KEYS`` from a geometry
+    tool's result payload, e.g. the absolute ``.FCStd``/``.stl`` path (re-sent
+    in full on every subsequent turn of a multi-step create/modify/boolean
+    chain), ``gui_shown``, or a driver-specific ``note`` string — none of
+    which the model needs to keep reasoning about the geometry it just built.
+
+    Scoped to ``_GEOMETRY_RESULT_TOOL_IDS`` and a dict payload only; anything
+    else is returned unchanged. Never mutates ``payload`` — this only affects
+    the copy that enters the LLM-facing message history, not
+    ``ToolResult.payload`` itself (still read unpruned by ``dispatch_tool_call``'s
+    ``_OBJECT_PATH_REGISTRY`` bookkeeping and the frontend's own
+    ``"tool_result"`` websocket event, both of which run before/independently
+    of this).
+    """
+    if tool_id not in _GEOMETRY_RESULT_TOOL_IDS or not isinstance(payload, dict):
+        return payload
+    return {k: v for k, v in payload.items() if k in _GEOMETRY_RESULT_KEEP_KEYS}
+
+
 def build_tool_result_message(tool_call_id: str, result: "ToolResult") -> dict[str, Any]:
     """The OpenAI-wire ``tool`` role message reporting ``result`` back to
     the model for the next loop iteration, keyed to the assistant message
@@ -3330,8 +3404,13 @@ def build_tool_result_message(tool_call_id: str, result: "ToolResult") -> dict[s
     reshape only kicks in as a fallback for a hand-built/empty-payload
     ``ToolResult`` that never went through dispatch (e.g. a synthetic
     failure a caller constructs directly).
+
+    A geometry tool's payload (``_GEOMETRY_RESULT_TOOL_IDS``) is further
+    slimmed to ``_GEOMETRY_RESULT_KEEP_KEYS`` before it enters this message —
+    see ``_slim_geometry_tool_result``.
     """
     payload = result.payload if (result.ok or result.payload) else {"ok": False, "error": result.message}
+    payload = _slim_geometry_tool_result(result.tool_id, payload)
     return {"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(payload)}
 
 
