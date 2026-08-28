@@ -774,6 +774,49 @@ def test_tool_complete_status_is_error_when_the_tool_fails(client: TestClient, m
         assert tool_complete == {"type": "tool_complete", "tool_name": "read_file", "status": "error"}
 
 
+def test_tool_failure_injects_system_override_directive_for_next_turn(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_execute_and_continue must inject a blunt SYSTEM OVERRIDE reinforcement
+    into the very next LLM call after an actual tool failure — on top of the
+    standing system-prompt rule, this is what the next next_react_turn call
+    literally sees, guarding against the model hallucinating success instead
+    of noticing `ok: false` and retrying."""
+    import dana.core.react_dispatch as react_dispatch
+
+    captured_messages: list[list[dict[str, Any]]] = []
+
+    class _RecordingProvider:
+        def __init__(self) -> None:
+            self._turns: list[Any] = [
+                [ToolCall(tool_id="read_file", arguments={"path": "does_not_exist.txt"})],
+                "Understood, stopping here.",
+            ]
+
+        def complete_with_tool_calls(self, messages: Any, *, tools: Any, provider: Any = None, **kwargs: Any) -> dict:
+            captured_messages.append(messages)
+            turn = self._turns.pop(0) if self._turns else "Done."
+            if isinstance(turn, str):
+                return {"content": turn, "tool_calls": [], "provider": "test"}
+            return {"content": "", "tool_calls": turn, "provider": "test"}
+
+    monkeypatch.setattr(react_dispatch, "ModelProvider", lambda **_kwargs: _RecordingProvider())
+
+    with client.websocket_connect("/ws/chat") as ws:
+        ws.receive_json()  # ready
+        ws.send_json({"type": "update_context", "active_plugins": ["os_tools"]})
+        ws.send_json({"text": "read does_not_exist.txt"})
+
+        _drain_until(ws, "assistant_message")
+
+    assert len(captured_messages) == 2
+    second_call_messages = captured_messages[1]
+    assert any(
+        m.get("role") == "system" and "SYSTEM OVERRIDE" in m.get("content", "")
+        for m in second_call_messages
+    )
+
+
 # --------------------------------------------------------------------------
 # Global Abort — "abort_turn". This server processes one websocket frame
 # at a time on a single task per connection (ws_chat's own `while True:

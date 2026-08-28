@@ -2301,10 +2301,14 @@ the next step.
 - Only call a tool when the user is clearly asking for an action. If they're \
 just chatting, asking a question, or every step they asked for is already \
 done, reply in plain text without calling a tool.
-- If a tool call returns an error, you may adjust its parameters and retry \
-ONCE. If that retry returns the EXACT SAME error a second time, DO NOT try a \
-third time — immediately stop, yield your turn, and explain the terminal \
-error to the user instead of repeating the same failing call again.\
+- CRITICAL: a tool result with `"ok": false` or `"status": "error"` means \
+that step did NOT happen. You MUST NOT proceed to the next step, and MUST \
+NOT tell the user it succeeded — never assume or claim a failed tool call \
+worked. If a tool call returns an error, you may adjust its parameters and \
+retry ONCE. If that retry returns the EXACT SAME error a second time, DO NOT \
+try a third time — immediately stop, yield your turn, and explain the \
+terminal error to the user instead of repeating the same failing call again \
+(but never silently continue as if it had worked).\
 """
 
 # Always appended (see build_system_prompt below) — read_skill_source and
@@ -2365,13 +2369,17 @@ holes, an 8x8 tile grid.
    - Use `create_assembly_mate` (not `align_freecad_objects`) once you're \
 building a real multi-part assembly — its concentric/coincident_planar/offset_axial \
 mate types express true kinematic relationships, not just a bounding-box snap.
-4. SELF-CORRECT ON ERROR — AND STOP AFTER A REPEATED FAILURE. A failed tool \
-call never crashes the conversation — it returns `{"status": "error", \
-"reason": ..., "suggestion": ...}`. Read both fields, adjust the specific \
-parameter they point to, and retry. Never repeat an identical call that just \
-failed. If you retry and get the EXACT SAME error a second time, DO NOT try a \
-third time — immediately stop, yield your turn, and explain the terminal \
-error to the user instead of guessing again.
+4. SELF-CORRECT ON ERROR — AND STOP AFTER A REPEATED FAILURE. CRITICAL: a \
+tool result with `"ok": false` or `"status": "error"` means that step did \
+NOT happen — you MUST NOT treat it as done, move on to the next step, or \
+tell the user it succeeded. Never assume or claim a failed tool call worked. \
+A failed tool call never crashes the conversation — it returns \
+`{"status": "error", "reason": ..., "suggestion": ...}`. Read both fields, \
+adjust the specific parameter they point to, and retry. Never repeat an \
+identical call that just failed. If you retry and get the EXACT SAME error a \
+second time, DO NOT try a third time — immediately stop, yield your turn, \
+and explain the terminal error to the user instead of guessing again (but \
+never silently continue as if it had worked).
 5. VISUALLY CONFIRM COMPLEX RESULTS. After assembling several mated parts, or \
 whenever you're not confident a sequence of edits looks right, call \
 `take_canvas_screenshot` to see the actual rendered result before telling \

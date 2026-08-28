@@ -748,6 +748,25 @@ async def _execute_and_continue(
         )
         return
 
+    if not result.ok:
+        # A blunt, turn-specific reinforcement on top of the standing
+        # "SELF-CORRECT ON ERROR" system-prompt rule (dana.core.react_dispatch's
+        # _CORE_SYSTEM_PROMPT/_FREECAD_SYSTEM_PROMPT) — this fires only on an
+        # ACTUAL failure the loop is about to hand back to the model (never on
+        # the repeated-failure branch above, which already ends the turn
+        # instead of asking the model to act on anything), so the very next
+        # next_react_turn call opens with an unmissable directive instead of
+        # relying solely on a general rule stated once, several messages back.
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "SYSTEM OVERRIDE: The last tool call failed. You must fix the error "
+                    "and retry. Do not move on to the next step."
+                ),
+            }
+        )
+
     print(
         f"[ReAct] Continuing loop after '{call.tool_id}' -> iteration {loop_count + 1}",
         file=sys.stderr,
