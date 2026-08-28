@@ -34,7 +34,7 @@ _FREECAD_EXPORT_DIR = DANA_WORKSPACE / "exports"
 # directory allowlist below (never an arbitrary path) is what makes path
 # traversal a structural impossibility rather than a string-sanitizing check.
 _ARTIFACT_DIRS: tuple[Path, ...] = (_FREECAD_OUTPUT_DIR, _FREECAD_EXPORT_DIR)
-_ARTIFACT_EXTENSIONS = frozenset({".step", ".stp", ".stl", ".fcstd", ".urdf"})
+_ARTIFACT_EXTENSIONS = frozenset({".step", ".stp", ".stl", ".fcstd", ".urdf", ".glb", ".obj"})
 
 _MEDIA_TYPES = {
     ".step": "model/step",
@@ -42,6 +42,9 @@ _MEDIA_TYPES = {
     ".stl": "model/stl",
     ".fcstd": "application/octet-stream",
     ".urdf": "application/xml",
+    # generate_3d_from_image's own output formats (dana.tools.image_to_3d).
+    ".glb": "model/gltf-binary",
+    ".obj": "model/obj",
 }
 
 

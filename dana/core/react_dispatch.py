@@ -138,6 +138,15 @@ def _tool_generate_urdf_assembly(args: dict[str, Any], _engine: Any, _cp: Any) -
     )
 
 
+def _tool_generate_3d_from_image(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    from dana.tools.image_to_3d import generate_3d_from_image
+
+    image_path = str(args.get("image_path") or "").strip()
+    if not image_path:
+        return {"ok": False, "error": "generate_3d_from_image requires image_path"}
+    return json.loads(generate_3d_from_image(image_path))
+
+
 def _tool_resync_workspace(_args: dict[str, Any], _engine: Any, cp: Any) -> dict[str, Any]:
     return cp.resync_workspace()
 
@@ -1215,6 +1224,7 @@ def _tool_insert_standard_part(args: dict[str, Any], _engine: Any, _cp: Any) -> 
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] = {
     "create_freecad_box": _tool_create_box,
     "generate_urdf_assembly": _tool_generate_urdf_assembly,
+    "generate_3d_from_image": _tool_generate_3d_from_image,
     "query_geometry_properties": _tool_query_geometry_properties,
     "read_system_architecture": _tool_read_system_architecture,
     "create_freecad_cylinder": _tool_create_cylinder,
@@ -1353,6 +1363,12 @@ def is_mutating_tool(tool_id: str) -> bool:
 
 
 def describe_tool_call(call: ToolCall) -> str:
+    if call.tool_id == "generate_3d_from_image":
+        image_path = call.arguments.get("image_path", "an image")
+        return (
+            f"Send {image_path} to a free third-party Hugging Face Space (TripoSR, "
+            "with CRM/zero123plus as fallbacks) to reconstruct it into a 3D mesh."
+        )
     if call.tool_id == "create_freecad_box":
         length = call.arguments.get("length", 40)
         width = call.arguments.get("width", 25)
@@ -1595,6 +1611,10 @@ _FREECAD_TOOL_IDS = frozenset(
         # its own load_capability/frontend wiring nothing currently activates).
         "query_geometry_properties",  # Spatial Awareness — the precise-joint-origin
         # companion to generate_urdf_assembly above; same domain for the same reason.
+        "generate_3d_from_image",  # Image-to-3D via free Hugging Face Spaces
+        # (dana.tools.image_to_3d) — its output feeds the same CAD pipeline
+        # (inspect/export/assemble) create_freecad_*'s own output does, so
+        # same domain rather than a separate one nothing currently activates.
     }
 )
 

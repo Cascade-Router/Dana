@@ -366,6 +366,32 @@ def get_mesh(token: str) -> FileResponse:
     return FileResponse(path, media_type="model/stl", filename=f"{token}.stl")
 
 
+@app.get("/api/mesh/{token}.glb")
+def get_mesh_glb(token: str) -> FileResponse:
+    """Same opaque-token registry/route shape as ``get_mesh`` above, for a
+    ``generate_3d_from_image`` result that came back as a ``.glb`` rather
+    than a ``.stl`` — see that route's own reasoning for why the extension
+    is baked into the path rather than a single ``{ext}`` route param."""
+    path = _MESH_REGISTRY.get(token)
+    if path is None or not path.is_file():
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="mesh not found")
+    return FileResponse(path, media_type="model/gltf-binary", filename=f"{token}.glb")
+
+
+@app.get("/api/mesh/{token}.obj")
+def get_mesh_obj(token: str) -> FileResponse:
+    """Same as ``get_mesh_glb`` above, for a ``generate_3d_from_image``
+    result that came back as a ``.obj`` instead."""
+    path = _MESH_REGISTRY.get(token)
+    if path is None or not path.is_file():
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="mesh not found")
+    return FileResponse(path, media_type="model/obj", filename=f"{token}.obj")
+
+
 @app.get("/api/mesh/{token}.urdf")
 def get_urdf(token: str) -> FileResponse:
     """Same opaque-token registry/route shape as ``get_mesh`` above, one
@@ -761,6 +787,20 @@ async def _execute_and_continue(
             artifacts_registry.register_artifact(path, format="urdf", source="generated")
             token = _register_mesh(path)
             mesh_url = f"/api/mesh/{token}.urdf"
+    elif result.ok and call.tool_id == "generate_3d_from_image":
+        # Deliberately NOT in _CAD_CREATE_TOOLS: its payload key is
+        # "mesh_path" (not "path"), and the file it names is already a raw
+        # .obj/.glb mesh — not a FreeCAD .FCStd document, which is what
+        # export_mesh_stl/export_model both require (they open their source
+        # via FreeCAD's own App.openDocument, which only reads FreeCAD's
+        # native document format). Same "it's already the artifact, just
+        # register+serve it" pattern as generate_urdf_assembly right above.
+        path = result.payload.get("mesh_path")
+        if isinstance(path, str) and path:
+            mesh_format = Path(path).suffix.lstrip(".").lower()
+            artifacts_registry.register_artifact(path, format=mesh_format, source="generated")
+            token = _register_mesh(path)
+            mesh_url = f"/api/mesh/{token}.{mesh_format}"
 
     await _dag_complete(websocket, node_id, "success" if result.ok else "error", result.payload, result.duration_ms)
     await websocket.send_json(

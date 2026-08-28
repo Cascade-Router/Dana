@@ -2423,6 +2423,13 @@
           "description_en": "Ordered list of joint objects connecting two links, each: {\"name\": optional str, \"parent\": str link name, \"child\": str link name, \"type\": \"fixed\"|\"revolute\"|\"continuous\", \"origin_xyz\": optional [x, y, z] — the child frame's offset from the parent, \"axis\": optional [x, y, z] — the rotation axis for revolute/continuous joints, defaults to [0, 0, 1]}."
         }
       ]
+    },
+    {
+      "id": "generate_3d_from_image",
+      "description_en": "Converts a single 2D image into a 3D mesh (.obj or .glb) by polling free Hugging Face Spaces (TripoSR, then CRM, then zero123plus as fallbacks) — no local GPU reconstruction model involved. Saves the resulting mesh under the workspace and returns its path plus which backend produced it. Sends the image to a third-party service over the network; may take a while (or fail outright) if all three backends are asleep/down, which is common for free community Spaces.",
+      "parameters": [
+        {"name": "image_path", "type": "string", "required": true, "description_en": "Path to the source 2D image (e.g. a screenshot or photo) to reconstruct into a 3D mesh."}
+      ]
     }
   ]
 }
