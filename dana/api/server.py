@@ -675,7 +675,17 @@ async def _execute_and_continue(
 
     mesh_url = None
     if result.ok and call.tool_id in _CAD_CREATE_TOOLS:
-        mesh = engine.export_mesh_stl(result.payload["path"], name=result.payload.get("name"))
+        # target_object scopes both exports to the ONE object this call
+        # actually produced — result.payload["name"] — rather than every
+        # object in result.payload["path"]'s document. Necessary now that
+        # path can be the shared Session_Active.FCStd (create_box/
+        # create_cylinder/apply_boolean/modify_parameter/align_objects/
+        # create_assembly_mate all write there): without a name, both
+        # export_mesh_stl and export_model previously grabbed every
+        # sibling object (or, pre-fix, the WRONG single object) in that
+        # document, not just the one this tool call was about.
+        result_name = result.payload.get("name")
+        mesh = engine.export_mesh_stl(result.payload["path"], name=result_name, target_object=result_name)
         if mesh.get("ok"):
             token = _register_mesh(mesh["path"])
             mesh_url = f"/api/mesh/{token}.stl"
@@ -690,7 +700,9 @@ async def _execute_and_continue(
         # an expected, honest limitation of that driver, not a failure of
         # this turn's actual tool call.
         try:
-            step = engine.export_model([result.payload["path"]], "step", result.payload.get("name") or "model")
+            step = engine.export_model(
+                [result.payload["path"]], "step", result_name or "model", target_objects=[result_name]
+            )
         except Exception:  # noqa: BLE001 — best-effort; a driver-level failure here must never fail the turn
             step = {"ok": False}
         if step.get("ok"):

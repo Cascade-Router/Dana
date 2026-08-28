@@ -538,6 +538,61 @@ _PLACEMENT_SNIPPET = (
 )
 
 
+# Multi-Stage Object Resolution — polls 3 increasingly-loose match
+# strategies against ``target_name`` (exact Name, exact Label, then a
+# case-insensitive Name match) so a caller can reliably reference ONE
+# specific object by name, instead of the old "grab whichever object
+# nothing else references" heuristic (``next(o for o in doc.Objects if
+# not o.InList)``) — a heuristic that silently returned an ARBITRARY
+# sibling object once create_box/create_cylinder/apply_boolean/
+# modify_parameter started sharing one Session_Active.FCStd document with
+# many top-level objects (get_bounding_box("Cylinder") could silently
+# return the Box's bounding box instead, since the old heuristic never
+# looked at the requested name at all). Lives as embedded script TEXT
+# (not a plain engine.py function) because ``doc`` only exists inside the
+# FreeCADCmd subprocess this module launches — see the module docstring.
+_RESOLVE_OBJECT_SNIPPET = """\
+def resolve_object(doc, target_name):
+    obj = doc.getObject(target_name)
+    if obj is not None:
+        return obj
+    matches = [o for o in doc.Objects if o.Label == target_name]
+    if matches:
+        return matches[0]
+    matches = [o for o in doc.Objects if target_name.lower() == o.Name.lower()]
+    if matches:
+        return matches[0]
+    return None
+"""
+
+
+def _object_lookup_snippet(
+    *, obj_var: str = "obj", doc_var: str = "doc", target_object: str | None = None
+) -> str:
+    """Script text binding ``obj_var`` to the ``target_object``-named object in
+    ``doc_var`` via ``resolve_object`` (see ``_RESOLVE_OBJECT_SNIPPET`` — must
+    already be embedded earlier in the same script), raising a clear
+    ``RuntimeError`` — surfaced to the LLM as ``ok: false`` by
+    ``_run_freecad_script``'s existing failure path, the same way
+    ``apply_boolean``/``modify_parameter`` already report an unknown object —
+    rather than silently falling back to an arbitrary sibling when
+    ``target_object`` doesn't resolve.
+
+    Falls back to the legacy "first object nothing references" heuristic
+    only when no ``target_object`` is given at all — still correct for the
+    one-object-per-file case some internal callers use (e.g.
+    ``batch_pattern_array``'s own bounding-box read, which has no name to
+    give).
+    """
+    if target_object:
+        return (
+            f"{obj_var} = resolve_object({doc_var}, {target_object!r})\n"
+            f"if {obj_var} is None:\n"
+            f'    raise RuntimeError("Object not found: " + {target_object!r})\n'
+        )
+    return f"{obj_var} = next((o for o in {doc_var}.Objects if not o.InList), {doc_var}.Objects[-1])\n"
+
+
 def _session_document_path() -> Path:
     """The shared ``Session_Active.FCStd`` path — see ``_SESSION_DOCUMENT_NAME``'s
     module-level comment. Same ``freecad_output/`` directory every other
@@ -1238,8 +1293,9 @@ _EXPORT_STL_SCRIPT = """\
 import FreeCAD as App
 import Mesh
 
+""" + _RESOLVE_OBJECT_SNIPPET + """\
 doc = App.openDocument({source_path!r})
-Mesh.export(list(doc.Objects), {out_path!r})
+{lookup}Mesh.export({export_targets}, {out_path!r})
 print("{marker} path=" + {out_path!r})
 """
 
@@ -1309,9 +1365,9 @@ _DEFAULT_EDGE_NAME: dict[str, str] = {"fillet": "Fillet", "chamfer": "Chamfer"}
 _EDGE_OP_WHOLE_SCRIPT = """\
 import FreeCAD as App
 
+""" + _RESOLVE_OBJECT_SNIPPET + """\
 base_doc = App.openDocument({target_path!r})
-base_obj = next((o for o in base_doc.Objects if not o.InList), base_doc.Objects[-1])
-
+{lookup}
 doc = App.newDocument("DanaModel")
 copied = doc.copyObject(base_obj, False)
 target_indices = list(range(1, len(copied.Shape.Edges) + 1))
@@ -1334,9 +1390,9 @@ print("{marker} path=" + {out_path!r})
 _EDGE_OP_FACE_SCRIPT = """\
 import FreeCAD as App
 
+""" + _RESOLVE_OBJECT_SNIPPET + """\
 base_doc = App.openDocument({target_path!r})
-base_obj = next((o for o in base_doc.Objects if not o.InList), base_doc.Objects[-1])
-
+{lookup}
 doc = App.newDocument("DanaModel")
 copied = doc.copyObject(base_obj, False)
 
@@ -1368,6 +1424,7 @@ def apply_edge_operation(
     value: float,
     face_centroid: tuple[float, float, float] | None = None,
     name: str | None = None,
+    target_object: str | None = None,
 ) -> str:
     """Round (``"fillet"``) or bevel (``"chamfer"``) the edges of a
     previously-created solid.
@@ -1378,6 +1435,9 @@ def apply_edge_operation(
     the edges bounding the face nearest that point are targeted, found
     against FreeCAD's exact BRep geometry (no raycasting against the
     tessellated display mesh).
+
+    ``target_object``, when given, is resolved via Multi-Stage Object
+    Resolution — see ``get_bounding_box``'s matching note.
     """
     op = (operation or "").strip().lower()
     if op not in _EDGE_FEATURE_TYPE:
@@ -1404,6 +1464,7 @@ def apply_edge_operation(
             face_targeted=face_targeted,
         )
     out_path = _output_path(resolved_name, ext="FCStd")
+    lookup = _object_lookup_snippet(obj_var="base_obj", doc_var="base_doc", target_object=target_object)
     if face_targeted:
         cx, cy, cz = (float(face_centroid[0]), float(face_centroid[1]), float(face_centroid[2]))
         script = _EDGE_OP_FACE_SCRIPT.format(
@@ -1416,6 +1477,7 @@ def apply_edge_operation(
             cz=cz,
             out_path=str(out_path),
             marker=_OK_MARKER,
+            lookup=lookup,
         )
     else:
         script = _EDGE_OP_WHOLE_SCRIPT.format(
@@ -1425,6 +1487,7 @@ def apply_edge_operation(
             value=value_f,
             out_path=str(out_path),
             marker=_OK_MARKER,
+            lookup=lookup,
         )
     result = _run_freecad_script(script)
     if not result["ok"]:
@@ -1553,17 +1616,23 @@ def modify_parameter(
 _GET_BOUNDING_BOX_SCRIPT = """\
 import FreeCAD as App
 
+""" + _RESOLVE_OBJECT_SNIPPET + """\
 doc = App.openDocument({target_path!r})
-obj = next((o for o in doc.Objects if not o.InList), doc.Objects[-1])
-""" + _BBOX_PRINT + """\
+{lookup}""" + _BBOX_PRINT + """\
 print("{marker} path=" + {target_path!r})
 """
 
 
-def get_bounding_box(target_path: str) -> str:
+def get_bounding_box(target_path: str, target_object: str | None = None) -> str:
     """Read-only: the physical bounding box of a previously-created object,
     in mm. Never saves — a query, not a mutation, so it never needs the
     HITL approval gate the create_*/apply_* mutators do.
+
+    ``target_object``, when given, is resolved via Multi-Stage Object
+    Resolution (exact Name, then Label, then case-insensitive Name) rather
+    than the legacy "first object nothing references" heuristic — required
+    once ``target_path`` can point at a shared multi-object session
+    document rather than a dedicated one-object-per-file document.
     """
     target = Path(target_path)
     if not target.is_file():
@@ -1573,7 +1642,11 @@ def get_bounding_box(target_path: str) -> str:
             "get_bounding_box", path=str(target),
             x_min=0.0, y_min=0.0, z_min=0.0, x_max=0.0, y_max=0.0, z_max=0.0,
         )
-    script = _GET_BOUNDING_BOX_SCRIPT.format(target_path=str(target), marker=_OK_MARKER)
+    script = _GET_BOUNDING_BOX_SCRIPT.format(
+        target_path=str(target),
+        marker=_OK_MARKER,
+        lookup=_object_lookup_snippet(target_object=target_object),
+    )
     result = _run_freecad_script(script, require_marker=True)
     if not result["ok"]:
         return _error(f"get_bounding_box failed: {result['error']}")
@@ -1593,9 +1666,9 @@ def get_bounding_box(target_path: str) -> str:
 _INSPECT_SPATIAL_SCRIPT = """\
 import FreeCAD as App
 
+""" + _RESOLVE_OBJECT_SNIPPET + """\
 doc = App.openDocument({target_path!r})
-obj = next((o for o in doc.Objects if not o.InList), doc.Objects[-1])
-shape = obj.Shape
+{lookup}shape = obj.Shape
 com = shape.CenterOfMass
 print("{marker}_SPATIAL " + str([
     shape.Volume, shape.Area, com.x, com.y, com.z,
@@ -1606,7 +1679,7 @@ print("{marker} path=" + {target_path!r})
 """
 
 
-def inspect_spatial_properties(target_path: str) -> str:
+def inspect_spatial_properties(target_path: str, target_object: str | None = None) -> str:
     """Read-only: richer topology introspection than ``get_bounding_box`` —
     solid volume, surface area, center of mass, validity, and face/edge/
     vertex counts for a previously-created object. Never saves, so — like
@@ -1616,6 +1689,9 @@ def inspect_spatial_properties(target_path: str) -> str:
     Lets a caller (the LLM, mid-ReAct-loop) "look before it leaps": check
     edge/face count and validity before a risky fillet/chamfer/boolean
     rather than only discovering geometric infeasibility after the fact.
+
+    ``target_object``, when given, is resolved via Multi-Stage Object
+    Resolution — see ``get_bounding_box``'s matching note.
     """
     target = Path(target_path)
     if not target.is_file():
@@ -1632,7 +1708,11 @@ def inspect_spatial_properties(target_path: str) -> str:
             edge_count=0,
             vertex_count=0,
         )
-    script = _INSPECT_SPATIAL_SCRIPT.format(target_path=str(target), marker=_OK_MARKER)
+    script = _INSPECT_SPATIAL_SCRIPT.format(
+        target_path=str(target),
+        marker=_OK_MARKER,
+        lookup=_object_lookup_snippet(target_object=target_object),
+    )
     result = _run_freecad_script(script, require_marker=True)
     if not result["ok"]:
         return _error(f"inspect_spatial_properties failed: {result['error']}")
@@ -1656,9 +1736,9 @@ _ALIGNMENT_TYPES = frozenset({"top_center", "bottom_center", "flush_left", "flus
 _ALIGN_APPLY_SCRIPT = """\
 import FreeCAD as App
 
+""" + _RESOLVE_OBJECT_SNIPPET + """\
 doc = App.openDocument({source_path!r})
-obj = next((o for o in doc.Objects if not o.InList), doc.Objects[-1])
-obj.Placement.Base = obj.Placement.Base + App.Vector({dx}, {dy}, {dz})
+{lookup}obj.Placement.Base = obj.Placement.Base + App.Vector({dx}, {dy}, {dz})
 doc.recompute()
 doc.save()
 print("{marker}_PLACEMENT " + str([obj.Placement.Base.x, obj.Placement.Base.y, obj.Placement.Base.z]))
@@ -1702,7 +1782,13 @@ def _alignment_delta(
     raise ValueError(f"unknown alignment_type: {alignment_type}")
 
 
-def align_objects(source_path: str, target_path: str, alignment_type: str) -> str:
+def align_objects(
+    source_path: str,
+    target_path: str,
+    alignment_type: str,
+    source_object: str | None = None,
+    target_object: str | None = None,
+) -> str:
     """Snap ``source_path``'s object directly to ``target_path``'s
     bounding box (``alignment_type`` one of ``top_center``/``bottom_center``/
     ``flush_left``/``flush_right``) by translating the source object's
@@ -1711,6 +1797,12 @@ def align_objects(source_path: str, target_path: str, alignment_type: str) -> st
     creating a new feature. Reads both bounding boxes via
     ``get_bounding_box`` (plain Python delta math, no FreeCAD needed for
     that part) before touching FreeCAD at all.
+
+    ``source_object``/``target_object``, when given, are resolved via
+    Multi-Stage Object Resolution rather than the legacy heuristic —
+    required once ``source_path``/``target_path`` can be the SAME shared
+    session document (two distinct objects can no longer be told apart by
+    path alone in that case).
     """
     align = (alignment_type or "").strip().lower()
     if align not in _ALIGNMENT_TYPES:
@@ -1725,10 +1817,10 @@ def align_objects(source_path: str, target_path: str, alignment_type: str) -> st
     if not target.is_file():
         return _error(f"align_objects: target_path not found: {target_path}")
 
-    source_bbox = json.loads(get_bounding_box(str(source)))
+    source_bbox = json.loads(get_bounding_box(str(source), target_object=source_object))
     if not source_bbox.get("ok"):
         return _error(f"align_objects: failed to read source bounding box: {source_bbox.get('error')}")
-    target_bbox = json.loads(get_bounding_box(str(target)))
+    target_bbox = json.loads(get_bounding_box(str(target), target_object=target_object))
     if not target_bbox.get("ok"):
         return _error(f"align_objects: failed to read target bounding box: {target_bbox.get('error')}")
 
@@ -1738,7 +1830,12 @@ def align_objects(source_path: str, target_path: str, alignment_type: str) -> st
         return _dry_run_result("align_objects", alignment_type=align, path=str(source), delta=[dx, dy, dz])
 
     script = _ALIGN_APPLY_SCRIPT.format(
-        source_path=str(source), dx=dx, dy=dy, dz=dz, marker=_OK_MARKER
+        source_path=str(source),
+        dx=dx,
+        dy=dy,
+        dz=dz,
+        marker=_OK_MARKER,
+        lookup=_object_lookup_snippet(target_object=source_object),
     )
     result = _run_freecad_script(script)
     if not result["ok"]:
@@ -1809,7 +1906,12 @@ def _mate_delta(
 
 
 def create_assembly_mate(
-    fixed_path: str, moving_path: str, mate_type: str, mate_params: dict[str, Any] | None = None
+    fixed_path: str,
+    moving_path: str,
+    mate_type: str,
+    mate_params: dict[str, Any] | None = None,
+    fixed_object: str | None = None,
+    moving_object: str | None = None,
 ) -> str:
     """Position ``moving_path``'s object relative to ``fixed_path``'s
     object as a named kinematic mate (``mate_type`` one of ``concentric``/
@@ -1822,6 +1924,9 @@ def create_assembly_mate(
     reuses ``align_objects``'s own apply script verbatim — a mate and an
     alignment are the same FreeCAD operation (translate + save), they only
     differ in how the delta gets computed.
+
+    ``fixed_object``/``moving_object``, when given, are resolved via
+    Multi-Stage Object Resolution — see ``align_objects``'s matching note.
     """
     mt = (mate_type or "").strip().lower()
     if mt not in _MATE_TYPES:
@@ -1836,10 +1941,10 @@ def create_assembly_mate(
         return _error(f"create_assembly_mate: moving_path not found: {moving_path}")
 
     params = dict(mate_params or {})
-    fixed_bbox = json.loads(get_bounding_box(str(fixed)))
+    fixed_bbox = json.loads(get_bounding_box(str(fixed), target_object=fixed_object))
     if not fixed_bbox.get("ok"):
         return _error(f"create_assembly_mate: failed to read fixed object's bounding box: {fixed_bbox.get('error')}")
-    moving_bbox = json.loads(get_bounding_box(str(moving)))
+    moving_bbox = json.loads(get_bounding_box(str(moving), target_object=moving_object))
     if not moving_bbox.get("ok"):
         return _error(f"create_assembly_mate: failed to read moving object's bounding box: {moving_bbox.get('error')}")
 
@@ -1851,7 +1956,14 @@ def create_assembly_mate(
     if is_dry_run_enabled():
         return _dry_run_result("create_assembly_mate", mate_type=mt, path=str(moving), delta=[dx, dy, dz])
 
-    script = _ALIGN_APPLY_SCRIPT.format(source_path=str(moving), dx=dx, dy=dy, dz=dz, marker=_OK_MARKER)
+    script = _ALIGN_APPLY_SCRIPT.format(
+        source_path=str(moving),
+        dx=dx,
+        dy=dy,
+        dz=dz,
+        marker=_OK_MARKER,
+        lookup=_object_lookup_snippet(target_object=moving_object),
+    )
     result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"create_assembly_mate failed: {result['error']}")
@@ -2006,10 +2118,20 @@ def create_pipe(
     )
 
 
-def export_mesh_stl(source_path: str, name: str | None = None) -> str:
-    """Tessellate every object in ``source_path`` (a ``.FCStd`` document)
-    into a standalone ``.stl`` mesh file — the hand-off format for
-    ``gr.Model3D`` viewers that can't load native FreeCAD documents.
+def export_mesh_stl(source_path: str, name: str | None = None, target_object: str | None = None) -> str:
+    """Tessellate ``source_path`` (a ``.FCStd`` document) into a standalone
+    ``.stl`` mesh file — the hand-off format for ``gr.Model3D`` viewers
+    that can't load native FreeCAD documents.
+
+    ``target_object``, when given, tessellates ONLY that resolved object
+    (Multi-Stage Object Resolution — see ``get_bounding_box``'s matching
+    note) rather than every object in the document — required once
+    ``source_path`` can be a shared multi-object session document, where
+    exporting ``list(doc.Objects)`` would silently bundle in unrelated
+    sibling objects (and, after a Boolean, its already-consumed Base/Tool
+    inputs) alongside the one the caller actually meant. Without it, every
+    object in the document is exported — unchanged legacy behavior for
+    callers that don't have a specific object name to give.
     """
     source = Path(source_path)
     if not source.is_file():
@@ -2018,7 +2140,11 @@ def export_mesh_stl(source_path: str, name: str | None = None) -> str:
         return _dry_run_result("export_mesh_stl", source_path=str(source))
     out_path = _output_path(name or source.stem, ext="stl")
     script = _EXPORT_STL_SCRIPT.format(
-        source_path=str(source), out_path=str(out_path), marker=_OK_MARKER
+        source_path=str(source),
+        out_path=str(out_path),
+        marker=_OK_MARKER,
+        lookup=_object_lookup_snippet(target_object=target_object) if target_object else "",
+        export_targets="[obj]" if target_object else "list(doc.Objects)",
     )
     result = _run_freecad_script(script)
     if not result["ok"]:
@@ -2036,10 +2162,17 @@ _EXPORT_MODEL_STL_SCRIPT = """\
 import FreeCAD as App
 import Mesh
 
+""" + _RESOLVE_OBJECT_SNIPPET + """\
 objects = []
-for p in {target_paths!r}:
+for p, n in {target_specs!r}:
     d = App.openDocument(p)
-    objects.append(next((o for o in d.Objects if not o.InList), d.Objects[-1]))
+    if n:
+        o = resolve_object(d, n)
+        if o is None:
+            raise RuntimeError("Object not found: " + n)
+    else:
+        o = next((x for x in d.Objects if not x.InList), d.Objects[-1])
+    objects.append(o)
 
 Mesh.export(objects, {out_path!r})
 print("{marker} path=" + {out_path!r})
@@ -2049,22 +2182,38 @@ _EXPORT_MODEL_STEP_SCRIPT = """\
 import FreeCAD as App
 import Part
 
+""" + _RESOLVE_OBJECT_SNIPPET + """\
 objects = []
-for p in {target_paths!r}:
+for p, n in {target_specs!r}:
     d = App.openDocument(p)
-    objects.append(next((o for o in d.Objects if not o.InList), d.Objects[-1]))
+    if n:
+        o = resolve_object(d, n)
+        if o is None:
+            raise RuntimeError("Object not found: " + n)
+    else:
+        o = next((x for x in d.Objects if not x.InList), d.Objects[-1])
+    objects.append(o)
 
 Part.export(objects, {out_path!r})
 print("{marker} path=" + {out_path!r})
 """
 
 
-def export_model(target_paths: list[str], format: str, filename: str) -> str:
+def export_model(
+    target_paths: list[str], format: str, filename: str, target_objects: list[str] | None = None
+) -> str:
     """Export one or more previously-created objects together into a single
     named ``.stl`` (3D printing) or ``.step`` (external CAD interchange)
-    file under ``_EXPORT_DIR`` — only each document's primary (non-consumed)
-    object is exported, not every helper object a Boolean/Sweep/Fillet
-    result's document happens to also contain.
+    file under ``_EXPORT_DIR`` — only each requested object is exported,
+    not every helper object a Boolean/Sweep/Fillet result's document (or a
+    shared multi-object session document) happens to also contain.
+
+    ``target_objects``, when given, must be the same length as
+    ``target_paths`` — the object at each index is resolved via
+    Multi-Stage Object Resolution (see ``get_bounding_box``'s matching
+    note) within that index's document. A ``None``/missing entry (or
+    omitting ``target_objects`` entirely) falls back to the legacy "first
+    object nothing references" heuristic for that path.
     """
     fmt = (format or "").strip().lower()
     if fmt not in _EXPORT_FORMAT_EXT:
@@ -2075,6 +2224,7 @@ def export_model(target_paths: list[str], format: str, filename: str) -> str:
     missing = [str(p) for p in paths if not p.is_file()]
     if missing:
         return _error(f"export_model: target path(s) not found: {missing}")
+    names = list(target_objects or [])
 
     ext = _EXPORT_FORMAT_EXT[fmt]
     safe_name = _safe_name(filename or "export")
@@ -2085,9 +2235,11 @@ def export_model(target_paths: list[str], format: str, filename: str) -> str:
     _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = _EXPORT_DIR / f"{safe_name}.{ext}"
     template = _EXPORT_MODEL_STL_SCRIPT if fmt == "stl" else _EXPORT_MODEL_STEP_SCRIPT
-    script = template.format(
-        target_paths=[str(p) for p in paths], out_path=str(out_path), marker=_OK_MARKER
-    )
+    target_specs = [
+        (str(p), (names[i].strip() if i < len(names) and names[i] else None))
+        for i, p in enumerate(paths)
+    ]
+    script = template.format(target_specs=target_specs, out_path=str(out_path), marker=_OK_MARKER)
     result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"export_model failed: {result['error']}")

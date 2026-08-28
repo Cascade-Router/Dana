@@ -252,7 +252,13 @@ class MockFreeCADEngine(BaseCADEngine):
         value: float,
         face_centroid: tuple[float, float, float] | None = None,
         name: str | None = None,
+        target_object: str | None = None,
     ) -> dict[str, Any]:
+        # target_object is accepted for interface parity with the real
+        # engine but unused here: every mock object already lives in its
+        # OWN dedicated mesh file (see _MOCK_OBJECT_REGISTRY), so
+        # target_path alone is never ambiguous the way a shared
+        # Session_Active.FCStd path can be for the real FreeCAD driver.
         import trimesh
 
         op = (operation or "").strip().lower()
@@ -394,7 +400,10 @@ class MockFreeCADEngine(BaseCADEngine):
             "note": _MOCK_NOTE_CAD,
         }
 
-    def export_mesh_stl(self, source_path: str, name: str | None = None) -> dict[str, Any]:
+    def export_mesh_stl(
+        self, source_path: str, name: str | None = None, target_object: str | None = None
+    ) -> dict[str, Any]:
+        # target_object unused — see apply_edge_operation's matching note.
         import trimesh
 
         source = Path(source_path)
@@ -456,7 +465,8 @@ class MockFreeCADEngine(BaseCADEngine):
             "note": f"{_MOCK_NOTE_CAD}; parameter not geometrically applied, returned target unmodified",
         }
 
-    def get_bounding_box(self, target_path: str) -> dict[str, Any]:
+    def get_bounding_box(self, target_path: str, target_object: str | None = None) -> dict[str, Any]:
+        # target_object unused — see apply_edge_operation's matching note.
         import trimesh
 
         target = Path(target_path)
@@ -477,7 +487,8 @@ class MockFreeCADEngine(BaseCADEngine):
             "note": _MOCK_NOTE_CAD,
         }
 
-    def inspect_spatial_properties(self, target_path: str) -> dict[str, Any]:
+    def inspect_spatial_properties(self, target_path: str, target_object: str | None = None) -> dict[str, Any]:
+        # target_object unused — see apply_edge_operation's matching note.
         import trimesh
 
         target = Path(target_path)
@@ -566,7 +577,15 @@ class MockFreeCADEngine(BaseCADEngine):
             "note": f"{_MOCK_NOTE_CAD}; arc sweep not geometrically simulated, returned a placeholder",
         }
 
-    def align_objects(self, source_path: str, target_path: str, alignment_type: str) -> dict[str, Any]:
+    def align_objects(
+        self,
+        source_path: str,
+        target_path: str,
+        alignment_type: str,
+        source_object: str | None = None,
+        target_object: str | None = None,
+    ) -> dict[str, Any]:
+        # source_object/target_object unused — see apply_edge_operation's matching note.
         import trimesh
 
         align = (alignment_type or "").strip().lower()
@@ -624,7 +643,10 @@ class MockFreeCADEngine(BaseCADEngine):
         moving_path: str,
         mate_type: str,
         mate_params: dict[str, Any] | None = None,
+        fixed_object: str | None = None,
+        moving_object: str | None = None,
     ) -> dict[str, Any]:
+        # fixed_object/moving_object unused — see apply_edge_operation's matching note.
         import trimesh
 
         # Reuses the real engine's pure delta-math helper directly — same
@@ -787,7 +809,14 @@ class MockFreeCADEngine(BaseCADEngine):
             "note": _MOCK_NOTE_CAD,
         }
 
-    def export_model(self, target_paths: list[str], format: str, filename: str) -> dict[str, Any]:
+    def export_model(
+        self,
+        target_paths: list[str],
+        format: str,
+        filename: str,
+        target_objects: list[str] | None = None,
+    ) -> dict[str, Any]:
+        # target_objects unused — see apply_edge_operation's matching note.
         fmt = (format or "").strip().lower()
         if fmt not in ("stl", "step"):
             return {"ok": False, "error": f"export_model: unknown format '{format}' — must be stl or step"}

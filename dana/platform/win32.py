@@ -120,11 +120,14 @@ class RealFreeCADEngine(BaseCADEngine):
         value: float,
         face_centroid: tuple[float, float, float] | None = None,
         name: str | None = None,
+        target_object: str | None = None,
     ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
         return json.loads(
-            engine.apply_edge_operation(operation, target_path, value, face_centroid=face_centroid, name=name)
+            engine.apply_edge_operation(
+                operation, target_path, value, face_centroid=face_centroid, name=name, target_object=target_object
+            )
         )
 
     def create_extrusion(
@@ -164,10 +167,12 @@ class RealFreeCADEngine(BaseCADEngine):
             engine.create_star_prism(points, outer_radius, inner_radius, height, name, placement=placement)
         )
 
-    def export_mesh_stl(self, source_path: str, name: str | None = None) -> dict[str, Any]:
+    def export_mesh_stl(
+        self, source_path: str, name: str | None = None, target_object: str | None = None
+    ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.export_mesh_stl(source_path, name))
+        return json.loads(engine.export_mesh_stl(source_path, name, target_object=target_object))
 
     def modify_parameter(
         self, target_object: str, parameter_name: str, new_value: float | Sequence[float]
@@ -176,15 +181,15 @@ class RealFreeCADEngine(BaseCADEngine):
 
         return json.loads(engine.modify_parameter(target_object, parameter_name, new_value))
 
-    def get_bounding_box(self, target_path: str) -> dict[str, Any]:
+    def get_bounding_box(self, target_path: str, target_object: str | None = None) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.get_bounding_box(target_path))
+        return json.loads(engine.get_bounding_box(target_path, target_object=target_object))
 
-    def inspect_spatial_properties(self, target_path: str) -> dict[str, Any]:
+    def inspect_spatial_properties(self, target_path: str, target_object: str | None = None) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.inspect_spatial_properties(target_path))
+        return json.loads(engine.inspect_spatial_properties(target_path, target_object=target_object))
 
     def create_pipe(
         self,
@@ -200,15 +205,32 @@ class RealFreeCADEngine(BaseCADEngine):
             engine.create_pipe(pipe_radius, path_type, length_or_angle, name, placement=placement)
         )
 
-    def align_objects(self, source_path: str, target_path: str, alignment_type: str) -> dict[str, Any]:
+    def align_objects(
+        self,
+        source_path: str,
+        target_path: str,
+        alignment_type: str,
+        source_object: str | None = None,
+        target_object: str | None = None,
+    ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.align_objects(source_path, target_path, alignment_type))
+        return json.loads(
+            engine.align_objects(
+                source_path, target_path, alignment_type, source_object=source_object, target_object=target_object
+            )
+        )
 
-    def export_model(self, target_paths: list[str], format: str, filename: str) -> dict[str, Any]:
+    def export_model(
+        self,
+        target_paths: list[str],
+        format: str,
+        filename: str,
+        target_objects: list[str] | None = None,
+    ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.export_model(target_paths, format, filename))
+        return json.loads(engine.export_model(target_paths, format, filename, target_objects=target_objects))
 
     def create_assembly_mate(
         self,
@@ -216,10 +238,16 @@ class RealFreeCADEngine(BaseCADEngine):
         moving_path: str,
         mate_type: str,
         mate_params: dict[str, Any] | None = None,
+        fixed_object: str | None = None,
+        moving_object: str | None = None,
     ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.create_assembly_mate(fixed_path, moving_path, mate_type, mate_params))
+        return json.loads(
+            engine.create_assembly_mate(
+                fixed_path, moving_path, mate_type, mate_params, fixed_object=fixed_object, moving_object=moving_object
+            )
+        )
 
     def create_sketch_extrude(
         self,

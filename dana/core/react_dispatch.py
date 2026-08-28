@@ -844,7 +844,12 @@ def _tool_perform_freecad_edge_operation(args: dict[str, Any], engine: Any, _cp:
         face_centroid = None
 
     return engine.apply_edge_operation(
-        operation, target_path, value, face_centroid=face_centroid, name=str(args.get("name") or "").strip() or None
+        operation,
+        target_path,
+        value,
+        face_centroid=face_centroid,
+        name=str(args.get("name") or "").strip() or None,
+        target_object=target_name,
     )
 
 
@@ -918,7 +923,7 @@ def _tool_get_freecad_bounding_box(args: dict[str, Any], engine: Any, _cp: Any) 
             "ok": False,
             "error": f"unknown target_object '{target_name}' — create it first with a create_freecad_* tool",
         }
-    return engine.get_bounding_box(target_path)
+    return engine.get_bounding_box(target_path, target_object=target_name)
 
 
 def _tool_inspect_spatial_properties(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
@@ -931,7 +936,7 @@ def _tool_inspect_spatial_properties(args: dict[str, Any], engine: Any, _cp: Any
             "ok": False,
             "error": f"unknown target_object '{target_name}' — create it first with a create_freecad_* tool",
         }
-    return engine.inspect_spatial_properties(target_path)
+    return engine.inspect_spatial_properties(target_path, target_object=target_name)
 
 
 def _bbox_overlap(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
@@ -967,10 +972,10 @@ def _tool_analyze_bounding_box_collisions(args: dict[str, Any], engine: Any, _cp
     if not path_b:
         return {"ok": False, "error": f"unknown object_b '{name_b}' — create it first with a create_freecad_* tool"}
 
-    bbox_a = engine.get_bounding_box(path_a)
+    bbox_a = engine.get_bounding_box(path_a, target_object=name_a)
     if not bbox_a.get("ok"):
         return {"ok": False, "error": f"failed to read {name_a}'s bounding box: {bbox_a.get('error')}"}
-    bbox_b = engine.get_bounding_box(path_b)
+    bbox_b = engine.get_bounding_box(path_b, target_object=name_b)
     if not bbox_b.get("ok"):
         return {"ok": False, "error": f"failed to read {name_b}'s bounding box: {bbox_b.get('error')}"}
     return {"ok": True, "object_a": name_a, "object_b": name_b, **_bbox_overlap(bbox_a, bbox_b)}
@@ -1027,7 +1032,9 @@ def _tool_align_freecad_objects(args: dict[str, Any], engine: Any, _cp: Any) -> 
             "ok": False,
             "error": f"unknown target_object '{target_name}' — create it first with a create_freecad_* tool",
         }
-    return engine.align_objects(source_path, target_path, alignment_type)
+    return engine.align_objects(
+        source_path, target_path, alignment_type, source_object=source_name, target_object=target_name
+    )
 
 
 _MATE_TYPES = frozenset({"concentric", "coincident_planar", "offset_axial"})
@@ -1061,7 +1068,9 @@ def _tool_create_assembly_mate(args: dict[str, Any], engine: Any, _cp: Any) -> d
     mate_params = args.get("mate_params")
     if not isinstance(mate_params, dict):
         mate_params = {}
-    return engine.create_assembly_mate(fixed_path, moving_path, mate_type, mate_params)
+    return engine.create_assembly_mate(
+        fixed_path, moving_path, mate_type, mate_params, fixed_object=fixed_name, moving_object=moving_name
+    )
 
 
 _EXPORT_FORMATS = frozenset({"stl", "step"})
@@ -1079,6 +1088,7 @@ def _tool_export_freecad_model(args: dict[str, Any], engine: Any, _cp: Any) -> d
         return {"ok": False, "error": "export_freecad_model requires filename"}
 
     target_paths = []
+    resolved_names = []
     for raw_name in target_names:
         name = str(raw_name).strip()
         path = _OBJECT_PATH_REGISTRY.get(name)
@@ -1088,8 +1098,9 @@ def _tool_export_freecad_model(args: dict[str, Any], engine: Any, _cp: Any) -> d
                 "error": f"unknown target object '{name}' — create it first with a create_freecad_* tool",
             }
         target_paths.append(path)
+        resolved_names.append(name)
 
-    return engine.export_model(target_paths, export_format, filename)
+    return engine.export_model(target_paths, export_format, filename, target_objects=resolved_names)
 
 
 # Mirrors techdraw_export._DEFAULT_VIEWS — kept as a plain literal here
