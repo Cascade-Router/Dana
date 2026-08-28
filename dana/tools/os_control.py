@@ -842,26 +842,107 @@ def capture_screen_png_bytes() -> bytes:
         return buf.getvalue()
 
 
-def capture_window_png_bytes(hwnd: int) -> bytes:
-    """Grab only ``hwnd``'s on-screen region as PNG bytes via mss + Pillow.
+# PW_RENDERFULLCONTENT — added in Windows 8.1, needed for windows that use
+# DirectComposition/hardware-accelerated content (the plain PrintWindow(0)
+# flag often produces a blank/black result for those otherwise).
+_PW_RENDERFULLCONTENT = 0x00000002
+# A rendered CAD/UI window has real pixel variance (toolbars, a 3D viewport,
+# text); a PrintWindow call that silently produced nothing comes back as a
+# single flat color. Below this stddev (over a 0-255 grayscale channel), the
+# result is treated as "PrintWindow didn't actually render anything" rather
+# than trusted at face value.
+_BLANK_CAPTURE_STDDEV_THRESHOLD = 1.0
 
-    Uses ``get_window_rect`` rather than a full-monitor capture — this is
-    what lets a zero-focus workflow verify a window's contents regardless
-    of whether it's focused, in the background, or on a secondary monitor,
-    as long as nothing else is drawn on top of it.
+
+def _capture_window_via_printwindow(hwnd: int, width: int, height: int) -> Any | None:
+    """Best-effort: ``hwnd``'s own rendered content via ``user32.PrintWindow``
+    — the window paints ITSELF into an offscreen bitmap on request, so this
+    works regardless of Z-order or on-screen occlusion (another window, even
+    a fullscreen game, sitting visually on top of it doesn't matter at all)
+    and never touches focus/activation/Z-order — unlike a
+    ``SetForegroundWindow`` "flick", which risks silently no-op'ing under
+    Windows' foreground-lock rules, and — worse — can kick an occluding
+    EXCLUSIVE-fullscreen app (a game) out of that mode with no clean way to
+    restore it, for a real UX disruption in exchange for an unreliable fix.
+
+    Returns a Pillow ``Image`` or ``None`` (never raises) if ``PrintWindow``
+    itself reports failure, or its result looks blank — some GPU-accelerated
+    window content still doesn't come through this API even with
+    ``PW_RENDERFULLCONTENT``, so this is verified, not just assumed.
     """
-    import mss
-    from PIL import Image
+    if width <= 0 or height <= 0:
+        return None
+    try:
+        import win32con
+        import win32gui
+        import win32ui
+        from PIL import Image, ImageStat
+    except Exception:  # noqa: BLE001 — pywin32/Pillow unavailable is a caller-visible fallback, not a crash
+        return None
 
+    window_dc = mem_dc = save_dc = bitmap = None
+    try:
+        window_dc = win32gui.GetWindowDC(hwnd)
+        mem_dc = win32ui.CreateDCFromHandle(window_dc)
+        save_dc = mem_dc.CreateCompatibleDC()
+        bitmap = win32ui.CreateBitmap()
+        bitmap.CreateCompatibleBitmap(mem_dc, width, height)
+        save_dc.SelectObject(bitmap)
+
+        rendered = ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), _PW_RENDERFULLCONTENT)
+        if not rendered:
+            return None
+
+        info = bitmap.GetInfo()
+        bits = bitmap.GetBitmapBits(True)
+        img = Image.frombuffer(
+            "RGB", (info["bmWidth"], info["bmHeight"]), bits, "raw", "BGRX", 0, 1
+        )
+        if ImageStat.Stat(img.convert("L")).stddev[0] < _BLANK_CAPTURE_STDDEV_THRESHOLD:
+            return None
+        return img
+    except Exception:  # noqa: BLE001 — best-effort; any GDI failure just falls back to the region-grab
+        return None
+    finally:
+        if bitmap is not None:
+            win32gui.DeleteObject(bitmap.GetHandle())
+        if save_dc is not None:
+            save_dc.DeleteDC()
+        if mem_dc is not None:
+            mem_dc.DeleteDC()
+        if window_dc is not None:
+            win32gui.ReleaseDC(hwnd, window_dc)
+
+
+def capture_window_png_bytes(hwnd: int) -> bytes:
+    """Grab ``hwnd``'s own contents as PNG bytes — ``PrintWindow`` first (see
+    ``_capture_window_via_printwindow``: immune to Z-order/occlusion, never
+    touches focus), falling back to an on-screen region grab via mss +
+    Pillow (``get_window_rect``) only if that comes back empty/unsupported.
+
+    The mss fallback path is what lets a zero-focus workflow verify a
+    window's contents regardless of whether it's focused, in the
+    background, or on a secondary monitor, AS LONG AS nothing else is drawn
+    on top of it — the PrintWindow path above removes that last caveat for
+    windows it works on.
+    """
     left, top, right, bottom = get_window_rect(hwnd)
-    region = {"left": left, "top": top, "width": max(1, right - left), "height": max(1, bottom - top)}
-    with mss.mss() as sct:
-        shot = sct.grab(region)
-        img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-        img.thumbnail((1280, 720))
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue()
+    width, height = max(1, right - left), max(1, bottom - top)
+
+    img = _capture_window_via_printwindow(hwnd, width, height)
+    if img is None:
+        import mss
+        from PIL import Image
+
+        region = {"left": left, "top": top, "width": width, "height": height}
+        with mss.mss() as sct:
+            shot = sct.grab(region)
+            img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+
+    img.thumbnail((1280, 720))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def get_secondary_monitor() -> dict[str, int] | None:
