@@ -24,7 +24,26 @@ from dana.tools.os_control import (
     get_active_windows,
 )
 
-_CAD_WINDOW_HINTS = ("autocad", "acad", "freecad")
+# Exact owning-process executable names, NOT a title substring — a title
+# substring match previously false-positived on any unrelated window whose
+# title text happens to mention one of these words (e.g. a code editor with
+# this repo open, whose title legitimately contains "freecad" from the
+# plugin path/file being edited — confirmed live matching a real "... -
+# Visual Studio Code" window instead of the actual FreeCAD.exe one). Same
+# fix/rationale as dana.platform.win32's _CAD_WINDOW_PROCESS_NAMES.
+_CAD_WINDOW_PROCESS_NAMES = frozenset({"freecad.exe", "acad.exe"})
+
+
+def _process_exe_name(pid: int) -> str:
+    """Best-effort: the owning process's executable filename, lowercased.
+    Returns "" if the pid is gone/inaccessible by the time we look it up —
+    never raises, since a window can close between EnumWindows and here."""
+    try:
+        import psutil
+
+        return (psutil.Process(pid).name() or "").lower()
+    except Exception:  # noqa: BLE001
+        return ""
 
 _BLUEPRINT_PROMPT = (
     "You are reading an AutoCAD viewport screenshot. Identify every visible "
@@ -39,8 +58,7 @@ _BLUEPRINT_PROMPT = (
 
 def _find_cad_window() -> dict[str, Any] | None:
     for win in get_active_windows():
-        title = str(win.get("title") or "").lower()
-        if any(hint in title for hint in _CAD_WINDOW_HINTS):
+        if _process_exe_name(int(win["pid"])) in _CAD_WINDOW_PROCESS_NAMES:
             return win
     return None
 

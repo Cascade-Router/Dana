@@ -67,6 +67,7 @@ from dana.platform import get_cad_engine, get_control_plane
 from dana.platform.factory import IS_HF_SPACE
 from dana.plugins.freecad.call_log import CadCallLog
 from dana.plugins.freecad.py_export import write_macro_script
+from dana.security.dry_run import is_dry_run_enabled
 from dana.plugins.os.desktop_vision import _capture_primary_monitor_jpeg_b64
 from dana.services.voice_service import VoiceService, VoiceState
 
@@ -694,6 +695,40 @@ async def _execute_and_continue(
             step = {"ok": False}
         if step.get("ok"):
             artifacts_registry.register_artifact(step["path"], format="step", source="generated")
+
+        # Automatic Visual Verification — headless, no live R3F/Tauri canvas
+        # needed (unlike take_canvas_screenshot, which requires that
+        # frontend round-trip and so cannot be silently auto-triggered
+        # mid-dispatch of an unrelated tool call). Screenshots the actual
+        # FreeCAD GUI window (already on-screen via _auto_show) and reads it
+        # back with a VLM, merged directly into THIS tool's own result
+        # payload — the next turn's next_react_turn call sees it as part of
+        # the same observation, no separate message/multimodal plumbing
+        # needed. Best-effort in both stages (capture, then VLM read): a
+        # missing/failed screenshot or unreachable/non-vision VLM must never
+        # fail the geometry operation itself — same "convenience miss, not a
+        # tool failure" philosophy dana.plugins.freecad.engine._auto_show
+        # and build_visual_inspection_result already use. Skipped entirely in
+        # dry-run mode (tests, CI) — same flag every other OS/FreeCAD-touching
+        # operation in this codebase already respects, so a test suite never
+        # triggers a real OS screen capture or a live vision-model HTTP call.
+        try:
+            if not is_dry_run_enabled():
+                import json as _json
+
+                from dana.tools.cad_vision import analyze_cad_blueprint, capture_cad_viewport
+
+                capture = await asyncio.to_thread(capture_cad_viewport)
+                if capture.get("ok") and capture.get("path"):
+                    result.payload["screenshot_path"] = capture["path"]
+                    analysis = _json.loads(await asyncio.to_thread(analyze_cad_blueprint, capture["path"]))
+                    result.payload["visual_verification"] = (
+                        analysis.get("summary")
+                        if analysis.get("ok")
+                        else f"screenshot captured but automatic visual analysis was unavailable: {analysis.get('error')}"
+                    )
+        except Exception:  # noqa: BLE001 — best-effort; a vision-pipeline failure here must never fail the turn
+            pass
     elif result.ok and call.tool_id == "export_freecad_model":
         # An explicit LLM-invoked export — same registry, so the Export
         # dropdown/Gradio "artifacts" endpoint see it alongside the

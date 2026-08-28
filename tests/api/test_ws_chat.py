@@ -54,6 +54,14 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch, *turns: list[ToolCall] | str) -> 
 def _mock_platform(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server_module, "get_cad_engine", lambda: MockFreeCADEngine())
     monkeypatch.setattr(server_module, "get_control_plane", lambda: MockControlPlane())
+    # _execute_and_continue's Automatic Visual Verification step reaches the
+    # real OS (a screen capture) and a real Ollama daemon (VLM analysis) on
+    # every successful CAD-mutating tool call, gated only by DANA_OS_DRY_RUN
+    # — without this, every test here that completes a create/modify/boolean
+    # tool would silently screenshot this machine's actual screen and make a
+    # real HTTP call, which is exactly what this file's own docstring says
+    # these protocol/wiring tests must never require.
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "1")
 
 
 # Captured once, before any test clears the live attribute below — the real
@@ -250,6 +258,60 @@ def test_hitl_always_approved_tools_skip_approval_entirely(
 
         tool_result = _drain_until(ws, "tool_result")
         assert tool_result["ok"] is True
+
+
+def test_cad_mutation_auto_injects_screenshot_and_visual_verification(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Automatic Visual Verification: a successful CAD-mutating tool call
+    must come back with screenshot_path/visual_verification merged into its
+    OWN result payload, with no separate tool call — dana.tools.cad_vision's
+    real capture/VLM functions are mocked here (never the real OS/network,
+    matching this whole file's design) and DANA_OS_DRY_RUN is explicitly
+    overridden to false for just this test so _execute_and_continue's own
+    gate doesn't skip the code path being tested."""
+    monkeypatch.setattr(server_module, "_HITL_ALWAYS_APPROVED_TOOLS", _REAL_HITL_ALWAYS_APPROVED_TOOLS)
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "0")
+    monkeypatch.setattr(
+        "dana.tools.cad_vision.capture_cad_viewport",
+        lambda: {"ok": True, "path": "/fake/last_cad_viewport.png", "window_found": True},
+    )
+    monkeypatch.setattr(
+        "dana.tools.cad_vision.analyze_cad_blueprint",
+        lambda *_a, **_k: '{"ok": true, "summary": "a single rectangular box, no visible defects"}',
+    )
+    _mock_llm(monkeypatch, [ToolCall(tool_id="create_freecad_box", arguments={"length": 10, "width": 10, "height": 10})])
+    with client.websocket_connect("/ws/chat") as ws:
+        ws.receive_json()  # ready
+        _activate_freecad(ws)
+        ws.send_json({"text": "build a small box"})
+
+        tool_result = _drain_until(ws, "tool_result")
+        assert tool_result["ok"] is True
+        assert tool_result["payload"]["screenshot_path"] == "/fake/last_cad_viewport.png"
+        assert tool_result["payload"]["visual_verification"] == "a single rectangular box, no visible defects"
+
+
+def test_cad_mutation_visual_verification_failure_does_not_fail_the_tool(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A capture/VLM failure is a convenience miss, not a tool failure — the
+    underlying create_freecad_box result must still report ok: true."""
+    monkeypatch.setattr(server_module, "_HITL_ALWAYS_APPROVED_TOOLS", _REAL_HITL_ALWAYS_APPROVED_TOOLS)
+    monkeypatch.setenv("DANA_OS_DRY_RUN", "0")
+    monkeypatch.setattr(
+        "dana.tools.cad_vision.capture_cad_viewport",
+        lambda: (_ for _ in ()).throw(RuntimeError("no display attached")),
+    )
+    _mock_llm(monkeypatch, [ToolCall(tool_id="create_freecad_box", arguments={"length": 10, "width": 10, "height": 10})])
+    with client.websocket_connect("/ws/chat") as ws:
+        ws.receive_json()  # ready
+        _activate_freecad(ws)
+        ws.send_json({"text": "build a small box"})
+
+        tool_result = _drain_until(ws, "tool_result")
+        assert tool_result["ok"] is True
+        assert "screenshot_path" not in tool_result["payload"]
 
 
 def test_hitl_whitelist_never_covers_script_execution_tools(

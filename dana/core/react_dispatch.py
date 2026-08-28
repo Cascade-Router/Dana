@@ -2385,10 +2385,25 @@ identical call that just failed. If you retry and get the EXACT SAME error a \
 second time, DO NOT try a third time — immediately stop, yield your turn, \
 and explain the terminal error to the user instead of guessing again (but \
 never silently continue as if it had worked).
-5. VISUALLY CONFIRM COMPLEX RESULTS. After assembling several mated parts, or \
-whenever you're not confident a sequence of edits looks right, call \
-`take_canvas_screenshot` to see the actual rendered result before telling \
-the user it's done or exporting it.
+5. AUTOMATIC VISUAL VERIFICATION — LOOK BEFORE YOU PROCEED. Every create_freecad_*/ \
+perform_freecad_*/modify_freecad_parameter/insert_standard_part/batch_pattern_array/ \
+align_freecad_objects/create_assembly_mate call that succeeds already comes back \
+with a `screenshot_path` (an auto-captured, headless screenshot of the live \
+FreeCAD window taken right after your edit) and a `visual_verification` text \
+summary read off that screenshot by a vision model — you do NOT need to call a \
+separate tool for this. After modifying geometry, look at `visual_verification` \
+to confirm the shape looks physically correct BEFORE proceeding to the next step \
+or telling the user it's done — never assume a numerically successful result \
+looks right on screen. If it describes something that contradicts what you \
+intended (wrong shape, a missing feature, an obviously wrong proportion), \
+investigate with `get_freecad_bounding_box`/`inspect_spatial_properties` or \
+correct it — don't ignore a visual mismatch just because the tool reported \
+`"ok": true`. If `visual_verification` instead reports the screenshot or its \
+analysis was unavailable, that's a convenience miss (no FreeCAD window visible, \
+no vision model reachable), not a failure — proceed on the numeric result as \
+before. `take_canvas_screenshot` is still available separately for an \
+interactive live view of the canvas on request (e.g. the user asks to see it) \
+— it needs the live 3D viewer and is not what the automatic check above uses.
 6. After creating or modifying solid geometry, ensure the object is recomputed \
 so the mesh pipeline exports the updated geometry.\
 """
