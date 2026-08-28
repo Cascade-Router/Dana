@@ -844,6 +844,32 @@ def _tool_perform_freecad_edge_operation(args: dict[str, Any], engine: Any, _cp:
     )
 
 
+# "Placement"/"Placement.Base" are the one dimensional-ish property that
+# isn't a bare number — a 3D translation — so modify_freecad_parameter
+# accepts a [x, y, z] vector for either spelling instead of requiring a
+# single float.
+_VECTOR_PARAMETER_NAMES = frozenset({"placement", "placement.base"})
+
+
+def _parse_vector_new_value(raw_value: Any) -> tuple[float, float, float] | None:
+    """Parse a 3-number vector from a ``[x, y, z]``/``(x, y, z)`` list-like
+    value or a JSON-array string such as ``"[30, 20, 10]"`` or
+    ``"[30,20,10]"``. Returns ``None`` on anything that isn't exactly three
+    numbers — never raises."""
+    components = raw_value
+    if isinstance(components, str):
+        try:
+            components = json.loads(components)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(components, (list, tuple)) or len(components) != 3:
+        return None
+    try:
+        return (float(components[0]), float(components[1]), float(components[2]))
+    except (TypeError, ValueError):
+        return None
+
+
 def _tool_modify_freecad_parameter(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
     target_name = str(args.get("target_object") or "").strip()
     if not target_name:
@@ -857,10 +883,23 @@ def _tool_modify_freecad_parameter(args: dict[str, Any], engine: Any, _cp: Any) 
     parameter_name = str(args.get("parameter_name") or "").strip()
     if not parameter_name:
         return {"ok": False, "error": "modify_freecad_parameter requires parameter_name"}
-    try:
-        new_value = float(args.get("new_value"))
-    except (TypeError, ValueError):
-        return {"ok": False, "error": "modify_freecad_parameter requires a numeric new_value"}
+    raw_value = args.get("new_value")
+    if parameter_name.lower() in _VECTOR_PARAMETER_NAMES:
+        vector = _parse_vector_new_value(raw_value)
+        if vector is None:
+            return {
+                "ok": False,
+                "error": (
+                    "modify_freecad_parameter: Placement new_value must be a 3-number "
+                    f"[x, y, z] vector, e.g. '[30, 20, 10]' — got {raw_value!r}"
+                ),
+            }
+        new_value: float | tuple[float, float, float] = vector
+    else:
+        try:
+            new_value = float(raw_value)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "modify_freecad_parameter requires a numeric new_value"}
     return engine.modify_parameter(target_path, parameter_name, new_value)
 
 
@@ -1348,6 +1387,8 @@ def describe_tool_call(call: ToolCall) -> str:
         target = call.arguments.get("target_object", "?")
         param = call.arguments.get("parameter_name", "?")
         value = call.arguments.get("new_value", "?")
+        if str(param).lower() in _VECTOR_PARAMETER_NAMES:
+            return f"Move `{target}` to {value} in FreeCAD."
         return f"Set `{target}`.{param} = {value}mm in FreeCAD."
     if call.tool_id == "get_freecad_bounding_box":
         target = call.arguments.get("target_object", "?")
@@ -3427,7 +3468,10 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
             return f"`{payload.get('object_a')}` and `{payload.get('object_b')}` overlap — volume {payload.get('overlap_volume')}."
         return f"`{payload.get('object_a')}` and `{payload.get('object_b')}` do not overlap."
     if call.tool_id == "modify_freecad_parameter":
-        return f"Set `{payload.get('name')}`.{payload.get('parameter_name')} = {payload.get('new_value')}mm."
+        param = str(payload.get("parameter_name") or "")
+        if param.lower() in _VECTOR_PARAMETER_NAMES:
+            return f"Moved `{payload.get('name')}` to {payload.get('new_value')}."
+        return f"Set `{payload.get('name')}`.{param} = {payload.get('new_value')}mm."
     if call.tool_id == "align_freecad_objects":
         return (
             f"Aligned `{payload.get('name')}` ({payload.get('alignment_type')}) — "

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -393,17 +394,29 @@ class MockFreeCADEngine(BaseCADEngine):
             "note": _MOCK_NOTE_CAD,
         }
 
-    def modify_parameter(self, target_path: str, parameter_name: str, new_value: float) -> dict[str, Any]:
+    def modify_parameter(
+        self, target_path: str, parameter_name: str, new_value: float | Sequence[float]
+    ) -> dict[str, Any]:
         target = Path(target_path)
         if not target.is_file():
             return {"ok": False, "error": f"modify_parameter: target_path not found: {target_path}"}
         param = (parameter_name or "").strip()
         if not param:
             return {"ok": False, "error": "modify_parameter requires a non-empty parameter_name"}
-        try:
-            value_f = float(new_value)
-        except (TypeError, ValueError):
-            return {"ok": False, "error": f"modify_parameter: new_value must be a number, got {new_value!r}"}
+        if param.lower() in ("placement", "placement.base"):
+            try:
+                x, y, z = (float(component) for component in new_value)
+            except (TypeError, ValueError):
+                return {
+                    "ok": False,
+                    "error": f"modify_parameter: {param} new_value must be a 3-number [x, y, z] vector, got {new_value!r}",
+                }
+            resolved_value: float | list[float] = [x, y, z]
+        else:
+            try:
+                resolved_value = float(new_value)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": f"modify_parameter: new_value must be a number, got {new_value!r}"}
         # Safe stub: a headless mesh has no named "Length"/"Height"/"Radius"
         # properties to setattr onto (there's no parametric object behind
         # it, just triangles), so this can't resize the mesh for real —
@@ -414,7 +427,7 @@ class MockFreeCADEngine(BaseCADEngine):
             "name": target.stem,
             "path": str(target),
             "parameter_name": param,
-            "new_value": value_f,
+            "new_value": resolved_value,
             "driver": "mock",
             "note": f"{_MOCK_NOTE_CAD}; parameter not geometrically applied, returned target unmodified",
         }

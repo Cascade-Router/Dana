@@ -1366,13 +1366,39 @@ doc.save()
 print("{marker} path=" + {out_path!r})
 """
 
+# "Placement"/"Placement.Base" is a 3D translation, not a bare settable
+# number — setattr(obj, "Placement", 5.0) would fail outright. Replace the
+# whole Placement with a new Vector base while keeping the object's
+# existing Rotation, so a move never silently discards prior orientation.
+_VECTOR_PARAMETER_NAMES = frozenset({"placement", "placement.base"})
 
-def modify_parameter(target_path: str, parameter_name: str, new_value: float) -> str:
+_MODIFY_PARAMETER_VECTOR_SCRIPT = """\
+import FreeCAD as App
+
+doc = App.openDocument({target_path!r})
+obj = next((o for o in doc.Objects if not o.InList), doc.Objects[-1])
+obj.Placement = App.Placement(App.Vector({x}, {y}, {z}), obj.Placement.Rotation)
+doc.recompute()
+doc.save()
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {out_path!r})
+"""
+
+
+def modify_parameter(
+    target_path: str, parameter_name: str, new_value: float | Sequence[float]
+) -> str:
     """Change a single dimensional property (e.g. ``"Height"``, ``"Radius"``)
     on a previously-created object, in place — unlike the ``create_*``
     helpers, this reopens and overwrites the SAME ``.FCStd`` document rather
     than starting a new one, so the object's parametric history/name/path
     are preserved across the edit.
+
+    ``parameter_name`` of ``"Placement"`` or ``"Placement.Base"`` is special:
+    it moves the object, so ``new_value`` must be a 3-number ``[x, y, z]``
+    vector (mm) instead of a single float — applied as a new
+    ``FreeCAD.Vector`` on ``Placement.Base`` while the object's current
+    ``Placement.Rotation`` is preserved.
     """
     target = Path(target_path)
     if not target.is_file():
@@ -1380,19 +1406,38 @@ def modify_parameter(target_path: str, parameter_name: str, new_value: float) ->
     param = (parameter_name or "").strip()
     if not param:
         return _error("modify_parameter requires a non-empty parameter_name")
-    try:
-        value_f = float(new_value)
-    except (TypeError, ValueError):
-        return _error(f"modify_parameter: new_value must be a number, got {new_value!r}")
-    if is_dry_run_enabled():
-        return _dry_run_result("modify_parameter", path=str(target), parameter_name=param, new_value=value_f)
-    script = _MODIFY_PARAMETER_SCRIPT.format(
-        target_path=str(target),
-        parameter_name=param,
-        new_value=value_f,
-        out_path=str(target),
-        marker=_OK_MARKER,
-    )
+
+    if param.lower() in _VECTOR_PARAMETER_NAMES:
+        try:
+            x, y, z = (float(component) for component in new_value)
+        except (TypeError, ValueError):
+            return _error(
+                f"modify_parameter: {param} new_value must be a 3-number [x, y, z] vector, got {new_value!r}"
+            )
+        if is_dry_run_enabled():
+            return _dry_run_result(
+                "modify_parameter", path=str(target), parameter_name=param, new_value=[x, y, z]
+            )
+        script = _MODIFY_PARAMETER_VECTOR_SCRIPT.format(
+            target_path=str(target), x=x, y=y, z=z, out_path=str(target), marker=_OK_MARKER,
+        )
+        result_value: float | list[float] = [x, y, z]
+    else:
+        try:
+            value_f = float(new_value)
+        except (TypeError, ValueError):
+            return _error(f"modify_parameter: new_value must be a number, got {new_value!r}")
+        if is_dry_run_enabled():
+            return _dry_run_result("modify_parameter", path=str(target), parameter_name=param, new_value=value_f)
+        script = _MODIFY_PARAMETER_SCRIPT.format(
+            target_path=str(target),
+            parameter_name=param,
+            new_value=value_f,
+            out_path=str(target),
+            marker=_OK_MARKER,
+        )
+        result_value = value_f
+
     result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"modify_parameter failed: {result['error']}")
@@ -1400,7 +1445,7 @@ def modify_parameter(target_path: str, parameter_name: str, new_value: float) ->
         name=target.stem,
         path=str(target),
         parameter_name=param,
-        new_value=value_f,
+        new_value=result_value,
         bounding_box=result.get("bounding_box"),
         gui_shown=_auto_show(target),
     )

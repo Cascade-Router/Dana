@@ -1008,6 +1008,75 @@ def test_dispatch_modify_parameter_end_to_end_via_registry() -> None:
     assert result.payload["new_value"] == 99.0
 
 
+def test_dispatch_modify_parameter_placement_accepts_bracket_string_vector() -> None:
+    """The LLM naturally emits new_value as the string "[30, 20, 10]" for a
+    move — this must parse into a 3-float vector, not be forced through the
+    scalar float() path used by dimensional properties."""
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"length": 20, "width": 20, "height": 20, "name": "MoveBoxA"}),
+        engine,
+        control_plane,
+    )
+
+    result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="modify_freecad_parameter",
+            arguments={"target_object": "MoveBoxA", "parameter_name": "Placement", "new_value": "[30, 20, 10]"},
+        ),
+        engine,
+        control_plane,
+    )
+    assert result.ok is True
+    assert result.payload["new_value"] == [30.0, 20.0, 10.0]
+
+
+def test_dispatch_modify_parameter_placement_base_alias_and_compact_string() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"length": 20, "width": 20, "height": 20, "name": "MoveBoxB"}),
+        engine,
+        control_plane,
+    )
+
+    result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="modify_freecad_parameter",
+            arguments={"target_object": "MoveBoxB", "parameter_name": "Placement.Base", "new_value": "[30,20,10]"},
+        ),
+        engine,
+        control_plane,
+    )
+    assert result.ok is True
+    assert result.payload["new_value"] == [30.0, 20.0, 10.0]
+
+
+def test_dispatch_modify_parameter_placement_rejects_bad_vector() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"length": 20, "width": 20, "height": 20, "name": "MoveBoxC"}),
+        engine,
+        control_plane,
+    )
+
+    call = ToolCall(
+        tool_id="modify_freecad_parameter",
+        arguments={"target_object": "MoveBoxC", "parameter_name": "Placement", "new_value": "[30, 20]"},
+    )
+    result = rd.dispatch_tool_call(call, engine, control_plane)
+    assert result.ok is False
+    assert "3-number" in result.message
+
+
 # --------------------------------------------------------------------------
 # Non-mutating spatial query: get_freecad_bounding_box
 # --------------------------------------------------------------------------

@@ -2000,11 +2000,11 @@
     },
     {
       "id": "modify_freecad_parameter",
-      "description_en": "Modifies a dimensional property of an existing object (e.g. changing a box's Height, or a cylinder's Radius) in place, without recreating it.",
+      "description_en": "Modifies a dimensional property of an existing object (e.g. changing a box's Height, or a cylinder's Radius), or moves it (parameter_name='Placement' or 'Placement.Base'), in place without recreating it.",
       "parameters": [
         {"name": "target_object", "type": "string", "required": true, "description_en": "Name of the existing object to modify (e.g. 'Box')."},
-        {"name": "parameter_name", "type": "string", "required": true, "description_en": "Name of the dimensional property to change, e.g. 'Length', 'Width', 'Height', 'Radius'."},
-        {"name": "new_value", "type": "number", "required": true, "description_en": "New value for the parameter, in mm."}
+        {"name": "parameter_name", "type": "string", "required": true, "description_en": "Name of the property to change, e.g. 'Length', 'Width', 'Height', 'Radius', or 'Placement'/'Placement.Base' to move the object."},
+        {"name": "new_value", "type": "string", "required": true, "description_en": "New value for the parameter. A plain number in mm for dimensional properties (e.g. '50'); a '[x, y, z]' vector in mm (e.g. '[30, 20, 10]') when parameter_name is 'Placement' or 'Placement.Base'."}
       ]
     },
     {
