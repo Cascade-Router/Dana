@@ -69,6 +69,32 @@ def _add_geometry(parent: ET.Element, tag: str, mesh_filename: str, origin: tupl
     ET.SubElement(geometry, "mesh", filename=mesh_filename)
 
 
+def _mesh_file_exists(mesh_path: str) -> bool:
+    """Poll 3 candidate locations for a caller-supplied ``mesh_path`` before
+    it's ever written into the URDF XML — an LLM can freely invent a
+    plausible-looking ``mesh_path`` string that was never actually produced
+    by ``export_mesh_stl``/``export_freecad_model``, and without this check
+    that hallucinated filename would silently end up as a dangling ``<mesh
+    filename="...">`` reference in the generated ``.urdf`` (broken the
+    moment anything tries to load it).
+
+    Checked in order: the path as given (absolute or already
+    cwd-relative-and-correct), then its basename under this module's own
+    canonical ``_OUTPUT_DIR`` (``DANA_WORKSPACE/freecad_output`` —
+    cwd-independent, where every create_freecad_*/export_mesh_stl artifact
+    actually lands), then its basename under the process's current working
+    directory (a plain relative mesh_path the caller already resolved
+    against its own cwd).
+    """
+    candidate = Path(mesh_path)
+    if candidate.exists():
+        return True
+    basename = candidate.name
+    if (_OUTPUT_DIR / basename).exists():
+        return True
+    return (Path.cwd() / basename).exists()
+
+
 def _build_link(links_root: ET.Element, link: dict[str, Any]) -> str:
     name = str(link.get("name") or "").strip()
     if not name:
@@ -76,11 +102,17 @@ def _build_link(links_root: ET.Element, link: dict[str, Any]) -> str:
     link_el = ET.SubElement(links_root, "link", name=name)
     mesh_path = link.get("mesh_path") or link.get("stl_path")
     if mesh_path:
+        mesh_path = str(mesh_path)
+        if not _mesh_file_exists(mesh_path):
+            raise ValueError(
+                f"Mesh file '{mesh_path}' does not exist. You MUST use 'export_freecad_model' "
+                "to export the CAD object to an STL file before generating a URDF."
+            )
         # A bare basename, never the full artifact path — matches
         # dana.api.cad._resolve_artifact's "bare filename only" contract,
         # so the frontend can fetch it as /api/cad/artifacts/{filename}/download
         # regardless of where on disk this tool's caller generated it.
-        mesh_filename = Path(str(mesh_path)).name
+        mesh_filename = Path(mesh_path).name
         origin = _xyz_tuple(link.get("origin_xyz"))
         _add_geometry(link_el, "visual", mesh_filename, origin)
         _add_geometry(link_el, "collision", mesh_filename, origin)
