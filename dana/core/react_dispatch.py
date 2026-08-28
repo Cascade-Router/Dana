@@ -791,19 +791,23 @@ def _tool_perform_freecad_boolean(args: dict[str, Any], engine: Any, _cp: Any) -
     tool_name = str(args.get("tool_object") or "").strip()
     if not base_name or not tool_name:
         return {"ok": False, "error": "perform_freecad_boolean requires base_object and tool_object"}
-    base_path = _OBJECT_PATH_REGISTRY.get(base_name)
-    tool_path = _OBJECT_PATH_REGISTRY.get(tool_name)
-    if not base_path:
+    # Existence is still checked against _OBJECT_PATH_REGISTRY (populated by
+    # dispatch_tool_call as a side effect of every successful create/modify
+    # call), but the resolved PATH itself is no longer what's passed down —
+    # every session-scoped creation tool now shares the SAME underlying
+    # document, so a path alone can't tell two objects apart. apply_boolean
+    # resolves base_object/tool_object by NAME against that shared session.
+    if base_name not in _OBJECT_PATH_REGISTRY:
         return {
             "ok": False,
             "error": f"unknown base_object '{base_name}' — create it first with a create_freecad_* tool",
         }
-    if not tool_path:
+    if tool_name not in _OBJECT_PATH_REGISTRY:
         return {
             "ok": False,
             "error": f"unknown tool_object '{tool_name}' — create it first with a create_freecad_* tool",
         }
-    return engine.apply_boolean(operation, base_path, tool_path, name=str(args.get("name") or "").strip() or None)
+    return engine.apply_boolean(operation, base_name, tool_name, name=str(args.get("name") or "").strip() or None)
 
 
 _EDGE_OPERATIONS = frozenset({"fillet", "chamfer"})
@@ -874,8 +878,9 @@ def _tool_modify_freecad_parameter(args: dict[str, Any], engine: Any, _cp: Any) 
     target_name = str(args.get("target_object") or "").strip()
     if not target_name:
         return {"ok": False, "error": "modify_freecad_parameter requires target_object"}
-    target_path = _OBJECT_PATH_REGISTRY.get(target_name)
-    if not target_path:
+    # Existence check only — see perform_freecad_boolean's matching comment
+    # on why the resolved PATH itself is no longer what gets passed down.
+    if target_name not in _OBJECT_PATH_REGISTRY:
         return {
             "ok": False,
             "error": f"unknown target_object '{target_name}' — create it first with a create_freecad_* tool",
@@ -900,7 +905,7 @@ def _tool_modify_freecad_parameter(args: dict[str, Any], engine: Any, _cp: Any) 
             new_value = float(raw_value)
         except (TypeError, ValueError):
             return {"ok": False, "error": "modify_freecad_parameter requires a numeric new_value"}
-    return engine.modify_parameter(target_path, parameter_name, new_value)
+    return engine.modify_parameter(target_name, parameter_name, new_value)
 
 
 def _tool_get_freecad_bounding_box(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:

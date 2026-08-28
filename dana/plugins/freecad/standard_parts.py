@@ -4,16 +4,18 @@ bearing) instead of leaving the LLM to sketch/extrude hallucinated
 dimensions for them.
 
 ``insert_standard_part`` reuses ``dana.plugins.freecad.engine``'s stateless
-FreeCADCmd script-runner directly (``_run_freecad_script``/``_output_path``/
-``_BBOX_PRINT``/``_PLACEMENT_SNIPPET``) rather than going through the
-``BaseCADEngine`` platform abstraction (``dana.platform.base/win32/mock``) —
-this is a FreeCAD-plugin-specific generator built on ``engineering_standards
+FreeCADCmd script-runner directly (``_run_freecad_script``/
+``_session_document_path``/``_SESSION_OPEN_SNIPPET``/``_SESSION_SAVE_SNIPPET``/
+``_SESSION_RESULT_PRINT``/``_PLACEMENT_SNIPPET``) rather than going through
+the ``BaseCADEngine`` platform abstraction (``dana.platform.base/win32/mock``)
+— this is a FreeCAD-plugin-specific generator built on ``engineering_standards
 .py``'s exact dimension tables, the same architectural role as
 ``py_export.py``/``engineering_standards.py`` themselves, not a primitive
 that needs a headless/non-Windows stand-in. Every call is still a single
-stateless FreeCADCmd subprocess: file-in (none needed here — every part is
-built from scratch) / file-out (one ``.FCStd``), exactly like every
-``create_*`` function in ``engine.py``.
+stateless FreeCADCmd subprocess, but file-out is now the SAME shared
+``Session_Active.FCStd`` document every session-scoped ``create_*`` function
+in ``engine.py`` also opens/appends to and saves back — not its own
+independent ``.FCStd`` per call like before.
 """
 
 from __future__ import annotations
@@ -22,15 +24,18 @@ import re
 from typing import Any
 
 from dana.plugins.freecad.engine import (
-    _BBOX_PRINT,
     _OK_MARKER,
     _PLACEMENT_SNIPPET,
+    _SESSION_DOCUMENT_NAME,
+    _SESSION_OPEN_SNIPPET,
+    _SESSION_RESULT_PRINT,
+    _SESSION_SAVE_SNIPPET,
     _auto_show,
     _dry_run_result,
     _error,
     _ok,
-    _output_path,
     _run_freecad_script,
+    _session_document_path,
 )
 from dana.plugins.freecad.fasteners_bootstrap import ensure_fasteners_workbench
 from dana.plugins.freecad.engineering_standards import (
@@ -74,15 +79,12 @@ body = Part.makeBox(body_w, body_w, body_d, App.Vector(-body_w / 2.0, -body_w / 
 boss = Part.makeCylinder(boss_r, boss_h, App.Vector(0.0, 0.0, body_d))
 shaft = Part.makeCylinder(shaft_r, shaft_len, App.Vector(0.0, 0.0, body_d + boss_h))
 
-doc = App.newDocument("DanaModel")
+""" + _SESSION_OPEN_SNIPPET + """\
 obj = doc.addObject("Part::Feature", {name!r})
 obj.Shape = Part.makeCompound([body, boss, shaft])
 """ + _PLACEMENT_SNIPPET + """\
 doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
+""" + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT
 
 # Shank + head as a compound (a screw isn't a single convex solid, and the
 # two features are visually/functionally distinct) — the shank sits below
@@ -95,15 +97,12 @@ import Part
 shank = Part.makeCylinder({nominal_diameter} / 2.0, {length})
 head = Part.makeCylinder({head_diameter} / 2.0, {head_height}, App.Vector(0.0, 0.0, {length}))
 
-doc = App.newDocument("DanaModel")
+""" + _SESSION_OPEN_SNIPPET + """\
 obj = doc.addObject("Part::Feature", {name!r})
 obj.Shape = Part.makeCompound([shank, head])
 """ + _PLACEMENT_SNIPPET + """\
 doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
+""" + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT
 
 # A genuine hollow ring (outer cylinder minus a concentric bore) — unlike
 # the other two part types this IS one real solid, built with a single
@@ -117,15 +116,12 @@ outer = Part.makeCylinder({outer_diameter} / 2.0, {width})
 bore = Part.makeCylinder({bore_diameter} / 2.0, {width})
 ring = outer.cut(bore)
 
-doc = App.newDocument("DanaModel")
+""" + _SESSION_OPEN_SNIPPET + """\
 obj = doc.addObject("Part::Feature", {name!r})
 obj.Shape = ring
 """ + _PLACEMENT_SNIPPET + """\
 doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
+""" + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT
 
 
 # Generates via FreeCAD's own community "Fasteners" workbench
@@ -190,7 +186,7 @@ except ImportError:
     )
     sys.exit(1)
 
-doc = App.newDocument("DanaModel")
+""" + _SESSION_OPEN_SNIPPET + """\
 try:
     obj = doc.addObject("Part::FeaturePython", {name!r})
     FastenersCmd.FSScrewObject(obj, {fastener_type!r}, None)
@@ -211,10 +207,7 @@ except Exception as exc:
     sys.exit(1)
 """ + _PLACEMENT_SNIPPET + """\
 doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
+""" + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT
 
 
 def _resolve_nema17(name: str | None) -> tuple[str, str, dict[str, Any], dict[str, float]]:
@@ -349,9 +342,14 @@ def insert_standard_part(
             "insert_standard_part", part_type=pt, name=resolved_name, dimensions=dims_out, placement=list(placement)
         )
 
-    out_path = _output_path(resolved_name, ext="FCStd")
+    session_path = _session_document_path()
     script = script_template.format(
-        name=resolved_name, placement=placement, out_path=str(out_path), marker=_OK_MARKER, **fmt_kwargs
+        name=resolved_name,
+        placement=placement,
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
+        marker=_OK_MARKER,
+        **fmt_kwargs,
     )
 
     extra_env: dict[str, str] | None = None
@@ -376,14 +374,14 @@ def insert_standard_part(
     if not result["ok"]:
         return _error(f"insert_standard_part failed: {result['error']}")
     return _ok(
-        name=resolved_name,
+        name=result.get("resolved_name") or resolved_name,
         type="Part::Feature",
         part_type=pt,
         bounding_box=result.get("bounding_box"),
         dimensions=dims_out,
         placement=list(placement),
-        path=str(out_path),
-        gui_shown=_auto_show(out_path),
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
     )
 
 

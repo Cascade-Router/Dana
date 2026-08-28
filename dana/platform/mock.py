@@ -26,6 +26,14 @@ _MOCK_WINDOWS: list[dict[str, Any]] = [
     {"hwnd": 1002, "title": "Dana — Live Trace", "pid": 3110},
 ]
 
+# Mirrors dana.core.react_dispatch's own _OBJECT_PATH_REGISTRY: a plain
+# module-level dict (not an instance attribute) since a fresh
+# MockFreeCADEngine() is constructed on every dispatch in real usage — apply_
+# boolean/modify_parameter now take object NAMES (matching RealFreeCADEngine's
+# shared-session interface), and _mesh_output_path's random tempfile name
+# means a name alone can't be resolved back to its .stl path without this.
+_MOCK_OBJECT_REGISTRY: dict[str, str] = {}
+
 
 def _bbox(mesh: Any) -> list[float]:
     lo, hi = mesh.bounds
@@ -121,7 +129,11 @@ class MockFreeCADEngine(BaseCADEngine):
 
     Every ``path`` returned is a real ``.stl`` file on disk (so a
     ``gr.Model3D`` viewer can load it), backed by ``trimesh`` primitives
-    instead of an actual ``.FCStd`` FreeCAD document.
+    instead of an actual ``.FCStd`` FreeCAD document — each object still gets
+    its OWN ``.stl`` file (unlike the real engine's shared session document),
+    but ``apply_boolean``/``modify_parameter`` still take object NAMES to
+    match ``RealFreeCADEngine``'s interface, resolved via the module-level
+    ``_MOCK_OBJECT_REGISTRY`` populated by ``create_box``/``create_cylinder``.
     """
 
     def create_box(
@@ -140,6 +152,7 @@ class MockFreeCADEngine(BaseCADEngine):
         mesh.apply_translation(placement)
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
+        _MOCK_OBJECT_REGISTRY[name] = str(out_path)
         return {
             "ok": True,
             "name": name,
@@ -168,6 +181,7 @@ class MockFreeCADEngine(BaseCADEngine):
         mesh.apply_translation(placement)
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
+        _MOCK_OBJECT_REGISTRY[name] = str(out_path)
         return {
             "ok": True,
             "name": name,
@@ -182,7 +196,7 @@ class MockFreeCADEngine(BaseCADEngine):
         }
 
     def apply_boolean(
-        self, operation: str, base_path: str, tool_path: str, name: str | None = None
+        self, operation: str, base_object: str, tool_object: str, name: str | None = None
     ) -> dict[str, Any]:
         import trimesh
 
@@ -193,6 +207,12 @@ class MockFreeCADEngine(BaseCADEngine):
         if op not in mesh_ops:
             return {"ok": False, "error": f"apply_boolean: unknown operation '{operation}' — must be cut, union, or intersect"}
 
+        base_path = _MOCK_OBJECT_REGISTRY.get(base_object)
+        tool_path = _MOCK_OBJECT_REGISTRY.get(tool_object)
+        if not base_path:
+            return {"ok": False, "error": f"apply_boolean: no object named {base_object!r} in this session"}
+        if not tool_path:
+            return {"ok": False, "error": f"apply_boolean: no object named {tool_object!r} in this session"}
         base = Path(base_path)
         tool = Path(tool_path)
         if not base.is_file():
@@ -212,6 +232,7 @@ class MockFreeCADEngine(BaseCADEngine):
 
         out_path = _mesh_output_path(resolved_name)
         mesh.export(out_path)
+        _MOCK_OBJECT_REGISTRY[resolved_name] = str(out_path)
         return {
             "ok": True,
             "name": resolved_name,
@@ -395,8 +416,11 @@ class MockFreeCADEngine(BaseCADEngine):
         }
 
     def modify_parameter(
-        self, target_path: str, parameter_name: str, new_value: float | Sequence[float]
+        self, target_object: str, parameter_name: str, new_value: float | Sequence[float]
     ) -> dict[str, Any]:
+        target_path = _MOCK_OBJECT_REGISTRY.get(target_object)
+        if not target_path:
+            return {"ok": False, "error": f"modify_parameter: no object named {target_object!r} in this session"}
         target = Path(target_path)
         if not target.is_file():
             return {"ok": False, "error": f"modify_parameter: target_path not found: {target_path}"}
@@ -424,7 +448,7 @@ class MockFreeCADEngine(BaseCADEngine):
         # relying on the ok/path/name contract still get a consistent result.
         return {
             "ok": True,
-            "name": target.stem,
+            "name": target_object,
             "path": str(target),
             "parameter_name": param,
             "new_value": resolved_value,

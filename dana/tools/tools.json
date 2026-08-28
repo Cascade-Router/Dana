@@ -1973,7 +1973,7 @@
     },
     {
       "id": "perform_freecad_boolean",
-      "description_en": "Combine two previously-created FreeCAD solids with a Boolean operation. 'cut' subtracts tool_object from base_object (e.g. drilling a hole); 'union' fuses both into one solid; 'intersect' keeps only the volume where they overlap. Both base_object and tool_object must be the exact object name (default 'Box'/'Cylinder'/'Pyramid'/'StarPrism' unless overridden) of solids already created via create_freecad_box/create_freecad_cylinder/create_freecad_pyramid/create_freecad_star_prism (or a prior perform_freecad_boolean result) earlier in this session.",
+      "description_en": "Combine two previously-created FreeCAD solids with a Boolean operation. 'cut' subtracts tool_object from base_object (e.g. drilling a hole); 'union' fuses both into one solid; 'intersect' keeps only the volume where they overlap. Both base_object and tool_object must be the exact object name (default 'Box'/'Cylinder' unless overridden) of solids already created via create_freecad_box, create_freecad_cylinder, insert_standard_part, or a prior perform_freecad_boolean result — all of which share one active FreeCAD session document. create_freecad_pyramid/create_freecad_star_prism/create_freecad_extrusion/create_freecad_pipe/create_freecad_sketch_extrude and batch_pattern_array/align_freecad_objects/create_assembly_mate objects are NOT in that shared document yet and cannot currently be used here.",
       "parameters": [
         {
           "name": "operation", "type": "string", "required": true,

@@ -12,6 +12,7 @@ so callers never need to guess the shape before deciding what to render.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any
 
 
@@ -75,14 +76,18 @@ class BaseCADEngine(ABC):
 
     @abstractmethod
     def apply_boolean(
-        self, operation: str, base_path: str, tool_path: str, name: str | None = None
+        self, operation: str, base_object: str, tool_object: str, name: str | None = None
     ) -> dict[str, Any]:
         """Combine two previously-created solids with a Boolean operation:
         ``"cut"`` subtracts the tool from the base, ``"union"`` fuses them,
-        ``"intersect"`` keeps only their overlapping volume. Both paths must
-        have been previously returned by ``create_box``/``create_cylinder``
-        (or another ``apply_boolean``) on the SAME engine instance. Returns
-        a result dict including ``{"ok": bool, "path": str, "name": str}``."""
+        ``"intersect"`` keeps only their overlapping volume. ``base_object``/
+        ``tool_object`` are the exact object NAMES returned by
+        ``create_box``/``create_cylinder``/``insert_standard_part`` (or a
+        prior ``apply_boolean``) — resolved by name against this driver's own
+        shared session state, not a file path (every session-scoped creation
+        call shares one underlying document/session, so a path alone can no
+        longer tell two objects apart). Returns a result dict including
+        ``{"ok": bool, "path": str, "name": str}``."""
 
     @abstractmethod
     def apply_edge_operation(
@@ -145,11 +150,17 @@ class BaseCADEngine(ABC):
         ``.stl`` mesh file. Returns ``{"ok": bool, "path": str}``."""
 
     @abstractmethod
-    def modify_parameter(self, target_path: str, parameter_name: str, new_value: float) -> dict[str, Any]:
+    def modify_parameter(
+        self, target_object: str, parameter_name: str, new_value: float | Sequence[float]
+    ) -> dict[str, Any]:
         """Change a single dimensional property (e.g. ``"Height"``,
-        ``"Radius"``) on a previously-created object, in place — reopens
-        and overwrites the SAME document/path rather than creating a new
-        one. Returns a result dict including ``{"ok": bool, "path": str,
+        ``"Radius"``) on a previously-created object, by NAME, in place —
+        reopens and overwrites the SAME shared session document/path rather
+        than creating a new one. ``parameter_name`` of ``"Placement"``/
+        ``"Placement.Base"`` is special: ``new_value`` must then be a
+        3-number ``[x, y, z]`` vector (mm), applied to the object's
+        ``Placement.Base`` while its ``Placement.Rotation`` is preserved.
+        Returns a result dict including ``{"ok": bool, "path": str,
         "name": str}``."""
 
     @abstractmethod

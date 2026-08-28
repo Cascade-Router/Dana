@@ -127,23 +127,30 @@ def test_pattern_offsets_rejects_unknown_pattern_type():
 
 def test_boolean_cut_script_hides_base_and_tool():
     script = engine._BOOLEAN_CUT_SCRIPT.format(
-        base_path="base.FCStd", tool_path="tool.FCStd", name="Cut", out_path="out.FCStd", marker="OK"
+        session_path="session.FCStd", base_object="Base", tool_object="Tool", name="Cut", marker="OK"
     )
     assert "obj.Base.Visibility = False" in script
     assert "obj.Tool.Visibility = False" in script
+    # Regression guard: _session_path must be locally defined (this script
+    # opens the session doc directly, NOT via _SESSION_OPEN_SNIPPET), since
+    # _SESSION_RESULT_PRINT's trailing print references it — a NameError
+    # here previously caused FreeCADCmd to silently re-run the whole script,
+    # duplicating the created object under an auto-suffixed name.
+    assert "_session_path = " in script
 
 
 def test_boolean_fuse_common_script_hides_all_shapes():
     script = engine._BOOLEAN_FUSE_COMMON_SCRIPT.format(
-        base_path="base.FCStd",
-        tool_path="tool.FCStd",
+        session_path="session.FCStd",
+        base_object="Base",
+        tool_object="Tool",
         feature_type="Part::MultiFuse",
         name="Fusion",
-        out_path="out.FCStd",
         marker="OK",
     )
     assert "_shape_obj.Visibility = False" in script
     assert "for _shape_obj in obj.Shapes:" in script
+    assert "_session_path = " in script
 
 
 # --------------------------------------------------------------------------

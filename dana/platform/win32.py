@@ -10,6 +10,7 @@ interface shape.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from dana.platform.base import BaseCADEngine, BaseControlPlane
@@ -106,11 +107,11 @@ class RealFreeCADEngine(BaseCADEngine):
         return json.loads(engine.create_cylinder(radius, height, name, placement=placement))
 
     def apply_boolean(
-        self, operation: str, base_path: str, tool_path: str, name: str | None = None
+        self, operation: str, base_object: str, tool_object: str, name: str | None = None
     ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.apply_boolean(operation, base_path, tool_path, name))
+        return json.loads(engine.apply_boolean(operation, base_object, tool_object, name))
 
     def apply_edge_operation(
         self,
@@ -168,10 +169,12 @@ class RealFreeCADEngine(BaseCADEngine):
 
         return json.loads(engine.export_mesh_stl(source_path, name))
 
-    def modify_parameter(self, target_path: str, parameter_name: str, new_value: float) -> dict[str, Any]:
+    def modify_parameter(
+        self, target_object: str, parameter_name: str, new_value: float | Sequence[float]
+    ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.modify_parameter(target_path, parameter_name, new_value))
+        return json.loads(engine.modify_parameter(target_object, parameter_name, new_value))
 
     def get_bounding_box(self, target_path: str) -> dict[str, Any]:
         from dana.plugins.freecad import engine

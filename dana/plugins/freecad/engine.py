@@ -83,8 +83,28 @@ _PLACEMENT_MARKER = f"{_OK_MARKER}_PLACEMENT"
 _PLACEMENT_RE = re.compile(re.escape(_PLACEMENT_MARKER) + r" (\[.*?\])")
 _SPATIAL_MARKER = f"{_OK_MARKER}_SPATIAL"
 _SPATIAL_RE = re.compile(re.escape(_SPATIAL_MARKER) + r" (\[.*?\])")
+# The FreeCAD-assigned Name a session-document script actually ends up with
+# — NOT necessarily the requested `name` argument verbatim, since FreeCAD
+# auto-suffixes ("Box" -> "Box001") on a collision with an object already in
+# the shared Session_Active.FCStd document. A plain identifier line (not a
+# Python literal), unlike the bbox/placement/spatial markers above.
+_NAME_MARKER = f"{_OK_MARKER}_NAME"
+_NAME_RE = re.compile(re.escape(_NAME_MARKER) + r" (.+)")
 _OUTPUT_DIR = DANA_WORKSPACE / "freecad_output"
 _EXPORT_DIR = DANA_WORKSPACE / "exports"
+
+# The single .FCStd document create_box/create_cylinder/insert_standard_part/
+# modify_parameter/apply_boolean all share for the life of this process —
+# replacing the old one-object-per-file design so a multi-part chain (e.g.
+# box + bolt + boolean cut) ends up as siblings in ONE document tree instead
+# of scattered across separate .FCStd files. create_freecad_extrusion/
+# _pyramid/_star_prism/_pipe/_sketch_extrude, batch_pattern_array,
+# align_freecad_objects, create_assembly_mate, apply_edge_operation, and the
+# read-only inspectors (get_bounding_box, inspect_spatial_properties) are
+# UNCHANGED — they still produce/expect one-object-per-file — so an object
+# built by one of those cannot currently be referenced by a session-based
+# perform_freecad_boolean/modify_freecad_parameter call, and vice versa.
+_SESSION_DOCUMENT_NAME = "Session_Active"
 
 
 class FreeCADNotFoundError(RuntimeError):
@@ -418,6 +438,14 @@ def _extract_spatial(stdout: str) -> list[Any] | None:
     return None
 
 
+def _extract_object_name(stdout: str) -> str | None:
+    """Parse the actual FreeCAD-assigned ``Name`` a session-document script
+    prints via ``_SESSION_RESULT_PRINT`` — see ``_NAME_MARKER``'s own
+    comment for why this can differ from the requested ``name`` argument."""
+    m = _NAME_RE.search(stdout or "")
+    return m.group(1).strip() if m else None
+
+
 def _run_freecad_script(
     script_text: str,
     *,
@@ -490,6 +518,7 @@ def _run_freecad_script(
         "stderr": proc.stderr,
         "bounding_box": _extract_bbox(proc.stdout) if ok else None,
         "placement": _extract_placement(proc.stdout) if ok else None,
+        "resolved_name": _extract_object_name(proc.stdout) if ok else None,
     }
 
 
@@ -508,34 +537,74 @@ _PLACEMENT_SNIPPET = (
     "    obj.Placement = App.Placement(App.Vector(_px, _py, _pz), App.Rotation())\n"
 )
 
-_BOX_SCRIPT = """\
+
+def _session_document_path() -> Path:
+    """The shared ``Session_Active.FCStd`` path — see ``_SESSION_DOCUMENT_NAME``'s
+    module-level comment. Same ``freecad_output/`` directory every other
+    ``.FCStd``/``.stl`` artifact already lives in."""
+    _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    return _OUTPUT_DIR / f"{_SESSION_DOCUMENT_NAME}.FCStd"
+
+
+# Opens the session document if it already exists (a prior create_box/
+# create_cylinder/insert_standard_part/apply_boolean/modify_parameter call
+# started it), else starts a fresh in-memory one — `doc`/`_session_existed`
+# are then in scope for the rest of the script. `{session_path!r}` is always
+# a plain literal path string (never user-controlled beyond what
+# ``_session_document_path`` itself returns), so this is injection-safe the
+# same way every other ``!r``-formatted script value here already is.
+_SESSION_OPEN_SNIPPET = """\
+import os
+
+_session_path = {session_path!r}
+_session_existed = os.path.isfile(_session_path)
+if _session_existed:
+    doc = App.openDocument(_session_path)
+else:
+    doc = App.newDocument({session_doc_name!r})
+"""
+
+# Saves back to the SAME path either way: `saveAs` the very first time (the
+# in-memory document created above has no path yet), a plain `save` on every
+# call after — mirrors modify_parameter's existing reopen-and-overwrite
+# pattern, just against a document that now holds many objects instead of one.
+_SESSION_SAVE_SNIPPET = """\
+if _session_existed:
+    doc.save()
+else:
+    doc.saveAs(_session_path)
+"""
+
+# Every session-scoped creation script ends the same way: the new object's
+# bounding box, its ACTUAL FreeCAD-assigned Name (see _NAME_MARKER — may
+# differ from the requested `name` on a collision), and the shared path.
+_SESSION_RESULT_PRINT = _BBOX_PRINT + """\
+print("{marker}_NAME " + obj.Name)
+print("{marker} path=" + _session_path)
+"""
+
+_BOX_SCRIPT = ("""\
 import FreeCAD as App
 
-doc = App.newDocument("DanaModel")
+""" + _SESSION_OPEN_SNIPPET + """\
 obj = doc.addObject("Part::Box", {name!r})
 obj.Length = {length}
 obj.Width = {width}
 obj.Height = {height}
 """ + _PLACEMENT_SNIPPET + """\
 doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
+""" + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT)
 
-_CYLINDER_SCRIPT = """\
+_CYLINDER_SCRIPT = ("""\
 import FreeCAD as App
 
-doc = App.newDocument("DanaModel")
+""" + _SESSION_OPEN_SNIPPET + """\
 obj = doc.addObject("Part::Cylinder", {name!r})
 obj.Radius = {radius}
 obj.Height = {height}
 """ + _PLACEMENT_SNIPPET + """\
 doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
+""" + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT)
 
 _EXTRUDE_SCRIPT = """\
 import FreeCAD as App
@@ -609,13 +678,16 @@ def create_box(
     name: str = "Box",
     placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> str:
-    """Create a parametric ``Part::Box`` and save it as a ``.FCStd`` document,
-    translated by ``placement`` (global X/Y/Z offset in mm) on top of its
-    normal corner-at-origin position.
+    """Create a parametric ``Part::Box`` inside the shared
+    ``Session_Active.FCStd`` document (started fresh if this is the first
+    session-scoped call), translated by ``placement`` (global X/Y/Z offset
+    in mm) on top of its normal corner-at-origin position.
 
     Returns lean JSON (name/type/bounding_box/dimensions/path) rather than
     echoing every input verbatim — keeps context small for fast local-LLM
-    ReAct turns that chain many CAD primitives in a row.
+    ReAct turns that chain many CAD primitives in a row. ``name`` in the
+    result may differ from the requested ``name`` argument if it collided
+    with an object already in the session document (FreeCAD auto-suffixes).
     """
     dims = {"length": float(length), "width": float(width), "height": float(height)}
     placement = (float(placement[0]), float(placement[1]), float(placement[2]))
@@ -623,27 +695,28 @@ def create_box(
         return _dry_run_result(
             "create_box", name=name, type="Part::Box", dimensions=dims, placement=list(placement)
         )
-    out_path = _output_path(name, ext="FCStd")
+    session_path = _session_document_path()
     script = _BOX_SCRIPT.format(
         name=name,
         length=dims["length"],
         width=dims["width"],
         height=dims["height"],
         placement=placement,
-        out_path=str(out_path),
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
         marker=_OK_MARKER,
     )
     result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"create_box failed: {result['error']}")
     return _ok(
-        name=name,
+        name=result.get("resolved_name") or name,
         type="Part::Box",
         bounding_box=result.get("bounding_box"),
         dimensions=dims,
         placement=list(placement),
-        path=str(out_path),
-        gui_shown=_auto_show(out_path),
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
     )
 
 
@@ -653,34 +726,37 @@ def create_cylinder(
     name: str = "Cylinder",
     placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> str:
-    """Create a parametric ``Part::Cylinder`` and save it as a ``.FCStd``
-    document, translated by ``placement`` (global X/Y/Z offset in mm)."""
+    """Create a parametric ``Part::Cylinder`` inside the shared
+    ``Session_Active.FCStd`` document, translated by ``placement`` (global
+    X/Y/Z offset in mm). See ``create_box`` for the session-document/
+    name-collision notes — identical here."""
     dims = {"radius": float(radius), "height": float(height)}
     placement = (float(placement[0]), float(placement[1]), float(placement[2]))
     if is_dry_run_enabled():
         return _dry_run_result(
             "create_cylinder", name=name, type="Part::Cylinder", dimensions=dims, placement=list(placement)
         )
-    out_path = _output_path(name, ext="FCStd")
+    session_path = _session_document_path()
     script = _CYLINDER_SCRIPT.format(
         name=name,
         radius=dims["radius"],
         height=dims["height"],
         placement=placement,
-        out_path=str(out_path),
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
         marker=_OK_MARKER,
     )
     result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"create_cylinder failed: {result['error']}")
     return _ok(
-        name=name,
+        name=result.get("resolved_name") or name,
         type="Part::Cylinder",
         bounding_box=result.get("bounding_box"),
         dimensions=dims,
         placement=list(placement),
-        path=str(out_path),
-        gui_shown=_auto_show(out_path),
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
     )
 
 
@@ -1112,44 +1188,51 @@ _BOOLEAN_FEATURE_TYPE: dict[str, str] = {
 }
 _DEFAULT_BOOLEAN_NAME: dict[str, str] = {"cut": "Cut", "union": "Fusion", "intersect": "Common"}
 
+# Both objects already live in the SAME shared session document (unlike the
+# old design, which opened base_doc/tool_doc as two SEPARATE files and had
+# to doc.copyObject(...) each into a third, brand-new document just to get
+# them into one place for the Boolean feature) — so Base/Tool/Shapes can
+# reference them DIRECTLY, looked up by Name via doc.getObject.
 _BOOLEAN_CUT_SCRIPT = """\
 import FreeCAD as App
 
-base_doc = App.openDocument({base_path!r})
-tool_doc = App.openDocument({tool_path!r})
-base_obj = next((o for o in base_doc.Objects if not o.InList), base_doc.Objects[-1])
-tool_obj = next((o for o in tool_doc.Objects if not o.InList), tool_doc.Objects[-1])
+_session_path = {session_path!r}
+doc = App.openDocument(_session_path)
+base_obj = doc.getObject({base_object!r})
+tool_obj = doc.getObject({tool_object!r})
+if base_obj is None:
+    raise RuntimeError("no object named " + {base_object!r} + " in the session document")
+if tool_obj is None:
+    raise RuntimeError("no object named " + {tool_object!r} + " in the session document")
 
-doc = App.newDocument("DanaModel")
 obj = doc.addObject("Part::Cut", {name!r})
-obj.Base = doc.copyObject(base_obj, False)
-obj.Tool = doc.copyObject(tool_obj, False)
+obj.Base = base_obj
+obj.Tool = tool_obj
 obj.Base.Visibility = False
 obj.Tool.Visibility = False
 doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
+doc.save()
+""" + _SESSION_RESULT_PRINT
 
 _BOOLEAN_FUSE_COMMON_SCRIPT = """\
 import FreeCAD as App
 
-base_doc = App.openDocument({base_path!r})
-tool_doc = App.openDocument({tool_path!r})
-base_obj = next((o for o in base_doc.Objects if not o.InList), base_doc.Objects[-1])
-tool_obj = next((o for o in tool_doc.Objects if not o.InList), tool_doc.Objects[-1])
+_session_path = {session_path!r}
+doc = App.openDocument(_session_path)
+base_obj = doc.getObject({base_object!r})
+tool_obj = doc.getObject({tool_object!r})
+if base_obj is None:
+    raise RuntimeError("no object named " + {base_object!r} + " in the session document")
+if tool_obj is None:
+    raise RuntimeError("no object named " + {tool_object!r} + " in the session document")
 
-doc = App.newDocument("DanaModel")
 obj = doc.addObject({feature_type!r}, {name!r})
-obj.Shapes = [doc.copyObject(base_obj, False), doc.copyObject(tool_obj, False)]
+obj.Shapes = [base_obj, tool_obj]
 for _shape_obj in obj.Shapes:
     _shape_obj.Visibility = False
 doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
+doc.save()
+""" + _SESSION_RESULT_PRINT
 
 _EXPORT_STL_SCRIPT = """\
 import FreeCAD as App
@@ -1161,58 +1244,61 @@ print("{marker} path=" + {out_path!r})
 """
 
 
-def apply_boolean(operation: str, base_path: str, tool_path: str, name: str | None = None) -> str:
-    """Combine two previously-created solids with a Boolean operation.
+def apply_boolean(operation: str, base_object: str, tool_object: str, name: str | None = None) -> str:
+    """Combine two objects already in the shared ``Session_Active.FCStd``
+    document with a Boolean operation, looked up by NAME — not path, since
+    every session-scoped creation tool (``create_box``/``create_cylinder``/
+    ``insert_standard_part``) now shares that one document, so a path alone
+    can no longer tell two objects apart the way it could when each lived in
+    its own file.
 
     ``"cut"`` builds a ``Part::Cut`` (subtracts the tool from the base);
     ``"union"`` builds a ``Part::MultiFuse`` (fuses both into one solid);
     ``"intersect"`` builds a ``Part::MultiCommon`` (keeps only their
-    overlapping volume). Both paths must be ``.FCStd`` documents previously
-    produced by ``create_box``/``create_cylinder``/``create_extruded_polyline``
-    (or a prior ``apply_boolean``) — each holds exactly one top-level
-    object, which is what gets copied into the new Boolean feature.
+    overlapping volume). ``base_object``/``tool_object`` must already exist
+    in the session document — built by a session-scoped creation tool, or a
+    prior ``apply_boolean`` call's own result name.
     """
     op = (operation or "").strip().lower()
     if op not in _BOOLEAN_FEATURE_TYPE:
         return _error(f"apply_boolean: unknown operation '{operation}' — must be cut, union, or intersect")
-    base = Path(base_path)
-    tool = Path(tool_path)
-    if not base.is_file():
-        return _error(f"apply_boolean: base_path not found: {base_path}")
-    if not tool.is_file():
-        return _error(f"apply_boolean: tool_path not found: {tool_path}")
     feature_type = _BOOLEAN_FEATURE_TYPE[op]
     resolved_name = name or _DEFAULT_BOOLEAN_NAME[op]
     if is_dry_run_enabled():
         return _dry_run_result("apply_boolean", operation=op, name=resolved_name, type=feature_type)
-    out_path = _output_path(resolved_name, ext="FCStd")
+    session_path = _session_document_path()
+    if not session_path.is_file():
+        return _error(
+            "apply_boolean: no session document yet — create objects with create_box/"
+            "create_cylinder/insert_standard_part first"
+        )
     if op == "cut":
         script = _BOOLEAN_CUT_SCRIPT.format(
-            base_path=str(base),
-            tool_path=str(tool),
+            session_path=str(session_path),
+            base_object=base_object,
+            tool_object=tool_object,
             name=resolved_name,
-            out_path=str(out_path),
             marker=_OK_MARKER,
         )
     else:
         script = _BOOLEAN_FUSE_COMMON_SCRIPT.format(
-            base_path=str(base),
-            tool_path=str(tool),
+            session_path=str(session_path),
+            base_object=base_object,
+            tool_object=tool_object,
             feature_type=feature_type,
             name=resolved_name,
-            out_path=str(out_path),
             marker=_OK_MARKER,
         )
     result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"apply_boolean failed: {result['error']}")
     return _ok(
-        name=resolved_name,
+        name=result.get("resolved_name") or resolved_name,
         type=feature_type,
         operation=op,
         bounding_box=result.get("bounding_box"),
-        path=str(out_path),
-        gui_shown=_auto_show(out_path),
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
     )
 
 
@@ -1357,13 +1443,15 @@ def apply_edge_operation(
 _MODIFY_PARAMETER_SCRIPT = """\
 import FreeCAD as App
 
-doc = App.openDocument({target_path!r})
-obj = next((o for o in doc.Objects if not o.InList), doc.Objects[-1])
+doc = App.openDocument({session_path!r})
+obj = doc.getObject({target_object!r})
+if obj is None:
+    raise RuntimeError("no object named " + {target_object!r} + " in the session document")
 setattr(obj, {parameter_name!r}, {new_value})
 doc.recompute()
 doc.save()
 """ + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
+print("{marker} path=" + {session_path!r})
 """
 
 # "Placement"/"Placement.Base" is a 3D translation, not a bare settable
@@ -1375,24 +1463,25 @@ _VECTOR_PARAMETER_NAMES = frozenset({"placement", "placement.base"})
 _MODIFY_PARAMETER_VECTOR_SCRIPT = """\
 import FreeCAD as App
 
-doc = App.openDocument({target_path!r})
-obj = next((o for o in doc.Objects if not o.InList), doc.Objects[-1])
+doc = App.openDocument({session_path!r})
+obj = doc.getObject({target_object!r})
+if obj is None:
+    raise RuntimeError("no object named " + {target_object!r} + " in the session document")
 obj.Placement = App.Placement(App.Vector({x}, {y}, {z}), obj.Placement.Rotation)
 doc.recompute()
 doc.save()
 """ + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
+print("{marker} path=" + {session_path!r})
 """
 
 
 def modify_parameter(
-    target_path: str, parameter_name: str, new_value: float | Sequence[float]
+    target_object: str, parameter_name: str, new_value: float | Sequence[float]
 ) -> str:
     """Change a single dimensional property (e.g. ``"Height"``, ``"Radius"``)
-    on a previously-created object, in place — unlike the ``create_*``
-    helpers, this reopens and overwrites the SAME ``.FCStd`` document rather
-    than starting a new one, so the object's parametric history/name/path
-    are preserved across the edit.
+    on an object already in the shared ``Session_Active.FCStd`` document, by
+    NAME — in place, so the object's parametric history/name are preserved
+    across the edit.
 
     ``parameter_name`` of ``"Placement"`` or ``"Placement.Base"`` is special:
     it moves the object, so ``new_value`` must be a 3-number ``[x, y, z]``
@@ -1400,12 +1489,15 @@ def modify_parameter(
     ``FreeCAD.Vector`` on ``Placement.Base`` while the object's current
     ``Placement.Rotation`` is preserved.
     """
-    target = Path(target_path)
-    if not target.is_file():
-        return _error(f"modify_parameter: target_path not found: {target_path}")
     param = (parameter_name or "").strip()
     if not param:
         return _error("modify_parameter requires a non-empty parameter_name")
+    session_path = _session_document_path()
+    if not session_path.is_file():
+        return _error(
+            "modify_parameter: no session document yet — create objects with create_box/"
+            "create_cylinder/insert_standard_part first"
+        )
 
     if param.lower() in _VECTOR_PARAMETER_NAMES:
         try:
@@ -1416,10 +1508,15 @@ def modify_parameter(
             )
         if is_dry_run_enabled():
             return _dry_run_result(
-                "modify_parameter", path=str(target), parameter_name=param, new_value=[x, y, z]
+                "modify_parameter", path=str(session_path), parameter_name=param, new_value=[x, y, z]
             )
         script = _MODIFY_PARAMETER_VECTOR_SCRIPT.format(
-            target_path=str(target), x=x, y=y, z=z, out_path=str(target), marker=_OK_MARKER,
+            session_path=str(session_path),
+            target_object=target_object,
+            x=x,
+            y=y,
+            z=z,
+            marker=_OK_MARKER,
         )
         result_value: float | list[float] = [x, y, z]
     else:
@@ -1428,12 +1525,14 @@ def modify_parameter(
         except (TypeError, ValueError):
             return _error(f"modify_parameter: new_value must be a number, got {new_value!r}")
         if is_dry_run_enabled():
-            return _dry_run_result("modify_parameter", path=str(target), parameter_name=param, new_value=value_f)
+            return _dry_run_result(
+                "modify_parameter", path=str(session_path), parameter_name=param, new_value=value_f
+            )
         script = _MODIFY_PARAMETER_SCRIPT.format(
-            target_path=str(target),
+            session_path=str(session_path),
+            target_object=target_object,
             parameter_name=param,
             new_value=value_f,
-            out_path=str(target),
             marker=_OK_MARKER,
         )
         result_value = value_f
@@ -1442,12 +1541,12 @@ def modify_parameter(
     if not result["ok"]:
         return _error(f"modify_parameter failed: {result['error']}")
     return _ok(
-        name=target.stem,
-        path=str(target),
+        name=target_object,
+        path=str(session_path),
         parameter_name=param,
         new_value=result_value,
         bounding_box=result.get("bounding_box"),
-        gui_shown=_auto_show(target),
+        gui_shown=_auto_show(session_path),
     )
 
 
