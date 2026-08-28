@@ -1124,6 +1124,8 @@ doc = App.newDocument("DanaModel")
 obj = doc.addObject("Part::Cut", {name!r})
 obj.Base = doc.copyObject(base_obj, False)
 obj.Tool = doc.copyObject(tool_obj, False)
+obj.Base.Visibility = False
+obj.Tool.Visibility = False
 doc.recompute()
 doc.saveAs({out_path!r})
 """ + _BBOX_PRINT + """\
@@ -1141,6 +1143,8 @@ tool_obj = next((o for o in tool_doc.Objects if not o.InList), tool_doc.Objects[
 doc = App.newDocument("DanaModel")
 obj = doc.addObject({feature_type!r}, {name!r})
 obj.Shapes = [doc.copyObject(base_obj, False), doc.copyObject(tool_obj, False)]
+for _shape_obj in obj.Shapes:
+    _shape_obj.Visibility = False
 doc.recompute()
 doc.saveAs({out_path!r})
 """ + _BBOX_PRINT + """\

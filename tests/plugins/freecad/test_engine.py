@@ -119,6 +119,34 @@ def test_pattern_offsets_rejects_unknown_pattern_type():
 
 
 # --------------------------------------------------------------------------
+# Boolean scripts — the Base/Tool/Shapes consumed by a Cut/Fuse/Common must
+# be hidden in the saved document itself, not just when the fit-view macro
+# happens to run on GUI open.
+# --------------------------------------------------------------------------
+
+
+def test_boolean_cut_script_hides_base_and_tool():
+    script = engine._BOOLEAN_CUT_SCRIPT.format(
+        base_path="base.FCStd", tool_path="tool.FCStd", name="Cut", out_path="out.FCStd", marker="OK"
+    )
+    assert "obj.Base.Visibility = False" in script
+    assert "obj.Tool.Visibility = False" in script
+
+
+def test_boolean_fuse_common_script_hides_all_shapes():
+    script = engine._BOOLEAN_FUSE_COMMON_SCRIPT.format(
+        base_path="base.FCStd",
+        tool_path="tool.FCStd",
+        feature_type="Part::MultiFuse",
+        name="Fusion",
+        out_path="out.FCStd",
+        marker="OK",
+    )
+    assert "_shape_obj.Visibility = False" in script
+    assert "for _shape_obj in obj.Shapes:" in script
+
+
+# --------------------------------------------------------------------------
 # _sketch_edge_specs — create_sketch_extrude's pure geometry prep
 # --------------------------------------------------------------------------
 
