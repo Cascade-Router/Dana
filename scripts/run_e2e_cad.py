@@ -18,13 +18,27 @@ through a minimal duck-typed ``WebSocket`` stand-in that only needs
 ``send_json`` (nothing here ever calls ``receive_json``; that's ``ws_chat``'s
 own message loop, which this runner replaces outright rather than reusing).
 
-Every tool this is meant to exercise (create_freecad_box, insert_standard_part,
-modify_freecad_parameter, perform_freecad_boolean, ...) is in
-``dana.api.server._HITL_ALWAYS_APPROVED_TOOLS``, so none of them ever suspend
-the loop waiting for a human approval a headless script could never supply.
-If a call DOES suspend (HITL approval or a visual-capture request — e.g. a
-custom prompt reaching for a tool outside that allowlist), this runner
-detects the stuck session state below and fails loudly instead of hanging.
+Most tools this is meant to exercise (create_freecad_box, insert_standard_part,
+modify_freecad_parameter, perform_freecad_boolean, ...) are in
+``dana.api.server._HITL_ALWAYS_APPROVED_TOOLS`` and never suspend the loop at
+all. A few real scenarios (generate_urdf_assembly, export_freecad_model,
+create_assembly_mate) legitimately need a downstream mutating tool that
+ISN'T on that permanent allowlist — by design, since a human should
+ordinarily approve them once per session. ``_CI_PREAPPROVED_TOOLS`` below
+pre-seeds exactly those tool_ids into THIS run's own ``session
+["hitl_approved_tools"]`` — the same in-memory, never-persisted, per-session
+allowlist ``_resolve_react_hitl`` would populate after a real human clicked
+"approve" once — so a scripted CI run can reach them autonomously. This is
+scoped entirely to the plain dict this script constructs below: it never
+touches ``dana.api.server._HITL_ALWAYS_APPROVED_TOOLS`` itself (the live
+server's own permanent, always-approved set is completely untouched — a
+real session run through ``ws_chat`` still requires actual human approval
+for every one of these three, exactly as before) or any other session.
+
+Anything else that still suspends (HITL approval for a tool outside both
+allowlists, or a visual-capture request) is a genuine "this headless script
+cannot proceed" case — this runner detects the stuck session state below
+and fails loudly instead of hanging.
 
 Local Chat Session Persistence is still exercised for real (a genuine,
 uniquely-named session is created and handed through the same
@@ -60,6 +74,18 @@ _MASTER_PROMPT = (
     "Build a box 60x40x20 and insert an ISO4017 hex bolt size M8 length 30. "
     "Then move the bolt to X=30, Y=20, Z=10 and perform a boolean cut to "
     "subtract the bolt from the box."
+)
+
+# Mutating tools a real chain-of-CAD-tools scenario can legitimately reach
+# that are NOT in dana.api.server._HITL_ALWAYS_APPROVED_TOOLS (that set is
+# deliberately narrow — see its own comment there) — pre-approved for THIS
+# run only via session["hitl_approved_tools"] below, never by touching that
+# module-level set itself. Keep this list narrow and explicit (not "every
+# mutating tool") so a genuinely unexpected HITL suspension — a tool this
+# CI scenario has no business reaching — still surfaces as a loud failure
+# instead of being silently waved through.
+_CI_PREAPPROVED_TOOLS: frozenset[str] = frozenset(
+    {"generate_urdf_assembly", "export_freecad_model", "create_assembly_mate"}
 )
 
 # Substrings of the specific terminal messages dana.api.server._run_react_loop/
@@ -160,7 +186,14 @@ async def run(prompt: str) -> int:
         "working_memory": {"summary": "", "turn": 0},
         "turn_counter": 0,
         "abort_requested": False,
-        "hitl_approved_tools": set(),
+        # Pre-seeded (not left empty like a real fresh session would start)
+        # with _CI_PREAPPROVED_TOOLS — see the module docstring and that
+        # constant's own comment. A mutable set, exactly like a real
+        # session's, just started non-empty; _resolve_react_hitl (never
+        # invoked by this script at all, since nothing here ever suspends
+        # for one of these three) would otherwise be the only thing that
+        # adds to it, one real human approval at a time.
+        "hitl_approved_tools": set(_CI_PREAPPROVED_TOOLS),
     }
 
     try:
