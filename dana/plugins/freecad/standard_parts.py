@@ -257,7 +257,13 @@ def _resolve_bearing(specification: str, name: str | None) -> tuple[str, str, di
 def _resolve_fastener(
     fastener_type: str, size: str, length: float | None, name: str | None
 ) -> tuple[str, str, dict[str, Any], dict[str, float | str]]:
-    ft = (fastener_type or "").strip()
+    # FreeCAD's Fasteners workbench keys its type registry on an exact,
+    # space-free, uppercase token (e.g. "ISO4017", not "iso4017" or
+    # "ISO 4017") — normalize before validating/using it so an LLM-emitted
+    # variant resolves to the same canonical designation instead of either
+    # failing the token check (a stray space) or silently mismatching the
+    # workbench's registry (wrong case).
+    ft = str(fastener_type or "").replace(" ", "").upper()
     sz = (size or "").strip()
     if not ft or not _FASTENER_TOKEN_RE.match(ft):
         raise ValueError(

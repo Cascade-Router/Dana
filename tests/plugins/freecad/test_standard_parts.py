@@ -115,6 +115,32 @@ def test_insert_standard_part_custom_name_and_placement_are_honored():
 
 
 # --------------------------------------------------------------------------
+# insert_standard_part(part_type="fastener") — fastener_type sanitization
+#
+# FreeCAD's Fasteners workbench keys its type registry on an exact,
+# space-free, uppercase token: passing "iso4017" through unchanged used to
+# reach FastenersCmd.FSScrewObject and crash with FreeCAD's own
+# "'iso4017' is not part of the enumeration" error (confirmed live against
+# a real FreeCADCmd), and "ISO 4017" failed Dana's own token regex before
+# ever reaching FreeCAD. Both must now resolve to "ISO4017".
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw", ["ISO4017", "iso4017", "ISO 4017", "iso 4017", "  iso4017  "])
+def test_insert_fastener_dry_run_normalizes_type_case_and_spaces(raw: str):
+    result = json.loads(insert_standard_part("fastener", fastener_type=raw, size="M8", length=30))
+    assert result["ok"] is True, result
+    assert result["dimensions"]["fastener_type"] == "ISO4017"
+    assert result["name"] == "Fastener_ISO4017_M8"
+
+
+def test_insert_fastener_dry_run_rejects_empty_type():
+    result = json.loads(insert_standard_part("fastener", fastener_type="   ", size="M8", length=30))
+    assert result["ok"] is False
+    assert "fastener_type" in result["error"]
+
+
+# --------------------------------------------------------------------------
 # End-to-end dispatch_tool_call integration
 # --------------------------------------------------------------------------
 
