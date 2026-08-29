@@ -405,7 +405,24 @@ def show_in_freecad_gui(filepath: str) -> str:
     ``SWP_NOACTIVATE``, never calls ``set_foreground_window`` or any other
     activation API) is otherwise unchanged, so a fullscreen app or game on
     the primary monitor is still never disturbed.
+
+    Absolute headless lock: under ``DANA_HEADLESS=true`` this returns
+    immediately, before even checking whether ``filepath`` exists — a
+    backstop for any caller that reaches this function directly (e.g.
+    ``dana.api.cad.open_desktop``) rather than through ``_auto_show``
+    (which already has its own ``DANA_HEADLESS`` check), so no code path
+    can ever launch the GUI in headless mode.
     """
+    if os.getenv("DANA_HEADLESS", "false").lower() == "true":
+        # A bare `False`/bool return would violate this function's own
+        # `-> str` JSON-string contract — every caller does
+        # `json.loads(show_in_freecad_gui(...))` (see _auto_show and
+        # dana.api.cad.open_desktop), which raises TypeError on a non-str/
+        # bytes argument. `_ok(...)` keeps this parseable exactly like
+        # every other return path below, with a flag a caller can check
+        # instead of just falling through to a confusing crash.
+        return _ok(op="show_in_freecad_gui", path=filepath, spawned=False, skipped="headless_mode")
+
     path = Path(filepath)
     if not path.is_file():
         return _error(f"show_in_freecad_gui: file not found: {filepath}")

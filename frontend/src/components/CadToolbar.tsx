@@ -164,9 +164,9 @@ export function CadToolbar({ meshUrl }: Props) {
             {artifacts.length === 0 && (
               <div className="cad-toolbar__export-empty">No artifacts generated yet.</div>
             )}
-            {artifacts.map((a) => (
+            {artifacts.map((a, index) => (
               <button
-                key={a.filename}
+                key={`${a.filename}-${index}`}
                 type="button"
                 className="cad-toolbar__export-item"
                 onClick={() => download(a)}

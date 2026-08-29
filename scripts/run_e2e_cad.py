@@ -71,6 +71,22 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+# Loaded explicitly, before any dana.* import, so TRIPO_API_KEY/
+# MESHY_API_KEY/etc. are guaranteed present in os.environ from this
+# script's very first tool call onward — rather than depending on
+# whichever dana.core.model_provider.ensure_dotenv_loaded() call happens
+# to fire first inside the ReAct loop (which already works in practice
+# once an LLM call has been made, but leaves a real gap for anything that
+# reads os.environ before that point). Same explicit-path-then-default-
+# search double call ensure_dotenv_loaded() itself uses, for the same
+# reason: reliable regardless of this process's current working directory
+# when invoked, not just when run from the repo root as the module
+# docstring's own usage example assumes.
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(_ROOT / ".env")
+load_dotenv()
+
 from dana.api.server import _process_user_text  # noqa: E402
 from dana.api.sessions import SESSIONS_DIR, new_session_id  # noqa: E402
 from dana.platform.factory import get_cad_engine  # noqa: E402
