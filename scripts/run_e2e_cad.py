@@ -47,6 +47,12 @@ full orchestrator parity means not silently skipping that either — but its
 on-disk record is deleted again once the run ends, so repeated CI runs never
 accumulate phantom chats in the user's real session storage.
 
+The shared FreeCAD ``Session_Active.FCStd`` document gets the same treatment
+in the other direction: ``_wipe_session_state`` deletes it (plus any stale
+backup/lock file) before the very first prompt of a run is dispatched, so a
+previous run's leftover objects can never bleed into this run's Automatic
+Visual Verification screenshot/VLM read.
+
 Usage (from repo root)::
 
     python scripts/run_e2e_cad.py                 # runs the default master prompt
@@ -70,6 +76,13 @@ from dana.api.sessions import SESSIONS_DIR, new_session_id  # noqa: E402
 from dana.platform.factory import get_cad_engine  # noqa: E402
 from dana.plugins.freecad.call_log import CadCallLog  # noqa: E402
 
+# Same directory/filename dana.plugins.freecad.engine._session_document_path()
+# resolves to — declared as its own copy rather than importing engine.py's
+# underscore-prefixed module attributes across modules, same precedent
+# dana.tools.image_to_3d/dana.api.cad/dana.tools.urdf_builder's own
+# docstrings already apply.
+_SESSION_DOCUMENT_PATH = _ROOT / "freecad_output" / "Session_Active.FCStd"
+
 _MASTER_PROMPT = (
     "Build a box 60x40x20 and insert an ISO4017 hex bolt size M8 length 30. "
     "Then move the bolt to X=30, Y=20, Z=10 and perform a boolean cut to "
@@ -85,7 +98,12 @@ _MASTER_PROMPT = (
 # CI scenario has no business reaching — still surfaces as a loud failure
 # instead of being silently waved through.
 _CI_PREAPPROVED_TOOLS: frozenset[str] = frozenset(
-    {"generate_urdf_assembly", "export_freecad_model", "create_assembly_mate"}
+    {
+        "generate_urdf_assembly",
+        "export_freecad_model",
+        "create_assembly_mate",
+        "generate_3d_from_image",
+    }
 )
 
 # Substrings of the specific terminal messages dana.api.server._run_react_loop/
@@ -105,6 +123,56 @@ _FAILURE_MARKERS: tuple[str, ...] = (
 
 def _banner(title: str) -> None:
     print(f"\n{'=' * 78}\n{title}\n{'=' * 78}", flush=True)
+
+
+def _wipe_session_state() -> None:
+    """Deletes the shared ``Session_Active.FCStd`` (and any stale lock/backup
+    file sitting next to it) before this run's first prompt is ever
+    dispatched. ``create_box``/``apply_boolean``/``import_and_solidify_mesh``
+    /``modify_parameter`` all reuse the ONE session-scoped document by design
+    (see ``dana.plugins.freecad.engine``'s own ``_SESSION_DOCUMENT_NAME``
+    comment) — great for a real multi-turn chat, but it means a previous CI
+    run's leftover objects (a stray ``BaseBox``, ``AI_Part``, ``CutResult``,
+    ...) are still sitting in that document the next time this script runs.
+    The Automatic Visual Verification hook then screenshots/VLM-reads
+    whatever's ACTUALLY in the document, which can be a mix of this run's
+    new geometry and a prior run's leftovers — state contamination a VLM
+    has no way to distinguish from "this run's actual result".
+
+    Always safe to call: a genuinely fresh checkout has nothing to delete,
+    and every ``create_freecad_*``/``import_and_solidify_mesh`` call below
+    creates the document fresh (``App.newDocument``) the moment it doesn't
+    find one on disk (``_SESSION_OPEN_SNIPPET``).
+    """
+    session_dir = _SESSION_DOCUMENT_PATH.parent
+    if not session_dir.is_dir():
+        return
+
+    removed: list[str] = []
+    # Matches the document itself, FreeCAD's own timestamped
+    # ".<timestamp>.FCBak" backup convention (see the sibling Box.*/Cut.*
+    # .FCBak files already in freecad_output/), and a plain ".lock" suffix.
+    for candidate in session_dir.glob(f"{_SESSION_DOCUMENT_PATH.stem}*"):
+        try:
+            candidate.unlink()
+            removed.append(candidate.name)
+        except OSError:
+            pass
+    # LibreOffice-style lock marker convention — not one FreeCAD itself
+    # currently emits, but cheap to also guard against a future FreeCAD
+    # version (or a crashed prior GUI process) that does.
+    lock_marker = session_dir / f".~lock.{_SESSION_DOCUMENT_PATH.name}#"
+    if lock_marker.exists():
+        try:
+            lock_marker.unlink()
+            removed.append(lock_marker.name)
+        except OSError:
+            pass
+
+    if removed:
+        print(f"[runner] Wiped stale session state: {', '.join(sorted(removed))}", flush=True)
+    else:
+        print("[runner] No stale session state found (clean start).", flush=True)
 
 
 class _FakeWebSocket:
@@ -154,6 +222,7 @@ class _FakeWebSocket:
 
 
 async def run(prompt: str) -> int:
+    _wipe_session_state()
     engine = get_cad_engine()
     print(f"[runner] CAD engine driver: {type(engine).__name__}", flush=True)
     print(f"[runner] Prompt: {prompt}", flush=True)
