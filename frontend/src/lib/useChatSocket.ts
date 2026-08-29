@@ -176,29 +176,49 @@ export function useChatSocket(
   const activePluginsRef = useRef<string[]>(activePlugins);
   activePluginsRef.current = activePlugins;
 
+  // Tracks the session_id THIS hook instance last actually connected as —
+  // compared (not just relied on the effect's own dependency array) so the
+  // reset below only fires on a genuine session CHANGE, never on a
+  // same-session reconnect (a dropped/suspended socket — e.g. a background
+  // browser tab's connection getting closed by the browser/OS and this
+  // effect re-running to re-establish it) reusing the identical
+  // requestedSessionId. Initialized to requestedSessionId itself (not
+  // null/undefined) so the very first connect of a brand-new hook instance
+  // is never mistaken for a "change" either — first mount already starts
+  // from each state's own empty initial value, nothing to additionally
+  // clear there.
+  const previousSessionIdRef = useRef<string | null>(requestedSessionId);
+
   useEffect(() => {
-    // Every (re)connect starts this turn/session's client-side state clean
-    // — seeded from whatever history the caller already fetched for THIS
-    // requestedSessionId (empty for a brand-new chat), never carrying over
-    // the PREVIOUS session's messages/activity/turn state.
-    setMessages(initialMessagesRef.current);
-    setLiveActivity([]);
-    liveActivityRef.current = [];
-    setTurnActive(false);
-    // Terminal History isolation: `log` (server_log/tool_call/tool_result/
-    // etc. WS events) is genuinely per-session data — without this reset
-    // it kept accumulating across a chat switch, so the Terminal History
-    // panel showed a PREVIOUS session's backend activity mixed in with the
-    // newly-selected one. Deliberately NOT resetting consoleCapture.ts's
-    // own browser-console buffer here (TerminalDrawer's OTHER log source,
-    // read via useSyncExternalStore, combined into the same panel) — that
-    // one is browser/OS-level, not tied to any particular chat session,
-    // and a debugging tool clearing recent real console errors just
-    // because the user switched chats would be surprising, not helpful.
-    setLog([]);
-    setMeshUrl(null);
-    setDriverState(null);
-    setCameraTarget(null);
+    const sessionChanged = previousSessionIdRef.current !== requestedSessionId;
+    previousSessionIdRef.current = requestedSessionId;
+
+    if (sessionChanged) {
+      // Every session CHANGE (never a same-session reconnect — see
+      // sessionChanged above) starts this chat's client-side state clean —
+      // seeded from whatever history the caller already fetched for THIS
+      // requestedSessionId (empty for a brand-new chat), never carrying
+      // over the PREVIOUS session's messages/activity/turn state.
+      setMessages(initialMessagesRef.current);
+      setLiveActivity([]);
+      liveActivityRef.current = [];
+      setTurnActive(false);
+      // Terminal History isolation: `log` (server_log/tool_call/tool_result/
+      // etc. WS events) is genuinely per-session data — without this reset
+      // it kept accumulating across a chat switch, so the Terminal History
+      // panel showed a PREVIOUS session's backend activity mixed in with
+      // the newly-selected one. Deliberately NOT resetting
+      // consoleCapture.ts's own browser-console buffer here (TerminalDrawer's
+      // OTHER log source, read via useSyncExternalStore, combined into the
+      // same panel) — that one is browser/OS-level, not tied to any
+      // particular chat session, and a debugging tool clearing recent real
+      // console errors just because the user switched chats would be
+      // surprising, not helpful.
+      setLog([]);
+      setMeshUrl(null);
+      setDriverState(null);
+      setCameraTarget(null);
+    }
 
     const query = requestedSessionId ? `?session_id=${encodeURIComponent(requestedSessionId)}` : "";
     const socket = new WebSocket(`${API_WS_BASE}/ws/chat${query}`);
