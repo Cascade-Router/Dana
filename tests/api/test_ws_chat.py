@@ -1164,3 +1164,44 @@ def test_execute_code_task_requires_hitl_approval_with_files_then_dispatches(
 
         assistant = _drain_until(ws, "assistant_message")
         assert assistant["content"] == "Done."
+
+
+def test_verification_gate_rejects_unacknowledged_failure_then_accepts_admission(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for the hallucinated-success bug a live E2E run hit:
+    perform_freecad_boolean failed (no such object), yet the model's
+    proposed "final" answer confidently reported a fused bounding box as if
+    the operation had succeeded. _run_react_loop's verification gate
+    (last_failure + _acknowledges_failure) must reject that first "final"
+    turn and loop back with a SYSTEM OVERRIDE message instead of ending the
+    turn on it — then accept the SECOND "final" turn once it actually
+    admits the failure in plain language.
+
+    perform_freecad_boolean is (in production) in _HITL_ALWAYS_APPROVED_TOOLS
+    so this never needs an approval round-trip — but this file's own
+    _disable_permanent_hitl_whitelist autouse fixture clears that set for
+    every test here by default, so it must be restored explicitly (same
+    pattern every other test in this file that relies on the real whitelist
+    already uses) or the tool call suspends on hitl_approval_required
+    forever instead of dispatching. MockFreeCADEngine.apply_boolean fails
+    deterministically for an object name that was never created.
+    """
+    monkeypatch.setattr(server_module, "_HITL_ALWAYS_APPROVED_TOOLS", _REAL_HITL_ALWAYS_APPROVED_TOOLS)
+    _mock_llm(
+        monkeypatch,
+        [ToolCall(tool_id="perform_freecad_boolean", arguments={"operation": "union", "base_object": "AI_Part", "tool_object": "BaseBox"})],
+        "The bounding box of the fused result is (0, 0, 0, 50, 50, 50).",  # hallucinated success — must be rejected
+        "I wasn't able to complete this — the boolean union failed because 'AI_Part' doesn't exist yet.",
+    )
+    with client.websocket_connect("/ws/chat") as ws:
+        ws.receive_json()  # ready
+        _activate_freecad(ws)
+        ws.send_json({"text": "fuse AI_Part and BaseBox"})
+
+        tool_result = _drain_until(ws, "tool_result")
+        assert tool_result["ok"] is False
+
+        assistant = _drain_until(ws, "assistant_message")
+        assert "wasn't able to complete" in assistant["content"]
+        assert "fused result is (0, 0, 0, 50, 50, 50)" not in assistant["content"]

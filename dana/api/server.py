@@ -968,6 +968,25 @@ async def _sweep_stale_suspensions() -> None:
                     pass
 
 
+# Substrings _acknowledges_failure checks a proposed "final" answer for,
+# case-insensitively, when the last tool actually dispatched failed —
+# deliberately plain/generic (not tied to any one tool's error wording),
+# since the point is only to tell "the model is aware something went
+# wrong" from "the model is confidently reporting success that never
+# happened", not to grade the quality of its explanation.
+_FAILURE_ACKNOWLEDGEMENT_MARKERS: tuple[str, ...] = ("failed", "error", "cannot", "unable")
+
+
+def _acknowledges_failure(content: str) -> bool:
+    """True if ``content`` (a model's proposed final answer) contains any of
+    ``_FAILURE_ACKNOWLEDGEMENT_MARKERS`` — used by _run_react_loop's
+    verification gate to tell whether a final answer, offered right after
+    the last dispatched tool call failed, actually admits that rather than
+    silently reporting success."""
+    lowered = (content or "").lower()
+    return any(marker in lowered for marker in _FAILURE_ACKNOWLEDGEMENT_MARKERS)
+
+
 async def _run_react_loop(
     websocket: WebSocket,
     session: dict[str, Any],
@@ -1058,11 +1077,47 @@ async def _run_react_loop(
         return
 
     if turn.kind == "final":
-        await _dag_complete(websocket, node_id, "success", {"final": True}, parse_ms)
         content = turn.content or (
             "I didn't think that needed a tool call — try asking for a specific "
             "action (e.g. \"refactor foo.py to use snake_case\" or \"build a box 60x40x20\")."
         )
+
+        if last_failure is not None and not _acknowledges_failure(content):
+            # Verification gate against hallucinated success: the LAST tool
+            # actually dispatched failed (last_failure is threaded through
+            # every _run_react_loop/_execute_and_continue recursion — see
+            # _execute_and_continue's own docstring), and the model's
+            # proposed final answer doesn't even mention that in plain
+            # language. A live E2E run hit exactly this: import_and_
+            # solidify_mesh/perform_freecad_boolean were never successfully
+            # called, yet the model's "final" answer confidently reported a
+            # fabricated "fused result" bounding box. Rejecting the
+            # termination and bouncing back into the loop (bounded by the
+            # existing _MAX_REACT_ITERATIONS check at the top of this
+            # function — this never loops forever) forces the model to
+            # either retry, try something else, or actually say it failed.
+            await _dag_complete(websocket, node_id, "error", {"final": True, "rejected": "unacknowledged_failure"}, parse_ms)
+            failed_tool_id, failure_message = last_failure
+            print(
+                f"[ReAct] Rejecting unacknowledged-failure termination after '{failed_tool_id}' "
+                f"failed ({failure_message!r}) -> iteration {loop_count + 1}",
+                file=sys.stderr,
+                flush=True,
+            )
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "SYSTEM OVERRIDE: Your last tool action failed. You cannot declare the "
+                        "task successful. You must either retry the action, try an alternative "
+                        "tool, or explicitly explain the failure to the user."
+                    ),
+                }
+            )
+            await _run_react_loop(websocket, session, messages, loop_count + 1, last_failure=last_failure)
+            return
+
+        await _dag_complete(websocket, node_id, "success", {"final": True}, parse_ms)
         messages.append({"role": "assistant", "content": content})
         await _finish_turn(websocket, session, messages, content)
         await _speak_reply(websocket, content)

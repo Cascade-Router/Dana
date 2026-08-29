@@ -16,6 +16,7 @@ import base64
 import binascii
 import inspect
 import json
+import math
 import re
 import sys
 import time
@@ -279,6 +280,22 @@ def _first_sentence(text: str, limit: int = 200) -> str:
     return first[:limit].rstrip()
 
 
+# Dropped from a search_tool_catalog query before lexical matching — common
+# connectors that pad a natural-language query ("import a mesh FILE and
+# convert it TO a solid") without ever appearing in a tool's own terse
+# description. Deliberately small/conservative (not a full stop-word list)
+# so a real content word never gets accidentally dropped.
+_SEARCH_STOP_WORDS = frozenset({"and", "to", "a", "the", "file", "for", "with", "of", "in"})
+
+# Fraction of a query's (stop-word-stripped) terms that must appear in a
+# tool's name+description for _tool_search_tool_catalog's lexical stage to
+# consider it a match — see that function's own docstring for why even
+# stop-word filtering alone doesn't fully close its motivating recall gap
+# (a genuine vocabulary mismatch, not just query padding, can still leave
+# one term out of five unmatched).
+_LEXICAL_MATCH_THRESHOLD = 0.75
+
+
 def _tool_search_tool_catalog(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
     """Lazy Loading, discovery half: searches the ENTIRE global tool
     registry (``dana.tools.registry.get_tool_registry`` — every tool from
@@ -300,31 +317,47 @@ def _tool_search_tool_catalog(args: dict[str, Any], _engine: Any, _cp: Any) -> d
     Two stages now run on every call, merged and deduplicated:
 
     1. **Lexical** — every registered tool whose name + description
-       contains ALL of ``query``'s whitespace-split terms (case-insensitive
-       substring match). Cheap (a linear scan over plain strings already
-       held in memory, no embedding/network call) and catches exact-keyword
-       queries the hash-embedding step alone can miss.
+       contains at least ``_LEXICAL_MATCH_THRESHOLD`` (75%) of ``query``'s
+       significant terms (case-insensitive substring match, ``_STOP_WORDS``
+       dropped first). Cheap (a linear scan over plain strings already held
+       in memory, no embedding/network call) and catches exact-keyword
+       queries the hash-embedding step alone can miss. Neither stop-word
+       filtering nor a 100%-required threshold alone would have fully fixed
+       the incident above: even with "and"/"to"/"file" dropped, the query's
+       remaining "convert" never appears in ``import_and_solidify_mesh``'s
+       own description (it says "combine"/"edge-operate", not "convert") —
+       a plain ALL-terms match still misses it. A 75% threshold (4 of the 5
+       remaining terms: import/obj/mesh/solid all hit, "convert" doesn't)
+       is what actually closes the gap; ranked by match count so a tool
+       matching more terms outranks one that barely clears the bar.
     2. **Semantic** — the existing vector-similarity search
        (``registry.retrieve``), for queries that don't share exact wording
        with a tool's own description.
 
-    Lexical hits are listed first (a literal keyword match is the stronger
-    signal), then semantic hits fill any remaining slots up to 10 total.
+    Lexical hits are listed first, best-match-count first (a literal
+    keyword match is the stronger signal), then semantic hits fill any
+    remaining slots up to 10 total.
     """
     query = str(args.get("query") or "").strip()
     if not query:
         return {"ok": False, "error": "query is required"}
     registry = get_tool_registry()
 
-    terms = [t for t in query.lower().split() if t]
+    raw_terms = [t for t in query.lower().split() if t]
+    terms = [t for t in raw_terms if t not in _SEARCH_STOP_WORDS] or raw_terms
     lexical_hits = []
     if terms:
+        required = max(1, math.ceil(len(terms) * _LEXICAL_MATCH_THRESHOLD))
+        scored: list[tuple[int, Any]] = []
         for entry in registry.tools.values():
             if not is_bindable_tool(entry):
                 continue
             haystack = f"{entry.name} {entry.description}".lower()
-            if all(term in haystack for term in terms):
-                lexical_hits.append(entry)
+            matched = sum(1 for term in terms if term in haystack)
+            if matched >= required:
+                scored.append((matched, entry))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        lexical_hits = [entry for _, entry in scored]
 
     semantic_hits = registry.retrieve(query, k=10)
 
