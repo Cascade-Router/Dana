@@ -29,7 +29,7 @@ from dana.core.context_manager import prune_message_history, prune_tool_output_h
 from dana.core.model_provider import ModelProvider, tool_calling_provider
 from dana.core.skill_loader import delete_skill, load_user_skills, read_skill_source, save_skill
 from dana.core.tool_retrieval import narrow_tool_ids_by_query
-from dana.tools.registry import get_tool_registry
+from dana.tools.registry import get_tool_registry, is_bindable_tool
 from dana.paths import CAPTURES_DIR
 from dana.platform import factory as platform_factory
 from dana.platform import get_cad_engine, get_control_plane
@@ -283,19 +283,64 @@ def _tool_search_tool_catalog(args: dict[str, Any], _engine: Any, _cp: Any) -> d
     """Lazy Loading, discovery half: searches the ENTIRE global tool
     registry (``dana.tools.registry.get_tool_registry`` — every tool from
     ``tools.json`` plus every plugin manifest, regardless of which
-    capability domains are currently active) for ``query``, returning only
-    a lightweight tool_id + one-sentence description per match — never a
-    full schema, so a broad discovery search never itself costs the token
-    budget the way actually loading a tool would. Pair with
-    ``load_specific_tool`` to make a returned match callable.
+    capability domains are currently active) for ``query`` using a
+    two-stage hybrid search, returning only a lightweight tool_id +
+    one-sentence description per match — never a full schema, so a broad
+    discovery search never itself costs the token budget the way actually
+    loading a tool would. Pair with ``load_specific_tool`` to make a
+    returned match callable.
+
+    The old embedding-only search had a real recall gap: a live E2E run's
+    query "import OBJ mesh file and convert to solid" failed to surface
+    ``import_and_solidify_mesh`` at all, despite that tool's own
+    description literally starting with "Imports a triangle mesh
+    (.obj/.glb/.stl...)" — the agent then guessed a nonexistent tool_id and
+    gave up (see ``_FREECAD_ESSENTIAL_TOOL_IDS``'s comment on the same
+    incident, which is also why that tool moved into the essential tier).
+    Two stages now run on every call, merged and deduplicated:
+
+    1. **Lexical** — every registered tool whose name + description
+       contains ALL of ``query``'s whitespace-split terms (case-insensitive
+       substring match). Cheap (a linear scan over plain strings already
+       held in memory, no embedding/network call) and catches exact-keyword
+       queries the hash-embedding step alone can miss.
+    2. **Semantic** — the existing vector-similarity search
+       (``registry.retrieve``), for queries that don't share exact wording
+       with a tool's own description.
+
+    Lexical hits are listed first (a literal keyword match is the stronger
+    signal), then semantic hits fill any remaining slots up to 10 total.
     """
     query = str(args.get("query") or "").strip()
     if not query:
         return {"ok": False, "error": "query is required"}
     registry = get_tool_registry()
+
+    terms = [t for t in query.lower().split() if t]
+    lexical_hits = []
+    if terms:
+        for entry in registry.tools.values():
+            if not is_bindable_tool(entry):
+                continue
+            haystack = f"{entry.name} {entry.description}".lower()
+            if all(term in haystack for term in terms):
+                lexical_hits.append(entry)
+
+    semantic_hits = registry.retrieve(query, k=10)
+
+    seen: set[str] = set()
+    merged = []
+    for entry in (*lexical_hits, *semantic_hits):
+        if entry.name in seen:
+            continue
+        seen.add(entry.name)
+        merged.append(entry)
+        if len(merged) >= 10:
+            break
+
     matches = [
         {"tool_id": entry.name, "description": _first_sentence(entry.description) or entry.name}
-        for entry in registry.retrieve(query, k=10)
+        for entry in merged
     ]
     return {
         "ok": True,
@@ -1658,14 +1703,14 @@ _FREECAD_TOOL_IDS = frozenset(
 # minute (TPM): Limit 8000, Used 6895, Requested 6842" on
 # openai/gpt-oss-120b) — a 400 "too many tools" was the original
 # hypothesis, but the actual failure is TPM exhaustion; cutting the
-# schema payload is still the correct fix either way. These 8 cover the
+# schema payload is still the correct fix either way. These 9 cover the
 # overwhelming majority of "make me a basic part" requests (box/cylinder,
 # one boolean op, one edge op, a parameter tweak, a bounding-box check,
-# export, standard hardware) without the model ever seeing the
-# heavier/rarer schemas (patterns, assembly mates, blueprints, camera
-# control). The agent can still reach the full set any time a task
-# genuinely needs it by calling load_capability again with
-# domain="freecad_full".
+# export, standard hardware, an AI-generated-mesh-to-solid bridge) without
+# the model ever seeing the heavier/rarer schemas (patterns, assembly
+# mates, blueprints, camera control). The agent can still reach the full
+# set any time a task genuinely needs it by calling load_capability again
+# with domain="freecad_full".
 _FREECAD_ESSENTIAL_TOOL_IDS = frozenset(
     {
         "create_freecad_box",
@@ -1681,6 +1726,15 @@ _FREECAD_ESSENTIAL_TOOL_IDS = frozenset(
         # (or give up) before ever calling it. Its own tools.json description already
         # says "Always prefer this over hand-modeling a named standard part," so it
         # needs to be reachable from turn one, same as the other essential primitives.
+        "import_and_solidify_mesh",  # Mesh-to-solid bridge (dana.plugins.freecad
+        # .mesh_ops) — the mandatory next step for a generate_3d_from_image result
+        # before any perform_freecad_*/create_assembly_mate call can touch it.
+        # Previously freecad_full-only: a live E2E run asked to solidify+union an
+        # AI-generated mesh never found it (load_capability("freecad") redirects to
+        # this essential set, and search_tool_catalog's old embedding-only search
+        # failed to surface it), so the agent fabricated a "fused result" bounding
+        # box without ever calling this tool or perform_freecad_boolean. Same
+        # "reachable from turn one" reasoning as insert_standard_part above.
     }
 )
 
