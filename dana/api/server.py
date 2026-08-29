@@ -73,6 +73,22 @@ from dana.plugins.os.desktop_vision import _capture_primary_monitor_jpeg_b64
 from dana.services.voice_service import VoiceService, VoiceState
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Loaded here — the one module every entry point (start_dana.py, app.py,
+# scripts/launchers/launch_api_server.py, run_e2e_cad.py, pytest) already
+# imports — so DANA_HEADLESS/TRIPO_API_KEY/etc. are guaranteed present in
+# os.environ for the live web app too, not just the standalone E2E runner
+# (which loads its own copy of .env for the same reason: several checks in
+# this module and dana.plugins.freecad.engine read os.environ directly,
+# not through dana.core.model_provider.ensure_dotenv_loaded(), so nothing
+# upstream of them was guaranteed to have loaded .env first). Same
+# explicit-path-then-default-search double call ensure_dotenv_loaded()
+# itself uses, for the same reason: reliable regardless of this process's
+# current working directory at launch.
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(_REPO_ROOT / ".env")
+load_dotenv()
 _FRONTEND_DIST = _REPO_ROOT / "frontend" / "dist"
 
 # Dev origins for `npm run tauri dev` / `npm run dev` (Vite default 5173,
@@ -216,13 +232,13 @@ async def _broadcast(message: dict[str, Any]) -> None:
 
 
 class _BroadcastStream:
-    """Debug Terminal plumbing: tees every line written to ``stream`` (stdout
-    or stderr — every ``print()``/traceback in this process, from any
-    thread) out to every connected ``/ws/chat`` client as a ``server_log``
-    event, so the frontend's floating Debug Terminal shows live backend
-    output without a separate log-tailing mechanism. The original stream is
-    always written first — this never replaces real console output, only
-    mirrors it.
+    """Terminal History plumbing: tees every line written to ``stream``
+    (stdout or stderr — every ``print()``/traceback in this process, from
+    any thread) out to every connected ``/ws/chat`` client as a
+    ``server_log`` event, so the frontend's floating Terminal History panel
+    shows live backend output without a separate log-tailing mechanism.
+    The original stream is always written first — this never replaces real
+    console output, only mirrors it.
 
     Buffers partial lines (``write`` can be called with partial/multi-line
     chunks) and only emits complete lines. Broadcasting itself hops onto the

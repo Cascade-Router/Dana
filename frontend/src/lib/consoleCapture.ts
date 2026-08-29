@@ -5,10 +5,10 @@ import type { ServerEvent } from "./useChatSocket";
 // (real backend stdout/stderr — see _BroadcastStream), which never exist at
 // all on the Gradio-mode build (useGradioChat.ts hardcodes `log: []`, since
 // app.py's plain request/response "chat" endpoint has no streaming
-// telemetry channel). That's why the Debug Terminal stayed empty there even
-// though gradioChatClient.ts's own `console.log("[GradioClient] ...")`
-// calls were reaching devtools the whole time — nothing ever routed a
-// browser-side console call into that array. This module patches
+// telemetry channel). That's why the Terminal History panel stayed empty
+// there even though gradioChatClient.ts's own `console.log("[GradioClient]
+// ...")` calls were reaching devtools the whole time — nothing ever routed
+// a browser-side console call into that array. This module patches
 // window.console once (idempotent — safe to call from multiple entry
 // points) so every console.log/warn/error anywhere in the app also lands
 // in a shared, reactive buffer TerminalDrawer reads from, on top of
@@ -70,12 +70,6 @@ export function installConsoleCapture(): void {
     original.error(...args);
     push("stderr", `[browser:error] ${args.map(formatArg).join(" ")}`);
   };
-
-  // Proves the capture mechanism itself is live, right as it comes up —
-  // goes through the now-patched console.log so it's simultaneously (a) a
-  // real devtools message and (b) the very first entry the Debug Terminal
-  // panel should ever show, regardless of WS vs Gradio mode.
-  console.log("[DebugTerminal] Debug console initialized successfully");
 }
 
 export function getCapturedLog(): ServerEvent[] {

@@ -202,12 +202,18 @@ export function useChatSocket(
 
     socket.onmessage = (event) => {
       const data: ServerEvent = JSON.parse(event.data);
-      // Debug Terminal's live feed — "server_log" mirrors every backend
+      // Terminal History's live feed — "server_log" mirrors every backend
       // print()/traceback (see dana/api/server.py's _BroadcastStream), which
       // can be noisy over a long session, so this is capped to the most
       // recent MAX_LOG_LINES rather than growing unbounded for the life of
-      // the connection.
-      setLog((prev) => [...prev, data].slice(-MAX_LOG_LINES));
+      // the connection. "ready" is excluded here — it fires on every
+      // connect/reconnect carrying the full driver_state payload (already
+      // consumed into its own state below), and was crowding real tool
+      // activity out of the capped buffer on a long session with several
+      // reconnects.
+      if (data.type !== "ready") {
+        setLog((prev) => [...prev, data].slice(-MAX_LOG_LINES));
+      }
 
       switch (data.type) {
         case "ready":

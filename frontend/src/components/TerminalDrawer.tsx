@@ -9,10 +9,13 @@ import "./TerminalDrawer.css";
 // yet regardless of which other module happened to import it first.
 installConsoleCapture();
 
+// "ready" is deliberately not a case here — useChatSocket.ts's onmessage
+// excludes it from the `log` array it feeds this component (see that
+// exclusion's own comment for why), so it never reaches this function in
+// practice; the `default` branch below still covers it defensively if
+// that ever changes.
 function formatLine(event: ServerEvent): string {
   switch (event.type) {
-    case "ready":
-      return `[ready] driver_state=${JSON.stringify(event.driver_state)}`;
     case "tool_call":
       return `[tool_call] ${event.tool_id}(${JSON.stringify(event.arguments)})`;
     case "tool_start":
@@ -65,14 +68,14 @@ export function TerminalDrawer({ log }: Props) {
         type="button"
         className="terminal-drawer__fab"
         onClick={() => setOpen((o) => !o)}
-        title="Debug Terminal"
+        title="Terminal History"
       >
-        {open ? "✕" : "🐞"} Debug Terminal ({combinedLog.length})
+        {open ? "✕" : "🐞"} Terminal History ({combinedLog.length})
       </button>
       {open && (
         <div className="terminal-drawer__panel">
           <div className="terminal-drawer__header">
-            Debug Terminal — live backend/WS log + browser console
+            Terminal History — live backend/WS log + browser console
           </div>
           <div className="terminal-drawer__body" ref={bodyRef}>
             {combinedLog.length === 0 && <div className="terminal-drawer__empty">No events yet.</div>}
