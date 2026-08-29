@@ -766,6 +766,14 @@ async def _execute_and_continue(
         # dry-run mode (tests, CI) — same flag every other OS/FreeCAD-touching
         # operation in this codebase already respects, so a test suite never
         # triggers a real OS screen capture or a live vision-model HTTP call.
+        #
+        # call.tool_id/result_name (the SAME object name already resolved
+        # above for the export step) are passed through as the prompt's
+        # tool/object context — a live E2E run had this hook's VLM
+        # confidently describing a "CutResult" object that no longer even
+        # existed in the document, because the old prompt asked a fully
+        # generic "does this look successful?" question with nothing for
+        # the model to actually check the screenshot against.
         try:
             if not is_dry_run_enabled():
                 from dana.tools.cad_vision import capture_cad_viewport, verify_visual_operation
@@ -774,7 +782,7 @@ async def _execute_and_continue(
                 if capture.get("ok") and capture.get("path"):
                     result.payload["screenshot_path"] = capture["path"]
                     result.payload["visual_verification"] = await asyncio.to_thread(
-                        verify_visual_operation, capture["path"]
+                        verify_visual_operation, capture["path"], call.tool_id, result_name or ""
                     )
         except Exception:  # noqa: BLE001 — best-effort; a vision-pipeline failure here must never fail the turn
             pass

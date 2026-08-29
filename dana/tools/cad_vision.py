@@ -188,13 +188,27 @@ def analyze_cad_blueprint(
     return json.dumps({"ok": False, "error": "all VLM providers failed", "attempts": attempts})
 
 
-_VISUAL_OPERATION_PROMPT = (
-    "Does this CAD viewport show a successful 3D operation? Reply with a "
-    "brief 1-sentence verification."
-)
+def _visual_operation_prompt(tool_name: str, target_object: str) -> str:
+    """Builds the per-call VLM prompt for ``verify_visual_operation`` — a
+    generic "does this look like a successful operation?" question let a
+    cloud VLM with no real grounding in the actual scene free-associate a
+    plausible-sounding but fabricated answer (a live E2E run had it
+    confidently describing a "CutResult" object that didn't even exist in
+    the document anymore, confirmed by independently reading the .FCStd
+    file). Naming the actual tool and object the caller just acted on
+    gives the model something concrete to check the screenshot against,
+    instead of inventing detail to fill a generic prompt.
+    """
+    tool_name = (tool_name or "").strip() or "a CAD"
+    target_object = (target_object or "").strip() or "the affected object"
+    return (
+        f"The CAD agent just executed the '{tool_name}' operation, resulting in or "
+        f"modifying the object '{target_object}'. Based on this screenshot of the "
+        "FreeCAD viewport, provide a 1-sentence visual verification of the result."
+    )
 
 
-def verify_visual_operation(image_path_or_base64: str) -> str:
+def verify_visual_operation(image_path_or_base64: str, tool_name: str, target_object: str) -> str:
     """Cheap, cloud-only visual sanity check for the automatic per-tool-call
     hook (``dana.api.server._execute_and_continue``, fired after EVERY
     geometry tool call) — deliberately separate from ``analyze_cad_blueprint``
@@ -211,6 +225,14 @@ def verify_visual_operation(image_path_or_base64: str) -> str:
     it instead of a bespoke HTTP client keeps the gateway URL/key resolution
     and error handling in the one place that already owns them.
 
+    ``tool_name``/``target_object`` (the dispatched tool_id and the specific
+    object it just created/modified — see ``_visual_operation_prompt``) are
+    injected into the prompt so the VLM has real context to check the
+    screenshot against instead of free-associating a generic answer. Both
+    are caller-supplied plain strings, never blindly trusted as ground
+    truth — this only changes what the model is ASKED, not what it's shown;
+    the screenshot itself is still the only actual evidence.
+
     Returns a short plain-English sentence — never raises and never a JSON
     envelope (the one caller just wants a human-readable string to attach to
     a tool result) — falling back to a fixed message if the gateway is
@@ -220,8 +242,9 @@ def verify_visual_operation(image_path_or_base64: str) -> str:
     fallback = "Visual verification unavailable (Cloud VLM failed)"
     if image_b64 is None:
         return fallback
+    prompt = _visual_operation_prompt(tool_name, target_object)
     try:
-        text = ModelProvider().complete_vision(_VISUAL_OPERATION_PROMPT, image_b64, provider="gateway")
+        text = ModelProvider().complete_vision(prompt, image_b64, provider="gateway")
     except Exception:  # noqa: BLE001 — any proxy failure (502/504/timeout/refused/...) degrades to `fallback`
         return fallback
     return text.strip() or fallback
