@@ -31,21 +31,41 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
-from dana.api import artifacts_registry
-from dana.api.cad import router as _cad_router
-from dana.api.sessions import derive_title, is_valid_session_id, load_session, new_session_id, save_session
-from dana.api.sessions import router as _sessions_router
-from dana.api.system import router as _system_router
-from dana.api.workspace import load_mounted_directories
-from dana.api.workspace import router as _workspace_router
-from dana.core.model_provider import tool_calling_provider
-from dana.platform.proxy_launcher import start_cascade_proxy, stop_cascade_proxy
-from dana.core.react_dispatch import (
+# Loaded here, before any dana.* import below — the one module every entry
+# point (start_dana.py, app.py, scripts/launchers/launch_api_server.py,
+# run_e2e_cad.py, pytest) already imports — so DANA_HEADLESS/TRIPO_API_KEY/
+# etc. are guaranteed present in os.environ for the live web app too, not
+# just the standalone E2E runner (which loads its own copy of .env for the
+# same reason: several checks in this module and dana.plugins.freecad.engine
+# read os.environ directly, not through
+# dana.core.model_provider.ensure_dotenv_loaded(), so nothing upstream of
+# them was guaranteed to have loaded .env first). Same explicit-path-then-
+# default-search double call ensure_dotenv_loaded() itself uses, for the same
+# reason: reliable regardless of this process's current working directory at
+# launch. Must precede the dana.* imports just below, not merely follow the
+# stdlib ones — several of those modules read os.environ at import time.
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(_REPO_ROOT / ".env")
+load_dotenv()
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+
+from dana.api import artifacts_registry  # noqa: E402
+from dana.api.cad import router as _cad_router  # noqa: E402
+from dana.api.sessions import derive_title, is_valid_session_id, load_session, new_session_id, save_session  # noqa: E402
+from dana.api.sessions import router as _sessions_router  # noqa: E402
+from dana.api.system import router as _system_router  # noqa: E402
+from dana.api.workspace import load_mounted_directories  # noqa: E402
+from dana.api.workspace import router as _workspace_router  # noqa: E402
+from dana.core.model_provider import tool_calling_provider  # noqa: E402
+from dana.platform.proxy_launcher import start_cascade_proxy, stop_cascade_proxy  # noqa: E402
+from dana.core.react_dispatch import (  # noqa: E402
     ToolResult,
     build_assistant_tool_call_message,
     build_system_prompt,
@@ -62,34 +82,17 @@ from dana.core.react_dispatch import (
     next_react_turn,
     plugin_registry_view,
 )
-from dana.core.context_distiller import schedule_distillation
-from dana.paths import CAPTURES_DIR
-from dana.session_context import set_session_id
-from dana.platform import get_cad_engine, get_control_plane
-from dana.platform.factory import IS_HF_SPACE
-from dana.plugins.freecad.call_log import CadCallLog
-from dana.plugins.freecad.py_export import write_macro_script
-from dana.security.dry_run import is_dry_run_enabled
-from dana.plugins.os.desktop_vision import _capture_primary_monitor_jpeg_b64
-from dana.services.voice_service import VoiceService, VoiceState
+from dana.core.context_distiller import schedule_distillation  # noqa: E402
+from dana.paths import CAPTURES_DIR  # noqa: E402
+from dana.session_context import set_session_id  # noqa: E402
+from dana.platform import get_cad_engine, get_control_plane  # noqa: E402
+from dana.platform.factory import IS_HF_SPACE  # noqa: E402
+from dana.plugins.freecad.call_log import CadCallLog  # noqa: E402
+from dana.plugins.freecad.py_export import write_macro_script  # noqa: E402
+from dana.security.dry_run import is_dry_run_enabled  # noqa: E402
+from dana.plugins.os.desktop_vision import _capture_primary_monitor_jpeg_b64  # noqa: E402
+from dana.services.voice_service import VoiceService, VoiceState  # noqa: E402
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-
-# Loaded here — the one module every entry point (start_dana.py, app.py,
-# scripts/launchers/launch_api_server.py, run_e2e_cad.py, pytest) already
-# imports — so DANA_HEADLESS/TRIPO_API_KEY/etc. are guaranteed present in
-# os.environ for the live web app too, not just the standalone E2E runner
-# (which loads its own copy of .env for the same reason: several checks in
-# this module and dana.plugins.freecad.engine read os.environ directly,
-# not through dana.core.model_provider.ensure_dotenv_loaded(), so nothing
-# upstream of them was guaranteed to have loaded .env first). Same
-# explicit-path-then-default-search double call ensure_dotenv_loaded()
-# itself uses, for the same reason: reliable regardless of this process's
-# current working directory at launch.
-from dotenv import load_dotenv  # noqa: E402
-
-load_dotenv(_REPO_ROOT / ".env")
-load_dotenv()
 _FRONTEND_DIST = _REPO_ROOT / "frontend" / "dist"
 
 # Dev origins for `npm run tauri dev` / `npm run dev` (Vite default 5173,
@@ -1124,19 +1127,23 @@ async def _run_react_loop(
         # (502s, 400s, any status) and urllib.error.URLError (stalled/refused
         # connections), so a proxy/network failure never crashes this process
         # — it surfaces here as next_react_turn's ReactTurn("error", content=
-        # the specific failure, e.g. "cloud HTTP 502: Bad Gateway -- ...").
-        # That detail used to be discarded in favor of a bare generic apology.
-        # `messages` itself is NOT the right place to record it: a fresh
-        # `messages` list is built from scratch for every new user turn (see
-        # _handle_user_message above), so anything appended to THIS turn's
-        # list is discarded the moment this function returns — the only
-        # thing that actually survives into future turns is whatever string
-        # is handed to _finish_turn below, which both replies to the user now
-        # AND feeds dana.core.context_distiller's working-memory summary that
-        # every later turn's system prompt is built from. So the fix is to
-        # put the real failure IN that string, not to mutate `messages`.
+        # the specific failure, e.g. "cloud HTTP 402: Payment Required -- ...",
+        # or, once ModelProvider's Ollama fallback also fails, a combined
+        # "cloud AND local fallback both failed" message). That detail is
+        # exactly str(exc) from whatever HTTP/provider client raised it —
+        # provider-internal wording (status codes, endpoint URLs, sometimes
+        # response bodies) that has no business reaching the chat bubble, so
+        # it's logged server-side for whoever's debugging instead of handed
+        # to _finish_turn, which both replies to the user AND feeds
+        # dana.core.context_distiller's working-memory summary that every
+        # later turn's system prompt is built from (`messages` itself is NOT
+        # the right place for it: a fresh `messages` list is built from
+        # scratch for every new user turn — see _handle_user_message above —
+        # so anything appended to THIS turn's list is discarded the moment
+        # this function returns).
         error_detail = turn.content or "no further detail available"
-        reply = f"I ran into a problem talking to the model — please try again. (proxy/network error: {error_detail})"
+        print(f"[react-loop] model call failed: {error_detail}", file=sys.stderr, flush=True)
+        reply = "I ran into a problem talking to the model — please try again."
         await _finish_turn(websocket, session, messages, reply)
         return
 

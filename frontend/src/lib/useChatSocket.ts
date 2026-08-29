@@ -147,6 +147,13 @@ export function useChatSocket(
   const initialMessagesRef = useRef<ChatMessage[]>(initialMessages);
   initialMessagesRef.current = initialMessages;
   const [log, setLog] = useState<ServerEvent[]>([]);
+  // Per-session Terminal History cache, keyed by requestedSessionId. `log`
+  // itself stays a flat array (single active connection's live feed) — this
+  // is what lets switching BACK to a session already visited in this tab
+  // restore what it had instead of the blank slate a fresh `setLog([])`
+  // would otherwise leave (see the sessionChanged block below, the only
+  // place this is read from or written to).
+  const logCacheRef = useRef<Record<string, ServerEvent[]>>({});
   const [driverState, setDriverState] = useState<Record<string, unknown> | null>(null);
   const [meshUrl, setMeshUrl] = useState<string | null>(null);
   const [cameraTarget, setCameraTarget] = useState<CameraTarget | null>(null);
@@ -191,9 +198,17 @@ export function useChatSocket(
 
   useEffect(() => {
     const sessionChanged = previousSessionIdRef.current !== requestedSessionId;
+    const previousSessionId = previousSessionIdRef.current;
     previousSessionIdRef.current = requestedSessionId;
 
     if (sessionChanged) {
+      // Stash the outgoing session's log before clearing `log` below, then
+      // seed it back in from cache if the incoming session was already
+      // visited this tab — otherwise this genuinely is a first visit and an
+      // empty array is correct (nothing to restore).
+      if (previousSessionId) {
+        logCacheRef.current[previousSessionId] = log;
+      }
       // Every session CHANGE (never a same-session reconnect — see
       // sessionChanged above) starts this chat's client-side state clean —
       // seeded from whatever history the caller already fetched for THIS
@@ -204,17 +219,19 @@ export function useChatSocket(
       liveActivityRef.current = [];
       setTurnActive(false);
       // Terminal History isolation: `log` (server_log/tool_call/tool_result/
-      // etc. WS events) is genuinely per-session data — without this reset
-      // it kept accumulating across a chat switch, so the Terminal History
-      // panel showed a PREVIOUS session's backend activity mixed in with
-      // the newly-selected one. Deliberately NOT resetting
+      // etc. WS events) is genuinely per-session data — without swapping it
+      // out here it kept accumulating across a chat switch, so the Terminal
+      // History panel showed a PREVIOUS session's backend activity mixed in
+      // with the newly-selected one. Swapped via logCacheRef (above) rather
+      // than a bare reset so switching BACK to an already-visited session
+      // restores what it had instead of going blank. Deliberately NOT resetting
       // consoleCapture.ts's own browser-console buffer here (TerminalDrawer's
       // OTHER log source, read via useSyncExternalStore, combined into the
       // same panel) — that one is browser/OS-level, not tied to any
       // particular chat session, and a debugging tool clearing recent real
       // console errors just because the user switched chats would be
       // surprising, not helpful.
-      setLog([]);
+      setLog(requestedSessionId ? logCacheRef.current[requestedSessionId] ?? [] : []);
       setMeshUrl(null);
       setDriverState(null);
       setCameraTarget(null);

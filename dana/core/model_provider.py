@@ -706,8 +706,9 @@ class ModelProvider:
         before giving up. Skipped when the primary attempt was already
         Ollama itself (nothing to fall back to) or when
         ``ollama_fallback_enabled()`` is off. If the fallback attempt ALSO
-        raises, that exception (not the original cloud one) propagates —
-        it's the more relevant failure at that point.
+        raises, a single ``RuntimeError`` propagates naming BOTH failures
+        (cloud + local), so whoever's reading logs doesn't have to go
+        hunting for the original cloud error separately.
         """
         resolved_provider = (provider or cloud_provider_name()).strip().lower()
         if resolved_provider in _NON_OPENAI_SCHEMA_PROVIDERS:
@@ -756,19 +757,26 @@ class ModelProvider:
             # 404 ("model not found") on a machine that never pulled it,
             # defeating the entire point of a "seamless" fallback.
             fb_model = (os.environ.get("OLLAMA_FALLBACK_MODEL") or "").strip() or fb_model
-            with llm_lock:
-                raw = complete_openai_with_tools(
-                    messages,
-                    api_key=fb_key,
-                    base_url=fb_base,
-                    model=fb_model,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    num_predict=num_predict,
-                    temperature=temperature,
-                    extra_headers=fb_headers,
-                    fallback_models=fb_fallback_models,
-                )
+            try:
+                with llm_lock:
+                    raw = complete_openai_with_tools(
+                        messages,
+                        api_key=fb_key,
+                        base_url=fb_base,
+                        model=fb_model,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        num_predict=num_predict,
+                        temperature=temperature,
+                        extra_headers=fb_headers,
+                        fallback_models=fb_fallback_models,
+                    )
+            except Exception as fallback_exc:  # noqa: BLE001 — see docstring: this replaces exc, deliberately
+                raise RuntimeError(
+                    f"Cloud provider {resolved_provider!r} failed ({exc}), AND local Ollama fallback "
+                    f"failed too ({fallback_exc}). Please ensure Ollama is running and the model "
+                    f"({fb_model!r}) is pulled."
+                ) from fallback_exc
             model = fb_model
             effective_provider = "ollama"
         # P1 metric — logged on the SAME line as ttft_ms (see _log_ttft) so
