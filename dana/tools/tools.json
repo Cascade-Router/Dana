@@ -1238,56 +1238,6 @@
       }
     },
     {
-      "id": "delegate_to_cursor",
-      "description_en": "Write a detailed markdown implementation plan to CAMGRASPER/cursor_handoffs/dana_handoff.md (mirrored to .cursor/instructions/) and optionally launch Cursor for agent handoff.",
-      "parameters": [
-        {
-          "name": "query",
-          "type": "string",
-          "required": false,
-          "description_en": "User request / failure context.",
-          "description_fa": "    ."
-        },
-        {
-          "name": "goal",
-          "type": "string",
-          "required": false,
-          "description_en": "Objective for the Cursor agent.",
-          "description_fa": "   Cursor."
-        },
-        {
-          "name": "error",
-          "type": "string",
-          "required": false,
-          "description_en": "Isolated failure / stack context.",
-          "description_fa": "  ."
-        },
-        {
-          "name": "launch_cursor",
-          "type": "string",
-          "required": false,
-          "description_en": "If false/0, skip launching Cursor.",
-          "description_fa": " false  Cursor  ."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "delegate to cursor",
-          "hand off to cursor",
-          "cursor handoff",
-          "fix my bug",
-          "write an implementation plan",
-          "open cursor and fix"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "  ",
-          "  "
-        ]
-      }
-    },
-    {
       "id": "github_issue_reporter",
       "description_en": "Report a bug via voice or text by creating an official GitHub issue on the community repository. Use when the user or a friend wants to file a bug report.",
       "ephemeral": false,

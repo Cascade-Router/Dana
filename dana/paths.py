@@ -64,15 +64,6 @@ LEGACY_DESKTOP_GENERATED_TOOLS_DIR: Path = DANA_WORKSPACE / "generated_tools"
 # Live telemetry surface overwritten every ~45s by the dashboard writer.
 DASHBOARD_PATH: Path = DANA_WORKSPACE / "dashboard.md"
 
-CURSOR_HANDOFF_DIR: Path = DANA_WORKSPACE / "cursor_handoffs"
-
-CURSOR_HANDOFF_PATH: Path = CURSOR_HANDOFF_DIR / "dana_handoff.md"
-
-# Mirror so Cursor IDE still discovers the plan under the project tree.
-CURSOR_HANDOFF_MIRROR_DIR: Path = PROJECT_ROOT / ".cursor" / "instructions"
-
-CURSOR_HANDOFF_MIRROR_PATH: Path = CURSOR_HANDOFF_MIRROR_DIR / "dana_handoff.md"
-
 CAPTURES_DIR: Path = DANA_WORKSPACE / "captures"
 
 # Sandbox root for dana.plugins.os.file_system's list_directory/read_file/
@@ -159,7 +150,6 @@ WORKSPACE_SUBDIRS: tuple[Path, ...] = (
     EXECUTION_JAIL_LIBRARY_DIR,
     CUSTOM_TOOLS_DIR,
     CUSTOM_TOOLS_ARCHIVE_DIR,
-    CURSOR_HANDOFF_DIR,
     CAPTURES_DIR,
 )
 

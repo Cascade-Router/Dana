@@ -1,6 +1,6 @@
 """CAMGRASPER workspace bootstrap + one-shot legacy migration.
 
-Ensures ``CAMGRASPER/{logs,tracker,sandbox,custom_tools,cursor_handoffs,captures}``
+Ensures ``CAMGRASPER/{logs,tracker,sandbox,custom_tools,captures}``
 exist (``DANA_WORKSPACE`` == repo root) and migrates prior artifacts without data loss.
 """
 
@@ -25,14 +25,6 @@ from dana.paths import (
     BUG_TRACKER_PATH,
 
     CAPTURES_DIR,
-
-    CURSOR_HANDOFF_DIR,
-
-    CURSOR_HANDOFF_MIRROR_DIR,
-
-    CURSOR_HANDOFF_MIRROR_PATH,
-
-    CURSOR_HANDOFF_PATH,
 
     CUSTOM_TOOLS_DIR,
 
@@ -216,7 +208,6 @@ Repo root is the runtime workspace (`DANA_WORKSPACE == PROJECT_ROOT`).
 | `execution_jail/` | Filesystem jail (`task_queue.json`, `library/`, fixture copies). Not the Python package. |
 | `dana_security/` | Importable security package + `patch_ledger.md` |
 | `custom_tools/` | Sole Tool Forge write/load root (ephemeral; wiped on context reset) |
-| `cursor_handoffs/` | `dana_handoff.md` (mirrored into `.cursor/instructions/`) |
 | `captures/` | Screen captures from OS computer-use |
 | `_archive/` | Unused legacy snapshots (not loaded at runtime) |
 
@@ -331,61 +322,6 @@ def ensure_repo_custom_tools_package() -> Path:
 
     return REPO_CUSTOM_TOOLS_DIR
 
-
-
-
-
-def ensure_cursor_handoff_mirror() -> None:
-
-    """Keep project ``.cursor/instructions/dana_handoff.md`` linked/copied to workspace."""
-
-    CURSOR_HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
-
-    CURSOR_HANDOFF_MIRROR_DIR.mkdir(parents=True, exist_ok=True)
-
-    if not CURSOR_HANDOFF_PATH.is_file():
-
-        return
-
-    mirror = CURSOR_HANDOFF_MIRROR_PATH
-
-    try:
-
-        if mirror.is_symlink() or mirror.exists():
-
-            try:
-
-                if mirror.resolve() == CURSOR_HANDOFF_PATH.resolve():
-
-                    return
-
-            except OSError:
-
-                pass
-
-            try:
-
-                if mirror.is_file() or mirror.is_symlink():
-
-                    mirror.unlink()
-
-            except OSError:
-
-                pass
-
-        try:
-
-            os.symlink(str(CURSOR_HANDOFF_PATH), str(mirror))
-
-            return
-
-        except OSError:
-
-            shutil.copy2(str(CURSOR_HANDOFF_PATH), str(mirror))
-
-    except OSError as exc:
-
-        _log(f"WARNING: cursor handoff mirror failed: {exc}")
 
 
 
@@ -506,16 +442,6 @@ def migrate_legacy_artifacts() -> dict[str, Any]:
     if n_patches:
 
         report["moved"].append(f"tracker/pending_patches/({n_patches} files)")
-
-
-
-    # Cursor handoff
-
-    legacy_handoff = PROJECT_ROOT / ".cursor" / "instructions" / "dana_handoff.md"
-
-    if _safe_move_file(legacy_handoff, CURSOR_HANDOFF_PATH):
-
-        report["moved"].append("cursor_handoffs/dana_handoff.md")
 
 
 
@@ -694,10 +620,6 @@ def ensure_dana_workspace(*, migrate: bool = True) -> Path:
     else:
 
         _log(f"Workspace ready at {DANA_WORKSPACE} (migration skipped)")
-
-
-
-    ensure_cursor_handoff_mirror()
 
 
 
