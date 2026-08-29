@@ -269,7 +269,16 @@ def test_cad_mutation_auto_injects_screenshot_and_visual_verification(
     real capture/VLM functions are mocked here (never the real OS/network,
     matching this whole file's design) and DANA_OS_DRY_RUN is explicitly
     overridden to false for just this test so _execute_and_continue's own
-    gate doesn't skip the code path being tested."""
+    gate doesn't skip the code path being tested.
+
+    Mocks ``verify_visual_operation`` (a plain string return, never a JSON
+    envelope — see its own docstring), not ``analyze_cad_blueprint``: the
+    "outsource visual verification to cascade proxy" refactor moved
+    _execute_and_continue's automatic per-tool-call hook onto the former,
+    cloud-gateway-only path — analyze_cad_blueprint is local-Ollama-first
+    and is only ever called by the separate, on-demand verify_cad_rendering
+    tool now, not this automatic hook.
+    """
     monkeypatch.setattr(server_module, "_HITL_ALWAYS_APPROVED_TOOLS", _REAL_HITL_ALWAYS_APPROVED_TOOLS)
     monkeypatch.setenv("DANA_OS_DRY_RUN", "0")
     monkeypatch.setattr(
@@ -277,8 +286,8 @@ def test_cad_mutation_auto_injects_screenshot_and_visual_verification(
         lambda: {"ok": True, "path": "/fake/last_cad_viewport.png", "window_found": True},
     )
     monkeypatch.setattr(
-        "dana.tools.cad_vision.analyze_cad_blueprint",
-        lambda *_a, **_k: '{"ok": true, "summary": "a single rectangular box, no visible defects"}',
+        "dana.tools.cad_vision.verify_visual_operation",
+        lambda *_a, **_k: "a single rectangular box, no visible defects",
     )
     _mock_llm(monkeypatch, [ToolCall(tool_id="create_freecad_box", arguments={"length": 10, "width": 10, "height": 10})])
     with client.websocket_connect("/ws/chat") as ws:
