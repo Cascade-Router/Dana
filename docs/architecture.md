@@ -247,15 +247,32 @@ are doing on the primary display.
 
 **Orchestration** (`dana/plugins/freecad/engine.py`, `show_in_freecad_gui`):
 
+FreeCAD has no single-instance IPC — an already-running GUI process can
+never be told a document changed on disk (a separate headless `FreeCADCmd`
+subprocess is what actually writes it), so this function ALWAYS terminates
+any existing `FreeCAD.exe` and launches a fresh one against the current
+file, rather than reusing whatever was already open. Reusing a stale
+process used to leave `capture_cad_viewport`'s screenshots (and therefore
+the Automatic Visual Verification VLM read of them) showing an earlier
+session's leftover document.
+
 1. `_is_freecad_gui_running()` checks for a live FreeCAD process via `psutil`.
-2. `_find_freecad_window()` locates the window by a **title-contains-"freecad"
-   heuristic** over `get_active_windows()`.
-3. `_title_matches_file()` confirms the found window is showing the *right*
-   document (`path.stem.lower() in title.lower()`) before touching it.
-4. On a match, `_send_to_secondary_monitor()` calls `get_secondary_monitor()`
+2. If one is running, `_terminate_freecad_gui()` closes it (graceful
+   `terminate()`, escalating to `kill()` after a short timeout) and waits
+   for it to actually exit.
+3. A fresh `FreeCAD.exe` is spawned against the target file, alongside
+   `_FIT_VIEW_MACRO` — a one-shot script FreeCAD runs on open that
+   force-activates the just-opened document's own tab
+   (`Gui.activateDocument(doc.Name)`), switches to an isometric view, and
+   fits all visible geometry (`Gui.SendMsgToActiveView("ViewFit")`).
+4. `_find_freecad_window()` locates the new window by a
+   **title-contains-"freecad" heuristic** over `get_active_windows()` — any
+   window found here can only be the one just spawned, since every prior
+   instance was already terminated.
+5. On a match, `_send_to_secondary_monitor()` calls `get_secondary_monitor()`
    + `move_window_no_activate()`, sizing the window to
    `min(1280, width) × min(800, height)` on that display.
-5. If the title doesn't match, or the move fails, `_notify_cad_update_ready()`
+6. If no window is found, or the move fails, `_notify_cad_update_ready()`
    falls back to a **silent toast** instead of forcing a window switch.
 
 **Silent toast fallback** (`dana/middleware/toast_notify.py`):

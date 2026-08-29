@@ -129,10 +129,10 @@ def open_desktop() -> dict[str, Any]:
     """Opens the most recently modified ``.FCStd`` document (i.e. the
     active/last-touched model) in the real FreeCAD GUI, reusing
     ``dana.plugins.freecad.engine.show_in_freecad_gui`` — the exact same
-    "never steal focus, never spawn a duplicate instance, push to the
-    secondary monitor" logic already used automatically after every
-    create_freecad_*/perform_freecad_boolean tool call. This is just an
-    on-demand trigger for the SAME mechanism, not a new one.
+    "never steal focus, always relaunch fresh against current disk state,
+    push to the secondary monitor" logic already used automatically after
+    every create_freecad_*/perform_freecad_boolean tool call. This is just
+    an on-demand trigger for the SAME mechanism, not a new one.
     """
     path = _newest_fcstd()
     if path is None:

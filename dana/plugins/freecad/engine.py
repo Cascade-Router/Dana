@@ -176,6 +176,50 @@ def _is_freecad_gui_running() -> bool:
     return False
 
 
+def _terminate_freecad_gui(*, timeout: float = 5.0) -> None:
+    """Terminates every running ``FreeCAD.exe`` GUI process and waits
+    (briefly) for it to actually exit before ``show_in_freecad_gui`` spawns
+    its replacement.
+
+    FreeCAD has no single-instance IPC (see ``show_in_freecad_gui``'s own
+    docstring), so an already-running process can never be told a document
+    changed on disk — a separate ``FreeCADCmd`` subprocess is what actually
+    wrote it — or made to re-run ``_FIT_VIEW_MACRO``'s activate/isometric/
+    fit-all snippet. Closing it and launching fresh is the only way to
+    guarantee the next screenshot reflects current geometry. Graceful
+    ``terminate()`` first, escalating to ``kill()`` only for whatever is
+    still alive past ``timeout`` — a plain unsaved-document FreeCAD GUI
+    closes near-instantly, so this rarely reaches the escalation path.
+    """
+    procs = []
+    for proc in psutil.process_iter(["name"]):
+        try:
+            if (proc.info.get("name") or "").lower() == "freecad.exe":
+                procs.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    if not procs:
+        return
+    for proc in procs:
+        try:
+            proc.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    deadline = time.monotonic() + timeout
+    for proc in procs:
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            proc.wait(timeout=remaining)
+        except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+            pass
+    for proc in procs:
+        try:
+            if proc.is_running():
+                proc.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+
 def get_freecad_gui_path(*, force_refresh: bool = False) -> str:
     """Resolve the FreeCAD GUI binary — lives next to FreeCADCmd in the same ``bin/``."""
     cmd_path = get_freecadcmd_path(force_refresh=force_refresh)
@@ -200,12 +244,6 @@ def _find_freecad_window() -> dict[str, Any] | None:
     except Exception:  # noqa: BLE001
         pass
     return None
-
-
-def _title_matches_file(window: dict[str, Any] | None, path: Path) -> bool:
-    if not window:
-        return False
-    return path.stem.lower() in str(window.get("title") or "").lower()
 
 
 def _send_to_secondary_monitor(hwnd: int) -> bool:
@@ -256,6 +294,21 @@ import FreeCADGui as Gui
 
 doc = App.ActiveDocument
 if doc is not None:
+    # Force this document's own tab frontmost in the GUI before anything
+    # else — dana.tools.cad_vision.capture_cad_viewport is a pure OS-level
+    # PrintWindow-style screenshot with no FreeCAD scripting of its own, so
+    # whatever tab is actually visually frontmost at capture time is
+    # exactly what a VLM sees, regardless of what App.ActiveDocument
+    # "logically" points to. Uses doc.Name rather than a hardcoded
+    # "Session_Active": this ONE macro is shared by every _auto_show
+    # (out_path) caller in this module, including the not-yet-migrated
+    # one-off-file tools (create_pyramid, create_pipe, ...) that each open
+    # their OWN differently-named document here, not just the ones sharing
+    # Session_Active.FCStd.
+    try:
+        Gui.activateDocument(doc.Name)
+    except Exception:
+        pass
     # A Boolean feature (Part::Cut/MultiFuse/MultiCommon) consumes its
     # Base/Tool/Shapes children into the result, and a Part::Sweep consumes
     # its Sections/Spine profile+path — only the top-level feature should
@@ -307,42 +360,44 @@ def _write_fit_view_macro() -> str:
 
 
 def show_in_freecad_gui(filepath: str) -> str:
-    """Open ``filepath`` in the live FreeCAD GUI on the secondary monitor —
-    NEVER stealing OS focus.
+    """Open ``filepath`` in a FRESH FreeCAD GUI process on the secondary
+    monitor — NEVER stealing OS focus.
 
-    Zero-focus workspace: this never calls ``set_foreground_window`` (or
-    any other activation API) under any circumstances, so a fullscreen app
-    or game on the primary monitor is never disturbed. Never spawns a
-    second ``FreeCAD.exe`` when one is already running either — FreeCAD
-    has no single-instance IPC, so a second ``Popen`` call just piles up
-    an extra invisible process. Whatever FreeCAD window exists gets pushed
-    onto the second monitor via ``SetWindowPos``/``SWP_NOACTIVATE`` and
-    shown via ``SW_SHOWNOACTIVATE`` — visible, but never activated. Moving
-    is unconditional (repositioning a background window is not
-    disruptive), but if that window's title doesn't actually name
-    ``filepath`` (an ALREADY-running instance showing a different or no
-    document — the ambiguity a freshly spawned process doesn't have, since
-    it was launched WITH this file as its argument), moving it to the
-    right monitor still wouldn't show the right thing, so this falls back
-    to a silent OS toast instead.
+    ALWAYS terminates any already-running ``FreeCAD.exe`` first (via
+    ``_terminate_freecad_gui``) and launches a new one against ``filepath``.
+    This used to reuse an already-running instance instead — but FreeCAD
+    has no single-instance IPC, so that process could never be told a
+    document had changed on disk (a separate ``FreeCADCmd`` subprocess is
+    what actually writes it) or made to re-run ``_FIT_VIEW_MACRO``'s
+    activate/isometric/fit-all snippet again. That let
+    ``dana.tools.cad_vision.capture_cad_viewport``'s screenshot (a pure
+    OS-level PrintWindow-style capture, no FreeCAD scripting of its own)
+    show stale geometry — confirmed live: a boolean union was correctly
+    computed and saved, but the already-running GUI's own screenshot still
+    showed an earlier session's leftover document. Always relaunching costs
+    a few seconds of latency and a brief close/reopen flash on the
+    secondary monitor each time; zero-focus (``SW_SHOWNOACTIVATE``/
+    ``SWP_NOACTIVATE``, never calls ``set_foreground_window`` or any other
+    activation API) is otherwise unchanged, so a fullscreen app or game on
+    the primary monitor is still never disturbed.
     """
     path = Path(filepath)
     if not path.is_file():
         return _error(f"show_in_freecad_gui: file not found: {filepath}")
 
     was_running = _is_freecad_gui_running()
-    spawned = False
-    if not was_running:
-        try:
-            gui_path = get_freecad_gui_path()
-        except FreeCADNotFoundError as exc:
-            return _error(str(exc))
-        try:
-            macro_path = _write_fit_view_macro()
-            subprocess.Popen([gui_path, str(path), macro_path])  # noqa: S603
-        except OSError as exc:
-            return _error(f"show_in_freecad_gui: failed to launch FreeCAD GUI: {exc}")
-        spawned = True
+    if was_running:
+        _terminate_freecad_gui()
+
+    try:
+        gui_path = get_freecad_gui_path()
+    except FreeCADNotFoundError as exc:
+        return _error(str(exc))
+    try:
+        macro_path = _write_fit_view_macro()
+        subprocess.Popen([gui_path, str(path), macro_path])  # noqa: S603
+    except OSError as exc:
+        return _error(f"show_in_freecad_gui: failed to launch FreeCAD GUI: {exc}")
 
     # Poll for the window instead of trusting one fixed sleep — cold starts
     # (workbench/plugin loading) can leave the title bar generic for
@@ -350,14 +405,14 @@ def show_in_freecad_gui(filepath: str) -> str:
     # a fixed wait either races that or wastes time once it's already done.
     deadline = time.monotonic() + _WINDOW_POLL_TIMEOUT_S
     window = _find_freecad_window()
-    while time.monotonic() < deadline:
-        if spawned and window is not None:
-            break
-        if not spawned and _title_matches_file(window, path):
-            break
+    while time.monotonic() < deadline and window is None:
         time.sleep(_WINDOW_POLL_INTERVAL_S)
         window = _find_freecad_window()
-    title_matches = spawned or _title_matches_file(window, path)
+    # Every prior instance was just terminated above, so any FreeCAD window
+    # found now can only be the one just spawned for `path` — no need to
+    # additionally match its title (a slow title-bar update during a cold
+    # workbench-loading start would otherwise be mistaken for "wrong file").
+    title_matches = window is not None
 
     moved = False
     if window is not None:
@@ -372,7 +427,7 @@ def show_in_freecad_gui(filepath: str) -> str:
         op="show_in_freecad_gui",
         path=str(path),
         was_running=was_running,
-        spawned=spawned,
+        spawned=True,
         title_matched=title_matches,
         moved_to_secondary=moved,
     )
