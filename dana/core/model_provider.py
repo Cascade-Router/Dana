@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sys
 import time
 from typing import Any, Literal
 
@@ -159,6 +160,32 @@ def cloud_fallback_enabled() -> bool:
     ensure_dotenv_loaded()
     raw = (os.environ.get("DANA_ALLOW_CLOUD_FALLBACK") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def ollama_fallback_enabled() -> bool:
+    """Whether ``ModelProvider.complete_with_tool_calls`` should retry
+    against local Ollama when the primary CLOUD provider call raises —
+    any exception (a 402 "Payment Required" from a rate-limited free
+    OpenRouter tier is the incident this exists for, but a 429/5xx/network
+    failure gets the same treatment, since the caller can't tell them
+    apart from the plain ``RuntimeError`` ``dana.core.openai_tool_bridge``
+    raises for any non-2xx response — see that module's own HTTPError
+    handling).
+
+    Deliberately a SEPARATE flag from ``cloud_fallback_enabled`` above,
+    not a reuse of it — that one gates the OPPOSITE direction (a
+    local-first plain-text ``complete()`` call falling through to cloud
+    once local fails). Reusing it here would have silently inherited
+    backwards semantics. Also deliberately default-ENABLED (opposite of
+    ``cloud_fallback_enabled``'s default-off) — this is meant to be
+    "seamless": an unavailable cloud provider with no fallback today just
+    dead-ends the user's turn with a raw error, so the safer default is on,
+    overridable for anyone (tests, CI, a deliberately cloud-only setup)
+    who wants it off.
+    """
+    ensure_dotenv_loaded()
+    raw = (os.environ.get("DANA_OLLAMA_FALLBACK") or "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def force_local() -> bool:
@@ -669,6 +696,18 @@ class ModelProvider:
         (``dana.core.agent_loop.execute_tool_call``) with no OpenAI-shape
         parsing of their own. Raises ``NotImplementedError`` for providers
         that don't speak the OpenAI tools schema (Gemini, Anthropic).
+
+        Automatic Ollama Fallback: if the primary CLOUD call raises (a 402
+        "Payment Required" from a rate-limited free OpenRouter tier is the
+        incident this was built for, but any exception gets the same
+        treatment — see ``ollama_fallback_enabled``'s own docstring for
+        why this can't distinguish 402/429/5xx from each other), this
+        retries the SAME messages/tools/tool_choice against local Ollama
+        before giving up. Skipped when the primary attempt was already
+        Ollama itself (nothing to fall back to) or when
+        ``ollama_fallback_enabled()`` is off. If the fallback attempt ALSO
+        raises, that exception (not the original cloud one) propagates —
+        it's the more relevant failure at that point.
         """
         resolved_provider = (provider or cloud_provider_name()).strip().lower()
         if resolved_provider in _NON_OPENAI_SCHEMA_PROVIDERS:
@@ -684,23 +723,62 @@ class ModelProvider:
         # cloud-routed turns (DANA_CLOUD_PRIMARY on — see
         # dana.core.model_provider.tool_calling_provider) run fully
         # unserialized, since a cloud call has no local VRAM to contend for.
-        with llm_lock if resolved_provider == "ollama" else contextlib.nullcontext():
-            raw = complete_openai_with_tools(
-                messages,
-                api_key=key,
-                base_url=base,
-                model=model,
-                tools=tools,
-                tool_choice=tool_choice,
-                num_predict=num_predict,
-                temperature=temperature,
-                extra_headers=extra_headers,
-                fallback_models=fallback_models,
+        try:
+            with llm_lock if resolved_provider == "ollama" else contextlib.nullcontext():
+                raw = complete_openai_with_tools(
+                    messages,
+                    api_key=key,
+                    base_url=base,
+                    model=model,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    num_predict=num_predict,
+                    temperature=temperature,
+                    extra_headers=extra_headers,
+                    fallback_models=fallback_models,
+                )
+            effective_provider = resolved_provider
+        except Exception as exc:  # noqa: BLE001 — any cloud failure falls back to local Ollama below
+            if resolved_provider == "ollama" or not ollama_fallback_enabled():
+                raise
+            print(
+                "[Ollama Fallback] Cloud provider failed, routing request to local Ollama...",
+                file=sys.stderr,
+                flush=True,
             )
+            print(f"[Ollama Fallback] original {resolved_provider!r} error: {exc}", file=sys.stderr, flush=True)
+            fb_key, fb_base, fb_model, fb_headers, fb_fallback_models = self._resolve_openai_endpoint("ollama")
+            # OLLAMA_FALLBACK_MODEL, when set, wins outright; otherwise this
+            # reuses whatever local model the user already has configured
+            # for the existing local-first path (_resolve_openai_endpoint's
+            # own DANA_OPENAI_TOOLS_MODEL/self.local_model resolution) —
+            # NOT a hardcoded "llama3" default, which would just as likely
+            # 404 ("model not found") on a machine that never pulled it,
+            # defeating the entire point of a "seamless" fallback.
+            fb_model = (os.environ.get("OLLAMA_FALLBACK_MODEL") or "").strip() or fb_model
+            with llm_lock:
+                raw = complete_openai_with_tools(
+                    messages,
+                    api_key=fb_key,
+                    base_url=fb_base,
+                    model=fb_model,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    num_predict=num_predict,
+                    temperature=temperature,
+                    extra_headers=fb_headers,
+                    fallback_models=fb_fallback_models,
+                )
+            model = fb_model
+            effective_provider = "ollama"
         # P1 metric — logged on the SAME line as ttft_ms (see _log_ttft) so
         # the two are directly correlatable turn over turn.
         _log_ttft(model, raw.get("ttft_ms"), tools_schema_bytes=len(json.dumps(tools)) if tools else 0)
-        self.last_provider = f"cloud:{resolved_provider}"
+        self.last_provider = (
+            f"cloud:{resolved_provider}"
+            if effective_provider == resolved_provider
+            else f"ollama-fallback (was {resolved_provider})"
+        )
         return {
             "content": str(raw.get("content") or "").strip(),
             "tool_calls": openai_tool_calls_to_ir(
