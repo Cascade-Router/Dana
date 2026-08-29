@@ -10,6 +10,14 @@ re-declared here as plain ``Path`` literals (same precedent as
 their own copy rather than importing engine.py's underscore-prefixed
 module attribute across modules) rather than reaching into engine.py's
 private globals.
+
+Scoped Mini-Explorer: every route below takes an explicit ``session_id``
+query param (never the ambient ``dana.session_context`` contextvar — a
+plain REST GET/POST isn't part of the WebSocket turn's async call chain
+that contextvar propagates through) and only ever lists/resolves/opens
+files under that session's OWN ``sessions/<session_id>/`` subdirectory —
+never the flat top-level ``freecad_output/``/``exports/`` another chat
+session's files might still live directly inside from before this change.
 """
 
 from __future__ import annotations
@@ -23,18 +31,28 @@ from fastapi.responses import FileResponse
 
 from dana.api import artifacts_registry
 from dana.paths import DANA_WORKSPACE
+from dana.session_context import sanitize_session_id, session_scoped_dir
 
 router = APIRouter(prefix="/api/cad", tags=["cad"])
 
 _FREECAD_OUTPUT_DIR = DANA_WORKSPACE / "freecad_output"
 _FREECAD_EXPORT_DIR = DANA_WORKSPACE / "exports"
 
-# Only these two dirs, only these extensions — an artifact "download by
-# filename" route is a path built from user-controlled input, so the
-# directory allowlist below (never an arbitrary path) is what makes path
-# traversal a structural impossibility rather than a string-sanitizing check.
-_ARTIFACT_DIRS: tuple[Path, ...] = (_FREECAD_OUTPUT_DIR, _FREECAD_EXPORT_DIR)
 _ARTIFACT_EXTENSIONS = frozenset({".step", ".stp", ".stl", ".fcstd", ".urdf", ".glb", ".obj"})
+
+
+def _artifact_dirs(session_id: str | None) -> tuple[Path, Path]:
+    """This session's own ``(freecad_output, exports)`` subdirectory pair —
+    only these two dirs, only ``_ARTIFACT_EXTENSIONS``, is what makes an
+    artifact "download by filename" route (built from user-controlled
+    input) structurally safe from path traversal, same guarantee the old
+    flat ``_ARTIFACT_DIRS`` tuple gave, just session-scoped now."""
+    sid = sanitize_session_id(session_id)
+    return (
+        session_scoped_dir(_FREECAD_OUTPUT_DIR, sid),
+        session_scoped_dir(_FREECAD_EXPORT_DIR, sid),
+    )
+
 
 _MEDIA_TYPES = {
     ".step": "model/step",
@@ -48,9 +66,11 @@ _MEDIA_TYPES = {
 }
 
 
-def _list_artifacts() -> list[dict[str, Any]]:
+def _list_artifacts(session_id: str | None) -> list[dict[str, Any]]:
+    sid = sanitize_session_id(session_id)
+    output_dir, export_dir = _artifact_dirs(sid)
     out: list[dict[str, Any]] = []
-    for directory in _ARTIFACT_DIRS:
+    for directory in (output_dir, export_dir):
         if not directory.is_dir():
             continue
         for path in directory.iterdir():
@@ -63,7 +83,7 @@ def _list_artifacts() -> list[dict[str, Any]]:
                     "format": path.suffix.lstrip(".").lower(),
                     "size_bytes": stat.st_size,
                     "modified_at": stat.st_mtime,
-                    "source": "generated" if directory == _FREECAD_OUTPUT_DIR else "exported",
+                    "source": "generated" if directory == output_dir else "exported",
                 }
             )
     seen_filenames = {a["filename"] for a in out}
@@ -73,68 +93,77 @@ def _list_artifacts() -> list[dict[str, Any]]:
     # arbitrary system-temp path via tempfile.mkstemp, never under either
     # directory above. Registry entries win no priority over a same-named
     # on-disk file — just fill in whatever the scan didn't already find.
-    for entry in artifacts_registry.list_artifacts():
+    # Filtered to THIS session_id — see artifacts_registry.list_artifacts's
+    # own docstring.
+    for entry in artifacts_registry.list_artifacts(session_id=sid):
         if entry["filename"] in seen_filenames:
             continue
         seen_filenames.add(entry["filename"])
-        out.append({k: v for k, v in entry.items() if k != "path"})
+        out.append({k: v for k, v in entry.items() if k not in ("path", "session_id")})
     out.sort(key=lambda a: a["modified_at"], reverse=True)
     return out
 
 
-def _resolve_artifact(filename: str) -> Path:
+def _resolve_artifact(filename: str, session_id: str | None) -> Path:
     """Only a bare filename (no path separators) matching either a file that
-    ACTUALLY exists directly inside one of ``_ARTIFACT_DIRS``, or one already
-    recorded in ``artifacts_registry`` (the mock engine's arbitrary temp-path
-    outputs — see ``_list_artifacts``), is ever returned — never resolved
-    relative to an arbitrary/absolute caller path, so ``../../whatever`` or
-    an absolute path never matches anything; the registry lookup is likewise
-    a match against paths THIS process itself already generated, never the
-    caller-supplied string used as a path directly.
+    ACTUALLY exists directly inside one of THIS session's own artifact
+    directories, or one already recorded in ``artifacts_registry`` under
+    THIS session_id (the mock engine's arbitrary temp-path outputs — see
+    ``_list_artifacts``), is ever returned — never resolved relative to an
+    arbitrary/absolute caller path, so ``../../whatever`` or an absolute
+    path never matches anything; the registry lookup is likewise a match
+    against paths THIS session itself already generated, never the
+    caller-supplied string used as a path directly, and never another
+    session's own same-named file.
     """
+    sid = sanitize_session_id(session_id)
     name = Path(filename).name
     if name != filename or Path(name).suffix.lower() not in _ARTIFACT_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"invalid artifact filename: {filename!r}")
-    for directory in _ARTIFACT_DIRS:
+    for directory in _artifact_dirs(sid):
         candidate = directory / name
         if candidate.is_file():
             return candidate
-    for entry in artifacts_registry.list_artifacts():
+    for entry in artifacts_registry.list_artifacts(session_id=sid):
         if entry["filename"] == name:
             return Path(entry["path"])
     raise HTTPException(status_code=404, detail=f"artifact not found: {filename!r}")
 
 
 @router.get("/artifacts")
-def list_artifacts() -> dict[str, Any]:
-    return {"ok": True, "artifacts": _list_artifacts()}
+def list_artifacts(session_id: str | None = None) -> dict[str, Any]:
+    return {"ok": True, "artifacts": _list_artifacts(session_id)}
 
 
 @router.get("/artifacts/{filename}/download")
-def download_artifact(filename: str) -> FileResponse:
-    path = _resolve_artifact(filename)
+def download_artifact(filename: str, session_id: str | None = None) -> FileResponse:
+    path = _resolve_artifact(filename, session_id)
     media_type = _MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path, media_type=media_type, filename=path.name)
 
 
-def _newest_fcstd() -> Path | None:
-    candidates = [p for p in _FREECAD_OUTPUT_DIR.glob("*.FCStd") if p.is_file()] if _FREECAD_OUTPUT_DIR.is_dir() else []
+def _newest_fcstd(session_id: str | None) -> Path | None:
+    output_dir, _export_dir = _artifact_dirs(session_id)
+    candidates = [p for p in output_dir.glob("*.FCStd") if p.is_file()] if output_dir.is_dir() else []
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
 @router.post("/open-desktop")
-def open_desktop() -> dict[str, Any]:
-    """Opens the most recently modified ``.FCStd`` document (i.e. the
-    active/last-touched model) in the real FreeCAD GUI, reusing
-    ``dana.plugins.freecad.engine.show_in_freecad_gui`` — the exact same
-    "never steal focus, always relaunch fresh against current disk state,
-    push to the secondary monitor" logic already used automatically after
-    every create_freecad_*/perform_freecad_boolean tool call. This is just
-    an on-demand trigger for the SAME mechanism, not a new one.
+def open_desktop(session_id: str | None = None) -> dict[str, Any]:
+    """Opens THIS session's own most recently modified ``.FCStd`` document
+    (i.e. the active/last-touched model FOR THIS CHAT) in the real FreeCAD
+    GUI, reusing ``dana.plugins.freecad.engine.show_in_freecad_gui`` — the
+    exact same "never steal focus, always relaunch fresh against current
+    disk state, push to the secondary monitor" logic already used
+    automatically after every create_freecad_*/perform_freecad_boolean
+    tool call. This is just an on-demand trigger for the SAME mechanism,
+    not a new one. Previously scanned the whole flat ``freecad_output/``
+    globally, so "open desktop" could open a DIFFERENT chat session's last-
+    touched document — session_id closes that.
     """
-    path = _newest_fcstd()
+    path = _newest_fcstd(session_id)
     if path is None:
         raise HTTPException(status_code=404, detail="no FreeCAD document has been generated yet")
     from dana.plugins.freecad.engine import show_in_freecad_gui

@@ -158,10 +158,10 @@ function AppShell() {
   const syncPayload: SyncPayload = useMemo(
     () => ({
       secrets: Object.fromEntries(entries.map((e) => [e.id, e])),
-      plugin: activePluginId ? { pluginId: activePluginId, meshUrl, cameraTarget } : null,
+      plugin: activePluginId ? { pluginId: activePluginId, meshUrl, cameraTarget, sessionId } : null,
       voice: { state: voiceState.state, transcript: voiceState.transcript },
     }),
-    [entries, activePluginId, meshUrl, cameraTarget, voiceState]
+    [entries, activePluginId, meshUrl, cameraTarget, sessionId, voiceState]
   );
   useSyncBroadcaster(syncPayload);
   useForwardedPluginSelect(sendSelection);
@@ -268,6 +268,7 @@ function AppShell() {
                 cameraTarget={cameraTarget}
                 onSelect={sendSelection}
                 log={log}
+                sessionId={sessionId}
               />
             </Suspense>
           </div>

@@ -64,6 +64,7 @@ from dana.core.react_dispatch import (
 )
 from dana.core.context_distiller import schedule_distillation
 from dana.paths import CAPTURES_DIR
+from dana.session_context import set_session_id
 from dana.platform import get_cad_engine, get_control_plane
 from dana.platform.factory import IS_HF_SPACE
 from dana.plugins.freecad.call_log import CadCallLog
@@ -669,6 +670,17 @@ async def _execute_and_continue(
     tool already has a human in the loop re-approving each retry, which is
     its own safety valve.
     """
+    # Ambient session_id for the whole synchronous dispatch_tool_call ->
+    # _tool_* handler -> dana.plugins.freecad.engine.* call chain below —
+    # see dana.session_context's own module docstring for why a
+    # contextvar, not a new parameter threaded through ~40 handler/~20
+    # engine function signatures, is what actually makes CAD workspace
+    # isolation (one Session_Active.FCStd, one object-name registry per
+    # chat session) work. This is the ONE production call site of
+    # dispatch_tool_call (see this function's own docstring), so setting
+    # it here covers every dispatch path — immediate and post-HITL-
+    # approval alike.
+    set_session_id(session["session_id"])
     engine = get_cad_engine()
     control_plane = get_control_plane()
 
@@ -744,7 +756,9 @@ async def _execute_and_continue(
         if mesh.get("ok"):
             token = _register_mesh(mesh["path"])
             mesh_url = f"/api/mesh/{token}.stl"
-            artifacts_registry.register_artifact(mesh["path"], format="stl", source="generated")
+            artifacts_registry.register_artifact(
+                mesh["path"], format="stl", source="generated", session_id=session["session_id"]
+            )
         # Best-effort STEP sibling — rule 6 of _FREECAD_SYSTEM_PROMPT asks
         # the LLM to keep geometry recomputed for "the mesh pipeline"; this
         # is that pipeline's other half, run automatically instead of
@@ -761,7 +775,9 @@ async def _execute_and_continue(
         except Exception:  # noqa: BLE001 — best-effort; a driver-level failure here must never fail the turn
             step = {"ok": False}
         if step.get("ok"):
-            artifacts_registry.register_artifact(step["path"], format="step", source="generated")
+            artifacts_registry.register_artifact(
+                step["path"], format="step", source="generated", session_id=session["session_id"]
+            )
 
         # Automatic Visual Verification — headless, no live R3F/Tauri canvas
         # needed (unlike take_canvas_screenshot, which requires that
@@ -826,7 +842,10 @@ async def _execute_and_continue(
         path = result.payload.get("path")
         if isinstance(path, str) and path:
             artifacts_registry.register_artifact(
-                path, format=str(result.payload.get("format") or "").lower(), source="exported"
+                path,
+                format=str(result.payload.get("format") or "").lower(),
+                source="exported",
+                session_id=session["session_id"],
             )
     elif result.ok and call.tool_id == "generate_urdf_assembly":
         # The .urdf IS the artifact here (unlike _CAD_CREATE_TOOLS, there's
@@ -836,7 +855,9 @@ async def _execute_and_continue(
         # STLLoader off the URL's own file extension.
         path = result.payload.get("path")
         if isinstance(path, str) and path:
-            artifacts_registry.register_artifact(path, format="urdf", source="generated")
+            artifacts_registry.register_artifact(
+                path, format="urdf", source="generated", session_id=session["session_id"]
+            )
             token = _register_mesh(path)
             mesh_url = f"/api/mesh/{token}.urdf"
     elif result.ok and call.tool_id == "generate_3d_from_image":
@@ -850,7 +871,9 @@ async def _execute_and_continue(
         path = result.payload.get("mesh_path")
         if isinstance(path, str) and path:
             mesh_format = Path(path).suffix.lstrip(".").lower()
-            artifacts_registry.register_artifact(path, format=mesh_format, source="generated")
+            artifacts_registry.register_artifact(
+                path, format=mesh_format, source="generated", session_id=session["session_id"]
+            )
             token = _register_mesh(path)
             mesh_url = f"/api/mesh/{token}.{mesh_format}"
 

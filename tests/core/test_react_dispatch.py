@@ -743,7 +743,7 @@ def test_dispatch_boolean_end_to_end_via_object_name_registry() -> None:
 
     # The boolean result itself registers too, so it can chain into a
     # further boolean op as someone else's base_object/tool_object.
-    assert rd._OBJECT_PATH_REGISTRY["Cut"] == cut_result.payload["path"]
+    assert rd._object_registry()["Cut"] == cut_result.payload["path"]
 
 
 def test_dispatch_boolean_union_and_intersect_use_default_names() -> None:
@@ -886,7 +886,7 @@ def test_dispatch_edge_operation_whole_object_via_registry() -> None:
     assert result.payload["type"] == "Part::Fillet"
     assert result.payload["face_targeted"] is False
     # The edge-op result itself registers too, so it can chain further.
-    assert rd._OBJECT_PATH_REGISTRY["Fillet"] == result.payload["path"]
+    assert rd._object_registry()["Fillet"] == result.payload["path"]
 
 
 def test_dispatch_edge_operation_face_targeted_via_explicit_centroid() -> None:
@@ -1168,13 +1168,13 @@ def test_get_bounding_box_never_registers_a_new_object() -> None:
         engine,
         control_plane,
     )
-    before = dict(rd._OBJECT_PATH_REGISTRY)
+    before = dict(rd._object_registry())
     rd.dispatch_tool_call(
         ToolCall(tool_id="get_freecad_bounding_box", arguments={"target_object": "BBoxBoxB"}),
         engine,
         control_plane,
     )
-    assert rd._OBJECT_PATH_REGISTRY == before
+    assert rd._object_registry() == before
 
 
 # --------------------------------------------------------------------------
@@ -1339,7 +1339,7 @@ def test_dispatch_align_end_to_end_via_registry() -> None:
     assert len(result.payload["placement"]) == 3
     # The aligned object re-registers under the same name -> same path
     # (it moved in place, it didn't get a new identity or file).
-    assert rd._OBJECT_PATH_REGISTRY["AlignCylA"] == result.payload["path"]
+    assert rd._object_registry()["AlignCylA"] == result.payload["path"]
 
 
 # --------------------------------------------------------------------------
@@ -1418,7 +1418,7 @@ def test_dispatch_export_end_to_end_via_registry() -> None:
     assert result.payload["target_count"] == 2
     # An export result has no "name" of its own — it must NOT register as
     # a fresh object in the name->path registry.
-    assert "motor_mount_assembly" not in rd._OBJECT_PATH_REGISTRY
+    assert "motor_mount_assembly" not in rd._object_registry()
 
 
 def test_dispatch_export_step_reports_mock_limitation_not_a_crash() -> None:

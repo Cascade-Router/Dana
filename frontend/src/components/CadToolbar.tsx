@@ -29,9 +29,18 @@ type Props = {
    * for Gradio — see useChatSocket.ts/useGradioChat.ts), so one fetch+blob
    * download path covers both without a mode branch. */
   meshUrl: string | null;
+  /** The active chat's session_id — Scoped Mini-Explorer: every REST call
+   * below carries this so the artifact list/download/open-desktop only
+   * ever touches THIS session's own freecad_output/sessions/<session_id>/
+   * files, never another chat's (dana.api.cad enforces the same scoping
+   * server-side; this is what actually tells it which session). `null`
+   * before the first WS "ready" event of a brand-new chat — every REST
+   * call below is skipped/no-ops until it's set, same as a real session_id
+   * would eventually arrive; not a permanent no-session state. */
+  sessionId: string | null;
 };
 
-export function CadToolbar({ meshUrl }: Props) {
+export function CadToolbar({ meshUrl, sessionId }: Props) {
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
   const [launching, setLaunching] = useState(false);
@@ -41,7 +50,9 @@ export function CadToolbar({ meshUrl }: Props) {
   const refreshArtifacts = useCallback(() => {
     if (IS_GRADIO_MODE) {
       // No REST endpoint reachable at all in this build (see apiBase.ts) —
-      // list via app.py's hidden Gradio "artifacts" api instead.
+      // list via app.py's hidden Gradio "artifacts" api instead. Gradio
+      // mode is a single-session HF Space deployment (no session_id
+      // concept there at all), so no scoping is needed or possible here.
       fetchGradioArtifacts(_SPACE_URL)
         .then((files) =>
           setArtifacts(
@@ -61,40 +72,54 @@ export function CadToolbar({ meshUrl }: Props) {
         });
       return;
     }
-    apiFetch("/api/cad/artifacts")
+    if (!sessionId) {
+      setArtifacts([]);
+      return;
+    }
+    apiFetch(`/api/cad/artifacts?session_id=${encodeURIComponent(sessionId)}`)
       .then((res) => (res.ok ? res.json() : { artifacts: [] }))
       .then((data) => setArtifacts(data.artifacts ?? []))
       .catch(() => setArtifacts([]));
-  }, []);
+  }, [sessionId]);
 
   useEffect(() => {
     refreshArtifacts();
   }, [refreshArtifacts]);
 
   const launchDesktop = useCallback(() => {
+    if (!sessionId) return;
     setLaunching(true);
     setLaunchError(null);
-    apiFetch("/api/cad/open-desktop", { method: "POST" })
+    apiFetch(`/api/cad/open-desktop?session_id=${encodeURIComponent(sessionId)}`, { method: "POST" })
       .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
       .then(({ ok, data }) => {
         if (!ok) throw new Error(data.detail || "failed to open FreeCAD");
       })
       .catch((err) => setLaunchError(String(err instanceof Error ? err.message : err)))
       .finally(() => setLaunching(false));
-  }, []);
+  }, [sessionId]);
 
-  const download = useCallback((artifact: Artifact) => {
-    // window.open (not an <a download>) — dev mode serves the frontend and
-    // API from different origins (see apiBase.ts), and a cross-origin
-    // "download" attribute is silently ignored by most browsers; the
-    // backend's Content-Disposition: attachment header is what actually
-    // triggers the save either way. In Gradio mode there's no REST download
-    // route at all — `artifact.url` is already the real, fetchable Gradio
-    // file URL (see refreshArtifacts/fetchGradioArtifacts).
-    const url = artifact.url ?? resolveApiUrl(`/api/cad/artifacts/${encodeURIComponent(artifact.filename)}/download`);
-    window.open(url, "_blank");
-    setExportOpen(false);
-  }, []);
+  const download = useCallback(
+    (artifact: Artifact) => {
+      // window.open (not an <a download>) — dev mode serves the frontend and
+      // API from different origins (see apiBase.ts), and a cross-origin
+      // "download" attribute is silently ignored by most browsers; the
+      // backend's Content-Disposition: attachment header is what actually
+      // triggers the save either way. In Gradio mode there's no REST download
+      // route at all — `artifact.url` is already the real, fetchable Gradio
+      // file URL (see refreshArtifacts/fetchGradioArtifacts), and no
+      // session_id to append either (single-session deployment).
+      const url =
+        artifact.url ??
+        resolveApiUrl(
+          `/api/cad/artifacts/${encodeURIComponent(artifact.filename)}/download` +
+            (sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "")
+        );
+      window.open(url, "_blank");
+      setExportOpen(false);
+    },
+    [sessionId]
+  );
 
   // The live viewport mesh (Viewer3D's meshUrl) isn't in the artifacts list
   // above — it's the in-progress geometry, not yet a saved file on either

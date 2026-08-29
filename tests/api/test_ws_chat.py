@@ -576,19 +576,19 @@ def test_react_loop_stops_at_max_iterations(client: TestClient, monkeypatch: pyt
     """A model stuck proposing the same non-mutating tool call forever must
     be forcefully stopped, not left to run indefinitely."""
     endless_tool_call = [ToolCall(tool_id="system_state", arguments={})]
-    # dana.api.server._MAX_REACT_ITERATIONS is 13 — queue more canned turns
+    # dana.api.server._MAX_REACT_ITERATIONS is 30 — queue more canned turns
     # than that so the loop actually reaches the cap instead of running out
     # of mock responses first (which would fall back to a "Done." final turn).
-    _mock_llm(monkeypatch, *([endless_tool_call] * 15))  # far more turns than the cap allows
+    _mock_llm(monkeypatch, *([endless_tool_call] * 32))  # far more turns than the cap allows
     with client.websocket_connect("/ws/chat") as ws:
         ws.receive_json()  # ready
         ws.send_json({"text": "loop forever"})
 
-        # 13 full iterations (dag_start/dag_complete/tool_call/tool_result per
+        # 30 full iterations (dag_start/dag_complete/tool_call/tool_result per
         # iteration, plus any tee'd server_log lines) produce well more than
-        # 100 websocket messages before the cap's own assistant_message —
+        # 200 websocket messages before the cap's own assistant_message —
         # generous headroom here rather than hand-computing an exact count.
-        assistant = _drain_until(ws, "assistant_message", limit=250)
+        assistant = _drain_until(ws, "assistant_message", limit=500)
         assert "maximum number of reasoning steps" in assistant["content"]
 
 

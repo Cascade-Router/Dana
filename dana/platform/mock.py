@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from dana.platform.base import BaseCADEngine, BaseControlPlane
+from dana.session_context import get_session_id
 
 _MOCK_NOTE_CONTROL = "mocked — no Windows/Win32 APIs in this container"
 _MOCK_NOTE_CAD = "mocked — headless trimesh geometry, no FreeCADCmd binary in this container"
@@ -26,13 +27,23 @@ _MOCK_WINDOWS: list[dict[str, Any]] = [
     {"hwnd": 1002, "title": "Dana — Live Trace", "pid": 3110},
 ]
 
-# Mirrors dana.core.react_dispatch's own _OBJECT_PATH_REGISTRY: a plain
-# module-level dict (not an instance attribute) since a fresh
-# MockFreeCADEngine() is constructed on every dispatch in real usage — apply_
-# boolean/modify_parameter now take object NAMES (matching RealFreeCADEngine's
+# Mirrors dana.core.react_dispatch's own _OBJECT_PATH_REGISTRY (see that
+# module's matching comment for the full reasoning): a plain module-level
+# dict (not an instance attribute) since a fresh MockFreeCADEngine() is
+# constructed on every dispatch in real usage — apply_boolean/
+# modify_parameter now take object NAMES (matching RealFreeCADEngine's
 # shared-session interface), and _mesh_output_path's random tempfile name
 # means a name alone can't be resolved back to its .stl path without this.
-_MOCK_OBJECT_REGISTRY: dict[str, str] = {}
+# Nested per session_id for the exact same reason react_dispatch.py's
+# registry is: two chat sessions each naming an object "Box" would
+# otherwise clobber each other's entry in one shared global dict. Always
+# go through _mock_object_registry() below, never this dict directly.
+_MOCK_OBJECT_REGISTRY: dict[str, dict[str, str]] = {}
+
+
+def _mock_object_registry() -> dict[str, str]:
+    """THIS session's own slice of ``_MOCK_OBJECT_REGISTRY``."""
+    return _MOCK_OBJECT_REGISTRY.setdefault(get_session_id(), {})
 
 
 def _bbox(mesh: Any) -> list[float]:
@@ -152,7 +163,7 @@ class MockFreeCADEngine(BaseCADEngine):
         mesh.apply_translation(placement)
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
-        _MOCK_OBJECT_REGISTRY[name] = str(out_path)
+        _mock_object_registry()[name] = str(out_path)
         return {
             "ok": True,
             "name": name,
@@ -181,7 +192,7 @@ class MockFreeCADEngine(BaseCADEngine):
         mesh.apply_translation(placement)
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
-        _MOCK_OBJECT_REGISTRY[name] = str(out_path)
+        _mock_object_registry()[name] = str(out_path)
         return {
             "ok": True,
             "name": name,
@@ -207,8 +218,8 @@ class MockFreeCADEngine(BaseCADEngine):
         if op not in mesh_ops:
             return {"ok": False, "error": f"apply_boolean: unknown operation '{operation}' — must be cut, union, or intersect"}
 
-        base_path = _MOCK_OBJECT_REGISTRY.get(base_object)
-        tool_path = _MOCK_OBJECT_REGISTRY.get(tool_object)
+        base_path = _mock_object_registry().get(base_object)
+        tool_path = _mock_object_registry().get(tool_object)
         if not base_path:
             return {"ok": False, "error": f"apply_boolean: no object named {base_object!r} in this session"}
         if not tool_path:
@@ -232,7 +243,7 @@ class MockFreeCADEngine(BaseCADEngine):
 
         out_path = _mesh_output_path(resolved_name)
         mesh.export(out_path)
-        _MOCK_OBJECT_REGISTRY[resolved_name] = str(out_path)
+        _mock_object_registry()[resolved_name] = str(out_path)
         return {
             "ok": True,
             "name": resolved_name,
@@ -427,7 +438,7 @@ class MockFreeCADEngine(BaseCADEngine):
     def modify_parameter(
         self, target_object: str, parameter_name: str, new_value: float | Sequence[float]
     ) -> dict[str, Any]:
-        target_path = _MOCK_OBJECT_REGISTRY.get(target_object)
+        target_path = _mock_object_registry().get(target_object)
         if not target_path:
             return {"ok": False, "error": f"modify_parameter: no object named {target_object!r} in this session"}
         target = Path(target_path)

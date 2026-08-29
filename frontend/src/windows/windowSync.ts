@@ -34,6 +34,7 @@ export type PluginSyncState = {
   pluginId: PluginId;
   meshUrl: string | null;
   cameraTarget: CameraTarget | null;
+  sessionId: string | null;
 };
 
 export type VoiceSyncState = {

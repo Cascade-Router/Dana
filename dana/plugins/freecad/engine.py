@@ -32,6 +32,7 @@ import psutil
 
 from dana.paths import DANA_WORKSPACE
 from dana.security.dry_run import is_dry_run_enabled
+from dana.session_context import session_scoped_dir
 
 # Re-exported (not implemented here — neither needs a FreeCADCmd subprocess
 # at all, just pure-Python mesh/XML work) purely so
@@ -479,9 +480,27 @@ def _safe_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", name or "").strip("_") or "model"
 
 
+def _session_dir() -> Path:
+    """``freecad_output/sessions/<current session_id>/`` — every one-off
+    file (``create_pyramid``, ``create_pipe``, ...) AND the shared
+    ``Session_Active.FCStd`` document now live under here instead of the
+    flat top-level ``freecad_output/``, so two different chat sessions can
+    never collide on an object sharing the same name (previously a real
+    bug: two sessions each creating a "Box" silently clobbered each other's
+    file). See ``dana.session_context`` for how the current session_id is
+    resolved.
+    """
+    return session_scoped_dir(_OUTPUT_DIR)
+
+
+def _export_dir() -> Path:
+    """``exports/sessions/<current session_id>/`` — same reasoning as
+    ``_session_dir`` above, for ``export_model``'s named STL/STEP output."""
+    return session_scoped_dir(_EXPORT_DIR)
+
+
 def _output_path(name: str, *, ext: str) -> Path:
-    _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    return _OUTPUT_DIR / f"{_safe_name(name)}.{ext}"
+    return _session_dir() / f"{_safe_name(name)}.{ext}"
 
 
 def _extract_bbox(stdout: str) -> list[float] | None:
@@ -691,11 +710,12 @@ def _object_lookup_snippet(
 
 
 def _session_document_path() -> Path:
-    """The shared ``Session_Active.FCStd`` path — see ``_SESSION_DOCUMENT_NAME``'s
-    module-level comment. Same ``freecad_output/`` directory every other
-    ``.FCStd``/``.stl`` artifact already lives in."""
-    _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    return _OUTPUT_DIR / f"{_SESSION_DOCUMENT_NAME}.FCStd"
+    """THIS chat session's own ``Session_Active.FCStd`` path — see
+    ``_SESSION_DOCUMENT_NAME``'s module-level comment. Under ``_session_dir()``
+    (``freecad_output/sessions/<session_id>/``), not the flat top-level
+    ``freecad_output/`` every other artifact used to share — see
+    ``_session_dir``'s own docstring for why."""
+    return _session_dir() / f"{_SESSION_DOCUMENT_NAME}.FCStd"
 
 
 # Opens the session document if it already exists (a prior create_box/
@@ -2372,11 +2392,10 @@ def export_model(
     ext = _EXPORT_FORMAT_EXT[fmt]
     safe_name = _safe_name(filename or "export")
     if is_dry_run_enabled():
-        out_path = _EXPORT_DIR / f"{safe_name}.{ext}"
+        out_path = _export_dir() / f"{safe_name}.{ext}"
         return _dry_run_result("export_model", format=fmt, path=str(out_path), target_count=len(paths))
 
-    _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = _EXPORT_DIR / f"{safe_name}.{ext}"
+    out_path = _export_dir() / f"{safe_name}.{ext}"
     template = _EXPORT_MODEL_STL_SCRIPT if fmt == "stl" else _EXPORT_MODEL_STEP_SCRIPT
     target_specs = [
         (str(p), (names[i].strip() if i < len(names) and names[i] else None))

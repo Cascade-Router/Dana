@@ -91,7 +91,7 @@ def test_dispatch_tool_call_generate_2d_blueprint_end_to_end(existing_path: str)
     from dana.core import react_dispatch as rd
     from dana.tools.schema import ToolCall
 
-    rd._OBJECT_PATH_REGISTRY["BlueprintTestBox"] = existing_path
+    rd._object_registry()["BlueprintTestBox"] = existing_path
 
     result = rd.dispatch_tool_call(
         ToolCall(

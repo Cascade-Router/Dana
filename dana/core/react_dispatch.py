@@ -30,6 +30,7 @@ from dana.core.context_manager import prune_message_history, prune_tool_output_h
 from dana.core.model_provider import ModelProvider, tool_calling_provider
 from dana.core.skill_loader import delete_skill, load_user_skills, read_skill_source, save_skill
 from dana.core.tool_retrieval import narrow_tool_ids_by_query
+from dana.session_context import get_session_id
 from dana.tools.registry import get_tool_registry, is_bindable_tool
 from dana.paths import CAPTURES_DIR
 from dana.platform import factory as platform_factory
@@ -877,7 +878,23 @@ def _tool_create_freecad_star_prism(args: dict[str, Any], engine: Any, _cp: Any)
 # module docstring), so there's no persistent ActiveDocument to fetch objects
 # from by name across calls; this is that continuity, entirely dispatch-side so
 # neither CAD engine driver needs to know about LLM-facing object names.
-_OBJECT_PATH_REGISTRY: dict[str, str] = {}
+#
+# Nested per session_id (outer key), not a flat dict — two different chat
+# sessions each naming an object "Box" used to silently clobber each
+# other's entry in one shared global dict (confirmed live: whichever
+# session created its "Box" LAST won, and the other session's later
+# perform_freecad_boolean/modify_freecad_parameter calls on "its own" Box
+# would resolve to the wrong session's file). Always go through
+# _object_registry() below, never this dict directly, so every read/write
+# is scoped to the CURRENT turn's session_id (dana.session_context).
+_OBJECT_PATH_REGISTRY: dict[str, dict[str, str]] = {}
+
+
+def _object_registry() -> dict[str, str]:
+    """THIS session's own slice of ``_OBJECT_PATH_REGISTRY`` — created
+    empty on first use, same lazy semantics a flat dict's ``.get()``/``in``
+    already had for a session's first-ever object."""
+    return _OBJECT_PATH_REGISTRY.setdefault(get_session_id(), {})
 
 _BOOLEAN_OPERATIONS = frozenset({"cut", "union", "intersect"})
 
@@ -899,12 +916,12 @@ def _tool_perform_freecad_boolean(args: dict[str, Any], engine: Any, _cp: Any) -
     # every session-scoped creation tool now shares the SAME underlying
     # document, so a path alone can't tell two objects apart. apply_boolean
     # resolves base_object/tool_object by NAME against that shared session.
-    if base_name not in _OBJECT_PATH_REGISTRY:
+    if base_name not in _object_registry():
         return {
             "ok": False,
             "error": f"unknown base_object '{base_name}' — create it first with a create_freecad_* tool",
         }
-    if tool_name not in _OBJECT_PATH_REGISTRY:
+    if tool_name not in _object_registry():
         return {
             "ok": False,
             "error": f"unknown tool_object '{tool_name}' — create it first with a create_freecad_* tool",
@@ -925,7 +942,7 @@ def _tool_perform_freecad_edge_operation(args: dict[str, Any], engine: Any, _cp:
     target_name = str(args.get("target_object") or "").strip()
     if not target_name:
         return {"ok": False, "error": "perform_freecad_edge_operation requires target_object"}
-    target_path = _OBJECT_PATH_REGISTRY.get(target_name)
+    target_path = _object_registry().get(target_name)
     if not target_path:
         return {
             "ok": False,
@@ -991,7 +1008,7 @@ def _tool_modify_freecad_parameter(args: dict[str, Any], engine: Any, _cp: Any) 
         return {"ok": False, "error": "modify_freecad_parameter requires target_object"}
     # Existence check only — see perform_freecad_boolean's matching comment
     # on why the resolved PATH itself is no longer what gets passed down.
-    if target_name not in _OBJECT_PATH_REGISTRY:
+    if target_name not in _object_registry():
         return {
             "ok": False,
             "error": f"unknown target_object '{target_name}' — create it first with a create_freecad_* tool",
@@ -1025,7 +1042,7 @@ def _tool_get_freecad_bounding_box(args: dict[str, Any], engine: Any, _cp: Any) 
     target_name = str(args.get("target_object") or "").strip()
     if not target_name:
         return {"ok": False, "error": "get_freecad_bounding_box requires target_object"}
-    target_path = _OBJECT_PATH_REGISTRY.get(target_name)
+    target_path = _object_registry().get(target_name)
     if not target_path:
         return {
             "ok": False,
@@ -1038,7 +1055,7 @@ def _tool_inspect_spatial_properties(args: dict[str, Any], engine: Any, _cp: Any
     target_name = str(args.get("target_object") or "").strip()
     if not target_name:
         return {"ok": False, "error": "inspect_spatial_properties requires target_object"}
-    target_path = _OBJECT_PATH_REGISTRY.get(target_name)
+    target_path = _object_registry().get(target_name)
     if not target_path:
         return {
             "ok": False,
@@ -1073,10 +1090,10 @@ def _tool_analyze_bounding_box_collisions(args: dict[str, Any], engine: Any, _cp
     name_b = str(args.get("object_b") or "").strip()
     if not name_a or not name_b:
         return {"ok": False, "error": "analyze_bounding_box_collisions requires object_a and object_b"}
-    path_a = _OBJECT_PATH_REGISTRY.get(name_a)
+    path_a = _object_registry().get(name_a)
     if not path_a:
         return {"ok": False, "error": f"unknown object_a '{name_a}' — create it first with a create_freecad_* tool"}
-    path_b = _OBJECT_PATH_REGISTRY.get(name_b)
+    path_b = _object_registry().get(name_b)
     if not path_b:
         return {"ok": False, "error": f"unknown object_b '{name_b}' — create it first with a create_freecad_* tool"}
 
@@ -1128,13 +1145,13 @@ def _tool_align_freecad_objects(args: dict[str, Any], engine: Any, _cp: Any) -> 
             "top_center, bottom_center, flush_left, flush_right",
         }
 
-    source_path = _OBJECT_PATH_REGISTRY.get(source_name)
+    source_path = _object_registry().get(source_name)
     if not source_path:
         return {
             "ok": False,
             "error": f"unknown source_object '{source_name}' — create it first with a create_freecad_* tool",
         }
-    target_path = _OBJECT_PATH_REGISTRY.get(target_name)
+    target_path = _object_registry().get(target_name)
     if not target_path:
         return {
             "ok": False,
@@ -1163,10 +1180,10 @@ def _tool_create_assembly_mate(args: dict[str, Any], engine: Any, _cp: Any) -> d
             "concentric, coincident_planar, offset_axial",
         }
 
-    fixed_path = _OBJECT_PATH_REGISTRY.get(fixed_name)
+    fixed_path = _object_registry().get(fixed_name)
     if not fixed_path:
         return {"ok": False, "error": f"unknown fixed_obj '{fixed_name}' — create it first with a create_freecad_* tool"}
-    moving_path = _OBJECT_PATH_REGISTRY.get(moving_name)
+    moving_path = _object_registry().get(moving_name)
     if not moving_path:
         return {
             "ok": False,
@@ -1199,7 +1216,7 @@ def _tool_export_freecad_model(args: dict[str, Any], engine: Any, _cp: Any) -> d
     resolved_names = []
     for raw_name in target_names:
         name = str(raw_name).strip()
-        path = _OBJECT_PATH_REGISTRY.get(name)
+        path = _object_registry().get(name)
         if not path:
             return {
                 "ok": False,
@@ -1227,7 +1244,7 @@ def _tool_generate_2d_blueprint(args: dict[str, Any], _engine: Any, _cp: Any) ->
     object_name = str(args.get("object_name") or "").strip()
     if not object_name:
         return {"ok": False, "error": "generate_2d_blueprint requires object_name"}
-    source_path = _OBJECT_PATH_REGISTRY.get(object_name)
+    source_path = _object_registry().get(object_name)
     if not source_path:
         return {
             "ok": False,
@@ -1272,7 +1289,7 @@ def _tool_batch_pattern_array(args: dict[str, Any], engine: Any, _cp: Any) -> di
     source_name = str(args.get("source_object") or "").strip()
     if not source_name:
         return {"ok": False, "error": "batch_pattern_array requires source_object"}
-    source_path = _OBJECT_PATH_REGISTRY.get(source_name)
+    source_path = _object_registry().get(source_name)
     if not source_path:
         return {
             "ok": False,
@@ -3681,7 +3698,7 @@ def dispatch_tool_call(
     else:
         message = "ok"
         if isinstance(payload, dict) and payload.get("name") and payload.get("path"):
-            _OBJECT_PATH_REGISTRY[str(payload["name"])] = str(payload["path"])
+            _object_registry()[str(payload["name"])] = str(payload["path"])
     if ok:
         print(f"[ReAct] Tool {call.tool_id} executed successfully -> {payload}", file=sys.stderr, flush=True)
     else:

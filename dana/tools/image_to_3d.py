@@ -60,13 +60,21 @@ from typing import Any, Callable
 import requests
 
 from dana.paths import DANA_WORKSPACE
+from dana.session_context import session_scoped_dir
 
-# Same directory dana.plugins.freecad.engine._OUTPUT_DIR writes
+# Same base directory dana.plugins.freecad.engine._OUTPUT_DIR writes
 # create_freecad_*/export_mesh_stl artifacts to — declared as its own copy
 # rather than importing engine.py's underscore-prefixed module attribute
 # across modules, same precedent dana.api.cad/dana.tools.urdf_builder's own
-# docstrings already apply.
+# docstrings already apply. ``_session_dir()`` (not the bare constant) is
+# what the actual download destination below is built from, so a mesh this
+# session generates never lands in a directory another session's own
+# generate_3d_from_image call could also write into.
 _OUTPUT_DIR = DANA_WORKSPACE / "freecad_output"
+
+
+def _session_dir() -> Path:
+    return session_scoped_dir(_OUTPUT_DIR)
 
 _MESH_EXTENSIONS = (".glb", ".obj")
 
@@ -328,12 +336,11 @@ def _safe_label(label: str) -> str:
 
 
 def _move_to_output(local_path: str, model_label: str) -> Path:
-    """Moves the backend's downloaded temp file into the canonical
-    ``freecad_output/`` — a random suffix keeps two calls to the SAME
-    backend in one session from colliding on identical filenames."""
+    """Moves the backend's downloaded temp file into THIS session's own
+    output directory — a random suffix keeps two calls to the SAME backend
+    in one session from colliding on identical filenames."""
     src = Path(local_path)
-    _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    dest = _OUTPUT_DIR / f"{_safe_label(model_label)}_{uuid.uuid4().hex[:8]}{src.suffix.lower()}"
+    dest = _session_dir() / f"{_safe_label(model_label)}_{uuid.uuid4().hex[:8]}{src.suffix.lower()}"
     shutil.move(str(src), dest)
     return dest
 

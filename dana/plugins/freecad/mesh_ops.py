@@ -23,7 +23,6 @@ from pathlib import Path
 
 from dana.plugins.freecad.engine import (
     _OK_MARKER,
-    _OUTPUT_DIR,
     _SESSION_DOCUMENT_NAME,
     _SESSION_OPEN_SNIPPET,
     _SESSION_RESULT_PRINT,
@@ -33,6 +32,7 @@ from dana.plugins.freecad.engine import (
     _error,
     _ok,
     _run_freecad_script,
+    _session_dir,
     _session_document_path,
 )
 from dana.platform.factory import IS_HF_SPACE
@@ -91,17 +91,17 @@ def _resolve_mesh_path(mesh_path: str) -> Path | None:
     """Multi-Stage file resolution for a caller-supplied ``mesh_path`` — the
     same 3-candidate poll ``dana.tools.urdf_builder``'s own mesh-existence
     check uses (its own module docstring has the full reasoning): the path
-    as given, then its basename under the canonical ``freecad_output/``
-    (``_OUTPUT_DIR`` — cwd-independent, where ``generate_3d_from_image``'s
-    own output actually lands), then its basename under the process's
-    current working directory. Returns the first candidate that's an
-    actual file, or ``None`` if none of the three are.
+    as given, then its basename under THIS session's own output directory
+    (``_session_dir()`` — cwd-independent, where ``generate_3d_from_image``'s
+    own output actually lands for this session), then its basename under
+    the process's current working directory. Returns the first candidate
+    that's an actual file, or ``None`` if none of the three are.
     """
     candidate = Path(mesh_path)
     if candidate.is_file():
         return candidate
     basename = candidate.name
-    alt = _OUTPUT_DIR / basename
+    alt = _session_dir() / basename
     if alt.is_file():
         return alt
     alt2 = Path.cwd() / basename

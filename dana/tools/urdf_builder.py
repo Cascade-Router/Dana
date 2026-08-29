@@ -22,15 +22,24 @@ from typing import Any
 from xml.dom import minidom
 
 from dana.paths import DANA_WORKSPACE
+from dana.session_context import session_scoped_dir
 
-# Same output directory dana.plugins.freecad.engine._OUTPUT_DIR writes
+# Same base output directory dana.plugins.freecad.engine._OUTPUT_DIR writes
 # create_freecad_*/export_mesh_stl artifacts to — declared as its own copy
 # rather than importing engine.py's underscore-prefixed module attribute
 # across modules (same precedent dana.api.cad's docstring already applies
 # to py_export/techdraw_export). Placing the .urdf alongside the .stl
 # meshes it references means dana.api.cad's existing artifact directory
 # scan picks it up for free once ".urdf" is added to its extension allowlist.
+# ``_session_dir()`` (not the bare constant) is what callers below actually
+# use — see dana.session_context's own docstring for why every mesh/doc a
+# chat session produces now lives under its own sessions/<session_id>/
+# subdirectory instead of this flat, session-shared one.
 _OUTPUT_DIR = DANA_WORKSPACE / "freecad_output"
+
+
+def _session_dir() -> Path:
+    return session_scoped_dir(_OUTPUT_DIR)
 
 _JOINT_TYPES = frozenset({"fixed", "revolute", "continuous"})
 _DEFAULT_JOINT_LIMIT = (-3.14159, 3.14159)
@@ -79,10 +88,10 @@ def _mesh_file_exists(mesh_path: str) -> bool:
     moment anything tries to load it).
 
     Checked in order: the path as given (absolute or already
-    cwd-relative-and-correct), then its basename under this module's own
-    canonical ``_OUTPUT_DIR`` (``DANA_WORKSPACE/freecad_output`` —
-    cwd-independent, where every create_freecad_*/export_mesh_stl artifact
-    actually lands), then its basename under the process's current working
+    cwd-relative-and-correct), then its basename under THIS session's own
+    output directory (``_session_dir()`` — cwd-independent, where every
+    create_freecad_*/export_mesh_stl artifact for this session actually
+    lands), then its basename under the process's current working
     directory (a plain relative mesh_path the caller already resolved
     against its own cwd).
     """
@@ -90,7 +99,7 @@ def _mesh_file_exists(mesh_path: str) -> bool:
     if candidate.exists():
         return True
     basename = candidate.name
-    if (_OUTPUT_DIR / basename).exists():
+    if (_session_dir() / basename).exists():
         return True
     return (Path.cwd() / basename).exists()
 
@@ -192,8 +201,7 @@ def generate_urdf_assembly(
     xml_bytes = ET.tostring(robot_el, encoding="utf-8")
     pretty_xml = minidom.parseString(xml_bytes).toprettyxml(indent="  ")
 
-    _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = _OUTPUT_DIR / f"{name}.urdf"
+    out_path = _session_dir() / f"{name}.urdf"
     out_path.write_text(pretty_xml, encoding="utf-8")
 
     return _ok(

@@ -7,10 +7,10 @@ import "./CadPlugin.css";
 // Default export so this can be React.lazy()-imported — the R3F canvas,
 // three.js and @xyflow/react bundles only load once the CAD plugin is
 // actually activated, not on Dana's core chat-only startup path.
-export default function CadPlugin({ meshUrl, cameraTarget, onSelect, log }: PluginComponentProps) {
+export default function CadPlugin({ meshUrl, cameraTarget, onSelect, log, sessionId }: PluginComponentProps) {
   return (
     <div className="cad-plugin">
-      <CadToolbar meshUrl={meshUrl} />
+      <CadToolbar meshUrl={meshUrl} sessionId={sessionId} />
       <div className="cad-plugin__viewport">
         {/* Viewer3D — and the <Canvas>/WebGLRenderer inside it — is always
             rendered here, never gated behind meshUrl or an artifact list's

@@ -31,6 +31,7 @@ export function PluginWindowApp({ pluginId }: { pluginId: PluginId }) {
           cameraTarget={pluginState?.cameraTarget ?? null}
           onSelect={sendSelect}
           log={[]}
+          sessionId={pluginState?.sessionId ?? null}
         />
       </Suspense>
     </div>

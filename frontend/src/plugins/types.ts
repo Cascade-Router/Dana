@@ -19,6 +19,11 @@ export type PluginComponentProps = {
   cameraTarget: CameraTarget | null;
   onSelect: (selection: CanvasSelection) => void;
   log: ServerEvent[];
+  /** The active chat's session_id — CadPlugin's Scoped Mini-Explorer
+   * (CadToolbar) needs this to only ever list/open THIS session's own
+   * CAD artifacts, never another chat's. `null` before the very first
+   * WebSocket "ready" event of a brand-new chat. */
+  sessionId: string | null;
 };
 
 export type PluginDefinition = {

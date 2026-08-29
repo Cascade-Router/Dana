@@ -185,6 +185,20 @@ export function useChatSocket(
     setLiveActivity([]);
     liveActivityRef.current = [];
     setTurnActive(false);
+    // Terminal History isolation: `log` (server_log/tool_call/tool_result/
+    // etc. WS events) is genuinely per-session data — without this reset
+    // it kept accumulating across a chat switch, so the Terminal History
+    // panel showed a PREVIOUS session's backend activity mixed in with the
+    // newly-selected one. Deliberately NOT resetting consoleCapture.ts's
+    // own browser-console buffer here (TerminalDrawer's OTHER log source,
+    // read via useSyncExternalStore, combined into the same panel) — that
+    // one is browser/OS-level, not tied to any particular chat session,
+    // and a debugging tool clearing recent real console errors just
+    // because the user switched chats would be surprising, not helpful.
+    setLog([]);
+    setMeshUrl(null);
+    setDriverState(null);
+    setCameraTarget(null);
 
     const query = requestedSessionId ? `?session_id=${encodeURIComponent(requestedSessionId)}` : "";
     const socket = new WebSocket(`${API_WS_BASE}/ws/chat${query}`);
