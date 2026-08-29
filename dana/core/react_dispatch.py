@@ -962,21 +962,25 @@ def _tool_perform_freecad_edge_operation(args: dict[str, Any], engine: Any, _cp:
 _VECTOR_PARAMETER_NAMES = frozenset({"placement", "placement.base"})
 
 
-def _parse_vector_new_value(raw_value: Any) -> tuple[float, float, float] | None:
-    """Parse a 3-number vector from a ``[x, y, z]``/``(x, y, z)`` list-like
-    value or a JSON-array string such as ``"[30, 20, 10]"`` or
-    ``"[30,20,10]"``. Returns ``None`` on anything that isn't exactly three
-    numbers — never raises."""
+def _parse_vector_new_value(raw_value: Any) -> tuple[float, ...] | None:
+    """Parse a 3-number ``[x, y, z]`` or 6-number ``[x, y, z, yaw, pitch,
+    roll]`` vector from a list-like value or a JSON-array string such as
+    ``"[30, 20, 10]"`` or ``"[30, 20, 10, 90, 0, 0]"``. Returns ``None`` on
+    anything that isn't exactly 3 or 6 numbers — never raises. The 6-number
+    form (mm position + DEGREES Euler rotation — see
+    ``dana.plugins.freecad.engine.modify_parameter``'s own docstring for
+    the live-confirmed units) lets a kinematic-assembly caller move AND
+    orient a part in one call instead of two."""
     components = raw_value
     if isinstance(components, str):
         try:
             components = json.loads(components)
         except (TypeError, ValueError):
             return None
-    if not isinstance(components, (list, tuple)) or len(components) != 3:
+    if not isinstance(components, (list, tuple)) or len(components) not in (3, 6):
         return None
     try:
-        return (float(components[0]), float(components[1]), float(components[2]))
+        return tuple(float(c) for c in components)
     except (TypeError, ValueError):
         return None
 
@@ -1003,10 +1007,12 @@ def _tool_modify_freecad_parameter(args: dict[str, Any], engine: Any, _cp: Any) 
                 "ok": False,
                 "error": (
                     "modify_freecad_parameter: Placement new_value must be a 3-number "
-                    f"[x, y, z] vector, e.g. '[30, 20, 10]' — got {raw_value!r}"
+                    "[x, y, z] vector (e.g. '[30, 20, 10]') or a 6-number "
+                    "[x, y, z, yaw, pitch, roll] vector in mm + degrees "
+                    f"(e.g. '[30, 20, 10, 90, 0, 0]') — got {raw_value!r}"
                 ),
             }
-        new_value: float | tuple[float, float, float] = vector
+        new_value: float | tuple[float, ...] = vector
     else:
         try:
             new_value = float(raw_value)

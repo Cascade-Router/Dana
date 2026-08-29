@@ -1611,10 +1611,19 @@ print("{marker} path=" + {session_path!r})
 
 # "Placement"/"Placement.Base" is a 3D translation, not a bare settable
 # number — setattr(obj, "Placement", 5.0) would fail outright. Replace the
-# whole Placement with a new Vector base while keeping the object's
-# existing Rotation, so a move never silently discards prior orientation.
+# whole Placement with a new Vector base and either the object's EXISTING
+# Rotation (a 3-element [x, y, z]) or a NEW one built from Euler angles (a
+# 6-element [x, y, z, yaw, pitch, roll]) — see modify_parameter's own
+# docstring for why a move never silently discards prior orientation in
+# the 3-element case, and the Yaw/Pitch/Roll degrees confirmation for the
+# 6-element case.
 _VECTOR_PARAMETER_NAMES = frozenset({"placement", "placement.base"})
 
+# {rotation_expr} is raw Python, not a %r-quoted literal — always either
+# the fixed string "obj.Placement.Rotation" or "App.Rotation(<float>,
+# <float>, <float>)" built from already-float()-validated numbers in
+# modify_parameter below, so this is exactly as injection-safe as every
+# other numeric !r/format substitution in this module's script templates.
 _MODIFY_PARAMETER_VECTOR_SCRIPT = """\
 import FreeCAD as App
 
@@ -1622,7 +1631,7 @@ doc = App.openDocument({session_path!r})
 obj = doc.getObject({target_object!r})
 if obj is None:
     raise RuntimeError("no object named " + {target_object!r} + " in the session document")
-obj.Placement = App.Placement(App.Vector({x}, {y}, {z}), obj.Placement.Rotation)
+obj.Placement = App.Placement(App.Vector({x}, {y}, {z}), {rotation_expr})
 doc.recompute()
 doc.save()
 """ + _BBOX_PRINT + """\
@@ -1639,10 +1648,21 @@ def modify_parameter(
     across the edit.
 
     ``parameter_name`` of ``"Placement"`` or ``"Placement.Base"`` is special:
-    it moves the object, so ``new_value`` must be a 3-number ``[x, y, z]``
-    vector (mm) instead of a single float — applied as a new
-    ``FreeCAD.Vector`` on ``Placement.Base`` while the object's current
-    ``Placement.Rotation`` is preserved.
+    it moves (and optionally rotates) the object, so ``new_value`` must be a
+    vector instead of a single float — either:
+
+    - A 3-number ``[x, y, z]`` (mm) — moves ``Placement.Base`` to that
+      point, PRESERVING the object's current ``Placement.Rotation``
+      (a translate never silently discards prior orientation).
+    - A 6-number ``[x, y, z, yaw, pitch, roll]`` (mm + DEGREES) — moves
+      ``Placement.Base`` AND replaces ``Placement.Rotation`` with a fresh
+      ``FreeCAD.Rotation(yaw, pitch, roll)``, the exact Euler convention
+      FreeCAD's own Placement dialog uses (confirmed live:
+      ``Rotation(90, 0, 0).toEuler() == (90.0, 0.0, 0.0)`` — the
+      constructor takes degrees directly, no radian conversion needed or
+      wanted). Needed for kinematic assemblies (URDF joints, assembly
+      mates) where a linked part must be moved AND oriented in one call,
+      not just translated.
     """
     param = (parameter_name or "").strip()
     if not param:
@@ -1656,14 +1676,28 @@ def modify_parameter(
 
     if param.lower() in _VECTOR_PARAMETER_NAMES:
         try:
-            x, y, z = (float(component) for component in new_value)
+            components = [float(component) for component in new_value]
         except (TypeError, ValueError):
             return _error(
-                f"modify_parameter: {param} new_value must be a 3-number [x, y, z] vector, got {new_value!r}"
+                f"modify_parameter: {param} new_value must be a 3-number [x, y, z] or "
+                f"6-number [x, y, z, yaw, pitch, roll] vector, got {new_value!r}"
+            )
+        if len(components) == 3:
+            x, y, z = components
+            rotation_expr = "obj.Placement.Rotation"
+            result_value: float | list[float] = [x, y, z]
+        elif len(components) == 6:
+            x, y, z, yaw, pitch, roll = components
+            rotation_expr = f"App.Rotation({yaw}, {pitch}, {roll})"
+            result_value = [x, y, z, yaw, pitch, roll]
+        else:
+            return _error(
+                f"modify_parameter: {param} new_value must have 3 elements [x, y, z] or "
+                f"6 elements [x, y, z, yaw, pitch, roll] (degrees), got {len(components)}"
             )
         if is_dry_run_enabled():
             return _dry_run_result(
-                "modify_parameter", path=str(session_path), parameter_name=param, new_value=[x, y, z]
+                "modify_parameter", path=str(session_path), parameter_name=param, new_value=result_value
             )
         script = _MODIFY_PARAMETER_VECTOR_SCRIPT.format(
             session_path=str(session_path),
@@ -1671,9 +1705,9 @@ def modify_parameter(
             x=x,
             y=y,
             z=z,
+            rotation_expr=rotation_expr,
             marker=_OK_MARKER,
         )
-        result_value: float | list[float] = [x, y, z]
     else:
         try:
             value_f = float(new_value)

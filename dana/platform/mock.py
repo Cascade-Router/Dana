@@ -438,13 +438,24 @@ class MockFreeCADEngine(BaseCADEngine):
             return {"ok": False, "error": "modify_parameter requires a non-empty parameter_name"}
         if param.lower() in ("placement", "placement.base"):
             try:
-                x, y, z = (float(component) for component in new_value)
+                components = [float(component) for component in new_value]
             except (TypeError, ValueError):
                 return {
                     "ok": False,
-                    "error": f"modify_parameter: {param} new_value must be a 3-number [x, y, z] vector, got {new_value!r}",
+                    "error": (
+                        f"modify_parameter: {param} new_value must be a 3-number [x, y, z] or "
+                        f"6-number [x, y, z, yaw, pitch, roll] vector, got {new_value!r}"
+                    ),
                 }
-            resolved_value: float | list[float] = [x, y, z]
+            if len(components) not in (3, 6):
+                return {
+                    "ok": False,
+                    "error": (
+                        f"modify_parameter: {param} new_value must have 3 elements [x, y, z] or "
+                        f"6 elements [x, y, z, yaw, pitch, roll] (degrees), got {len(components)}"
+                    ),
+                }
+            resolved_value: float | list[float] = components
         else:
             try:
                 resolved_value = float(new_value)
