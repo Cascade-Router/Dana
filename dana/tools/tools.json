@@ -61,181 +61,6 @@
       }
     },
     {
-      "id": "analyze_visual_context",
-      "description_en": "Captures the primary monitor via mss and reads on-screen text with pytesseract OCR (returns <screen_text>). Webcam source still uses JIT YOLO object detection.",
-      "parameters": [
-        {
-          "name": "source",
-          "type": "string",
-          "required": true,
-          "enum": [
-            "screen",
-            "webcam"
-          ],
-          "description_en": "Where to capture the visual frame from. Defaults to 'screen' (OCR). Use 'webcam' for YOLO.",
-          "description_fa": ""
-        }
-      ],
-      "aliases_en": {
-        "screen": [
-          "what do you see on my screen",
-          "what is on my screen",
-          "what's on my screen",
-          "check what's on my screen",
-          "check what is on my screen",
-          "look at my screen",
-          "read the screen",
-          "read this",
-          "analyze my screen",
-          "what do you see"
-        ],
-        "webcam": [
-          "what do you see on camera",
-          "look at the camera",
-          "analyze the webcam",
-          "check the webcam"
-        ]
-      },
-      "aliases_fa": {
-        "screen": [],
-        "webcam": []
-      }
-    },
-    {
-      "id": "click_ui_element",
-      "description_en": "Locate a UI element on screen by description (native UI Automation first, then Florence-2 vision grounding) and physically click its center. Use when the user wants you to press a button, click a link, check a box, or otherwise interact with something on screen — not just read or find it (use ocr_with_region for that). Rate-limited, fails closed if the target can't be found or the click would land off-screen.",
-      "parameters": [
-        {
-          "name": "target_description",
-          "type": "string",
-          "required": true,
-          "description_en": "What to click, in plain language (e.g. 'Submit button', 'the Cancel link', 'checkbox next to Terms').",
-          "description_fa": ""
-        }
-      ],
-      "aliases_en": {
-        "target_description": [
-          "click the submit button",
-          "press ok",
-          "click on",
-          "click the button",
-          "check the box",
-          "click that link"
-        ]
-      },
-      "aliases_fa": {
-        "target_description": []
-      }
-    },
-    {
-      "id": "scroll_screen",
-      "description_en": "Scroll the screen up, down, left, or right to reveal off-screen content or UI elements. Use before click_ui_element/type_text_in_element when the target isn't visible yet. Amount is semantic (small/medium/large), not a raw tick count.",
-      "parameters": [
-        {
-          "name": "direction",
-          "type": "string",
-          "required": true,
-          "enum": [
-            "up",
-            "down",
-            "left",
-            "right"
-          ],
-          "description_en": "Which way to scroll.",
-          "description_fa": ""
-        },
-        {
-          "name": "amount",
-          "type": "string",
-          "required": false,
-          "enum": [
-            "small",
-            "medium",
-            "large"
-          ],
-          "description_en": "How far to scroll. Defaults to 'medium'.",
-          "description_fa": ""
-        }
-      ],
-      "aliases_en": {
-        "direction": [
-          "scroll down",
-          "scroll up",
-          "page down",
-          "scroll to the bottom",
-          "scroll left",
-          "scroll right"
-        ]
-      },
-      "aliases_fa": {
-        "direction": []
-      }
-    },
-    {
-      "id": "type_text_in_element",
-      "description_en": "Locate a UI element on screen by description, click it to focus, then type text into it (search bars, form fields, text boxes). Combines click_ui_element with stealth keyboard input in one step. Fails closed if the target can't be found, the click is blocked, or typing fails — never types into the wrong place.",
-      "parameters": [
-        {
-          "name": "target_description",
-          "type": "string",
-          "required": true,
-          "description_en": "What to click before typing, in plain language (e.g. 'search bar', 'Email field', 'the comment box').",
-          "description_fa": ""
-        },
-        {
-          "name": "text",
-          "type": "string",
-          "required": true,
-          "description_en": "The text to type into the focused element.",
-          "description_fa": ""
-        }
-      ],
-      "aliases_en": {
-        "target_description": [
-          "type in the search bar",
-          "fill in the email field",
-          "enter text in",
-          "type into",
-          "search for"
-        ]
-      },
-      "aliases_fa": {
-        "target_description": []
-      }
-    },
-    {
-      "id": "drag_ui_element",
-      "description_en": "Locate two UI elements on screen by description (native UI Automation first, then Florence-2 vision grounding) and drag from the first to the second — press down on the source, move to the destination, release. Use for drag-and-drop interactions (moving a file into a folder, dragging a slider, reordering a list item, dismissing a card). Fails closed if either element can't be found or either point would land off-screen.",
-      "parameters": [
-        {
-          "name": "source_description",
-          "type": "string",
-          "required": true,
-          "description_en": "What to drag, in plain language (e.g. 'the invoice.pdf file icon', 'the volume slider handle').",
-          "description_fa": ""
-        },
-        {
-          "name": "destination_description",
-          "type": "string",
-          "required": true,
-          "description_en": "Where to drop it, in plain language (e.g. 'the Archive folder', 'the right edge of the slider track').",
-          "description_fa": ""
-        }
-      ],
-      "aliases_en": {
-        "source_description": [
-          "drag the file to",
-          "drag and drop",
-          "move the icon into",
-          "drag the slider to",
-          "drag this to that"
-        ]
-      },
-      "aliases_fa": {
-        "source_description": []
-      }
-    },
-    {
       "id": "list_active_windows",
       "description_en": "List all currently visible top-level application windows on the desktop (title + process id), topmost first. Use before focus_window when you don't know the exact window title, or to check what applications are currently open.",
       "parameters": [],
@@ -369,33 +194,6 @@
       },
       "aliases_fa": {
         "message": []
-      }
-    },
-    {
-      "id": "ocr_with_region",
-      "description_en": "Florence-2 OCR with region grounding: read on-screen text (terminals, buttons, UI labels) from the Tracker rolling frame buffer, return text + boxes, and highlight the match on the live ROI overlay. Use when the user asks to read text, find a button, locate a label, or ground UI elements.",
-      "parameters": [
-        {
-          "name": "query",
-          "type": "string",
-          "required": false,
-          "description_en": "Optional text or UI label to find (e.g. 'Submit', 'traceback'). Empty = report all OCR regions and focus the largest.",
-          "description_fa": ""
-        }
-      ],
-      "aliases_en": {
-        "query": [
-          "read the text",
-          "read my terminal",
-          "ocr",
-          "where is the submit button",
-          "find the button",
-          "ground the text",
-          "read the traceback"
-        ]
-      },
-      "aliases_fa": {
-        "query": []
       }
     },
     {
@@ -601,39 +399,6 @@
       }
     },
     {
-      "id": "inject_keystrokes",
-      "description_en": "Safely type plaintext into the focused window on behalf of the user (sanitized; no OS control chords).",
-      "parameters": [
-        {
-          "name": "text",
-          "type": "string",
-          "required": true,
-          "description_en": "Plaintext to type. Control chords and naked shell lines are blocked.",
-          "description_fa": "  .        ‌."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "type this",
-          "type that",
-          "type it out",
-          "type for me",
-          "enter this text",
-          "paste by typing",
-          "key in this"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "   ",
-          "  ",
-          "  ",
-          " ",
-          "   "
-        ]
-      }
-    },
-    {
       "id": "read_clipboard_context",
       "description_en": "Read the current plaintext system clipboard. CRITICAL: ONLY use read_clipboard_context if the user explicitly asks you to 'read my screen', 'read my clipboard', or 'check what I copied'. NEVER use this tool autonomously during a web search or general inquiry.",
       "parameters": [],
@@ -655,42 +420,6 @@
           "  ",
           "    ",
           " ‌"
-        ]
-      }
-    },
-    {
-      "id": "run_terminal_command",
-      "description_en": "Executes a shell command on the host OS and returns the output. Use this for file manipulation, checking system status, or running safe scripts.",
-      "parameters": [
-        {
-          "name": "command",
-          "type": "string",
-          "required": true,
-          "description_en": "Shell command to run (hard 10s timeout; stdout/stderr returned to the agent).",
-          "description_fa": "    (       ‌)."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "run this command",
-          "run a terminal command",
-          "execute in the shell",
-          "run in powershell",
-          "check disk space",
-          "list files in",
-          "list the files",
-          "list files in my current directory",
-          "any python files",
-          "python files in this folder",
-          "run a script"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "    ",
-          "   ",
-          "   ",
-          "    "
         ]
       }
     },
@@ -1509,41 +1238,6 @@
       }
     },
     {
-      "id": "evaluate_slide_and_type",
-      "description_en": "USE THIS TOOL IMMEDIATELY when the user asks to evaluate a slide on screen against a rule and type the evaluation into the active window (Chrome). Captures the screen, Cascade-Router judges the slide, then types a concise comment via OS keystrokes after a short focus delay.",
-      "parameters": [
-        {
-          "name": "rule",
-          "type": "string",
-          "required": false,
-          "description_en": "Compliance rule for the slide (e.g. clear title and under 30 words).",
-          "description_fa": "  ."
-        },
-        {
-          "name": "focus_delay_sec",
-          "type": "number",
-          "required": false,
-          "description_en": "Seconds to wait before typing so Chrome can be focused (default 1.5).",
-          "description_fa": "      ."
-        }
-      ],
-      "aliases_en": {
-        "_intent": [
-          "evaluate the slide on my screen",
-          "evaluate slide and type",
-          "slide review and type",
-          "check if the slide follows the rule",
-          "type your evaluation summary into my active window"
-        ]
-      },
-      "aliases_fa": {
-        "_intent": [
-          "   ",
-          "      "
-        ]
-      }
-    },
-    {
       "id": "delegate_to_cursor",
       "description_en": "Write a detailed markdown implementation plan to CAMGRASPER/cursor_handoffs/dana_handoff.md (mirrored to .cursor/instructions/) and optionally launch Cursor for agent handoff.",
       "parameters": [
@@ -1838,54 +1532,142 @@
       "id": "create_freecad_box",
       "description_en": "Create a parametric rectangular box (Part::Box) solid in FreeCAD, saved as a .FCStd document.",
       "parameters": [
-        {"name": "length", "type": "number", "required": false, "description_en": "Box length in mm."},
-        {"name": "width", "type": "number", "required": false, "description_en": "Box width in mm."},
-        {"name": "height", "type": "number", "required": false, "description_en": "Box height in mm."},
-        {"name": "name", "type": "string", "required": false, "description_en": "Name for the created object."},
         {
-          "name": "target_position", "type": "array", "items_type": "number", "required": false,
+          "name": "length",
+          "type": "number",
+          "required": false,
+          "description_en": "Box length in mm."
+        },
+        {
+          "name": "width",
+          "type": "number",
+          "required": false,
+          "description_en": "Box width in mm."
+        },
+        {
+          "name": "height",
+          "type": "number",
+          "required": false,
+          "description_en": "Box height in mm."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Name for the created object."
+        },
+        {
+          "name": "target_position",
+          "type": "array",
+          "items_type": "number",
+          "required": false,
           "description_en": "[x, y, z] anchor point, ONLY when the user refers to a previously clicked/selected point ('this', 'here') — copy it verbatim from the active canvas selection given in the system prompt."
         },
         {
-          "name": "target_normal", "type": "array", "items_type": "number", "required": false,
+          "name": "target_normal",
+          "type": "array",
+          "items_type": "number",
+          "required": false,
           "description_en": "[nx, ny, nz] surface normal at the selected point, copied verbatim from the active canvas selection when relevant."
         },
-        {"name": "placement_x", "type": "number", "required": false, "description_en": "Global X-axis offset in mm. Defaults to 0."},
-        {"name": "placement_y", "type": "number", "required": false, "description_en": "Global Y-axis offset in mm. Defaults to 0."},
-        {"name": "placement_z", "type": "number", "required": false, "description_en": "Global Z-axis offset in mm. Defaults to 0."}
+        {
+          "name": "placement_x",
+          "type": "number",
+          "required": false,
+          "description_en": "Global X-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_y",
+          "type": "number",
+          "required": false,
+          "description_en": "Global Y-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_z",
+          "type": "number",
+          "required": false,
+          "description_en": "Global Z-axis offset in mm. Defaults to 0."
+        }
       ]
     },
     {
       "id": "create_freecad_cylinder",
       "description_en": "Create a parametric cylinder (Part::Cylinder) solid in FreeCAD, saved as a .FCStd document.",
       "parameters": [
-        {"name": "radius", "type": "number", "required": false, "description_en": "Cylinder radius in mm."},
-        {"name": "height", "type": "number", "required": false, "description_en": "Cylinder height in mm."},
-        {"name": "name", "type": "string", "required": false, "description_en": "Name for the created object."},
         {
-          "name": "target_position", "type": "array", "items_type": "number", "required": false,
+          "name": "radius",
+          "type": "number",
+          "required": false,
+          "description_en": "Cylinder radius in mm."
+        },
+        {
+          "name": "height",
+          "type": "number",
+          "required": false,
+          "description_en": "Cylinder height in mm."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Name for the created object."
+        },
+        {
+          "name": "target_position",
+          "type": "array",
+          "items_type": "number",
+          "required": false,
           "description_en": "[x, y, z] anchor point, ONLY when the user refers to a previously clicked/selected point ('this', 'here') — copy it verbatim from the active canvas selection given in the system prompt."
         },
         {
-          "name": "target_normal", "type": "array", "items_type": "number", "required": false,
+          "name": "target_normal",
+          "type": "array",
+          "items_type": "number",
+          "required": false,
           "description_en": "[nx, ny, nz] surface normal at the selected point, copied verbatim from the active canvas selection when relevant."
         },
-        {"name": "placement_x", "type": "number", "required": false, "description_en": "Global X-axis offset in mm. Defaults to 0."},
-        {"name": "placement_y", "type": "number", "required": false, "description_en": "Global Y-axis offset in mm. Defaults to 0."},
-        {"name": "placement_z", "type": "number", "required": false, "description_en": "Global Z-axis offset in mm. Defaults to 0."}
+        {
+          "name": "placement_x",
+          "type": "number",
+          "required": false,
+          "description_en": "Global X-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_y",
+          "type": "number",
+          "required": false,
+          "description_en": "Global Y-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_z",
+          "type": "number",
+          "required": false,
+          "description_en": "Global Z-axis offset in mm. Defaults to 0."
+        }
       ]
     },
     {
       "id": "create_freecad_extrusion",
       "description_en": "Extrude a solid straight up along Z, anchored at a previously clicked/selected face (the underlying engine only extrudes along Z — it cannot extrude along an arbitrary face normal). Only usable when the user has selected a point on the canvas AND that point's normal is close to the Z axis; otherwise this tool will cleanly fail.",
       "parameters": [
-        {"name": "height", "type": "number", "required": true, "description_en": "Extrusion distance in mm (e.g. 'extrude this by 25mm' -> 25)."},
         {
-          "name": "target_position", "type": "array", "items_type": "number", "required": true,
+          "name": "height",
+          "type": "number",
+          "required": true,
+          "description_en": "Extrusion distance in mm (e.g. 'extrude this by 25mm' -> 25)."
+        },
+        {
+          "name": "target_position",
+          "type": "array",
+          "items_type": "number",
+          "required": true,
           "description_en": "[x, y, z] anchor point — copy verbatim from the active canvas selection given in the system prompt. Do not invent coordinates."
         },
         {
-          "name": "target_normal", "type": "array", "items_type": "number", "required": true,
+          "name": "target_normal",
+          "type": "array",
+          "items_type": "number",
+          "required": true,
           "description_en": "[nx, ny, nz] surface normal at the selected point — copy verbatim from the active canvas selection given in the system prompt."
         }
       ]
@@ -1902,8 +1684,15 @@
       "description_en": "Move the 3D viewer's camera to a preset framing of the current model.",
       "parameters": [
         {
-          "name": "preset", "type": "string", "required": true,
-          "enum": ["top", "front", "side", "iso"],
+          "name": "preset",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "top",
+            "front",
+            "side",
+            "iso"
+          ],
           "description_en": "Which preset view to frame: top-down, front, side, or isometric."
         }
       ]
@@ -1941,34 +1730,114 @@
       "read_only": true,
       "description_en": "Looks up exact dimensions for standard off-the-shelf hardware (motor mounting patterns, bolt clearance holes, etc.) from a local reference table. ALWAYS call this before sketching/extruding a mounting feature for a named standard part (e.g. 'NEMA 17', 'M3 bolt') instead of guessing or inventing dimensions — a wrong hole spacing or clearance diameter makes the part physically unusable. Read-only.",
       "parameters": [
-        {"name": "query", "type": "string", "required": true, "description_en": "Plain-language description of the standard to look up, e.g. 'NEMA 17 dimensions' or 'M3 clearance hole'."}
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "description_en": "Plain-language description of the standard to look up, e.g. 'NEMA 17 dimensions' or 'M3 clearance hole'."
+        }
       ]
     },
     {
       "id": "create_freecad_pyramid",
       "description_en": "Create a sharp-edged, pointed rectangular pyramid (Part::Feature) in FreeCAD — a flat rectangular base tapering up to a single sharp apex point. Use for pyramid/tapered/pointed-top solid requests.",
       "parameters": [
-        {"name": "length", "type": "number", "required": false, "description_en": "Base length in mm."},
-        {"name": "width", "type": "number", "required": false, "description_en": "Base width in mm."},
-        {"name": "height", "type": "number", "required": false, "description_en": "Height from base to the apex point, in mm."},
-        {"name": "name", "type": "string", "required": false, "description_en": "Name for the created object."},
-        {"name": "placement_x", "type": "number", "required": false, "description_en": "Global X-axis offset in mm. Defaults to 0."},
-        {"name": "placement_y", "type": "number", "required": false, "description_en": "Global Y-axis offset in mm. Defaults to 0."},
-        {"name": "placement_z", "type": "number", "required": false, "description_en": "Global Z-axis offset in mm. Defaults to 0."}
+        {
+          "name": "length",
+          "type": "number",
+          "required": false,
+          "description_en": "Base length in mm."
+        },
+        {
+          "name": "width",
+          "type": "number",
+          "required": false,
+          "description_en": "Base width in mm."
+        },
+        {
+          "name": "height",
+          "type": "number",
+          "required": false,
+          "description_en": "Height from base to the apex point, in mm."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Name for the created object."
+        },
+        {
+          "name": "placement_x",
+          "type": "number",
+          "required": false,
+          "description_en": "Global X-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_y",
+          "type": "number",
+          "required": false,
+          "description_en": "Global Y-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_z",
+          "type": "number",
+          "required": false,
+          "description_en": "Global Z-axis offset in mm. Defaults to 0."
+        }
       ]
     },
     {
       "id": "create_freecad_star_prism",
       "description_en": "Create a sophisticated, sharp-edged N-pointed star prism (Part::Feature) in FreeCAD — alternating outer/inner radius vertices extruded into a flat prism with sharp spikes, like a ninja star or a star-shaped gasket. Use whenever the user asks for a star, spikes, points, or a 'ninja star' shape.",
       "parameters": [
-        {"name": "points", "type": "integer", "required": true, "description_en": "Number of star points/spikes (e.g. 5 for a classic star, 8 for a shuriken/ninja-star look)."},
-        {"name": "outer_radius", "type": "number", "required": true, "description_en": "Radius in mm to each outer spike tip."},
-        {"name": "inner_radius", "type": "number", "required": true, "description_en": "Radius in mm to each inner notch between spikes — smaller than outer_radius."},
-        {"name": "height", "type": "number", "required": false, "description_en": "Thickness of the prism in mm (extrusion distance along Z)."},
-        {"name": "name", "type": "string", "required": false, "description_en": "Name for the created object."},
-        {"name": "placement_x", "type": "number", "required": false, "description_en": "Global X-axis offset in mm. Defaults to 0."},
-        {"name": "placement_y", "type": "number", "required": false, "description_en": "Global Y-axis offset in mm. Defaults to 0."},
-        {"name": "placement_z", "type": "number", "required": false, "description_en": "Global Z-axis offset in mm. Defaults to 0."}
+        {
+          "name": "points",
+          "type": "integer",
+          "required": true,
+          "description_en": "Number of star points/spikes (e.g. 5 for a classic star, 8 for a shuriken/ninja-star look)."
+        },
+        {
+          "name": "outer_radius",
+          "type": "number",
+          "required": true,
+          "description_en": "Radius in mm to each outer spike tip."
+        },
+        {
+          "name": "inner_radius",
+          "type": "number",
+          "required": true,
+          "description_en": "Radius in mm to each inner notch between spikes — smaller than outer_radius."
+        },
+        {
+          "name": "height",
+          "type": "number",
+          "required": false,
+          "description_en": "Thickness of the prism in mm (extrusion distance along Z)."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Name for the created object."
+        },
+        {
+          "name": "placement_x",
+          "type": "number",
+          "required": false,
+          "description_en": "Global X-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_y",
+          "type": "number",
+          "required": false,
+          "description_en": "Global Y-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_z",
+          "type": "number",
+          "required": false,
+          "description_en": "Global Z-axis offset in mm. Defaults to 0."
+        }
       ]
     },
     {
@@ -1976,13 +1845,34 @@
       "description_en": "Combine two previously-created FreeCAD solids with a Boolean operation. 'cut' subtracts tool_object from base_object (e.g. drilling a hole); 'union' fuses both into one solid; 'intersect' keeps only the volume where they overlap. Both base_object and tool_object must be the exact object name (default 'Box'/'Cylinder' unless overridden) of solids already created via create_freecad_box, create_freecad_cylinder, insert_standard_part, or a prior perform_freecad_boolean result — all of which share one active FreeCAD session document. create_freecad_pyramid/create_freecad_star_prism/create_freecad_extrusion/create_freecad_pipe/create_freecad_sketch_extrude and batch_pattern_array/align_freecad_objects/create_assembly_mate objects are NOT in that shared document yet and cannot currently be used here.",
       "parameters": [
         {
-          "name": "operation", "type": "string", "required": true,
-          "enum": ["cut", "union", "intersect"],
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "cut",
+            "union",
+            "intersect"
+          ],
           "description_en": "'cut' subtracts tool_object from base_object; 'union' fuses them; 'intersect' keeps only their overlap."
         },
-        {"name": "base_object", "type": "string", "required": true, "description_en": "Name of the main/base solid (e.g. the block being drilled)."},
-        {"name": "tool_object", "type": "string", "required": true, "description_en": "Name of the solid acting as the tool (e.g. the cylinder drilling the hole)."},
-        {"name": "name", "type": "string", "required": false, "description_en": "Name for the resulting object. Defaults to 'Cut'/'Fusion'/'Common' depending on operation."}
+        {
+          "name": "base_object",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the main/base solid (e.g. the block being drilled)."
+        },
+        {
+          "name": "tool_object",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the solid acting as the tool (e.g. the cylinder drilling the hole)."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Name for the resulting object. Defaults to 'Cut'/'Fusion'/'Common' depending on operation."
+        }
       ]
     },
     {
@@ -1990,21 +1880,51 @@
       "description_en": "Applies a fillet (rounded edge) or chamfer (beveled edge) to an object. If the user clicked a face in the viewer, it modifies only the edges of that specific face. Otherwise, it attempts to modify every edge of the entire object.",
       "parameters": [
         {
-          "name": "operation", "type": "string", "required": true,
-          "enum": ["fillet", "chamfer"],
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "fillet",
+            "chamfer"
+          ],
           "description_en": "'fillet' rounds the target edges; 'chamfer' bevels them."
         },
-        {"name": "target_object", "type": "string", "required": true, "description_en": "Name of the object to modify (e.g. 'Box')."},
-        {"name": "value", "type": "number", "required": true, "description_en": "Fillet radius or chamfer distance in mm."}
+        {
+          "name": "target_object",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the object to modify (e.g. 'Box')."
+        },
+        {
+          "name": "value",
+          "type": "number",
+          "required": true,
+          "description_en": "Fillet radius or chamfer distance in mm."
+        }
       ]
     },
     {
       "id": "modify_freecad_parameter",
       "description_en": "Modifies a dimensional property of an existing object (e.g. changing a box's Height, or a cylinder's Radius), or moves and/or rotates it (parameter_name='Placement' or 'Placement.Base'), in place without recreating it.",
       "parameters": [
-        {"name": "target_object", "type": "string", "required": true, "description_en": "Name of the existing object to modify (e.g. 'Box')."},
-        {"name": "parameter_name", "type": "string", "required": true, "description_en": "Name of the property to change, e.g. 'Length', 'Width', 'Height', 'Radius', or 'Placement'/'Placement.Base' to move and/or rotate the object."},
-        {"name": "new_value", "type": "string", "required": true, "description_en": "New value for the parameter. A plain number in mm for dimensional properties (e.g. '50'). For parameter_name 'Placement'/'Placement.Base': a '[x, y, z]' vector in mm (e.g. '[30, 20, 10]') to move the object while keeping its current rotation, OR a 6-element '[x, y, z, yaw, pitch, roll]' vector (position in mm, yaw/pitch/roll in DEGREES, e.g. '[30, 20, 10, 90, 0, 0]') to move AND rotate it in one call — use the 6-element form for kinematic assemblies (URDF joints, assembly mates) where a part needs a specific orientation, not just a position."}
+        {
+          "name": "target_object",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing object to modify (e.g. 'Box')."
+        },
+        {
+          "name": "parameter_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the property to change, e.g. 'Length', 'Width', 'Height', 'Radius', or 'Placement'/'Placement.Base' to move and/or rotate the object."
+        },
+        {
+          "name": "new_value",
+          "type": "string",
+          "required": true,
+          "description_en": "New value for the parameter. A plain number in mm for dimensional properties (e.g. '50'). For parameter_name 'Placement'/'Placement.Base': a '[x, y, z]' vector in mm (e.g. '[30, 20, 10]') to move the object while keeping its current rotation, OR a 6-element '[x, y, z, yaw, pitch, roll]' vector (position in mm, yaw/pitch/roll in DEGREES, e.g. '[30, 20, 10, 90, 0, 0]') to move AND rotate it in one call — use the 6-element form for kinematic assemblies (URDF joints, assembly mates) where a part needs a specific orientation, not just a position."
+        }
       ]
     },
     {
@@ -2012,24 +1932,64 @@
       "read_only": true,
       "description_en": "Reads the physical bounding box dimensions (x_min, y_min, z_min, x_max, y_max, z_max) of an existing object, in mm. Use this to calculate placement coordinates before creating new objects that need to align with existing ones — e.g. read an object's z_max to know where its top face sits before placing something on top of it. Read-only — does not modify anything.",
       "parameters": [
-        {"name": "target_object", "type": "string", "required": true, "description_en": "Name of the existing object to inspect (e.g. 'Box')."}
+        {
+          "name": "target_object",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing object to inspect (e.g. 'Box')."
+        }
       ]
     },
     {
       "id": "create_freecad_pipe",
       "description_en": "Creates a tubular pipe by sweeping a circular profile along a path. Use 'straight' for a plain cylindrical pipe, or 'arc' for a curved elbow/macaroni-shaped bend.",
       "parameters": [
-        {"name": "pipe_radius", "type": "number", "required": true, "description_en": "Radius of the pipe's circular cross-section, in mm."},
         {
-          "name": "path_type", "type": "string", "required": true,
-          "enum": ["straight", "arc"],
+          "name": "pipe_radius",
+          "type": "number",
+          "required": true,
+          "description_en": "Radius of the pipe's circular cross-section, in mm."
+        },
+        {
+          "name": "path_type",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "straight",
+            "arc"
+          ],
           "description_en": "'straight' sweeps along a line (length_or_angle is a distance in mm); 'arc' sweeps along a circular arc (length_or_angle is an angle in degrees)."
         },
-        {"name": "length_or_angle", "type": "number", "required": true, "description_en": "For 'straight': length of the pipe in mm. For 'arc': sweep angle in degrees (e.g. 90 for a right-angle elbow)."},
-        {"name": "name", "type": "string", "required": false, "description_en": "Name for the created object."},
-        {"name": "placement_x", "type": "number", "required": false, "description_en": "Global X-axis offset in mm. Defaults to 0."},
-        {"name": "placement_y", "type": "number", "required": false, "description_en": "Global Y-axis offset in mm. Defaults to 0."},
-        {"name": "placement_z", "type": "number", "required": false, "description_en": "Global Z-axis offset in mm. Defaults to 0."}
+        {
+          "name": "length_or_angle",
+          "type": "number",
+          "required": true,
+          "description_en": "For 'straight': length of the pipe in mm. For 'arc': sweep angle in degrees (e.g. 90 for a right-angle elbow)."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Name for the created object."
+        },
+        {
+          "name": "placement_x",
+          "type": "number",
+          "required": false,
+          "description_en": "Global X-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_y",
+          "type": "number",
+          "required": false,
+          "description_en": "Global Y-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_z",
+          "type": "number",
+          "required": false,
+          "description_en": "Global Z-axis offset in mm. Defaults to 0."
+        }
       ]
     },
     {
@@ -2038,26 +1998,56 @@
       "description_en": "Exports the specified 3D objects to an STL file (for 3D printing) or a STEP file (for external CAD software). Saves to the local output directory.",
       "parameters": [
         {
-          "name": "format", "type": "string", "required": true,
-          "enum": ["stl", "step"],
+          "name": "format",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "stl",
+            "step"
+          ],
           "description_en": "'stl' for 3D printing/mesh viewers; 'step' for external CAD software interchange."
         },
         {
-          "name": "target_objects", "type": "array", "items_type": "string", "required": true,
+          "name": "target_objects",
+          "type": "array",
+          "items_type": "string",
+          "required": true,
           "description_en": "Names of the objects to export together into one file (e.g. ['Box', 'Cylinder'])."
         },
-        {"name": "filename", "type": "string", "required": true, "description_en": "Desired output name, without extension (e.g. 'part_v1')."}
+        {
+          "name": "filename",
+          "type": "string",
+          "required": true,
+          "description_en": "Desired output name, without extension (e.g. 'part_v1')."
+        }
       ]
     },
     {
       "id": "align_freecad_objects",
       "description_en": "Snaps the source_object directly to the bounding box of the target_object. Use 'top_center' to stack an object perfectly on top of another.",
       "parameters": [
-        {"name": "source_object", "type": "string", "required": true, "description_en": "Name of the object to move."},
-        {"name": "target_object", "type": "string", "required": true, "description_en": "Name of the object to snap to (stays in place)."},
         {
-          "name": "alignment_type", "type": "string", "required": true,
-          "enum": ["top_center", "bottom_center", "flush_left", "flush_right"],
+          "name": "source_object",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the object to move."
+        },
+        {
+          "name": "target_object",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the object to snap to (stays in place)."
+        },
+        {
+          "name": "alignment_type",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "top_center",
+            "bottom_center",
+            "flush_left",
+            "flush_right"
+          ],
           "description_en": "'top_center' stacks source on top of target; 'bottom_center' stacks source below target; 'flush_left'/'flush_right' align source's -X/+X face with target's, centered on the other axes."
         }
       ]
@@ -2067,7 +2057,12 @@
       "read_only": true,
       "description_en": "Reads richer topology properties of an existing object than get_freecad_bounding_box: solid volume, surface area, center of mass, whether the solid is valid/watertight, and its face/edge/vertex counts. Read-only — does not modify anything. Use this BEFORE a risky fillet/chamfer/boolean to check the target's topology complexity and validity, rather than only discovering a geometry failure after the operation is attempted.",
       "parameters": [
-        {"name": "target_object", "type": "string", "required": true, "description_en": "Name of the existing object to inspect (e.g. 'Box')."}
+        {
+          "name": "target_object",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing object to inspect (e.g. 'Box')."
+        }
       ]
     },
     {
@@ -2075,8 +2070,18 @@
       "read_only": true,
       "description_en": "Checks whether two existing objects' bounding boxes overlap in 3D space, and if so, the overlap region and its volume. Read-only — does not modify anything. Use this BEFORE a boolean cut/union/intersect to confirm the two objects actually occupy shared space (a cut against a non-overlapping tool object is a silent no-op).",
       "parameters": [
-        {"name": "object_a", "type": "string", "required": true, "description_en": "Name of the first existing object."},
-        {"name": "object_b", "type": "string", "required": true, "description_en": "Name of the second existing object."}
+        {
+          "name": "object_a",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the first existing object."
+        },
+        {
+          "name": "object_b",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the second existing object."
+        }
       ]
     },
     {
@@ -2084,36 +2089,106 @@
       "description_en": "Draws a closed 2D profile from an ordered list of line/arc segments on a chosen work plane, then extrudes it into a solid. Use this instead of create_freecad_extrusion for profiles with rounded/arc edges (slots, D-profiles, filleted outlines) that a straight-edged polyline can't express — a higher-leverage foundational primitive for building custom 2D-then-3D geometry beyond basic CSG booleans.",
       "parameters": [
         {
-          "name": "segments", "type": "array", "required": true,
+          "name": "segments",
+          "type": "array",
+          "required": true,
           "description_en": "Ordered list of profile segments, each an object: {\"type\": \"line\", \"to\": [x, y]} for a straight edge, or {\"type\": \"arc\", \"to\": [x, y], \"via\": [x, y]} for a 3-point arc ending at 'to' and passing through 'via'. The profile starts at 'start' and must close (the last segment's 'to' should equal 'start')."
         },
-        {"name": "height", "type": "number", "required": true, "description_en": "Extrusion distance in model units, along the chosen plane's normal."},
-        {"name": "start", "type": "array", "items_type": "number", "required": false, "description_en": "Starting [x, y] point of the profile in the sketch plane. Defaults to [0, 0]."},
         {
-          "name": "plane", "type": "string", "required": false,
-          "enum": ["XY", "XZ", "YZ"],
+          "name": "height",
+          "type": "number",
+          "required": true,
+          "description_en": "Extrusion distance in model units, along the chosen plane's normal."
+        },
+        {
+          "name": "start",
+          "type": "array",
+          "items_type": "number",
+          "required": false,
+          "description_en": "Starting [x, y] point of the profile in the sketch plane. Defaults to [0, 0]."
+        },
+        {
+          "name": "plane",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "XY",
+            "XZ",
+            "YZ"
+          ],
           "description_en": "Work plane the 2D sketch is drawn on before extrusion. Defaults to XY."
         },
-        {"name": "name", "type": "string", "required": false, "description_en": "Object/document name. Defaults to 'Sketch'."}
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Object/document name. Defaults to 'Sketch'."
+        }
       ]
     },
     {
       "id": "batch_pattern_array",
       "description_en": "Creates many copies of a previously-created object arranged in a linear, grid, or circular pattern, in ONE tool call instead of one create_freecad_* call per copy. Use this for any repetitive placement (e.g. '64 tiles' as an 8x8 grid, 'a row of 10 bolts', '6 bolts around a circle') to avoid burning through the ReAct loop's per-turn iteration cap one placement at a time.",
       "parameters": [
-        {"name": "source_object", "type": "string", "required": true, "description_en": "Name of a previously-created object to repeat."},
         {
-          "name": "pattern_type", "type": "string", "required": true,
-          "enum": ["linear", "grid", "circular"],
+          "name": "source_object",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of a previously-created object to repeat."
+        },
+        {
+          "name": "pattern_type",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "linear",
+            "grid",
+            "circular"
+          ],
           "description_en": "'linear': copies spaced along X only. 'grid': copies spaced along both X and Y. 'circular': copies arranged evenly around a circle."
         },
-        {"name": "count_x", "type": "integer", "required": false, "description_en": "Total copies along X for 'linear'/'grid' (includes the original's own position). Defaults to 1."},
-        {"name": "count_y", "type": "integer", "required": false, "description_en": "Total copies along Y for 'grid' only. Defaults to 1."},
-        {"name": "spacing_x", "type": "number", "required": false, "description_en": "Center-to-center spacing along X in model units. Defaults to the source object's own bounding-box width (edge-to-edge, no gap)."},
-        {"name": "spacing_y", "type": "number", "required": false, "description_en": "Center-to-center spacing along Y in model units, 'grid' only. Defaults to the source object's own bounding-box depth."},
-        {"name": "count", "type": "integer", "required": false, "description_en": "Total number of copies for 'circular' only. Defaults to 1."},
-        {"name": "radius", "type": "number", "required": false, "description_en": "Circle radius in model units for 'circular' only."},
-        {"name": "name", "type": "string", "required": false, "description_en": "Object/document name for the resulting compound. Defaults to '<source_object>Pattern'."}
+        {
+          "name": "count_x",
+          "type": "integer",
+          "required": false,
+          "description_en": "Total copies along X for 'linear'/'grid' (includes the original's own position). Defaults to 1."
+        },
+        {
+          "name": "count_y",
+          "type": "integer",
+          "required": false,
+          "description_en": "Total copies along Y for 'grid' only. Defaults to 1."
+        },
+        {
+          "name": "spacing_x",
+          "type": "number",
+          "required": false,
+          "description_en": "Center-to-center spacing along X in model units. Defaults to the source object's own bounding-box width (edge-to-edge, no gap)."
+        },
+        {
+          "name": "spacing_y",
+          "type": "number",
+          "required": false,
+          "description_en": "Center-to-center spacing along Y in model units, 'grid' only. Defaults to the source object's own bounding-box depth."
+        },
+        {
+          "name": "count",
+          "type": "integer",
+          "required": false,
+          "description_en": "Total number of copies for 'circular' only. Defaults to 1."
+        },
+        {
+          "name": "radius",
+          "type": "number",
+          "required": false,
+          "description_en": "Circle radius in model units for 'circular' only."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Object/document name for the resulting compound. Defaults to '<source_object>Pattern'."
+        }
       ]
     },
     {
@@ -2121,42 +2196,80 @@
       "description_en": "Generates an exact standard-hardware solid — a NEMA 17 motor placeholder, a socket head cap screw, a ball bearing, or (via FreeCAD's own Fasteners workbench) real ISO/DIN/ANSI hardware like hex bolts and nuts — from a reference dimension table or the Fasteners workbench, instead of sketching/extruding a hallucinated approximation. Always prefer this over hand-modeling a named standard part. Use part_type='fastener' to spawn exact hardware like an M8x30 ISO4017 hex bolt (fastener_type='ISO4017', size='M8', length=30) instead of trying to manually extrude threads.",
       "parameters": [
         {
-          "name": "part_type", "type": "string", "required": true,
-          "enum": ["nema17_motor", "socket_head_screw", "ball_bearing", "fastener"],
+          "name": "part_type",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "nema17_motor",
+            "socket_head_screw",
+            "ball_bearing",
+            "fastener"
+          ],
           "description_en": "Which standard part to generate. Use 'fastener' for real ISO/DIN/ANSI hardware (hex bolts, nuts, socket screws) via the Fasteners workbench."
         },
         {
-          "name": "specification", "type": "string", "required": false,
+          "name": "specification",
+          "type": "string",
+          "required": false,
           "description_en": "Required for 'socket_head_screw' (a spec like 'M3x12', meaning M3 thread x 12mm length) and 'ball_bearing' (a designation like '608'). Unused for 'nema17_motor' and 'fastener'."
         },
         {
-          "name": "fastener_type", "type": "string", "required": false,
+          "name": "fastener_type",
+          "type": "string",
+          "required": false,
           "description_en": "Required for part_type='fastener' — a standard designation, e.g. 'ISO4017' for a hex bolt, 'ISO4032' for a hex nut, 'DIN912' for a socket head cap screw."
         },
         {
-          "name": "size", "type": "string", "required": false,
+          "name": "size",
+          "type": "string",
+          "required": false,
           "description_en": "Required for part_type='fastener' — a thread designation, e.g. 'M6', 'M8', 'M10x1.25'."
         },
         {
-          "name": "length", "type": "number", "required": false,
+          "name": "length",
+          "type": "number",
+          "required": false,
           "description_en": "Required for part_type='fastener' — fastener length in mm, e.g. 20, 30, 50. Unused for nuts, but still required — pass any positive value."
         },
-        {"name": "name", "type": "string", "required": false, "description_en": "Object/document name. Defaults to a name derived from part_type/specification (or fastener_type/size for 'fastener')."}
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Object/document name. Defaults to a name derived from part_type/specification (or fastener_type/size for 'fastener')."
+        }
       ]
     },
     {
       "id": "create_assembly_mate",
       "description_en": "Positions one existing object (moving_obj) relative to another (fixed_obj) as a named kinematic mate, expressing a true assembly relationship rather than a bounding-box snap. Prefer this over align_freecad_objects once you're building a real multi-part assembly (e.g. mating a shaft concentric inside a bearing bore, or a plate flush on a boss).",
       "parameters": [
-        {"name": "fixed_obj", "type": "string", "required": true, "description_en": "Name of the object that stays in place."},
-        {"name": "moving_obj", "type": "string", "required": true, "description_en": "Name of the object to reposition."},
         {
-          "name": "mate_type", "type": "string", "required": true,
-          "enum": ["concentric", "coincident_planar", "offset_axial"],
+          "name": "fixed_obj",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the object that stays in place."
+        },
+        {
+          "name": "moving_obj",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the object to reposition."
+        },
+        {
+          "name": "mate_type",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "concentric",
+            "coincident_planar",
+            "offset_axial"
+          ],
           "description_en": "'concentric': centers moving_obj's footprint on fixed_obj's (their vertical axes coincide) — e.g. a shaft inside a bore. 'coincident_planar': makes moving_obj's bottom face coincide with fixed_obj's top face — e.g. a plate resting flush on a boss. 'offset_axial': centers moving_obj on fixed_obj, standing off a fixed distance along the vertical axis — e.g. a shaft protruding a set distance above a boss."
         },
         {
-          "name": "mate_params", "type": "object", "required": false,
+          "name": "mate_params",
+          "type": "object",
+          "required": false,
           "description_en": "Extra numeric parameters depending on mate_type. concentric: {\"z_offset\": number}. coincident_planar: {\"offset_x\": number, \"offset_y\": number}. offset_axial: {\"distance\": number, \"from_face\": \"top\"|\"bottom\"}. All keys optional, default to 0/\"top\"."
         }
       ]
@@ -2172,17 +2285,35 @@
       "read_only": true,
       "description_en": "Projects clean orthographic (Front/Top/Right) and/or Isometric views of a completed object onto a standard drawing page and exports a PDF — a professional 2D blueprint, not dimensioned (no auto-dimensioning yet, geometry only). Use this once a part or assembly is finished, to hand off a standard technical drawing. Read-only.",
       "parameters": [
-        {"name": "object_name", "type": "string", "required": true, "description_en": "Name of the existing object to draw (e.g. 'Box')."},
         {
-          "name": "views", "type": "array", "items_type": "string", "required": false,
+          "name": "object_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing object to draw (e.g. 'Box')."
+        },
+        {
+          "name": "views",
+          "type": "array",
+          "items_type": "string",
+          "required": false,
           "description_en": "Which views to project, any of ['Front', 'Top', 'Right', 'Isometric']. Defaults to all four."
         },
         {
-          "name": "page_size", "type": "string", "required": false,
-          "enum": ["A4", "Letter"],
+          "name": "page_size",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "A4",
+            "Letter"
+          ],
           "description_en": "Standard drawing page size, landscape orientation. Defaults to A4."
         },
-        {"name": "filename", "type": "string", "required": false, "description_en": "Output PDF name, without extension. Defaults to the object's own name."}
+        {
+          "name": "filename",
+          "type": "string",
+          "required": false,
+          "description_en": "Output PDF name, without extension. Defaults to the object's own name."
+        }
       ]
     },
     {
@@ -2191,8 +2322,18 @@
       "description_en": "Dynamically unlocks a capability domain's tools for the rest of this conversation, when the user's request needs something outside your current tool set. NEVER tell the user to manually enable a plugin/domain themselves — call this FIRST instead, then call the newly-unlocked tool in a later turn; a domain's tools never appear until this has been called for it. Available domains: 'freecad' (the 7 essential CAD primitives — create a box/cylinder, one boolean op, one edge op, a parameter tweak, a bounding-box check, export — covers most basic modeling requests at low token cost), 'freecad_full' (all 24 FreeCAD tools, including patterns, assembly mates, 2D blueprints, standard-parts lookup, and camera control — only load this if 'freecad' genuinely isn't enough, since it costs far more tokens per turn), 'os_tools' (sandboxed filesystem operations and Python script execution), 'web_tools' (web search and webpage reading, for unfamiliar APIs, current facts, or documentation not in your local knowledge), 'vision_tools' (VLM analysis of an image file in the sandboxed workspace, e.g. verifying a chart you just generated), 'user_skills' (every permanent skill you've previously taught yourself via save_new_skill).",
       "parameters": [
         {
-          "name": "domain", "type": "string", "required": true,
-          "enum": ["software_engineering", "freecad", "freecad_full", "os_tools", "web_tools", "vision_tools", "user_skills"],
+          "name": "domain",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "software_engineering",
+            "freecad",
+            "freecad_full",
+            "os_tools",
+            "web_tools",
+            "vision_tools",
+            "user_skills"
+          ],
           "description_en": "The capability domain to load: 'software_engineering' (read/edit/refactor/debug code — search_codebase, analyze_codebase, execute_code_task, run_verification_command to verify), 'freecad' (CAD modeling — essential tools; only use 'freecad_full' if a heavier tool is genuinely needed), 'os_tools' (filesystem/shell access), 'web_tools' (web search/page fetch), 'vision_tools' (image analysis), 'user_skills' (previously self-taught skills)."
         }
       ]
@@ -2203,8 +2344,18 @@
       "description_en": "Explicitly drops a capability domain you unlocked via load_capability once you're done with it THIS turn or task, instead of leaving it active for several more turns waiting for it to decay out on its own. Use this right after finishing a task that needed a domain you don't expect to need again soon (e.g. you just used 'os_tools' for a one-off file read and the rest of the conversation is unrelated) — it keeps the next turn's tool list smaller and avoids blowing a free-tier model's token budget. Never call this on a domain the FRONTEND itself activated (an open CAD/Coder tab) — it has no effect there; that stays under the user's own tab control. If you unload something you turn out to still need, just call load_capability again.",
       "parameters": [
         {
-          "name": "domain", "type": "string", "required": true,
-          "enum": ["software_engineering", "freecad", "freecad_full", "os_tools", "web_tools", "vision_tools", "user_skills"],
+          "name": "domain",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "software_engineering",
+            "freecad",
+            "freecad_full",
+            "os_tools",
+            "web_tools",
+            "vision_tools",
+            "user_skills"
+          ],
           "description_en": "The capability domain to unload — same domain names load_capability accepts."
         }
       ]
@@ -2214,7 +2365,12 @@
       "read_only": true,
       "description_en": "Searches the ENTIRE global tool registry (every tool across every plugin/domain, including ones not currently in your tool set and not covered by load_capability's fixed domain list) for a plain-language query. Returns only a lightweight list of matching tool_ids with a one-sentence description each — never full schemas, so a broad discovery search never itself costs meaningful token budget. Use this when a request needs a capability you don't currently see and load_capability's domains don't obviously cover it; call load_specific_tool afterward with the matching tool_id to actually make it callable.",
       "parameters": [
-        {"name": "query", "type": "string", "required": true, "description_en": "Plain-language description of the capability you're looking for, e.g. 'convert an image to grayscale' or 'query engineering standards'."}
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "description_en": "Plain-language description of the capability you're looking for, e.g. 'convert an image to grayscale' or 'query engineering standards'."
+        }
       ]
     },
     {
@@ -2222,23 +2378,48 @@
       "read_only": true,
       "description_en": "Explicitly loads one specific tool_id (as returned by search_tool_catalog or check_plugin_registry) into your available tools starting the NEXT turn, bypassing both the normal capability-domain gate and semantic narrowing — the fine-grained, single-tool counterpart to load_capability's whole-domain unlock. Use this to fetch a tool you discovered via search_tool_catalog that isn't already reachable through an active domain.",
       "parameters": [
-        {"name": "tool_id", "type": "string", "required": true, "description_en": "Exact tool_id to load, as returned by search_tool_catalog or check_plugin_registry."}
+        {
+          "name": "tool_id",
+          "type": "string",
+          "required": true,
+          "description_en": "Exact tool_id to load, as returned by search_tool_catalog or check_plugin_registry."
+        }
       ]
     },
     {
       "id": "save_new_skill",
       "description_en": "Permanently teaches yourself a new tool by saving a Python function as a 'skill' to skills/<skill_name>.py — it becomes a real, dispatchable tool in the NEXT turn (no restart needed), as long as the 'user_skills' capability domain is active (load it first via load_capability if it isn't). Use this once you've worked out a repeatable data transformation or OS task (e.g. via run_python_script) and want to keep it permanently instead of re-deriving it from scratch every time. The Python code must define a top-level 'def run(args: dict) -> dict:' function that returns at least {'ok': True/False, ...} — do NOT include a TOOL_SCHEMA assignment in python_code, that's built automatically from the schema argument. schema.function.name MUST exactly equal skill_name. This is a MUTATING action — the user must explicitly approve the exact Python source before it is ever saved to disk.",
       "parameters": [
-        {"name": "skill_name", "type": "string", "required": true, "description_en": "Lowercase snake_case identifier for the new tool, e.g. 'convert_csv_to_json'. Must be unique — cannot collide with an existing tool id."},
-        {"name": "python_code", "type": "string", "required": true, "description_en": "The skill's Python source. Must define a top-level 'def run(args: dict) -> dict:' function. Do not include a TOOL_SCHEMA assignment of your own."},
-        {"name": "schema", "type": "object", "required": true, "description_en": "OpenAI tool-calling schema for this skill: {\"type\": \"function\", \"function\": {\"name\": <must equal skill_name>, \"description\": \"...\", \"parameters\": {\"type\": \"object\", \"properties\": {...}, \"required\": [...]}}}."}
+        {
+          "name": "skill_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Lowercase snake_case identifier for the new tool, e.g. 'convert_csv_to_json'. Must be unique — cannot collide with an existing tool id."
+        },
+        {
+          "name": "python_code",
+          "type": "string",
+          "required": true,
+          "description_en": "The skill's Python source. Must define a top-level 'def run(args: dict) -> dict:' function. Do not include a TOOL_SCHEMA assignment of your own."
+        },
+        {
+          "name": "schema",
+          "type": "object",
+          "required": true,
+          "description_en": "OpenAI tool-calling schema for this skill: {\"type\": \"function\", \"function\": {\"name\": <must equal skill_name>, \"description\": \"...\", \"parameters\": {\"type\": \"object\", \"properties\": {...}, \"required\": [...]}}}."
+        }
       ]
     },
     {
       "id": "delete_skill",
       "description_en": "Permanently deletes a previously-saved skill (removes skills/<skill_name>.py) and unloads it — it stops being a dispatchable tool starting the NEXT turn. Use this if you realize a skill you saved via save_new_skill was wrong, buggy, or no longer needed, instead of leaving a broken tool registered. This is a MUTATING action — the user must explicitly approve the deletion first.",
       "parameters": [
-        {"name": "skill_name", "type": "string", "required": true, "description_en": "The exact name of the skill to delete, e.g. 'convert_csv_to_json'."}
+        {
+          "name": "skill_name",
+          "type": "string",
+          "required": true,
+          "description_en": "The exact name of the skill to delete, e.g. 'convert_csv_to_json'."
+        }
       ]
     },
     {
@@ -2246,7 +2427,12 @@
       "read_only": true,
       "description_en": "Reads back the exact Python source code of a previously-saved user skill (one you created via save_new_skill). Use this to review a skill's code before fixing it — especially right after a skill call fails and its tool result includes a 'traceback' field: read the source here, find the exact line the traceback points at, then call save_new_skill with the corrected python_code (same skill_name) to overwrite and hot-reload it. Read-only.",
       "parameters": [
-        {"name": "skill_name", "type": "string", "required": true, "description_en": "The exact name of the skill whose source to read, e.g. 'convert_csv_to_json'."}
+        {
+          "name": "skill_name",
+          "type": "string",
+          "required": true,
+          "description_en": "The exact name of the skill whose source to read, e.g. 'convert_csv_to_json'."
+        }
       ]
     },
     {
@@ -2254,8 +2440,18 @@
       "read_only": true,
       "description_en": "Saves a durable note to your persistent Core Memory — a small on-disk store that survives a server restart and is shown to you at the top of every future session's system prompt, under '## Persistent Core Memory'. Use this to remember a user preference, an active project's constraints, or a workflow you just learned, so you don't have to be told it again next session. Overwrites any existing content under the same section name. Always available, no capability domain required.",
       "parameters": [
-        {"name": "section", "type": "string", "required": true, "description_en": "Short label for what this note is about, e.g. 'user_preferences' or 'active_project'. Reusing an existing section name overwrites it."},
-        {"name": "content", "type": "string", "required": true, "description_en": "The note to remember, in plain text."}
+        {
+          "name": "section",
+          "type": "string",
+          "required": true,
+          "description_en": "Short label for what this note is about, e.g. 'user_preferences' or 'active_project'. Reusing an existing section name overwrites it."
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "required": true,
+          "description_en": "The note to remember, in plain text."
+        }
       ]
     },
     {
@@ -2263,9 +2459,17 @@
       "read_only": true,
       "description_en": "Breaks a complex, long-horizon goal (e.g. 'build a full web app from scratch') down into an ordered checklist of tasks, and starts tracking it as your active plan — the plan is then shown back to you at the end of every system prompt as your own anchor, so you never lose track of which step you're on. Use this BEFORE starting a multi-step project, not partway through one. Calling this REPLACES any previously active plan entirely (the first task becomes active immediately). Always available, in any session.",
       "parameters": [
-        {"name": "objective", "type": "string", "required": true, "description_en": "The overall goal in one sentence, e.g. 'Build a Flask to-do app with a SQLite backend.'"},
         {
-          "name": "tasks", "type": "array", "items_type": "string", "required": true,
+          "name": "objective",
+          "type": "string",
+          "required": true,
+          "description_en": "The overall goal in one sentence, e.g. 'Build a Flask to-do app with a SQLite backend.'"
+        },
+        {
+          "name": "tasks",
+          "type": "array",
+          "items_type": "string",
+          "required": true,
           "description_en": "The ordered checklist of steps, each a short plain-text description, e.g. ['Scaffold the project structure', 'Install dependencies', 'Implement the backend API', 'Build the frontend', 'Write tests']. IDs are assigned automatically by position — do not include numbers yourself."
         }
       ]
@@ -2275,8 +2479,18 @@
       "read_only": true,
       "description_en": "Marks a task in your active plan as completed, and — if you already know what comes next — promotes another task to active in the same call. Call this as soon as a task is genuinely done, so your plan (shown to you every turn) stays accurate instead of stale. If you don't yet know the next task, omit next_task_id; you can promote one later once you decide. Always available, in any session.",
       "parameters": [
-        {"name": "task_id", "type": "integer", "required": true, "description_en": "The id of the task that is now complete (see the '## Current Active Plan' block in your own system prompt for the current ids)."},
-        {"name": "next_task_id", "type": "integer", "required": false, "description_en": "The id of the task to promote to active next, if you already know which one that is."}
+        {
+          "name": "task_id",
+          "type": "integer",
+          "required": true,
+          "description_en": "The id of the task that is now complete (see the '## Current Active Plan' block in your own system prompt for the current ids)."
+        },
+        {
+          "name": "next_task_id",
+          "type": "integer",
+          "required": false,
+          "description_en": "The id of the task to promote to active next, if you already know which one that is."
+        }
       ]
     },
     {
@@ -2284,7 +2498,12 @@
       "read_only": true,
       "description_en": "Lists the files and subdirectories directly inside a path in Dana's sandboxed agent workspace, or inside a directory the user has explicitly mounted (see the 'Mounted External Directories' section of the system prompt, if present). Requires the 'os_tools' capability domain to be loaded first via load_capability. A relative path is resolved against the sandbox root ('.' for the root itself); an absolute path is only permitted if it falls under a currently-mounted directory — never invent or guess one. Read-only.",
       "parameters": [
-        {"name": "path", "type": "string", "required": true, "description_en": "Directory path — relative to the sandbox root ('.' for the root itself), or an absolute path under a currently-mounted directory."}
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description_en": "Directory path — relative to the sandbox root ('.' for the root itself), or an absolute path under a currently-mounted directory."
+        }
       ]
     },
     {
@@ -2292,24 +2511,54 @@
       "read_only": true,
       "description_en": "Reads the text content of a file in Dana's sandboxed agent workspace, or in a directory the user has explicitly mounted. Requires the 'os_tools' capability domain to be loaded first via load_capability. Same sandbox/mount restrictions as list_directory. Read-only.",
       "parameters": [
-        {"name": "path", "type": "string", "required": true, "description_en": "File path — relative to the sandbox root, or an absolute path under a currently-mounted directory."}
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description_en": "File path — relative to the sandbox root, or an absolute path under a currently-mounted directory."
+        }
       ]
     },
     {
       "id": "write_file",
       "description_en": "Writes text content to a file in Dana's sandboxed agent workspace, or in a directory the user has explicitly mounted, creating parent directories as needed. Requires the 'os_tools' capability domain to be loaded first via load_capability. Same sandbox/mount restrictions as list_directory. Use this only for a NEW file, or when you genuinely intend to replace an existing file's ENTIRE content — if the file already exists and you only need to change part of it, use edit_file instead so you don't have to reproduce (and risk truncating) the rest of the file. This is a MUTATING action — the user must explicitly approve it before it runs.",
       "parameters": [
-        {"name": "path", "type": "string", "required": true, "description_en": "File path — relative to the sandbox root, or an absolute path under a currently-mounted directory."},
-        {"name": "content", "type": "string", "required": true, "description_en": "UTF-8 text content to write."}
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description_en": "File path — relative to the sandbox root, or an absolute path under a currently-mounted directory."
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "required": true,
+          "description_en": "UTF-8 text content to write."
+        }
       ]
     },
     {
       "id": "edit_file",
       "description_en": "Performs a surgical search-and-replace edit on an EXISTING file in Dana's sandboxed agent workspace, or in a directory the user has explicitly mounted — ALWAYS prefer this over write_file when the file already exists and you only need to change part of it, instead of regenerating and rewriting its entire content (which wastes tokens and risks a truncated/\"...\" output silently destroying the rest of the file). search_block must be an EXACT, verbatim copy of the original text you are replacing — matching whitespace, indentation, and line breaks exactly, character for character — and must occur exactly ONCE in the file's current content. If it occurs zero times (your copy of the text doesn't match what's actually on disk) or more than once (the target location is ambiguous), the edit is rejected with an error instead of guessing — re-read the file and retry with a more unique search_block. Requires the 'os_tools' capability domain to be loaded first via load_capability. Same sandbox/mount restrictions as list_directory. This is a MUTATING action — the user must explicitly approve it before it runs.",
       "parameters": [
-        {"name": "path", "type": "string", "required": true, "description_en": "File path — relative to the sandbox root, or an absolute path under a currently-mounted directory."},
-        {"name": "search_block", "type": "string", "required": true, "description_en": "The EXACT existing text to find and replace, copied verbatim from the file's current content (matching whitespace and line breaks exactly). Must occur exactly once in the file."},
-        {"name": "replace_block", "type": "string", "required": true, "description_en": "The text that replaces search_block."}
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description_en": "File path — relative to the sandbox root, or an absolute path under a currently-mounted directory."
+        },
+        {
+          "name": "search_block",
+          "type": "string",
+          "required": true,
+          "description_en": "The EXACT existing text to find and replace, copied verbatim from the file's current content (matching whitespace and line breaks exactly). Must occur exactly once in the file."
+        },
+        {
+          "name": "replace_block",
+          "type": "string",
+          "required": true,
+          "description_en": "The text that replaces search_block."
+        }
       ]
     },
     {
@@ -2317,17 +2566,35 @@
       "read_only": true,
       "description_en": "Recursively searches every text file under a directory in Dana's sandboxed agent workspace, or in a directory the user has explicitly mounted, for a case-insensitive substring match (like grep) — use this FIRST to locate which file(s) contain a variable, function, class, or text string in a large project, instead of guessing paths with list_directory or reading files one by one. Especially useful right before edit_file: find the exact file and confirm the surrounding text before writing a search_block. Skips hidden directories (.git, .venv, ...) and common dependency/build folders (node_modules, __pycache__, venv); binary/non-UTF-8 files are silently skipped rather than erroring. Returns at most 50 matches — if the result is truncated, narrow the query rather than assume you've seen every occurrence. Requires the 'os_tools' capability domain to be loaded first via load_capability. Read-only — dispatches immediately, no approval needed.",
       "parameters": [
-        {"name": "directory_path", "type": "string", "required": true, "description_en": "Directory to search, relative to the sandbox root ('.' for the root itself), or an absolute path under a currently-mounted directory."},
-        {"name": "query", "type": "string", "required": true, "description_en": "The text to search for (case-insensitive substring match, not a regular expression)."}
+        {
+          "name": "directory_path",
+          "type": "string",
+          "required": true,
+          "description_en": "Directory to search, relative to the sandbox root ('.' for the root itself), or an absolute path under a currently-mounted directory."
+        },
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "description_en": "The text to search for (case-insensitive substring match, not a regular expression)."
+        }
       ]
     },
     {
       "id": "run_python_script",
       "description_en": "Executes a Python script (.py file) that must already exist inside Dana's sandboxed agent workspace (write it there first with write_file), running it with the current Python interpreter under a strict ~10 second timeout. Requires the 'os_tools' capability domain to be loaded first via load_capability. Returns stdout/stderr; a non-zero exit code or a timeout comes back as an error carrying stderr (read the traceback and fix the script, then retry). This is a MUTATING, high-risk action — the user must explicitly approve it before it runs.",
       "parameters": [
-        {"name": "script_path", "type": "string", "required": true, "description_en": "Path to the .py file to execute, relative to the sandbox root."},
         {
-          "name": "args", "type": "array", "items_type": "string", "required": false,
+          "name": "script_path",
+          "type": "string",
+          "required": true,
+          "description_en": "Path to the .py file to execute, relative to the sandbox root."
+        },
+        {
+          "name": "args",
+          "type": "array",
+          "items_type": "string",
+          "required": false,
           "description_en": "Optional command-line arguments to pass to the script."
         }
       ]
@@ -2336,24 +2603,54 @@
       "id": "execute_terminal_command",
       "description_en": "Runs an arbitrary shell command (e.g. 'npm test', 'cargo check', 'git diff', 'pytest -q') with its working directory confined to Dana's sandboxed agent workspace, or a directory the user has explicitly mounted. Use this to run a project's own tests, linters, or build/verification steps AFTER editing files with write_file/edit_file, to confirm your change actually works, rather than assuming it does. Enforces a strict ~15 second timeout and truncates stdout/stderr to protect the context window — this is not for starting long-running processes like dev servers. Requires the 'os_tools' capability domain to be loaded first via load_capability. This is the HIGHEST-RISK MUTATING action available — the user must explicitly approve the exact command string before it runs.",
       "parameters": [
-        {"name": "command", "type": "string", "required": true, "description_en": "The exact shell command to run, e.g. 'npm test' or 'git diff --stat'."},
-        {"name": "working_dir", "type": "string", "required": false, "description_en": "Directory to run the command from — relative to the sandbox root (default '.'), or an absolute path under a currently-mounted directory."}
+        {
+          "name": "command",
+          "type": "string",
+          "required": true,
+          "description_en": "The exact shell command to run, e.g. 'npm test' or 'git diff --stat'."
+        },
+        {
+          "name": "working_dir",
+          "type": "string",
+          "required": false,
+          "description_en": "Directory to run the command from — relative to the sandbox root (default '.'), or an absolute path under a currently-mounted directory."
+        }
       ]
     },
     {
       "id": "start_background_service",
       "description_en": "Starts a long-running, NON-BLOCKING background process — use this instead of execute_terminal_command for a dev server, file watcher, or any command that is not expected to exit on its own (e.g. 'npm run dev', 'python -m uvicorn app:app --reload'). Returns immediately once the process has started; it does not wait for it to finish. stdout/stderr are redirected to a log file at data/logs/{alias}.log — use your existing read_file tool on that path any time afterward to check on it (e.g. to confirm the server is listening, or read a crash traceback). Requires the 'os_tools' capability domain to be loaded first via load_capability. This is a MUTATING action — the user must explicitly approve the exact command before it runs.",
       "parameters": [
-        {"name": "command", "type": "string", "required": true, "description_en": "The exact shell command to run, e.g. 'npm run dev'."},
-        {"name": "alias", "type": "string", "required": true, "description_en": "A short identifier for this service (letters, digits, '_', '-', '.' only), used to check its status, read its log, and stop it later — e.g. 'frontend-dev-server'."},
-        {"name": "working_dir", "type": "string", "required": false, "description_en": "Directory to run the command from — relative to the sandbox root (default '.'), or an absolute path under a currently-mounted directory."}
+        {
+          "name": "command",
+          "type": "string",
+          "required": true,
+          "description_en": "The exact shell command to run, e.g. 'npm run dev'."
+        },
+        {
+          "name": "alias",
+          "type": "string",
+          "required": true,
+          "description_en": "A short identifier for this service (letters, digits, '_', '-', '.' only), used to check its status, read its log, and stop it later — e.g. 'frontend-dev-server'."
+        },
+        {
+          "name": "working_dir",
+          "type": "string",
+          "required": false,
+          "description_en": "Directory to run the command from — relative to the sandbox root (default '.'), or an absolute path under a currently-mounted directory."
+        }
       ]
     },
     {
       "id": "stop_background_service",
       "description_en": "Stops a background service previously started with start_background_service, killing its ENTIRE process tree (not just its own top-level process) so it cannot leave anything running or a port locked. Requires the 'os_tools' capability domain to be loaded first via load_capability. This is a MUTATING action — the user must explicitly approve stopping it, since it may still be in active use.",
       "parameters": [
-        {"name": "alias", "type": "string", "required": true, "description_en": "The alias the service was started with (see start_background_service)."}
+        {
+          "name": "alias",
+          "type": "string",
+          "required": true,
+          "description_en": "The alias the service was started with (see start_background_service)."
+        }
       ]
     },
     {
@@ -2367,8 +2664,18 @@
       "read_only": true,
       "description_en": "Searches the public web (DuckDuckGo, no API key needed) for current facts, unfamiliar APIs/libraries, hardware specs, or documentation not in your local knowledge. Requires the 'web_tools' capability domain to be loaded first via load_capability. Returns a list of {title, href, body} hits. Read-only.",
       "parameters": [
-        {"name": "query", "type": "string", "required": true, "description_en": "Search query, in plain language."},
-        {"name": "max_results", "type": "integer", "required": false, "description_en": "Maximum number of results to return (default 5, capped at 20)."}
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "description_en": "Search query, in plain language."
+        },
+        {
+          "name": "max_results",
+          "type": "integer",
+          "required": false,
+          "description_en": "Maximum number of results to return (default 5, capped at 20)."
+        }
       ]
     },
     {
@@ -2376,7 +2683,12 @@
       "read_only": true,
       "description_en": "Fetches a fully-qualified http(s) URL and extracts clean, readable text (scripts/styles/nav/footer stripped), truncated to the first ~10,000 characters. Requires the 'web_tools' capability domain to be loaded first via load_capability. Use this to read documentation or an article a search_web result pointed to. Read-only.",
       "parameters": [
-        {"name": "url", "type": "string", "required": true, "description_en": "Fully qualified http:// or https:// URL to fetch."}
+        {
+          "name": "url",
+          "type": "string",
+          "required": true,
+          "description_en": "Fully qualified http:// or https:// URL to fetch."
+        }
       ]
     },
     {
@@ -2384,8 +2696,18 @@
       "read_only": true,
       "description_en": "Uses a vision-language model to look at an image file inside Dana's sandboxed agent workspace (e.g. a matplotlib chart or diagram written by run_python_script) and answer a question about it — use this to verify a plot rendered correctly, check axis labels, or describe an image-processing result. Requires the 'vision_tools' capability domain to be loaded first via load_capability. Only .png/.jpg/.jpeg images are supported. Read-only.",
       "parameters": [
-        {"name": "file_path", "type": "string", "required": true, "description_en": "Path to the image file, relative to the sandbox root."},
-        {"name": "query", "type": "string", "required": true, "description_en": "What to ask about the image, e.g. 'Are the axes labeled?' or 'Describe what this chart shows.'"}
+        {
+          "name": "file_path",
+          "type": "string",
+          "required": true,
+          "description_en": "Path to the image file, relative to the sandbox root."
+        },
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "description_en": "What to ask about the image, e.g. 'Are the axes labeled?' or 'Describe what this chart shows.'"
+        }
       ]
     },
     {
@@ -2398,7 +2720,12 @@
       "id": "analyze_desktop_screen",
       "description_en": "Captures the user's ACTUAL primary monitor (their real desktop — not a sandboxed image file) and uses a vision-language model to answer a question about what's currently on screen, e.g. reading an error message in an external IDE, describing an open schematic, or checking what application is in the foreground. Requires the 'os_tools' capability domain to be loaded first via load_capability. This is a HIGH-PRIVACY action — capturing the user's real screen may reveal unrelated open windows or sensitive content — so this is a MUTATING action: the user must explicitly approve each capture before it happens.",
       "parameters": [
-        {"name": "query", "type": "string", "required": true, "description_en": "What to ask about the captured screen, e.g. 'What error is shown in this stack trace?' or 'Describe the diagram on screen.'"}
+        {
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "description_en": "What to ask about the captured screen, e.g. 'What error is shown in this stack trace?' or 'Describe the diagram on screen.'"
+        }
       ]
     },
     {
@@ -2406,20 +2733,34 @@
       "read_only": true,
       "description_en": "Reads a generated mesh's (.stl artifact) REAL geometric properties — bounding box, dimensions, and centroid — via pure-Python mesh analysis (no FreeCAD document needed). Spatial Awareness: use this BEFORE calling generate_urdf_assembly to mathematically calculate precise joint origin_xyz offsets and mating-surface positions between parts (e.g. read one part's bounding box x_max and the next part's centroid to place their connecting joint exactly where the two surfaces should meet), instead of guessing coordinates. Read-only — does not modify anything.",
       "parameters": [
-        {"name": "mesh_path", "type": "string", "required": true, "description_en": "Path to a previously-generated .stl mesh artifact to analyze."}
+        {
+          "name": "mesh_path",
+          "type": "string",
+          "required": true,
+          "description_en": "Path to a previously-generated .stl mesh artifact to analyze."
+        }
       ]
     },
     {
       "id": "generate_urdf_assembly",
       "description_en": "Assembles previously-generated CAD parts (.stl mesh artifacts from create_freecad_*/export operations) into a single kinematic URDF (Unified Robot Description Format) robot model — the universal interchange hub for ROS2, Gazebo, and Isaac Sim. Each part becomes a URDF link (optionally carrying its mesh as visual+collision geometry); each connection between two links becomes a URDF joint (fixed, revolute, or continuous). Saves '<robot_name>.urdf' to the workspace.",
       "parameters": [
-        {"name": "robot_name", "type": "string", "required": true, "description_en": "Name of the robot assembly; also used as the output filename (<robot_name>.urdf)."},
         {
-          "name": "links", "type": "array", "required": true,
+          "name": "robot_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the robot assembly; also used as the output filename (<robot_name>.urdf)."
+        },
+        {
+          "name": "links",
+          "type": "array",
+          "required": true,
           "description_en": "Ordered list of link objects, each: {\"name\": str, \"mesh_path\": optional str — a previously-generated .stl artifact path or filename to attach as this link's visual+collision geometry; omit for a purely kinematic frame with no geometry, \"origin_xyz\": optional [x, y, z] offset applied to the mesh geometry}."
         },
         {
-          "name": "joints", "type": "array", "required": true,
+          "name": "joints",
+          "type": "array",
+          "required": true,
           "description_en": "Ordered list of joint objects connecting two links, each: {\"name\": optional str, \"parent\": str link name, \"child\": str link name, \"type\": \"fixed\"|\"revolute\"|\"continuous\", \"origin_xyz\": optional [x, y, z] — the child frame's offset from the parent, \"axis\": optional [x, y, z] — the rotation axis for revolute/continuous joints, defaults to [0, 0, 1]}."
         }
       ]
@@ -2428,17 +2769,31 @@
       "id": "generate_3d_from_image",
       "description_en": "Converts a single 2D image into a 3D mesh (.obj or .glb) by polling free Hugging Face Spaces (TripoSR, then CRM, then zero123plus as fallbacks) — no local GPU reconstruction model involved. Saves the resulting mesh under the workspace and returns its path plus which backend produced it. Sends the image to a third-party service over the network; may take a while (or fail outright) if all three backends are asleep/down, which is common for free community Spaces.",
       "parameters": [
-        {"name": "image_path", "type": "string", "required": true, "description_en": "Path to the source 2D image (e.g. a screenshot or photo) to reconstruct into a 3D mesh."}
+        {
+          "name": "image_path",
+          "type": "string",
+          "required": true,
+          "description_en": "Path to the source 2D image (e.g. a screenshot or photo) to reconstruct into a 3D mesh."
+        }
       ]
     },
     {
       "id": "import_and_solidify_mesh",
       "description_en": "Imports a triangle mesh (.obj/.glb/.stl — e.g. generate_3d_from_image's own output) into the shared FreeCAD session as a real solid (Part::Feature), so it can be used with perform_freecad_boolean/perform_freecad_edge_operation/create_assembly_mate afterward — those all require an actual B-Rep solid, not a raw mesh, which is all an AI mesh-reconstruction model ever produces. Always use this before trying to combine or edge-operate on a generate_3d_from_image result.",
       "parameters": [
-        {"name": "mesh_path", "type": "string", "required": true, "description_en": "Path to the mesh file to import (e.g. the mesh_path returned by generate_3d_from_image)."},
-        {"name": "object_name", "type": "string", "required": true, "description_en": "Name for the resulting solid object in the FreeCAD session."}
+        {
+          "name": "mesh_path",
+          "type": "string",
+          "required": true,
+          "description_en": "Path to the mesh file to import (e.g. the mesh_path returned by generate_3d_from_image)."
+        },
+        {
+          "name": "object_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name for the resulting solid object in the FreeCAD session."
+        }
       ]
     }
   ]
 }
-

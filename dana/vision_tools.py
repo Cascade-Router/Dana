@@ -263,16 +263,6 @@ def analyze_visual_context(source: str = "screen") -> str:
     if temporal_n > 1:
         summary += f" I have about {temporal_n} seconds of recent visual context buffered."
 
-    if source_label == "screen":
-        try:
-            from dana.tools.vision import summarize_visual_history
-
-            ocr_summary = summarize_visual_history(seconds=30.0)
-            if ocr_summary and not str(ocr_summary).startswith("SYSTEM_ERROR:"):
-                summary = f"{summary} {ocr_summary}"
-        except Exception:  # noqa: BLE001
-            pass
-
     payload = summary.strip()
     # Typed objects topic for Chat / ambient awareness (not OCR).
     try:

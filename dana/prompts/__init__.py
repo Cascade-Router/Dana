@@ -5,8 +5,6 @@ from dana.prompts.spatial_synthesis import (
     DANA_PERSONA,
     REACT_PROTOCOL,
     SPATIAL_SYNTHESIS_GUIDE,
-    build_agent_system_prompt,
-    spatial_focus_hint,
 )
 
 __all__ = [
@@ -14,6 +12,4 @@ __all__ = [
     "DANA_PERSONA",
     "REACT_PROTOCOL",
     "SPATIAL_SYNTHESIS_GUIDE",
-    "build_agent_system_prompt",
-    "spatial_focus_hint",
 ]
