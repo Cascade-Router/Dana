@@ -292,6 +292,31 @@ _FIT_VIEW_MACRO = """\
 import FreeCAD as App
 import FreeCADGui as Gui
 
+# _terminate_freecad_gui (show_in_freecad_gui's own always-relaunch fix)
+# kills this process outright on every geometry-mutating tool call — from
+# FreeCAD's own crash-recovery heuristic's point of view, that's
+# indistinguishable from an actual crash, so without this it pops a
+# "Recover Document" dialog on nearly every relaunch. This is a
+# persistent, on-disk preference (User parameter:BaseApp/Preferences/
+# Document), not per-process state, so setting it here also takes effect
+# for every later launch, not just this one; unconditional (runs even when
+# doc is None) since the dialog itself would otherwise still fire before
+# any document-dependent code below ever got a chance to run.
+#
+# The explicit App.saveParameter() is NOT optional: confirmed live (via
+# FreeCADCmd, mimicking psutil.Process.terminate()'s abrupt
+# TerminateProcess() on Windows with a hard os._exit()) that SetBool alone
+# only changes the value in memory — a process that dies without a clean
+# shutdown never flushes it, so the NEXT launch would read the OLD value
+# from disk and show the dialog anyway, forever, under this always-kill
+# relaunch pattern. saveParameter() forces an immediate, synchronous write
+# that survives even an abrupt kill moments later.
+try:
+    App.ParamGet("User parameter:BaseApp/Preferences/Document").SetBool("SaveAutoRecovery", False)
+    App.saveParameter()
+except Exception:
+    pass
+
 doc = App.ActiveDocument
 if doc is not None:
     # Force this document's own tab frontmost in the GUI before anything
