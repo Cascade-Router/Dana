@@ -188,6 +188,45 @@ def analyze_cad_blueprint(
     return json.dumps({"ok": False, "error": "all VLM providers failed", "attempts": attempts})
 
 
+_VISUAL_OPERATION_PROMPT = (
+    "Does this CAD viewport show a successful 3D operation? Reply with a "
+    "brief 1-sentence verification."
+)
+
+
+def verify_visual_operation(image_path_or_base64: str) -> str:
+    """Cheap, cloud-only visual sanity check for the automatic per-tool-call
+    hook (``dana.api.server._execute_and_continue``, fired after EVERY
+    geometry tool call) — deliberately separate from ``analyze_cad_blueprint``
+    above, which stays local-Ollama-first for its own caller
+    (``verify_cad_rendering``, an on-demand, far less frequent call that
+    genuinely needs the detailed entity-JSON read). Running a local Ollama
+    VLM after every single geometry call was the actual VRAM/latency cost
+    this exists to eliminate, so this never touches Ollama at all — it goes
+    straight to the Cascade-Router gateway (the local C++ proxy at
+    ``http://localhost:8080``, which itself routes to a fast cloud VLM via
+    OpenRouter) via ``ModelProvider.complete_vision(..., provider="gateway")``
+    — already the exact OpenAI-compatible ``POST /v1/chat/completions`` call
+    with the image as a base64 ``image_url`` content part this needs; reusing
+    it instead of a bespoke HTTP client keeps the gateway URL/key resolution
+    and error handling in the one place that already owns them.
+
+    Returns a short plain-English sentence — never raises and never a JSON
+    envelope (the one caller just wants a human-readable string to attach to
+    a tool result) — falling back to a fixed message if the gateway is
+    unreachable or rejects the request (502/504/timeout/anything else).
+    """
+    image_b64 = _resolve_to_base64(image_path_or_base64)
+    fallback = "Visual verification unavailable (Cloud VLM failed)"
+    if image_b64 is None:
+        return fallback
+    try:
+        text = ModelProvider().complete_vision(_VISUAL_OPERATION_PROMPT, image_b64, provider="gateway")
+    except Exception:  # noqa: BLE001 — any proxy failure (502/504/timeout/refused/...) degrades to `fallback`
+        return fallback
+    return text.strip() or fallback
+
+
 def verify_cad_rendering(expected_spec_json: str) -> str:
     """Capture the live viewport and check it against ``expected_spec_json``.
 
@@ -232,4 +271,9 @@ def verify_cad_rendering(expected_spec_json: str) -> str:
     )
 
 
-__all__ = ("analyze_cad_blueprint", "capture_cad_viewport", "verify_cad_rendering")
+__all__ = (
+    "analyze_cad_blueprint",
+    "capture_cad_viewport",
+    "verify_cad_rendering",
+    "verify_visual_operation",
+)

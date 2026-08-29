@@ -751,28 +751,30 @@ async def _execute_and_continue(
         # back with a VLM, merged directly into THIS tool's own result
         # payload — the next turn's next_react_turn call sees it as part of
         # the same observation, no separate message/multimodal plumbing
-        # needed. Best-effort in both stages (capture, then VLM read): a
-        # missing/failed screenshot or unreachable/non-vision VLM must never
-        # fail the geometry operation itself — same "convenience miss, not a
-        # tool failure" philosophy dana.plugins.freecad.engine._auto_show
-        # and build_visual_inspection_result already use. Skipped entirely in
+        # needed. Uses verify_visual_operation (Cascade-Router gateway ->
+        # cloud VLM), NOT analyze_cad_blueprint — this hook fires after
+        # EVERY geometry tool call, and analyze_cad_blueprint's own
+        # local-Ollama-first policy was the actual VRAM/latency cost this
+        # was rewritten to eliminate; analyze_cad_blueprint itself is
+        # untouched and still used by the separate, on-demand
+        # verify_cad_rendering tool. Best-effort in both stages (capture,
+        # then VLM read): a missing/failed screenshot or an unreachable
+        # gateway must never fail the geometry operation itself — same
+        # "convenience miss, not a tool failure" philosophy
+        # dana.plugins.freecad.engine._auto_show and
+        # build_visual_inspection_result already use. Skipped entirely in
         # dry-run mode (tests, CI) — same flag every other OS/FreeCAD-touching
         # operation in this codebase already respects, so a test suite never
         # triggers a real OS screen capture or a live vision-model HTTP call.
         try:
             if not is_dry_run_enabled():
-                import json as _json
-
-                from dana.tools.cad_vision import analyze_cad_blueprint, capture_cad_viewport
+                from dana.tools.cad_vision import capture_cad_viewport, verify_visual_operation
 
                 capture = await asyncio.to_thread(capture_cad_viewport)
                 if capture.get("ok") and capture.get("path"):
                     result.payload["screenshot_path"] = capture["path"]
-                    analysis = _json.loads(await asyncio.to_thread(analyze_cad_blueprint, capture["path"]))
-                    result.payload["visual_verification"] = (
-                        analysis.get("summary")
-                        if analysis.get("ok")
-                        else f"screenshot captured but automatic visual analysis was unavailable: {analysis.get('error')}"
+                    result.payload["visual_verification"] = await asyncio.to_thread(
+                        verify_visual_operation, capture["path"]
                     )
         except Exception:  # noqa: BLE001 — best-effort; a vision-pipeline failure here must never fail the turn
             pass
