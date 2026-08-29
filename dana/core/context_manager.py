@@ -102,14 +102,16 @@ def prune_message_history(messages: list[dict[str, Any]], keep_recent_images: in
 # Recent tool executions the model is very likely still actively reasoning
 # about (e.g. "did that last search actually find the right file?") stay
 # fully intact — only messages OLDER than this many tool-result messages are
-# ever eligible for truncation. Lowered from 2 to 1 (only the SINGLE most
-# recent tool result is now exempt) so a multi-step chain accumulating
-# several verbose tool results in a row (e.g. FreeCAD's create/boolean/export
-# sequence, each with its own bounding-box/placement/path payload) starts
-# trimming stale history from turn 3 instead of turn 4 — part of the same
-# fix that keeps a long ReAct chain under Groq's TPM ceiling as the tool
-# token budget above.
-_DEFAULT_KEEP_RECENT_TOOL_RESULTS = 1
+# ever eligible for truncation. Raised from 1 back to 3 to keep enough
+# recent tool-chain context intact for multi-step CAD sequences (e.g.
+# create/boolean/export, each needing to see the previous step's actual
+# result). NOTE: this directly trades against the Groq TPM 429 issue that
+# a prior change fixed by LOWERING this from 2 to 1 in the first place — if
+# Groq is the primary/cascade upstream and 429s reappear, that's this knob,
+# and the fix is to lower it again (or lean harder on
+# _DEFAULT_TOOL_OUTPUT_TRUNCATE_THRESHOLD/head_chars/tail_chars below rather
+# than keep_recent) rather than re-adding a second pruning mechanism.
+_DEFAULT_KEEP_RECENT_TOOL_RESULTS = 3
 # Below this, a tool result is already cheap enough that truncating it would
 # just add noise (the "[Pruned...]" wrapper itself costs characters) for no
 # real token savings.
