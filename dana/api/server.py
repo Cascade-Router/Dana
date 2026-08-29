@@ -21,6 +21,7 @@ both the API and the static React app.
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 import sys
 import time
@@ -508,8 +509,11 @@ async def _speak_reply(websocket: WebSocket, text: str) -> None:
 
 # Safety counter for _run_react_loop — forcefully stops the loop after this
 # many tool-executing iterations within one user turn, so a model stuck
-# re-deciding to call tools (a hallucination loop) can't run forever.
-_MAX_REACT_ITERATIONS = 13
+# re-deciding to call tools (a hallucination loop) can't run forever. Raised
+# from 13 to 30: a complex multi-part CAD assembly (several primitives, a
+# mesh import, multiple booleans, edge ops, verification) can legitimately
+# need more turns than a simple "build one box" scenario ever did.
+_MAX_REACT_ITERATIONS = 30
 
 # Permanently HITL-exempt, every session, no prior approval needed —
 # narrow parametric FreeCAD geometry CRUD (create/modify/boolean/pattern/
@@ -775,7 +779,20 @@ async def _execute_and_continue(
         # generic "does this look successful?" question with nothing for
         # the model to actually check the screenshot against.
         try:
-            if not is_dry_run_enabled():
+            if os.getenv("DANA_HEADLESS", "false").lower() == "true":
+                # Headless mode: show_in_freecad_gui's own fix (always
+                # terminate + relaunch the GUI fresh, so a stale document
+                # can never taint a screenshot — see engine.py's
+                # _terminate_freecad_gui) means every geometry-mutating
+                # call now visibly closes/reopens the FreeCAD window. That
+                # flashing is fine for a supervised interactive session but
+                # unacceptable for an unattended/CI run — this skips the
+                # GUI relaunch, screenshot, and VLM call entirely rather
+                # than just suppressing the visible symptom, since
+                # _auto_show (which triggers the relaunch) runs earlier,
+                # inside each create/modify tool itself, not here.
+                result.payload["visual_verification"] = "Visual verification skipped (Headless Mode active)."
+            elif not is_dry_run_enabled():
                 from dana.tools.cad_vision import capture_cad_viewport, verify_visual_operation
 
                 capture = await asyncio.to_thread(capture_cad_viewport)

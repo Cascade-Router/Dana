@@ -774,7 +774,19 @@ def _auto_show(out_path: Path) -> bool:
     Never raises and never fails the caller's create_* result — geometry
     generation already succeeded by the time this runs; a missing/failed
     GUI launch is a visual-convenience miss, not a tool failure.
+
+    Skipped entirely under ``DANA_HEADLESS=true``: ``show_in_freecad_gui``
+    always terminates and relaunches the GUI fresh (see its own docstring
+    and ``_terminate_freecad_gui``) so every screenshot reflects current
+    geometry — but that means every geometry-mutating call visibly closes
+    and reopens the FreeCAD window, which is exactly the "constantly
+    flashing" symptom an unattended/CI run needs to avoid. Gating the
+    per-tool-call vision hook in ``dana.api.server._execute_and_continue``
+    alone would leave this call (the actual source of the flash) untouched,
+    so it's gated here too, at the source.
     """
+    if os.getenv("DANA_HEADLESS", "false").lower() == "true":
+        return False
     try:
         return bool(json.loads(show_in_freecad_gui(str(out_path))).get("ok"))
     except Exception:  # noqa: BLE001
