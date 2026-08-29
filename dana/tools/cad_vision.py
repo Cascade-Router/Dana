@@ -217,13 +217,16 @@ def verify_visual_operation(image_path_or_base64: str, tool_name: str, target_ob
     genuinely needs the detailed entity-JSON read). Running a local Ollama
     VLM after every single geometry call was the actual VRAM/latency cost
     this exists to eliminate, so this never touches Ollama at all — it goes
-    straight to the Cascade-Router gateway (the local C++ proxy at
-    ``http://localhost:8080``, which itself routes to a fast cloud VLM via
-    OpenRouter) via ``ModelProvider.complete_vision(..., provider="gateway")``
-    — already the exact OpenAI-compatible ``POST /v1/chat/completions`` call
-    with the image as a base64 ``image_url`` content part this needs; reusing
-    it instead of a bespoke HTTP client keeps the gateway URL/key resolution
-    and error handling in the one place that already owns them.
+    straight to a cloud VLM via ``ModelProvider.complete_vision(...,
+    provider="openrouter")`` (hardcoded rather than deferring to
+    ``cloud_provider_name()``'s own default, which can resolve to a
+    non-OpenAI-wire provider like Gemini/Anthropic — see
+    ``_NON_OPENAI_SCHEMA_PROVIDERS`` — and this call needs the OpenAI vision
+    wire format unconditionally) — already the exact OpenAI-compatible
+    ``POST /v1/chat/completions`` call with the image as a base64
+    ``image_url`` content part this needs; reusing it instead of a bespoke
+    HTTP client keeps the endpoint/key resolution and error handling in the
+    one place that already owns them.
 
     ``tool_name``/``target_object`` (the dispatched tool_id and the specific
     object it just created/modified — see ``_visual_operation_prompt``) are
@@ -235,7 +238,7 @@ def verify_visual_operation(image_path_or_base64: str, tool_name: str, target_ob
 
     Returns a short plain-English sentence — never raises and never a JSON
     envelope (the one caller just wants a human-readable string to attach to
-    a tool result) — falling back to a fixed message if the gateway is
+    a tool result) — falling back to a fixed message if OpenRouter is
     unreachable or rejects the request (502/504/timeout/anything else).
     """
     image_b64 = _resolve_to_base64(image_path_or_base64)
@@ -244,8 +247,8 @@ def verify_visual_operation(image_path_or_base64: str, tool_name: str, target_ob
         return fallback
     prompt = _visual_operation_prompt(tool_name, target_object)
     try:
-        text = ModelProvider().complete_vision(prompt, image_b64, provider="gateway")
-    except Exception:  # noqa: BLE001 — any proxy failure (502/504/timeout/refused/...) degrades to `fallback`
+        text = ModelProvider().complete_vision(prompt, image_b64, provider="openrouter")
+    except Exception:  # noqa: BLE001 — any cloud failure (502/504/timeout/refused/...) degrades to `fallback`
         return fallback
     return text.strip() or fallback
 

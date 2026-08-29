@@ -177,14 +177,15 @@ def test_no_tool_call_yields_plain_fallback_message(client: TestClient, monkeypa
         assert "tool call" in assistant["content"] or "action" in assistant["content"]
 
 
-def test_llm_proxy_error_replies_gracefully_with_the_specific_failure(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+def test_llm_proxy_error_replies_gracefully_without_leaking_the_raw_failure(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A cloud gateway 502/400 (dana.core.openai_tool_bridge already turns
+    """A cloud provider 502/400 (dana.core.openai_tool_bridge already turns
     this into a RuntimeError, never a crash) must still end the turn with a
-    reply that names the actual failure — not just a bare "try again" that
-    throws away exactly the detail (which provider, which HTTP code) needed
-    to tell a real outage apart from an unrelated hiccup."""
+    generic apology — the raw failure text (provider internals: status
+    codes, endpoint URLs, sometimes response bodies) has no business
+    reaching the chat bubble, so it's logged server-side (stderr) instead,
+    for whoever's actually debugging the outage."""
     import dana.core.react_dispatch as react_dispatch
 
     class _FailingProvider:
@@ -198,8 +199,13 @@ def test_llm_proxy_error_replies_gracefully_with_the_specific_failure(
         ws.send_json({"text": "hello"})
 
         assistant = _drain_until(ws, "assistant_message")
-        assert "cloud HTTP 502" in assistant["content"]
-        assert "Bad Gateway" in assistant["content"]
+        assert "cloud HTTP 502" not in assistant["content"]
+        assert "Bad Gateway" not in assistant["content"]
+        assert "problem talking to the model" in assistant["content"]
+
+    captured = capsys.readouterr()
+    assert "cloud HTTP 502" in captured.err
+    assert "Bad Gateway" in captured.err
 
 
 def test_mutating_tool_requires_hitl_approval_then_proceeds(
@@ -273,9 +279,9 @@ def test_cad_mutation_auto_injects_screenshot_and_visual_verification(
 
     Mocks ``verify_visual_operation`` (a plain string return, never a JSON
     envelope — see its own docstring), not ``analyze_cad_blueprint``: the
-    "outsource visual verification to cascade proxy" refactor moved
+    "outsource visual verification to a cloud VLM" refactor moved
     _execute_and_continue's automatic per-tool-call hook onto the former,
-    cloud-gateway-only path — analyze_cad_blueprint is local-Ollama-first
+    cloud-only path — analyze_cad_blueprint is local-Ollama-first
     and is only ever called by the separate, on-demand verify_cad_rendering
     tool now, not this automatic hook.
     """

@@ -146,11 +146,9 @@ function AppShell() {
   }, []);
   const providerLabel = IS_GRADIO_MODE
     ? "HF ZeroGPU: Online"
-    : provider === "gateway"
-      ? "Cascade Proxy: Active"
-      : provider
-        ? `${provider}: Active`
-        : "Offline";
+    : provider
+      ? `${provider}: Active`
+      : "Offline";
 
   // Single broadcast point: any plugin/orb window currently open re-renders
   // from this payload the instant it changes. Nothing downstream reaches

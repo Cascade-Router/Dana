@@ -8,10 +8,9 @@ process environment can hold plenty of variables that have nothing to do
 with Dana — other tools' tokens, cloud CLI credentials, whatever the user's
 shell profile exports globally — and a substring match is one typo away
 from picking one of those up too. Instead this is a fixed ALLOWLIST of the
-exact variable names Dana's own code reads (see ``dana.core.model_provider``,
-``dana.cascade_router``, and the Cascade-Router gateway's own ``.env``
-surface) — a name not on this list is never reachable through this endpoint
-no matter what it's called or what it contains.
+exact variable names Dana's own code reads (see ``dana.core.model_provider``
+and ``dana.cascade_router``) — a name not on this list is never reachable
+through this endpoint no matter what it's called or what it contains.
 
 Every sensitive entry is masked (first 3 chars + "***" + last 2, or "***"
 outright if too short to leave anything genuinely hidden) INSIDE this
@@ -45,7 +44,6 @@ _SENSITIVE_VARS = frozenset(
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",  # read by dana.core.model_provider's "anthropic" branch —
         # missing from this allowlist before was a real gap, not intentional.
-        "LLM_GATEWAY_API_KEY",
         "HF_TOKEN_ALTEREGO",
         "HF_TOKEN_DEEPRESEARCH",
         "PUSHOVER_TOKEN",
@@ -58,7 +56,6 @@ _SENSITIVE_VARS = frozenset(
 # Routing/model config only — no credential material, safe to show verbatim.
 _NON_SENSITIVE_VARS = frozenset(
     {
-        "CASCADE_PROVIDERS",
         "DANA_CLOUD_PRIMARY",
         "DANA_GROQ_MODEL",
         "DANA_LOCAL_MODEL",
@@ -67,14 +64,11 @@ _NON_SENSITIVE_VARS = frozenset(
         "DANA_CASCADE_EXTERNAL",
         "DANA_CASCADE_MODEL",
         "DANA_FORCE_LOCAL",
-        "ENABLE_ML",
         "OLLAMA_URL",
-        "LLM_GATEWAY_URL",
         "GROQ_MODEL",
         "GROQ_HOST",
         "GROQ_BASE_PATH",
         "GROQ_PORT",
-        "GROQ_CASCADE_CODE_MODEL",
         "GEMINI_MODEL",
         "OPENAI_MODEL",
     }

@@ -130,42 +130,21 @@ def test_resolve_openai_endpoint_gemini_openai_respects_env_overrides(monkeypatc
     assert model == "gemini-9.9-ultra"
 
 
-def test_tool_calling_provider_defaults_to_gateway_when_cloud_primary_enabled(
+def test_tool_calling_provider_defaults_to_openrouter_when_cloud_primary_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Cloud tool-calling now defaults to the local Cascade-Router gateway
-    (see model_provider.gateway_base_url) rather than picking Groq/Gemini/
-    OpenAI directly — the gateway centrally holds every provider key and
-    cascades groq -> gemini -> openai on 429/5xx upstream itself. Any single
-    provider remains explicitly selectable via DANA_CLOUD_PROVIDER."""
+    """Cloud tool-calling defaults directly to OpenRouter (no local gateway
+    process) — OpenRouter's own server-side ``models`` fallback array
+    (DANA_OPENROUTER_MODEL, comma-separated) is what retries a 429/5xx
+    against the next model upstream. Any single provider remains explicitly
+    selectable via DANA_CLOUD_PROVIDER."""
     # This repo's .env now sets DANA_CLOUD_PROVIDER=openrouter for local
     # dev — silence ensure_dotenv_loaded() too, or it reloads that value
     # right back into os.environ before the read below undoes the delenv.
     monkeypatch.setattr(model_provider_module, "ensure_dotenv_loaded", lambda: None)
     monkeypatch.setenv("DANA_CLOUD_PRIMARY", "1")
     monkeypatch.delenv("DANA_CLOUD_PROVIDER", raising=False)
-    assert tool_calling_provider() == "gateway"
-
-
-def test_resolve_openai_endpoint_gateway_defaults_and_env_overrides(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("LLM_GATEWAY_URL", raising=False)
-    monkeypatch.delenv("DANA_GATEWAY_MODEL", raising=False)
-    monkeypatch.delenv("LLM_GATEWAY_API_KEY", raising=False)
-    provider = ModelProvider()
-    key, base, model, _headers, _fallback_models = provider._resolve_openai_endpoint("gateway")
-    assert base == "http://localhost:8080/v1"
-    assert model == "cascade-auto"
-    assert key  # placeholder key when none configured — never empty
-
-    monkeypatch.setenv("LLM_GATEWAY_URL", "http://localhost:9000/v1/")
-    monkeypatch.setenv("DANA_GATEWAY_MODEL", "cascade-fast")
-    monkeypatch.setenv("LLM_GATEWAY_API_KEY", "real-gateway-key")
-    key, base, model, _headers, _fallback_models = provider._resolve_openai_endpoint("gateway")
-    assert base == "http://localhost:9000/v1"
-    assert model == "cascade-fast"
-    assert key == "real-gateway-key"
+    assert tool_calling_provider() == "openrouter"
 
 
 def test_tool_calling_provider_still_supports_explicit_gemini_openai_override(
@@ -281,8 +260,8 @@ def test_resolve_openai_endpoint_openrouter_falls_back_to_generic_llm_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """LLM_API_KEY is the generic fallback name for anyone already using
-    that convention (matching LLM_GATEWAY_URL/LLM_GATEWAY_API_KEY's own
-    naming) — OPENROUTER_API_KEY still wins if both happen to be set."""
+    that convention — OPENROUTER_API_KEY still wins if both happen to be
+    set."""
     # This repo's .env now has a real OPENROUTER_API_KEY for local dev —
     # silence ensure_dotenv_loaded() too, or it reloads that value right
     # back into os.environ before the delenv below takes effect.

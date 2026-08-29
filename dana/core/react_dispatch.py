@@ -2750,20 +2750,19 @@ def _finalize_call_arguments(call: ToolCall, active_selection: dict[str, Any] | 
 # would have succeeded eventually.
 #
 # No longer derived from openai_tool_bridge's own TPM throttle-and-retry
-# sleep ceiling — that sleep/retry loop was removed once the cloud
-# tool-calling path moved behind the local Cascade-Router gateway (see
-# dana.core.model_provider.gateway_base_url), which already cascades
-# groq -> gemini -> openai on 429/5xx upstream in milliseconds. A 429/5xx
-# now fails this call fast instead of sleeping, so this timeout only needs
-# to bound a genuinely stalling connection (local Ollama or the gateway
-# itself), not a legitimate multi-second rate-limit wait.
+# sleep ceiling — that sleep/retry loop was removed once cloud tool-calling
+# moved to a direct single-provider call (dana.core.model_provider.
+# tool_calling_provider — OpenRouter by default), whose own server-side
+# ``models`` fallback array (see complete_openai_with_tools's
+# fallback_models) retries the next model upstream in milliseconds. A
+# 429/5xx now fails this call fast instead of sleeping, so this timeout
+# only needs to bound a genuinely stalling connection (local Ollama or the
+# cloud provider itself), not a legitimate multi-second rate-limit wait.
 #
-# Raised 30s -> 45s: the Cascade-Router gateway (native subprocess, see
-# dana.platform.proxy_launcher) can still be finishing its own warm-up
-# (loading router_weights.json / ONNX artifacts if ENABLE_ML=1) for a few
-# seconds after its /health check first passes — 30s was tight enough to
-# occasionally clip that window and trigger the apology fallback for a
-# request that would have succeeded at 35-40s.
+# Kept at 45s (previously raised from 30s for a since-removed local
+# gateway's own warm-up window) as a generally generous ceiling for a
+# free-tier cloud model's real latency — lower this only with evidence a
+# genuinely stalling request needs to fail faster than that.
 _LOCAL_TOOL_CALL_TIMEOUT_SEC = 45.0
 
 # Separate, shorter ceiling for the fallback apology itself — this must
@@ -3025,12 +3024,12 @@ async def _call_llm_once(
     # wrong one (a real Groq TPM stall previously got logged/apologized
     # for as if it were "the local model").
     target_provider = tool_calling_provider()
-    # Cloud-primary turns route through the native Cascade-Router gateway
-    # (dana.platform.proxy_launcher.start_cascade_proxy, provider "gateway"
-    # — see model_provider.gateway_base_url) which itself cascades
-    # groq -> gemini -> openai upstream, so this bridge just targets
-    # whichever single provider tool_calling_provider() resolved instead of
-    # retrying a ladder in-process.
+    # Cloud-primary turns call whichever single provider
+    # tool_calling_provider() resolved (OpenRouter by default) directly —
+    # no local gateway process in between. OpenRouter's own server-side
+    # ``models`` fallback array (DANA_OPENROUTER_MODEL, comma-separated —
+    # see model_provider._resolve_openai_endpoint's "openrouter" branch)
+    # is what retries a 429/5xx against the next model upstream now.
     def _run_completion() -> dict[str, Any]:
         return provider.complete_with_tool_calls(pruned_messages, tools=tools, provider=target_provider)
 

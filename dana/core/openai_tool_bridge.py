@@ -33,14 +33,17 @@ _USER_AGENT = "Dana-Agent/1.0 (+https://github.com/; Python urllib)"
 
 # Client-side TPM 429 throttle-and-retry (sleeping out Groq's own
 # retry-after hint, e.g. "Please try again in 19.0725s") used to live here.
-# Removed now that every cloud-tool-calling call routes through the local
-# Cascade-Router gateway (see dana.core.model_provider.gateway_base_url),
-# which already cascades groq -> gemini -> openai on 429/5xx upstream in
-# milliseconds — a 429 reaching this bridge means the gateway's own cascade
-# was exhausted, so sleeping and retrying the identical request here would
-# just be waiting out a limit the gateway already tried to route around.
-# Any HTTP error (429 included) is now treated as a standard fast failure —
-# see _complete_openai_with_tools_once's HTTPError handling.
+# Removed now that cloud tool-calling routes directly to a single provider
+# (dana.core.model_provider.tool_calling_provider — OpenRouter by default),
+# whose own server-side ``models`` fallback array (see
+# complete_openai_with_tools's ``fallback_models``) retries the next model
+# upstream in milliseconds — a 429/5xx reaching this bridge means that was
+# already exhausted, so sleeping and retrying the identical request here
+# would just be waiting out a limit already tried and failed upstream. Any
+# HTTP error (429 included) is now treated as a standard fast failure — see
+# _complete_openai_with_tools_once's HTTPError handling, and
+# ModelProvider.complete_with_tool_calls's own Ollama fallback for what
+# happens next.
 
 
 def build_image_content_part(image_b64: str, *, mime_type: str = "image/png") -> dict[str, Any]:
@@ -319,18 +322,18 @@ def complete_openai_with_tools(
 ) -> dict[str, Any]:
     """Public entry point every caller (``dana.core.model_provider``)
     actually uses. A plain passthrough to ``_complete_openai_with_tools_once``
-    — no client-side sleep/retry loop. A 429/5xx here means the upstream
-    Cascade-Router gateway's own cascade (groq -> gemini -> openai) was
-    already exhausted, so this raises immediately as a standard failure
-    (a plain ``RuntimeError``) rather than sleeping out a limit the gateway
-    already tried to route around; whatever caller-side fallback exists for
-    a real outage (e.g. routing to local Ollama) sees it right away.
+    — no client-side sleep/retry loop. A 429/5xx here means the request to
+    the resolved provider failed outright, so this raises immediately as a
+    standard failure (a plain ``RuntimeError``) rather than sleeping and
+    retrying; whatever caller-side fallback exists for a real outage (e.g.
+    ``ModelProvider.complete_with_tool_calls`` routing to local Ollama) sees
+    it right away.
 
     ``fallback_models``, when given, rides in the request body as
-    OpenRouter's own ``models`` cascade array — a DIFFERENT fallback layer
-    than the gateway cascade above: this one runs entirely on OpenRouter's
-    servers for a single ``model=`` provider choice, so it also applies when
-    ``base_url`` targets OpenRouter directly (not through the gateway).
+    OpenRouter's own ``models`` cascade array — this runs entirely on
+    OpenRouter's servers for a single ``model=`` provider choice, so a
+    429/5xx on the primary model retries the next one upstream in
+    milliseconds with no round trip back to this process.
     """
     return _complete_openai_with_tools_once(
         messages,

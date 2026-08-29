@@ -243,9 +243,10 @@ def _tpm_http_error(retry_after_text: str) -> urllib.error.HTTPError:
 
 
 def test_tpm_429_raises_immediately_without_sleeping(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Cloud tool-calling now routes through the local Cascade-Router gateway,
-    which already cascades groq -> gemini -> openai on 429/5xx upstream in
-    milliseconds. A 429 reaching this bridge means that cascade was already
+    """Cloud tool-calling now calls a single resolved provider directly
+    (OpenRouter by default), whose own server-side ``models`` fallback array
+    already retries a 429/5xx against the next model upstream in
+    milliseconds. A 429 reaching this bridge means that was already
     exhausted, so it must raise immediately as a standard failure — no
     client-side sleep/retry loop."""
     call_count = {"n": 0}

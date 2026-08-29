@@ -25,24 +25,6 @@ _NON_OPENAI_SCHEMA_PROVIDERS = frozenset({"gemini", "google", "anthropic"})
 _DEFAULT_LOCAL_MODEL = "qwen2.5-coder:7b"
 _COMPLEXITY_REJECT = "REJECT: Task too complex for local model"
 
-# Cascade-Router — the local C++ AI gateway (not this module's own
-# dana.cascade_router, an unrelated local-Ollama MoA router). It centrally
-# manages provider API keys and cascades groq -> gemini -> openai on
-# HTTP 429/5xx upstream, in milliseconds, so this bridge no longer needs to
-# hold its own provider keys or retry logic for the cloud tool-calling path.
-_DEFAULT_GATEWAY_URL = "http://localhost:8080/v1"
-_DEFAULT_GATEWAY_MODEL = "cascade-auto"
-
-
-def gateway_base_url() -> str:
-    ensure_dotenv_loaded()
-    return (os.environ.get("LLM_GATEWAY_URL") or "").strip().rstrip("/") or _DEFAULT_GATEWAY_URL
-
-
-def gateway_model_name() -> str:
-    ensure_dotenv_loaded()
-    return (os.environ.get("DANA_GATEWAY_MODEL") or "").strip() or _DEFAULT_GATEWAY_MODEL
-
 # Native Gemini generateContent (REST) — a DIFFERENT calling convention than
 # the OpenAI-compatible "gemini_openai" provider above (its own request/
 # response shape, not OpenAI-wire tool_calls). Extracted from the now-
@@ -240,10 +222,12 @@ def tool_calling_provider() -> str:
 
     ``"ollama"`` (local, free-per-request but VRAM/context limited) unless
     ``cloud_primary_enabled()`` — then ``DANA_CLOUD_PROVIDER`` if explicitly
-    set, else ``"gateway"`` by default: the local Cascade-Router gateway
-    (see ``gateway_base_url``) centrally holds provider keys and already
-    cascades groq -> gemini -> openai upstream, so this bridge no longer
-    needs to pick a single cloud provider itself.
+    set, else ``"openrouter"`` by default: a direct call to OpenRouter,
+    whose own server-side ``models`` array (``DANA_OPENROUTER_MODEL`` as a
+    comma-separated list — see ``_resolve_openai_endpoint``'s
+    ``"openrouter"`` branch) already retries a 429/5xx against the next
+    model upstream in milliseconds, with no local gateway process needed to
+    hold provider keys or cascade across providers itself.
 
     ``"gemini_openai"`` (Gemini's OpenAI-compatible endpoint, 1,000,000 TPM
     versus Groq's free-tier 8,000) briefly WAS the default here, to kill
@@ -264,7 +248,7 @@ def tool_calling_provider() -> str:
     """
     if not cloud_primary_enabled():
         return "ollama"
-    return (os.environ.get("DANA_CLOUD_PROVIDER") or "").strip().lower() or "gateway"
+    return (os.environ.get("DANA_CLOUD_PROVIDER") or "").strip().lower() or "openrouter"
 
 
 def _log_ttft(
@@ -524,9 +508,8 @@ class ModelProvider:
         ensure_dotenv_loaded()
         if provider == "openrouter":
             # OPENROUTER_API_KEY first; LLM_API_KEY as a generic fallback so
-            # a Space owner who already set that name (e.g. copying the
-            # style of LLM_GATEWAY_URL/LLM_GATEWAY_API_KEY above) doesn't
-            # need a second, provider-specific secret.
+            # a Space owner who already uses that generic naming convention
+            # doesn't need a second, provider-specific secret.
             key = (
                 self._api_keys.get("openrouter")
                 or os.environ.get("OPENROUTER_API_KEY")
@@ -569,17 +552,6 @@ class ModelProvider:
                 ),
             }
             return key, base, model, headers, fallback_models
-        if provider == "gateway":
-            # Local Cascade-Router (C++ gateway) — holds every real provider
-            # key itself and cascades groq -> gemini -> openai on 429/5xx
-            # upstream, so no per-provider key/model selection happens here.
-            # The gateway doesn't require a real bearer token locally, but
-            # complete_openai_with_tools always sends one, so fall back to a
-            # harmless placeholder when LLM_GATEWAY_API_KEY isn't set.
-            key = (self._api_keys.get("gateway") or os.environ.get("LLM_GATEWAY_API_KEY") or "").strip() or "gateway-local"
-            base = gateway_base_url()
-            model = gateway_model_name()
-            return key, base, model, {}, []
         if provider == "gemini_openai":
             # Google's OpenAI-compatible endpoint — distinct from the
             # "gemini"/"google" provider names in _NON_OPENAI_SCHEMA_PROVIDERS,
@@ -907,8 +879,6 @@ __all__ = (
     "cloud_primary_enabled",
     "complexity_reject_marker",
     "force_local",
-    "gateway_base_url",
-    "gateway_model_name",
     "get_default_provider",
     "is_complexity_reject",
     "local_model_name",

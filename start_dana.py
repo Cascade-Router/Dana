@@ -2,25 +2,19 @@
 """Unified dev orchestrator for Dānā.
 
 Starts, in order:
-  1. The Cascade-Router gateway — the same native subprocess launcher
-     production entry points use (``dana.platform.proxy_launcher``), which
-     runs the compiled ``proxy_server`` binary out of the sibling
-     ``../cascade-router`` checkout's ``cpp_core/build/`` — no Docker
-     daemon required. Blocks until ``GET http://127.0.0.1:8080/health``
-     returns 200 before continuing, since the FastAPI backend routes every
-     cloud LLM call through it (see ``dana.core.model_provider.
-     gateway_base_url``).
-  2. The FastAPI backend, via ``scripts/launchers/launch_api_server.py``
+  1. The FastAPI backend, via ``scripts/launchers/launch_api_server.py``
      (``dana/api/server.py`` is just an importable ``app`` object with no
      ``__main__`` of its own — this launcher is the real entry point).
-  3. The React/Vite frontend (``npm run dev`` in ``frontend/``).
+     Cloud LLM calls route directly to whichever provider
+     ``dana.core.model_provider.tool_calling_provider()`` resolves
+     (OpenRouter by default), with no local gateway process to wait on.
+  2. The React/Vite frontend (``npm run dev`` in ``frontend/``).
 
 Backend and frontend stdout/stderr are streamed to this terminal, each line
 prefixed with its source. Ctrl+C tears everything down: both process TREES
 are killed (not just the immediate child — on Windows, ``npm run dev``
 spawns a cmd.exe -> npm.cmd -> node(vite) chain, and killing only the
-top of that chain would orphan the actual dev server), then the gateway
-subprocess is terminated via ``stop_cascade_proxy``.
+top of that chain would orphan the actual dev server).
 
 Usage:
     python start_dana.py
@@ -34,8 +28,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-
-from dana.platform.proxy_launcher import start_cascade_proxy, stop_cascade_proxy
 
 REPO_ROOT = Path(__file__).resolve().parent
 FRONTEND_DIR = REPO_ROOT / "frontend"
@@ -153,14 +145,7 @@ def _kill_process_tree(process: subprocess.Popen, tag: str) -> None:
 def main() -> int:
     backend: subprocess.Popen | None = None
     frontend: subprocess.Popen | None = None
-    gateway: subprocess.Popen | None = None
     try:
-        gateway = start_cascade_proxy()
-        if gateway is None:
-            raise SystemExit(
-                "Cascade-Router gateway failed to start — see the [proxy_launcher] output above "
-                "(missing bin/ binary, bad config, or health check timeout)."
-            )
         backend = start_backend()
         frontend = start_frontend()
         _log("orchestrator", "all services up — press Ctrl+C to stop.")
@@ -179,7 +164,6 @@ def main() -> int:
             _kill_process_tree(frontend, "frontend")
         if backend is not None:
             _kill_process_tree(backend, "backend")
-        stop_cascade_proxy(gateway)
 
 
 if __name__ == "__main__":

@@ -285,24 +285,24 @@ def test_next_react_turn_prunes_stale_tool_output_before_calling_the_llm(
     messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
     messages += _tool_cycle("call_1", stale_output)
     messages += _tool_cycle("call_2", stale_output)
-    messages += _tool_cycle("call_3", fresh_output)
+    messages += _tool_cycle("call_3", stale_output)
+    messages += _tool_cycle("call_4", fresh_output)
 
     asyncio.run(rd.next_react_turn(messages))
 
     sent_messages = fake.calls[0]["messages"]
     assert len(sent_messages) == len(messages)  # count never changes
     sent_tool_contents = [m["content"] for m in sent_messages if m["role"] == "tool"]
-    # Default keep_recent=1 -> call_1 and call_2 (everything but the single
-    # most recent tool result) are stale; only call_3 stays intact.
+    # Default keep_recent=3 -> only call_1 (everything but the 3 most recent
+    # tool results) is stale; call_2/call_3/call_4 stay intact.
     assert sent_tool_contents[0] != stale_output
     assert sent_tool_contents[0].startswith("[Pruned to save context]")
-    assert sent_tool_contents[1] != stale_output
-    assert sent_tool_contents[1].startswith("[Pruned to save context]")
-    assert sent_tool_contents[2] == fresh_output  # most recent tool result untouched
+    assert sent_tool_contents[1] == stale_output
+    assert sent_tool_contents[2] == stale_output
+    assert sent_tool_contents[3] == fresh_output  # most recent tool result untouched
 
     # The caller's own messages list must never be mutated in place.
     assert messages[3]["content"] == stale_output
-    assert messages[5]["content"] == stale_output
 
 
 def test_next_react_turn_unknown_tool_id_yields_final(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2215,10 +2215,11 @@ def test_next_react_turn_does_not_prewarm_software_engineering_for_unrelated_cha
 
 # --------------------------------------------------------------------------
 # Turn-level timeout ceiling / provider attribution. Cloud tool-calling now
-# routes through the local Cascade-Router gateway, which cascades
-# groq -> gemini -> openai on 429/5xx upstream in milliseconds, so
-# openai_tool_bridge no longer sleeps out a Groq TPM retry-after hint —
-# a 429/5xx fails this call fast instead. This timeout only needs to bound
+# calls a single resolved provider directly (OpenRouter by default), whose
+# own server-side ``models`` fallback array retries a 429/5xx against the
+# next model upstream in milliseconds, so openai_tool_bridge no longer
+# sleeps out a Groq TPM retry-after hint — a 429/5xx fails this call fast
+# instead. This timeout only needs to bound
 # a genuinely stalling connection now.
 # --------------------------------------------------------------------------
 
