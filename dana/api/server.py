@@ -437,6 +437,7 @@ _CAD_CREATE_TOOLS = frozenset(
         "create_freecad_sketch_extrude",
         "batch_pattern_array",
         "insert_standard_part",
+        "import_and_solidify_mesh",
         # get_freecad_bounding_box, inspect_spatial_properties,
         # analyze_bounding_box_collisions, export_freecad_model, and
         # take_canvas_screenshot are intentionally absent: those reads have
@@ -534,6 +535,14 @@ _HITL_ALWAYS_APPROVED_TOOLS: frozenset[str] = frozenset(
         "modify_freecad_parameter",
         "align_freecad_objects",
         "insert_standard_part",
+        # Local-only geometry CRUD, same as every other entry here — imports
+        # an already-downloaded mesh FILE (never a network call of its own)
+        # into the shared .FCStd session doc. Unlike generate_3d_from_image
+        # (which DOES reach a third-party service and is deliberately NOT
+        # here), there's nothing about this specific step for a human to
+        # gate on beyond what create_freecad_box's own presence here already
+        # implies is fine.
+        "import_and_solidify_mesh",
     }
 )
 

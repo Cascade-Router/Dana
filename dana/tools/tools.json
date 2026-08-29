@@ -2430,6 +2430,14 @@
       "parameters": [
         {"name": "image_path", "type": "string", "required": true, "description_en": "Path to the source 2D image (e.g. a screenshot or photo) to reconstruct into a 3D mesh."}
       ]
+    },
+    {
+      "id": "import_and_solidify_mesh",
+      "description_en": "Imports a triangle mesh (.obj/.glb/.stl — e.g. generate_3d_from_image's own output) into the shared FreeCAD session as a real solid (Part::Feature), so it can be used with perform_freecad_boolean/perform_freecad_edge_operation/create_assembly_mate afterward — those all require an actual B-Rep solid, not a raw mesh, which is all an AI mesh-reconstruction model ever produces. Always use this before trying to combine or edge-operate on a generate_3d_from_image result.",
+      "parameters": [
+        {"name": "mesh_path", "type": "string", "required": true, "description_en": "Path to the mesh file to import (e.g. the mesh_path returned by generate_3d_from_image)."},
+        {"name": "object_name", "type": "string", "required": true, "description_en": "Name for the resulting solid object in the FreeCAD session."}
+      ]
     }
   ]
 }

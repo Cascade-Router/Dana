@@ -147,6 +147,21 @@ def _tool_generate_3d_from_image(args: dict[str, Any], _engine: Any, _cp: Any) -
     return json.loads(generate_3d_from_image(image_path))
 
 
+def _tool_import_and_solidify_mesh(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    """Bypasses the engine/control_plane driver abstraction entirely — same
+    reasoning as ``_tool_insert_standard_part`` above (see
+    ``dana.plugins.freecad.mesh_ops``'s own module docstring)."""
+    from dana.plugins.freecad.mesh_ops import import_and_solidify_mesh
+
+    mesh_path = str(args.get("mesh_path") or "").strip()
+    if not mesh_path:
+        return {"ok": False, "error": "import_and_solidify_mesh requires mesh_path"}
+    object_name = str(args.get("object_name") or "").strip()
+    if not object_name:
+        return {"ok": False, "error": "import_and_solidify_mesh requires object_name"}
+    return json.loads(import_and_solidify_mesh(mesh_path, object_name))
+
+
 def _tool_resync_workspace(_args: dict[str, Any], _engine: Any, cp: Any) -> dict[str, Any]:
     return cp.resync_workspace()
 
@@ -1225,6 +1240,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "create_freecad_box": _tool_create_box,
     "generate_urdf_assembly": _tool_generate_urdf_assembly,
     "generate_3d_from_image": _tool_generate_3d_from_image,
+    "import_and_solidify_mesh": _tool_import_and_solidify_mesh,
     "query_geometry_properties": _tool_query_geometry_properties,
     "read_system_architecture": _tool_read_system_architecture,
     "create_freecad_cylinder": _tool_create_cylinder,
@@ -1369,6 +1385,10 @@ def describe_tool_call(call: ToolCall) -> str:
             f"Send {image_path} to a free third-party Hugging Face Space (TripoSR, "
             "with CRM/zero123plus as fallbacks) to reconstruct it into a 3D mesh."
         )
+    if call.tool_id == "import_and_solidify_mesh":
+        mesh_path = call.arguments.get("mesh_path", "?")
+        object_name = call.arguments.get("object_name", "?")
+        return f"Import mesh '{mesh_path}' and solidify it as `{object_name}` in FreeCAD."
     if call.tool_id == "create_freecad_box":
         length = call.arguments.get("length", 40)
         width = call.arguments.get("width", 25)
@@ -1615,6 +1635,10 @@ _FREECAD_TOOL_IDS = frozenset(
         # (dana.tools.image_to_3d) — its output feeds the same CAD pipeline
         # (inspect/export/assemble) create_freecad_*'s own output does, so
         # same domain rather than a separate one nothing currently activates.
+        "import_and_solidify_mesh",  # Mesh-to-solid bridge (dana.plugins.freecad
+        # .mesh_ops) — the mandatory next step for a generate_3d_from_image
+        # result before any perform_freecad_*/create_assembly_mate call can
+        # touch it; same domain as both.
     }
 )
 
@@ -3404,6 +3428,7 @@ _GEOMETRY_RESULT_TOOL_IDS = frozenset(
         "create_freecad_sketch_extrude",
         "batch_pattern_array",
         "insert_standard_part",
+        "import_and_solidify_mesh",
     }
 )
 
@@ -3589,6 +3614,7 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         "create_freecad_sketch_extrude",
         "batch_pattern_array",
         "insert_standard_part",
+        "import_and_solidify_mesh",
     ):
         driver = payload.get("driver", "win32/freecad")
         return (
