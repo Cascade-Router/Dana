@@ -170,11 +170,10 @@ archive/legacy_donna/donna_memory.enc
 /archive/
 .shadow_state/
 
-# Watchdog REPL scratch files (keep package + ledger docs)
-dana_security/run_*_dana_watchdog.py
-dana_security/__pycache__/
-dana_security/patch_ledger.md
-dana_security/patch_ledger_archive.md
+# Local-only patch ledger (real ticket history, kept out of git; moved here
+# from the now-removed dana_security/ package)
+docs/patch_ledger.md
+docs/patch_ledger_archive.md
 
 # Optional in-repo custom mirror (gitignored except __init__.py)
 dana/tools/custom/*

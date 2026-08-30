@@ -6,10 +6,6 @@ still referenced by live code. These are DELIBERATELY left alone because
 each is either imported at runtime or is a currently-active data directory,
 not legacy cruft, despite sounding like it:
 
-  - dana_security/    — ``dana.tools.registry`` does
-                         ``from dana_security import load_dynamic_source``;
-                         its patch_ledger.md is the live ledger
-                         draft_cursor_prompt/architect_new_tool append to.
   - cursor_handoffs/   — ``dana.paths.CURSOR_HANDOFF_DIR`` (== repo root,
                          since DANA_WORKSPACE == PROJECT_ROOT); the
                          delegate_to_cursor tool writes dana_handoff.md here.
@@ -73,7 +69,6 @@ PROTECTED_NAMES = frozenset(
         "agent_workspace",
         "freecad_output",
         "custom_tools",
-        "dana_security",
         "cursor_handoffs",
         "dana_jason_loop",
     }

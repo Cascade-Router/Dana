@@ -424,7 +424,7 @@ def main() -> int:
     logs.mkdir(parents=True, exist_ok=True)
     tracker = TaskTracker(
         dropped_log_path=logs / "dropped_tasks_complex.log",
-        ledger_path=_ROOT / "dana_security" / "_complex_bench_ledger.md",
+        ledger_path=logs / "_complex_bench_ledger.md",
     )
     set_shared_task_tracker(tracker)
 

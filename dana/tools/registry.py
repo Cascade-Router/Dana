@@ -218,13 +218,6 @@ def _dynamic_source_available(tool_id: str) -> bool:
     name = str(tool_id or "").strip()
     if not name:
         return False
-    try:
-        from dana_security import load_dynamic_source
-
-        if load_dynamic_source(name):
-            return True
-    except Exception:  # noqa: BLE001
-        pass
     for root in (GENERAL_TOOLS_DIR, CUSTOM_TOOLS_DIR):
         try:
             if (Path(root) / f"{name}.py").is_file():

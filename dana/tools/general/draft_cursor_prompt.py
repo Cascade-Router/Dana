@@ -7,7 +7,7 @@ authorized tool for logging code changes.
 Writes structured tickets for the human to execute in Cursor.
 Does **not** mutate Dana's live core memory or apply patches in-process.
 
-Ledger path (repo-rooted): ``CAMGRASPER/dana_security/patch_ledger.md``
+Ledger path (repo-rooted): ``CAMGRASPER/docs/patch_ledger.md``
 """
 
 from __future__ import annotations
@@ -116,22 +116,20 @@ class DraftCursorPromptArgs(BaseModel):
 
 
 def _ledger_path() -> Path:
-    """Resolve ``dana_security/patch_ledger.md`` under the CAMGRASPER project root."""
+    """Resolve ``docs/patch_ledger.md`` under the CAMGRASPER project root."""
     try:
-        from dana.paths import DANA_SECURITY_DIR, PATCH_LEDGER_PATH, PROJECT_ROOT
+        from dana.paths import PATCH_LEDGER_PATH, PROJECT_ROOT
 
-        DANA_SECURITY_DIR.mkdir(parents=True, exist_ok=True)
         path = Path(PATCH_LEDGER_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
         root = Path(PROJECT_ROOT).resolve()
         try:
             path.resolve().relative_to(root)
         except ValueError:
-            return root / "dana_security" / "patch_ledger.md"
+            return root / "docs" / "patch_ledger.md"
         return path
     except Exception:  # noqa: BLE001
-        return (
-            Path(__file__).resolve().parents[3] / "dana_security" / "patch_ledger.md"
-        )
+        return Path(__file__).resolve().parents[3] / "docs" / "patch_ledger.md"
 
 
 def _new_ticket_id() -> str:
@@ -195,7 +193,7 @@ def _format_ticket(
 
 
 def _append_ticket_to_ledger(ticket: str) -> Path:
-    """Create ``dana_security/`` + ledger header if needed, then append ``ticket``."""
+    """Create ``docs/patch_ledger.md`` + header if needed, then append ``ticket``."""
     dest = _ledger_path()
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.is_file():
@@ -219,7 +217,7 @@ def draft_cursor_prompt(
 ) -> str:
     """USE THIS TOOL EXCLUSIVELY FOR ALL SYSTEM MODIFICATIONS, BUG FIXES, ARCHITECTURAL TICKETS, AND SELF-IMPROVEMENT REQUESTS. This is the only authorized tool for logging code changes.
 
-    Appends a PENDING ticket to ``dana_security/patch_ledger.md``.
+    Appends a PENDING ticket to ``docs/patch_ledger.md``.
 
     TECHNICAL PRODUCT MANAGER RULE: When the user gives a high-level or casual
     voice command for a code change, expand intent into a detailed Cursor ticket

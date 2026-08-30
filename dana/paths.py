@@ -10,8 +10,7 @@ Layout:
   CAMGRASPER/logs/            ← runtime + conversation logs
   CAMGRASPER/tracker/         ← bug_tracker.json + pending_patches/
   CAMGRASPER/execution_jail/  ← FS jail (task_queue.json, library/, fixture copies)
-  CAMGRASPER/dana_security/  ← importable security package + patch_ledger.md
-                                  (do NOT merge with execution_jail/ — different roles)
+  CAMGRASPER/docs/            ← docs + patch_ledger.md (local-only ticket history)
   CAMGRASPER/_archive/        ← unused legacy snapshots (not on the runtime path)
 """
 
@@ -77,15 +76,15 @@ AGENT_WORKSPACE_DIR: Path = DANA_WORKSPACE / "agent_workspace"
 
 # --- Repo-local (config / models / vault / async ledger) ---
 
-# Importable security package + unified patch ledger (async Cursor tickets).
-DANA_SECURITY_DIR: Path = PROJECT_ROOT / "dana_security"
-
-# Alias: historical name; always points at dana_security/.
-REPO_SANDBOX_DIR: Path = DANA_SECURITY_DIR
-
-PATCH_LEDGER_PATH: Path = DANA_SECURITY_DIR / "patch_ledger.md"
-
 DOCS_DIR: Path = PROJECT_ROOT / "docs"
+
+# Unified patch ledger (async Cursor tickets) -- the dana_security/ package
+# that used to hold this (AST sandbox, architect_new_tool) was removed: it
+# was unreachable from the live ReAct dispatch table and only ever called
+# from cascade_router.py, which the live server never imports and which is
+# gated off by default (settings.json's enable_cascade_router). The ledger's
+# real history moved to docs/ rather than being deleted with the package.
+PATCH_LEDGER_PATH: Path = DOCS_DIR / "patch_ledger.md"
 
 TTS_MODELS_DIR: Path = PROJECT_ROOT / "tts_models"
 

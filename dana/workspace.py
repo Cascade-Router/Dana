@@ -46,8 +46,6 @@ from dana.paths import (
 
     REPO_CUSTOM_TOOLS_DIR,
 
-    DANA_SECURITY_DIR,
-
     EXECUTION_JAIL_DIR,
 
     EXECUTION_JAIL_LIBRARY_DIR,
@@ -206,12 +204,12 @@ Repo root is the runtime workspace (`DANA_WORKSPACE == PROJECT_ROOT`).
 | `logs/` | `dana_runtime.log`, `dana_conversation.log` |
 | `tracker/` | `bug_tracker.json`, `pending_patches/` |
 | `execution_jail/` | Filesystem jail (`task_queue.json`, `library/`, fixture copies). Not the Python package. |
-| `dana_security/` | Importable security package + `patch_ledger.md` |
+| `docs/` | Documentation + `patch_ledger.md` (local-only ticket history) |
 | `custom_tools/` | Sole Tool Forge write/load root (ephemeral; wiped on context reset) |
 | `captures/` | Screen captures from OS computer-use |
 | `_archive/` | Unused legacy snapshots (not loaded at runtime) |
 
-Promoted tools: `dana/tools/general/` (Git-tracked). Do not merge `execution_jail/` with `dana_security/`.
+Promoted tools: `dana/tools/general/` (Git-tracked).
 
 """
 
@@ -486,16 +484,6 @@ def migrate_legacy_artifacts() -> dict[str, Any]:
             pass
 
 
-
-    # Legacy jail library misplaced under the security package (do NOT move package code).
-
-    legacy_lib = DANA_SECURITY_DIR / "library"
-
-    n_lib = _safe_move_tree_files(legacy_lib, EXECUTION_JAIL_LIBRARY_DIR, pattern="*.py")
-
-    if n_lib:
-
-        report["moved"].append(f"execution_jail/library/({n_lib} scripts)")
 
 
 
