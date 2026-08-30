@@ -128,6 +128,12 @@ def test_parse_utterance_unknown_tool_id_from_llm_is_ignored(monkeypatch: pytest
 
 
 def test_parse_utterance_returns_first_proposed_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Forces the local-Ollama default deterministically: tool_calling_provider()
+    # otherwise resolves whatever this machine's own .env has configured
+    # (DANA_CLOUD_PRIMARY/DANA_CLOUD_PROVIDER), which is an ambient dev-machine
+    # setting, not part of this test's actual contract — same monkeypatch
+    # pattern the groq-timeout test below uses to pin the OTHER provider.
+    monkeypatch.setattr(rd, "tool_calling_provider", lambda: "ollama")
     fake = _mock_llm(
         monkeypatch,
         tool_calls=[ToolCall(tool_id="create_freecad_box", arguments={"length": 60, "width": 40, "height": 20})],

@@ -287,6 +287,13 @@ def test_cad_mutation_auto_injects_screenshot_and_visual_verification(
     """
     monkeypatch.setattr(server_module, "_HITL_ALWAYS_APPROVED_TOOLS", _REAL_HITL_ALWAYS_APPROVED_TOOLS)
     monkeypatch.setenv("DANA_OS_DRY_RUN", "0")
+    # DANA_HEADLESS (this machine's own .env sets it true) takes the hook's
+    # headless branch instead, which never sets screenshot_path at all and
+    # never calls capture_cad_viewport/verify_visual_operation below — this
+    # test is specifically about the non-headless capture+VLM path, so it
+    # must override that ambient setting the same way it already does for
+    # DANA_OS_DRY_RUN.
+    monkeypatch.setenv("DANA_HEADLESS", "false")
     monkeypatch.setattr(
         "dana.tools.cad_vision.capture_cad_viewport",
         lambda: {"ok": True, "path": "/fake/last_cad_viewport.png", "window_found": True},

@@ -58,11 +58,40 @@ def _manifest_to_tool_spec(tool_def: dict[str, Any]) -> ToolSpec:
     )
 
 
-def _load_entry_module(plugin_dir: Path, entry_point: str, plugin_name: str) -> Any:
+def _load_entry_module(
+    plugin_dir: Path, entry_point: str, plugin_name: str, *, force_refresh: bool = False
+) -> Any:
+    """Import one plugin's entry-point file as ``dana.plugins.<plugin_name>.<stem>``.
+
+    Reuses an already-loaded module for that dotted name from ``sys.modules``
+    unless ``force_refresh`` is set. This is the fix for a real split-brain
+    bug: ``load_all_plugins`` and ``load_all_plugins_grouped`` each keep
+    their OWN cache (``_cached_plugins``/``_cached_plugins_grouped``), so
+    whichever one happens to run its "first call" LATER in the process
+    (e.g. the ``check_plugin_registry`` tool driving ``load_all_plugins``
+    for the first time, well after ``react_dispatch.refresh_plugin_tools()``
+    already populated ``load_all_plugins_grouped`` at import time) used to
+    unconditionally re-exec every plugin's entry point via
+    ``importlib.util.spec_from_file_location`` and overwrite
+    ``sys.modules[module_name]`` with a brand-new module object — silently
+    orphaning every function reference the OTHER cache had already bound
+    (``dana.core.react_dispatch.TOOL_HANDLERS``'s manifest-plugin handlers
+    included). Confirmed live: a test patching
+    ``dana.plugins.freecad.engine._run_freecad_script`` after
+    ``check_plugin_registry`` had fired once silently patched an orphaned
+    module twin, and the REAL FreeCADCmd binary ran instead of the mock.
+    Explicit ``force_refresh=True`` (a genuine hot-reload request) still
+    re-execs, matching ``refresh_plugin_tools()``'s documented "safe to call
+    again later" contract.
+    """
     entry_path = plugin_dir / entry_point
     if not entry_path.is_file():
         raise PluginLoadError(f"entry point not found: {entry_path}")
     module_name = f"dana.plugins.{plugin_name}.{entry_path.stem}"
+    if not force_refresh:
+        existing = sys.modules.get(module_name)
+        if existing is not None:
+            return existing
     spec = importlib.util.spec_from_file_location(
         module_name, entry_path, submodule_search_locations=[str(plugin_dir)]
     )
@@ -78,7 +107,9 @@ def _load_entry_module(plugin_dir: Path, entry_point: str, plugin_name: str) -> 
     return module
 
 
-def _load_plugin_full(plugin_dir: Path) -> tuple[str, list[tuple[ToolSpec, Callable[..., Any]]]]:
+def _load_plugin_full(
+    plugin_dir: Path, *, force_refresh: bool = False
+) -> tuple[str, list[tuple[ToolSpec, Callable[..., Any]]]]:
     """Shared body for ``load_plugin``/``load_all_plugins_grouped`` — loads
     the manifest + entry point exactly once and also returns the plugin's
     declared capability DOMAIN (``manifest["domain"]``, falling back to the
@@ -100,7 +131,7 @@ def _load_plugin_full(plugin_dir: Path) -> tuple[str, list[tuple[ToolSpec, Calla
     plugin_name = str(manifest.get("name") or plugin_dir.name)
     domain = str(manifest.get("domain") or plugin_name)
     entry_point = str(manifest.get("entry_point") or "engine.py")
-    module = _load_entry_module(plugin_dir, entry_point, plugin_name)
+    module = _load_entry_module(plugin_dir, entry_point, plugin_name, force_refresh=force_refresh)
 
     tools: list[tuple[ToolSpec, Callable[..., Any]]] = []
     for tool_def in manifest.get("tools") or []:
@@ -118,9 +149,9 @@ def _load_plugin_full(plugin_dir: Path) -> tuple[str, list[tuple[ToolSpec, Calla
     return domain, tools
 
 
-def load_plugin(plugin_dir: Path) -> list[tuple[ToolSpec, Callable[..., Any]]]:
+def load_plugin(plugin_dir: Path, *, force_refresh: bool = False) -> list[tuple[ToolSpec, Callable[..., Any]]]:
     """Load one plugin folder's manifest + entry point; raises ``PluginLoadError``."""
-    _domain, tools = _load_plugin_full(plugin_dir)
+    _domain, tools = _load_plugin_full(plugin_dir, force_refresh=force_refresh)
     return tools
 
 
@@ -148,7 +179,7 @@ def load_all_plugins(
     all_tools: list[tuple[ToolSpec, Callable[..., Any]]] = []
     for plugin_dir in discover_plugin_dirs(root):
         try:
-            all_tools.extend(load_plugin(plugin_dir))
+            all_tools.extend(load_plugin(plugin_dir, force_refresh=force_refresh))
         except PluginLoadError as exc:
             print(f"[plugin_manager] WARNING: skipping plugin {plugin_dir.name!r}: {exc}", flush=True)
         except Exception as exc:  # noqa: BLE001
@@ -176,9 +207,13 @@ def load_all_plugins_grouped(
     so a new plugin folder needs zero edits there to become reachable by
     the live ReAct loop. Cached separately from ``load_all_plugins`` (that
     one's own cache/shape is untouched, still used by
-    ``plugin_registry_view``'s introspection) — using both in the same
-    process re-execs each plugin's entry module once per distinct cache,
-    which is fine: it only happens at process start, not per turn.
+    ``plugin_registry_view``'s introspection) — the two caches' own result
+    SHAPES stay independent, but ``_load_entry_module`` reuses whichever
+    module ``sys.modules`` already holds for a given plugin unless
+    ``force_refresh`` is set, so a "first call" to this function and a
+    later "first call" to ``load_all_plugins`` (or vice versa) share the
+    same module instance instead of each re-execing its own throwaway
+    twin — see ``_load_entry_module``'s docstring for the bug this fixes.
     """
     global _cached_plugins_grouped
     if _cached_plugins_grouped is not None and not force_refresh and root is None:
@@ -187,7 +222,7 @@ def load_all_plugins_grouped(
     grouped: dict[str, list[tuple[ToolSpec, Callable[..., Any]]]] = {}
     for plugin_dir in discover_plugin_dirs(root):
         try:
-            domain, tools = _load_plugin_full(plugin_dir)
+            domain, tools = _load_plugin_full(plugin_dir, force_refresh=force_refresh)
         except PluginLoadError as exc:
             print(f"[plugin_manager] WARNING: skipping plugin {plugin_dir.name!r}: {exc}", flush=True)
             continue
