@@ -132,9 +132,12 @@ function AgentActivityFeed({ activity, live = false }: { activity: AgentActivity
 // files Aider is about to touch, and why) rather than as opaque JSON, since
 // this is the one HITL prompt in the app where "what exactly gets mutated"
 // isn't obvious from the action name alone.
-function CodeTaskApprovalDetails({ parameters }: { parameters: Record<string, unknown> }) {
+function CodeTaskApprovalDetails({ parameters, diff }: { parameters: Record<string, unknown>; diff?: string }) {
+  const [showDiff, setShowDiff] = useState(true); // Default to showing diff for safety
   const files = Array.isArray(parameters.files) ? parameters.files.filter((f): f is string => typeof f === "string") : [];
   const taskDescription = typeof parameters.task_description === "string" ? parameters.task_description : "";
+  const hasDiff = diff && diff.trim().length > 0;
+  
   return (
     <div className="hitl-card__code-task">
       <div className="hitl-card__code-task-badge">⚠️ Aider will edit files and create a git commit</div>
@@ -148,6 +151,25 @@ function CodeTaskApprovalDetails({ parameters }: { parameters: Record<string, un
             ))}
           </ul>
         </>
+      )}
+      {hasDiff && (
+        <div className="hitl-card__diff-section">
+          <div className="hitl-card__diff-header">
+            <span className="hitl-card__diff-label">📋 Current File State (Before Changes)</span>
+            <button
+              type="button"
+              className="hitl-card__diff-toggle"
+              onClick={() => setShowDiff(!showDiff)}
+            >
+              {showDiff ? "Hide Preview" : "Show Preview"}
+            </button>
+          </div>
+          {showDiff && (
+            <pre className="hitl-card__diff">
+              <code>{diff}</code>
+            </pre>
+          )}
+        </div>
       )}
     </div>
   );
@@ -211,7 +233,7 @@ function HitlCard({
       ) : (
         <>
           {hitl.actionName === "execute_code_task" ? (
-            <CodeTaskApprovalDetails parameters={hitl.parameters} />
+            <CodeTaskApprovalDetails parameters={hitl.parameters} diff={hitl.diff} />
           ) : (
             <pre className="hitl-card__params">{JSON.stringify(hitl.parameters, null, 2)}</pre>
           )}
