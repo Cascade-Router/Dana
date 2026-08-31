@@ -1,5 +1,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
+import { CostBar } from "./components/CostBar";
+import { PlanChecklist } from "./components/PlanChecklist";
 import { ChatSidebar } from "./components/ChatSidebar";
 import { EnvViewerWidget } from "./components/EnvViewerWidget";
 import { TerminalDrawer } from "./components/TerminalDrawer";
@@ -23,6 +25,7 @@ function AppShell() {
   const { entries } = useSecrets();
   const [secretsOpen, setSecretsOpen] = useState(false);
   const [envViewerOpen, setEnvViewerOpen] = useState(false);
+  const [planOpen, setPlanOpen] = useState(false);
 
   // Split-view (❐): "split" is today's existing chat+plugin layout (now at
   // an explicit 45/55 ratio instead of the old fixed sidebar width) —
@@ -103,6 +106,8 @@ function AppShell() {
     meshUrl,
     cameraTarget,
     voiceState,
+    costState,
+    planState,
     liveActivity,
     turnActive,
     sessionId,
@@ -228,6 +233,17 @@ function AppShell() {
         >
           ⚡ {providerLabel}
         </button>
+        <CostBar cost={costState} />
+        {planState.tasks.length > 0 && (
+          <button
+            type="button"
+            className="app__plan-badge"
+            title={`Active Plan: ${planState.objective}`}
+            onClick={() => setPlanOpen(true)}
+          >
+            📋 {planState.tasks.filter((t) => t.status === "completed").length}/{planState.tasks.length}
+          </button>
+        )}
         <button
           type="button"
           className="app__secrets-btn"
@@ -275,6 +291,7 @@ function AppShell() {
 
       {secretsOpen && <SecretsMenu onClose={() => setSecretsOpen(false)} />}
       {envViewerOpen && <EnvViewerWidget onClose={() => setEnvViewerOpen(false)} />}
+      {planOpen && <PlanChecklist plan={planState} onClose={() => setPlanOpen(false)} />}
       <TerminalDrawer log={log} />
     </div>
   );

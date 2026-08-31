@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_WS_BASE, resolveApiUrl, resolveMeshUrl } from "./apiBase";
 
+// dana.plugins.planning.task_board's global plan wire shape — exactly what
+// get_active_plan()/create_plan()/mark_task_completed() all share (see
+// task_board.py's own "Shape:" comment), so this never needs its own
+// translation layer against the backend.
+type PlanTask = {
+  id: number;
+  description: string;
+  status: "pending" | "active" | "completed";
+};
+
+type PlanWire = { objective: string; tasks: PlanTask[]; current_task_id: number | null };
+
 // Mirrors the JSON shapes dana/api/server.py's `/ws/chat` sends —
 // keep these two in sync by hand (no shared schema generation yet).
 export type ServerEvent =
@@ -9,21 +21,17 @@ export type ServerEvent =
       session_id: string;
       driver_state: Record<string, unknown>;
       plugins: { plugins: string[]; tools: unknown[] };
+      active_plan: PlanWire;
     }
+  | { type: "plan_update"; plan: PlanWire }
   | { type: "user_message"; content: string }
-  | { type: "tool_call"; tool_id: string; arguments: Record<string, unknown> }
-  | {
-      type: "tool_result";
-      tool_id: string;
-      ok: boolean;
-      payload: Record<string, unknown>;
-      message: string;
-      duration_ms: number;
-      mesh_url: string | null;
-    }
   | { type: "assistant_message"; content: string }
   | { type: "camera_animate"; position: [number, number, number]; target: [number, number, number] }
   | {
+      // Still used ONLY for a "parse-N" node (the LLM's own reasoning step,
+      // one per ReAct iteration) — a tool dispatch's node_id/label/node_type
+      // moved to "tool_dispatch_start" below (WebSocket Consolidation).
+      // DAGMonitor.tsx's buildGraph tells the two apart by node_id prefix.
       type: "dag_node_start";
       node_id: string;
       label: string;
@@ -31,11 +39,44 @@ export type ServerEvent =
       inputs: Record<string, unknown>;
     }
   | {
+      // Parse-node counterpart to dag_node_start above — see the same note.
       type: "dag_node_complete";
       node_id: string;
       status: "success" | "error";
       output: Record<string, unknown>;
       duration_ms: number;
+    }
+  | {
+      // WebSocket Consolidation: replaces the old dag_node_start(dispatch) +
+      // "tool_call" + "tool_start" trio with one event — see dana/api/server.py's
+      // _send_tool_dispatch_start. Read by DAGMonitor (node_id/label/node_type)
+      // and ChatPanel's Agent Activity feed (tool_name/args_summary) alike.
+      type: "tool_dispatch_start";
+      node_id: string;
+      label: string;
+      node_type: "agent" | "tool" | "vision";
+      tool_name: string;
+      arguments: Record<string, unknown>;
+      args_summary: string;
+    }
+  | {
+      // WebSocket Consolidation: replaces the old "tool_complete" +
+      // dag_node_complete(dispatch) + "tool_result" trio — see
+      // _send_tool_dispatch_end. `output` is the tool's result payload,
+      // serialized exactly once (it used to go out twice, byte-identical,
+      // as dag_node_complete.output AND tool_result.payload).
+      type: "tool_dispatch_end";
+      node_id: string;
+      tool_id: string;
+      status: "success" | "error";
+      output: Record<string, unknown>;
+      // Kept (not in this consolidation's original field list) because
+      // CoderPlugin.tsx's error banner falls back to it when a tool's own
+      // failure payload doesn't use the "error" key — see
+      // dana/api/server.py's _send_tool_dispatch_end for why.
+      message: string;
+      duration_ms: number;
+      mesh_url: string | null;
     }
   | {
       type: "hitl_approval_required";
@@ -48,9 +89,45 @@ export type ServerEvent =
     }
   | { type: "voice_state"; state: VoiceState; transcript: string }
   | { type: "assistant_audio"; audio_url: string }
-  | { type: "tool_start"; tool_name: string; args_summary: string }
-  | { type: "tool_complete"; tool_name: string; status: "success" | "error" }
-  | { type: "server_log"; stream: "stdout" | "stderr"; line: string };
+  | { type: "server_log"; stream: "stdout" | "stderr"; line: string }
+  | {
+      type: "usage_update";
+      model: string;
+      tokens: { prompt: number; completion: number };
+      cost_usd: number | null;
+      session_total_usd: number;
+      by_model: Record<string, number>;
+    };
+
+// One session's running LLM cost — mirrors dana/api/server.py's
+// session["cost_tracking"] (accumulated in _broadcast_usage_update, one
+// "usage_update" event per next_react_turn iteration). `activeModel` is
+// just the MOST RECENT model seen this session, not necessarily the one
+// with the largest slice of `byModel` (a session that switches models
+// keeps every model's own accumulated cost in `byModel`, so CostBar can
+// still render a fair proportional segment for each).
+export type CostState = {
+  activeModel: string | null;
+  sessionTotalUsd: number;
+  byModel: Record<string, number>;
+};
+
+const INITIAL_COST_STATE: CostState = { activeModel: null, sessionTotalUsd: 0, byModel: {} };
+
+// Camel-cased convenience shape PlanChecklist actually renders — see
+// PlanWire above for the raw wire shape this is built from (both "ready"'s
+// initial active_plan seed and every later "plan_update").
+export type PlanState = {
+  objective: string;
+  tasks: PlanTask[];
+  currentTaskId: number | null;
+};
+
+const INITIAL_PLAN_STATE: PlanState = { objective: "", tasks: [], currentTaskId: null };
+
+function toPlanState(wire: PlanWire): PlanState {
+  return { objective: wire.objective, tasks: wire.tasks, currentTaskId: wire.current_task_id };
+}
 
 export type VoiceState = "idle" | "listening" | "processing" | "speaking";
 
@@ -62,12 +139,13 @@ export type HitlRequest = {
   resolution?: "approved" | "cancelled";
 };
 
-// One "tool_start"/"tool_complete" pair from dana/api/server.py's
-// _execute_and_continue — the plugin-agnostic Agent Activity feed ChatPanel
-// renders inline, distinct from the DAG Monitor's "dag_node_*" events
-// (which only the CadPlugin ever renders). "running" until the matching
-// tool_complete arrives (see the reducer in useChatSocket below).
-export type AgentActivityStatus = "running" | "success" | "error";
+// One "tool_dispatch_start"/"tool_dispatch_end" pair from dana/api/server.py's
+// _send_tool_dispatch_start/_send_tool_dispatch_end — the plugin-agnostic
+// Agent Activity feed ChatPanel renders inline, distinct from the DAG
+// Monitor's "dag_node_*"/"tool_dispatch_*" node graph (which only the
+// CadPlugin ever renders). "running" until the matching tool_dispatch_end
+// arrives (see the reducer in useChatSocket below).
+type AgentActivityStatus = "running" | "success" | "error";
 
 export type AgentActivity = {
   id: string;
@@ -155,6 +233,8 @@ export function useChatSocket(
   // place this is read from or written to).
   const logCacheRef = useRef<Record<string, ServerEvent[]>>({});
   const [driverState, setDriverState] = useState<Record<string, unknown> | null>(null);
+  const [costState, setCostState] = useState<CostState>(INITIAL_COST_STATE);
+  const [planState, setPlanState] = useState<PlanState>(INITIAL_PLAN_STATE);
   const [meshUrl, setMeshUrl] = useState<string | null>(null);
   const [cameraTarget, setCameraTarget] = useState<CameraTarget | null>(null);
   const [voiceState, setVoiceState] = useState<{ state: VoiceState; transcript: string }>({
@@ -164,7 +244,7 @@ export function useChatSocket(
   const pendingImageUrlRef = useRef<string | null>(null);
   const replyAudioRef = useRef<HTMLAudioElement | null>(null);
   // The CURRENT turn's in-flight Agent Activity feed — mutated via this ref
-  // (not just the mirrored `liveActivity` state below) so "tool_complete"
+  // (not just the mirrored `liveActivity` state below) so "tool_dispatch_end"
   // and the "assistant_message" handler always see the latest entries even
   // though onmessage is a single closure created once in the effect below
   // (a stale-closure hazard the same pendingImageUrlRef pattern above
@@ -174,7 +254,7 @@ export function useChatSocket(
   const liveActivityRef = useRef<AgentActivity[]>([]);
   const [liveActivity, setLiveActivity] = useState<AgentActivity[]>([]);
   // Global Abort: true from the moment a turn starts (sendMessage, or a
-  // tool_start/hitl_approval_required arriving from a non-typed trigger
+  // tool_dispatch_start/hitl_approval_required arriving from a non-typed trigger
   // like a voice turn) until its final "assistant_message" lands — exactly
   // the window ChatPanel's "Stop Generating" button should be visible for.
   const [turnActive, setTurnActive] = useState(false);
@@ -218,8 +298,8 @@ export function useChatSocket(
       setLiveActivity([]);
       liveActivityRef.current = [];
       setTurnActive(false);
-      // Terminal History isolation: `log` (server_log/tool_call/tool_result/
-      // etc. WS events) is genuinely per-session data — without swapping it
+      // Terminal History isolation: `log` (server_log/tool_dispatch_start/
+      // tool_dispatch_end/etc. WS events) is genuinely per-session data — without swapping it
       // out here it kept accumulating across a chat switch, so the Terminal
       // History panel showed a PREVIOUS session's backend activity mixed in
       // with the newly-selected one. Swapped via logCacheRef (above) rather
@@ -235,6 +315,12 @@ export function useChatSocket(
       setMeshUrl(null);
       setDriverState(null);
       setCameraTarget(null);
+      setCostState(INITIAL_COST_STATE);
+      // Reseeded the instant the new connection's own "ready" arrives (see
+      // below) — the Task Planner is a single GLOBAL plan, not per-session,
+      // so this is only ever the brief gap between reset and that reseed,
+      // same as driverState/meshUrl above.
+      setPlanState(INITIAL_PLAN_STATE);
     }
 
     const query = requestedSessionId ? `?session_id=${encodeURIComponent(requestedSessionId)}` : "";
@@ -270,6 +356,7 @@ export function useChatSocket(
         case "ready":
           setDriverState(data.driver_state);
           setSessionId(data.session_id);
+          setPlanState(toPlanState(data.active_plan));
           break;
         case "assistant_message": {
           const imageUrl = pendingImageUrlRef.current ?? undefined;
@@ -285,7 +372,10 @@ export function useChatSocket(
           setMessages((prev) => [...prev, { role: "assistant", content: data.content, imageUrl, activity }]);
           break;
         }
-        case "tool_start": {
+        case "tool_dispatch_start": {
+          // WebSocket Consolidation: replaces the old "tool_start" case —
+          // same Agent Activity entry, sourced from this one event's own
+          // tool_name/args_summary fields instead of a separate message.
           setTurnActive(true);
           const entry: AgentActivity = {
             id: `${data.tool_name}-${liveActivityRef.current.length}-${Math.random().toString(36).slice(2)}`,
@@ -297,15 +387,21 @@ export function useChatSocket(
           setLiveActivity(liveActivityRef.current);
           break;
         }
-        case "tool_complete": {
-          // Marks the most recent still-"running" entry for this tool_name
+        case "tool_dispatch_end": {
+          // WebSocket Consolidation: replaces the old "tool_complete" +
+          // "tool_result" cases — marks the matching Agent Activity entry's
+          // status AND extracts meshUrl/image_url from the same one event's
+          // `output` (the old tool_result's `payload`, unchanged shape) and
+          // `mesh_url` fields, instead of two separate messages.
+          //
+          // Matches the most recent still-"running" entry for this tool_id
           // — matching by name+status (not e.g. an id round-tripped from
-          // the server, which tool_start/tool_complete don't carry) is
-          // enough here since a turn dispatches tool calls one at a time.
+          // the server, which this event doesn't carry) is enough here
+          // since a turn dispatches tool calls one at a time.
           const current = liveActivityRef.current;
           let targetIndex = -1;
           for (let i = current.length - 1; i >= 0; i--) {
-            if (current[i].toolName === data.tool_name && current[i].status === "running") {
+            if (current[i].toolName === data.tool_id && current[i].status === "running") {
               targetIndex = i;
               break;
             }
@@ -316,16 +412,23 @@ export function useChatSocket(
             liveActivityRef.current = next;
             setLiveActivity(next);
           }
-          break;
-        }
-        case "tool_result": {
           if (data.mesh_url) setMeshUrl(resolveMeshUrl(data.mesh_url));
-          const imageUrl = data.payload?.image_url;
+          const imageUrl = data.output?.image_url;
           if (typeof imageUrl === "string") pendingImageUrlRef.current = resolveApiUrl(imageUrl);
           break;
         }
         case "camera_animate":
           setCameraTarget({ position: data.position, target: data.target });
+          break;
+        case "usage_update":
+          setCostState({
+            activeModel: data.model,
+            sessionTotalUsd: data.session_total_usd,
+            byModel: data.by_model,
+          });
+          break;
+        case "plan_update":
+          setPlanState(toPlanState(data.plan));
           break;
         case "voice_state":
           setVoiceState({ state: data.state, transcript: data.transcript });
@@ -487,6 +590,8 @@ export function useChatSocket(
     messages,
     log,
     driverState,
+    costState,
+    planState,
     meshUrl,
     cameraTarget,
     voiceState,

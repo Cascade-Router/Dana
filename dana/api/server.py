@@ -21,7 +21,9 @@ both the API and the static React app.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -63,6 +65,8 @@ from dana.api.system import router as _system_router  # noqa: E402
 from dana.api.workspace import load_mounted_directories  # noqa: E402
 from dana.api.workspace import router as _workspace_router  # noqa: E402
 from dana.core.model_provider import tool_calling_provider  # noqa: E402
+from dana.plugins.planning.task_board import create_plan as _tb_create_plan  # noqa: E402
+from dana.plugins.planning.task_board import get_active_plan as _tb_get_active_plan  # noqa: E402
 from dana.core.react_dispatch import (  # noqa: E402
     ToolResult,
     build_assistant_tool_call_message,
@@ -441,6 +445,7 @@ _CAD_CREATE_TOOLS = frozenset(
         "create_freecad_extrusion",
         "create_freecad_pyramid",
         "create_freecad_star_prism",
+        "create_freecad_polygon",
         "perform_freecad_boolean",
         "perform_freecad_edge_operation",
         "modify_freecad_parameter",
@@ -482,6 +487,139 @@ async def _dag_complete(
     await websocket.send_json(
         {"type": "dag_node_complete", "node_id": node_id, "status": status, "output": output, "duration_ms": duration_ms}
     )
+
+
+async def _send_tool_dispatch_start(websocket: WebSocket, node_id: str, call: Any) -> None:
+    """Consolidated replacement for the old dag_node_start(dispatch) +
+    "tool_call" + "tool_start" trio — ONE event per tool dispatch instead of
+    three (WebSocket Consolidation). Carries everything either consumer used
+    to read off two separate messages: DAG Monitor's node_id/label/node_type
+    (same shape _dag_start already sent for a "dispatch-N" node) and
+    ChatPanel's Agent Activity feed's tool_name/args_summary (previously
+    "tool_start"'s own fields) — plus the dispatch arguments themselves
+    (previously the standalone "tool_call" event).
+
+    Deliberately NOT used for a "parse-N" node (the LLM's own reasoning
+    step, still `_dag_start`/`_dag_complete` — see _run_react_loop) — this
+    is only for an actual tool dispatch, exactly the three call sites
+    `_dag_start`+"tool_call" used to cover: _run_react_loop's immediate
+    non-mutating dispatch, _resolve_react_hitl's post-approval dispatch, and
+    _resolve_visual_capture's take_canvas_screenshot resolution.
+    """
+    await websocket.send_json(
+        {
+            "type": "tool_dispatch_start",
+            "node_id": node_id,
+            "label": call.tool_id,
+            "node_type": _node_type_for(call.tool_id),
+            "tool_name": call.tool_id,
+            "arguments": call.arguments,
+            "args_summary": _summarize_tool_args(call.tool_id, call.arguments),
+        }
+    )
+
+
+async def _send_tool_dispatch_end(
+    websocket: WebSocket, node_id: str, call: Any, result: ToolResult, mesh_url: str | None
+) -> None:
+    """Consolidated replacement for the old "tool_complete" +
+    dag_node_complete(dispatch) + "tool_result" trio — the result payload is
+    now serialized on the wire exactly ONCE (`output`), where it used to go
+    out twice (dag_node_complete.output and tool_result.payload were always
+    byte-identical). `status`/`output`/`duration_ms`/`mesh_url` together
+    cover every field either consumer (DAG Monitor, Agent Activity, the
+    mesh-viewer's meshUrl state) used to read off the three separate events.
+
+    Also carries `message` — NOT in this consolidation's original field
+    list, added back deliberately: CoderPlugin.tsx's error banner falls back
+    to it (`payload.error ?? message`) when a tool's own failure payload
+    doesn't use the "error" key (many use ``digest_error``'s "reason" key
+    instead, or something else entirely) — `result.message` is the one
+    field `dispatch_tool_call` unconditionally populates with a meaningful
+    failure summary regardless of which shape the tool's own payload used,
+    so dropping it would have silently degraded that fallback.
+
+    Timing note: the old "tool_complete" fired immediately after
+    ``dispatch_tool_call`` returned, before mesh/STEP export and visual
+    verification ran — Agent Activity's spinner-to-checkmark flip was
+    therefore slightly faster than DAG Monitor's own status update, which
+    already waited for all of that (same call site as this function). This
+    consolidation makes both consumers wait for the same single event, so
+    Agent Activity's status now resolves at DAG Monitor's (later) pace
+    instead of its own faster one — a deliberate, minor trade-off of this
+    consolidation, not an oversight.
+    """
+    await websocket.send_json(
+        {
+            "type": "tool_dispatch_end",
+            "node_id": node_id,
+            "tool_id": call.tool_id,
+            "status": "success" if result.ok else "error",
+            "output": result.payload,
+            "message": result.message,
+            "duration_ms": result.duration_ms,
+            "mesh_url": mesh_url,
+        }
+    )
+
+
+async def _broadcast_usage_update(
+    websocket: WebSocket, session: dict[str, Any], usage_info: dict[str, Any]
+) -> None:
+    """Cost Tracking: accumulates one ``next_react_turn`` iteration's LLM
+    cost (``dana.core.react_dispatch.ReactTurn.usage_info``, ultimately from
+    ``ModelProvider.complete_with_tool_calls`` -> ``dana.core.pricing``) onto
+    this SESSION's running total, then pushes a ``usage_update`` event to
+    the frontend's CostBar. Called once per ``_run_react_loop`` iteration
+    (right after ``next_react_turn`` returns), so a long multi-tool-call
+    turn reports cost incrementally rather than only once the whole turn
+    finishes.
+
+    ``cost_usd`` is ``None`` whenever the model isn't in ``dana.core.
+    pricing``'s table (every local Ollama model, by construction) — the
+    running total only ever accumulates a KNOWN cost, never silently
+    treats an unpriced model as free.
+    """
+    model = usage_info.get("model") or "unknown"
+    cost_usd = usage_info.get("cost_usd")
+    tracking = session.setdefault("cost_tracking", {"total_usd": 0.0, "by_model": {}})
+    if cost_usd is not None:
+        tracking["total_usd"] += cost_usd
+        tracking["by_model"][model] = tracking["by_model"].get(model, 0.0) + cost_usd
+    await websocket.send_json(
+        {
+            "type": "usage_update",
+            "model": model,
+            "tokens": {
+                "prompt": usage_info.get("prompt_tokens", 0),
+                "completion": usage_info.get("completion_tokens", 0),
+            },
+            "cost_usd": cost_usd,
+            "session_total_usd": tracking["total_usd"],
+            "by_model": dict(tracking["by_model"]),
+        }
+    )
+
+
+async def _broadcast_plan_update(websocket: WebSocket, plan: dict[str, Any] | None) -> None:
+    """Pushes the Task Planner's current state (dana.plugins.planning.
+    task_board's global plan — the exact ``{"objective", "tasks",
+    "current_task_id"}`` shape ``get_active_plan``/``create_plan``/
+    ``mark_task_completed`` all already share, same as the "## Current
+    Active Plan" system-prompt block reads) to the frontend's
+    PlanChecklist, as a ``plan_update`` event.
+
+    Two call sites, both guarded on ``result.ok``/``plan_result.get("ok")``
+    before ever reaching here: ``_execute_and_continue`` (the MODEL calling
+    create_plan/mark_task_completed as an ordinary tool dispatch) and
+    ``_process_user_text`` (the structural create_plan override that
+    bypasses the model entirely — see its own docstring). ``plan=None``
+    (a caller passing one through unconditionally) is a no-op here too, so
+    a stray call after a FAILED mutation never broadcasts a missing plan.
+    """
+    if not plan:
+        return
+    await websocket.send_json({"type": "plan_update", "plan": plan})
 
 
 async def _speak_reply(websocket: WebSocket, text: str) -> None:
@@ -583,13 +721,13 @@ _SUSPENDED_TURN_TIMEOUT_SEC = 300.0
 # it costing anything meaningful.
 _SUSPENSION_SWEEP_INTERVAL_SEC = 15.0
 
-# Hard cap on "tool_start"'s args_summary — a human-glance label for the
-# ChatPanel's inline Agent Activity feed (see _execute_and_continue), NOT a
-# payload dump. The full arguments already go out on the existing
-# "tool_call"/"dag_node_start" events for the DAG-Monitor/HITL-facing
-# consumers, so a single oversized value here (write_file's full "content",
-# run_python_script's script text, ...) is hard-truncated rather than
-# blowing up this lightweight status line.
+# Hard cap on "tool_dispatch_start"'s args_summary — a human-glance label
+# for the ChatPanel's inline Agent Activity feed (see
+# _send_tool_dispatch_start), NOT a payload dump. The full arguments already
+# go out in that same event's own "arguments" field for the DAG-Monitor/
+# HITL-facing consumers, so a single oversized value here (write_file's full
+# "content", run_python_script's script text, ...) is hard-truncated rather
+# than blowing up this lightweight status line.
 _ARGS_SUMMARY_MAX_CHARS = 80
 
 # Which argument best identifies a given tool_id's call at a glance, for
@@ -633,6 +771,7 @@ async def _execute_and_continue(
     tool_call_id: str,
     node_id: str,
     last_failure: tuple[str, str] | None = None,
+    last_call: tuple[str, str, int] | None = None,
 ) -> None:
     """Runs an already-approved (or never-gated) tool call, streams its
     dispatch/DAG/mesh/camera events, appends its result back into
@@ -644,11 +783,12 @@ async def _execute_and_continue(
     This is also the ONE choke point every actual tool dispatch passes
     through regardless of path (immediate for a non-mutating tool, or
     post-approval for a HITL-gated one — see _run_react_loop/
-    _resolve_react_hitl), so it's the single place to emit the lightweight
-    "tool_start"/"tool_complete" pair the frontend's ChatPanel renders as
-    an inline Agent Activity feed — plugin-agnostic, unlike the existing
-    "dag_node_start"/"tool_call"/"dag_node_complete" events, which are only
-    ever rendered by the CadPlugin's DAG Monitor.
+    _resolve_react_hitl), so it's the single place to emit
+    "tool_dispatch_end" (WebSocket Consolidation — see _send_tool_dispatch_end),
+    read by BOTH the frontend's ChatPanel Agent Activity feed (status/
+    args_summary-adjacent fields) and the CadPlugin's DAG Monitor
+    (node_id/output/duration_ms) off the same one event, rather than two
+    separate ones each consumer used to get.
 
     ``last_failure`` is ``(tool_id, error_message)`` from the PREVIOUS
     iteration's dispatch, if it failed — the deterministic backstop for the
@@ -664,6 +804,18 @@ async def _execute_and_continue(
     through the auto-dispatched (non-mutating) path — a HITL-gated mutating
     tool already has a human in the loop re-approving each retry, which is
     its own safety valve.
+
+    ``last_call`` is ``(tool_id, args_signature, repeat_count)`` from the
+    PREVIOUS iteration — a broader backstop than ``last_failure``: a live
+    FreeCAD run had the local-Ollama fallback call
+    ``load_capability({"domain": "freecad_full"})`` over 20 times in a row
+    without ever acting on an unlocked tool. That call SUCCEEDS every time
+    (``_tool_load_capability`` is stateless and always returns ``ok: True``
+    for a valid domain), so ``last_failure`` — which only tracks identical
+    FAILURES — never catches it; the loop would otherwise burn through every
+    remaining iteration up to ``_MAX_REACT_ITERATIONS`` making zero progress.
+    The same tool_id with the same arguments three times in a row (success
+    or failure) stops the turn immediately instead.
     """
     # Ambient session_id for the whole synchronous dispatch_tool_call ->
     # _tool_* handler -> dana.plugins.freecad.engine.* call chain below —
@@ -679,14 +831,6 @@ async def _execute_and_continue(
     engine = get_cad_engine()
     control_plane = get_control_plane()
 
-    await websocket.send_json(
-        {
-            "type": "tool_start",
-            "tool_name": call.tool_id,
-            "args_summary": _summarize_tool_args(call.tool_id, call.arguments),
-        }
-    )
-
     result = dispatch_tool_call(
         call,
         engine,
@@ -694,14 +838,6 @@ async def _execute_and_continue(
         call_log=session.get("call_log"),
         api_keys=session.get("api_keys"),
         allowed_mounts=load_mounted_directories(),
-    )
-
-    await websocket.send_json(
-        {
-            "type": "tool_complete",
-            "tool_name": call.tool_id,
-            "status": "success" if result.ok else "error",
-        }
     )
 
     if call.tool_id == "load_capability" and result.ok:
@@ -734,6 +870,14 @@ async def _execute_and_continue(
         # agent is actively working with must never expire mid-task just
         # because the turns are ticking by; only genuine disuse decays.
         _touch_capability_domains(session, domains_for_tool_id(call.tool_id))
+
+    if call.tool_id in ("create_plan", "mark_task_completed") and result.ok:
+        # Closes the loop on Cost Tracking's sibling event: the MODEL just
+        # mutated the Task Planner's global plan itself (as opposed to
+        # _process_user_text's own structural override, a separate call
+        # site) — push it to PlanChecklist right away rather than waiting
+        # for this tool's own tool_result (which ChatPanel never renders).
+        await _broadcast_plan_update(websocket, result.payload.get("plan"))
 
     mesh_url = None
     if result.ok and call.tool_id in _CAD_CREATE_TOOLS:
@@ -872,18 +1016,7 @@ async def _execute_and_continue(
             token = _register_mesh(path)
             mesh_url = f"/api/mesh/{token}.{mesh_format}"
 
-    await _dag_complete(websocket, node_id, "success" if result.ok else "error", result.payload, result.duration_ms)
-    await websocket.send_json(
-        {
-            "type": "tool_result",
-            "tool_id": call.tool_id,
-            "ok": result.ok,
-            "payload": result.payload,
-            "message": result.message,
-            "duration_ms": result.duration_ms,
-            "mesh_url": mesh_url,
-        }
-    )
+    await _send_tool_dispatch_end(websocket, node_id, call, result, mesh_url)
 
     if call.tool_id == "manipulate_camera" and result.ok:
         await websocket.send_json(
@@ -905,6 +1038,29 @@ async def _execute_and_continue(
         )
         return
 
+    # Broader backstop than the failure check above: catches a call that
+    # keeps SUCCEEDING with zero progress (see this function's own
+    # docstring -- load_capability(domain="freecad_full") is exactly this
+    # shape, always ok:True). Same tool_id + same arguments three times in
+    # a row, success or failure, stops the turn instead of burning through
+    # every remaining iteration up to _MAX_REACT_ITERATIONS.
+    args_signature = json.dumps(call.arguments, sort_keys=True, default=str)
+    current_call = (call.tool_id, args_signature)
+    repeat_count = (
+        last_call[2] + 1
+        if last_call is not None and last_call[0] == current_call[0] and last_call[1] == current_call[1]
+        else 1
+    )
+    if repeat_count >= 3:
+        await _finish_turn(
+            websocket,
+            session,
+            messages,
+            f"Called '{call.tool_id}' with the same arguments {repeat_count} times in a row without "
+            "making progress, so I stopped instead of continuing.",
+        )
+        return
+
     if not result.ok:
         # A blunt, turn-specific reinforcement on top of the standing
         # "SELF-CORRECT ON ERROR" system-prompt rule (dana.core.react_dispatch's
@@ -923,13 +1079,32 @@ async def _execute_and_continue(
                 ),
             }
         )
+    else:
+        # Success path reinforcement, now tied to structural planning
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "SYSTEM OVERRIDE: The last tool call succeeded. Check your active plan (if created) "
+                    "or the original request. If there are pending steps remaining, output the EXACT next "
+                    "JSON tool call immediately. Do NOT stop or output conversational text until all steps are finished."
+                ),
+            }
+        )
 
     print(
         f"[ReAct] Continuing loop after '{call.tool_id}' -> iteration {loop_count + 1}",
         file=sys.stderr,
         flush=True,
     )
-    await _run_react_loop(websocket, session, messages, loop_count + 1, last_failure=current_failure)
+    await _run_react_loop(
+        websocket,
+        session,
+        messages,
+        loop_count + 1,
+        last_failure=current_failure,
+        last_call=(current_call[0], current_call[1], repeat_count),
+    )
 
 
 def _first_user_text(messages: list[dict[str, Any]]) -> str:
@@ -1052,6 +1227,7 @@ async def _run_react_loop(
     messages: list[dict[str, Any]],
     loop_count: int,
     last_failure: tuple[str, str] | None = None,
+    last_call: tuple[str, str, int] | None = None,
 ) -> None:
     """The multi-step ReAct loop for one user turn: ask the LLM what to do
     next given the running ``messages`` history, either finish with plain
@@ -1107,6 +1283,9 @@ async def _run_react_loop(
     )
     parse_ms = int((time.perf_counter() - parse_start) * 1000)
 
+    if turn.usage_info:
+        await _broadcast_usage_update(websocket, session, turn.usage_info)
+
     if session.get("abort_requested"):
         session["abort_requested"] = False
         await _dag_complete(websocket, node_id, "error", {"aborted": True}, parse_ms)
@@ -1140,10 +1319,19 @@ async def _run_react_loop(
         return
 
     if turn.kind == "final":
-        content = turn.content or (
-            "I didn't think that needed a tool call — try asking for a specific "
-            "action (e.g. \"refactor foo.py to use snake_case\" or \"build a box 60x40x20\")."
-        )
+        content = turn.content
+
+        # Guard against raw tool regurgitation (JSON mimicry or leaked tokens)
+        if content and ("<tool_response>" in content or content.strip().startswith('{"status": "error"')):
+            content = (
+                "I successfully completed the earlier steps, but I encountered an error "
+                "trying to generate the final geometry and got stuck."
+            )
+        elif not content:
+            content = (
+                "I didn't think that needed a tool call — try asking for a specific "
+                "action (e.g. \"refactor foo.py to use snake_case\" or \"build a box 60x40x20\")."
+            )
 
         if last_failure is not None and not _acknowledges_failure(content):
             # Verification gate against hallucinated success: the LAST tool
@@ -1177,7 +1365,9 @@ async def _run_react_loop(
                     ),
                 }
             )
-            await _run_react_loop(websocket, session, messages, loop_count + 1, last_failure=last_failure)
+            await _run_react_loop(
+                websocket, session, messages, loop_count + 1, last_failure=last_failure, last_call=last_call
+            )
             return
 
         await _dag_complete(websocket, node_id, "success", {"final": True}, parse_ms)
@@ -1256,15 +1446,22 @@ async def _run_react_loop(
         )
         return
 
-    # Non-mutating: "dag_node_start"/"tool_call" fire only now, right as
-    # execution actually begins — same contract a mutating tool gets below,
-    # post-approval, in _resolve_react_hitl (never pre-approval — a client
-    # must not see "tool_call" for something that hasn't run yet).
+    # Non-mutating: "tool_dispatch_start" fires only now, right as execution
+    # actually begins — same contract a mutating tool gets below, post-
+    # approval, in _resolve_react_hitl (never pre-approval — a client must
+    # not see a dispatch-start event for something that hasn't run yet).
     dispatch_node_id = f"dispatch-{loop_count}"
-    await _dag_start(websocket, dispatch_node_id, call.tool_id, _node_type_for(call.tool_id), call.arguments)
-    await websocket.send_json({"type": "tool_call", "tool_id": call.tool_id, "arguments": call.arguments})
+    await _send_tool_dispatch_start(websocket, dispatch_node_id, call)
     await _execute_and_continue(
-        websocket, session, messages, loop_count, call, tool_call_id, dispatch_node_id, last_failure=last_failure
+        websocket,
+        session,
+        messages,
+        loop_count,
+        call,
+        tool_call_id,
+        dispatch_node_id,
+        last_failure=last_failure,
+        last_call=last_call,
     )
 
 
@@ -1296,8 +1493,7 @@ async def _resolve_react_hitl(websocket: WebSocket, session: dict[str, Any], res
 
     loop_count = state["loop_count"]
     dispatch_node_id = f"dispatch-{loop_count}"
-    await _dag_start(websocket, dispatch_node_id, call.tool_id, _node_type_for(call.tool_id), call.arguments)
-    await websocket.send_json({"type": "tool_call", "tool_id": call.tool_id, "arguments": call.arguments})
+    await _send_tool_dispatch_start(websocket, dispatch_node_id, call)
 
     await _execute_and_continue(
         websocket, session, state["messages"], loop_count, call, state["tool_call_id"], dispatch_node_id
@@ -1323,21 +1519,18 @@ async def _resolve_visual_capture(websocket: WebSocket, session: dict[str, Any],
     result = ToolResult(call.tool_id, bool(payload.get("ok")), payload, message, 0)
 
     dispatch_node_id = f"dispatch-{state['loop_count']}"
-    await _dag_start(websocket, dispatch_node_id, call.tool_id, _node_type_for(call.tool_id), call.arguments)
-    await _dag_complete(websocket, dispatch_node_id, "success" if result.ok else "error", payload, 0)
-    await websocket.send_json(
-        {
-            "type": "tool_result",
-            "tool_id": call.tool_id,
-            "ok": result.ok,
-            # The client already has the image bytes it just sent — no need
-            # to blast the full base64 back over the wire a second time.
-            "payload": {k: v for k, v in payload.items() if k != "image_b64"},
-            "message": result.message,
-            "duration_ms": 0,
-            "mesh_url": None,
-        }
+    await _send_tool_dispatch_start(websocket, dispatch_node_id, call)
+    # The client already has the image bytes it just sent — no need to blast
+    # the full base64 back over the wire a second time (same trim the old
+    # standalone "tool_result" send already applied here).
+    trimmed_result = ToolResult(
+        result.tool_id,
+        result.ok,
+        {k: v for k, v in payload.items() if k != "image_b64"},
+        result.message,
+        result.duration_ms,
     )
+    await _send_tool_dispatch_end(websocket, dispatch_node_id, call, trimmed_result, None)
 
     messages = state["messages"]
     messages.append(build_tool_result_message(state["tool_call_id"], result))
@@ -1368,6 +1561,44 @@ def _capture_desktop_context_data_uri() -> str | None:
     except Exception:  # noqa: BLE001 — capture failure must never crash the turn
         return None
     return f"data:image/jpeg;base64,{image_b64}"
+
+
+# Structural Task-Planner forcing: a live stress test (2026-08-30, 7B local
+# model) confirmed the system prompt's "call create_plan first for a
+# multi-step request" rule (dana.core.react_dispatch._FREECAD_SYSTEM_PROMPT
+# Rule #1) is simply ignored in practice — the model went straight to
+# geometry tool calls every time. Rather than lean further on prompt
+# wording, a genuinely multi-step request gets its plan created HERE, in
+# plain Python, before the model is ever asked anything — so the "## Current
+# Active Plan" block (dana.core.react_dispatch._format_active_plan_for_prompt)
+# is already populated on this very first turn regardless of whether the
+# model would have called create_plan itself.
+_MULTI_STEP_SPLIT_RE = re.compile(
+    r"\s*(?:,?\s+and\s+then\s+|,?\s+then\s+|;\s*then\s+|,\s+and\s+|;\s+)\s*",
+    re.IGNORECASE,
+)
+
+
+def _looks_multi_step(user_text: str) -> bool:
+    """Cheap keyword heuristic, not NLP. A false positive just pre-creates a
+    harmless single-task plan (get_active_plan-gated, see the call site
+    below, so it never clobbers a plan already in progress); a false
+    negative just leaves the model's own Rule #1 as the only defense —
+    exactly the status quo before this existed."""
+    lowered = f" {(user_text or '').lower()} "
+    return any(
+        marker in lowered
+        for marker in (" then ", " and then ", ", then", "; then", " after that ")
+    )
+
+
+def _split_into_steps(user_text: str) -> list[str]:
+    """Naive clause split on the same connectors _looks_multi_step scans
+    for — good enough to give create_plan distinct, ordered task strings
+    without needing a real NLP pass; falls back to the whole utterance as
+    one task if the split doesn't actually yield 2+ pieces."""
+    parts = [p.strip(" .") for p in _MULTI_STEP_SPLIT_RE.split(user_text.strip()) if p.strip(" .")]
+    return parts if len(parts) >= 2 else [user_text.strip()]
 
 
 async def _process_user_text(
@@ -1406,6 +1637,16 @@ async def _process_user_text(
     # iteration within it (see the "turn_counter" session field's own
     # comment above).
     session["turn_counter"] = session.get("turn_counter", 0) + 1
+
+    # Structural planner forcing (see _looks_multi_step above) — only ever
+    # auto-creates a plan into a genuinely IDLE planner slot; a plan already
+    # active from an earlier turn in this same session is never clobbered
+    # by a later turn's heuristic guess.
+    if _looks_multi_step(user_text) and not _tb_get_active_plan().get("tasks"):
+        plan_result = _tb_create_plan(objective=user_text, tasks=_split_into_steps(user_text))
+        if plan_result.get("ok"):
+            await _broadcast_plan_update(websocket, plan_result.get("plan"))
+
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
@@ -1440,6 +1681,12 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
             "session_id": resolved_session_id,
             "driver_state": driver_state(),
             "plugins": plugin_registry_view(),
+            # PlanChecklist's initial seed: the Task Planner is a single
+            # GLOBAL plan (dana.plugins.planning.task_board), not per-session
+            # — a reconnect/page-refresh mid-plan must see it immediately
+            # here, not wait for the next create_plan/mark_task_completed
+            # mutation's own "plan_update" broadcast (_broadcast_plan_update).
+            "active_plan": _tb_get_active_plan(),
         }
     )
     session: dict[str, Any] = {
