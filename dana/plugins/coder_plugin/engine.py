@@ -47,6 +47,7 @@ actual safety boundary, not a formality.
 
 from __future__ import annotations
 
+import difflib
 import shlex
 import subprocess
 from pathlib import Path
@@ -335,6 +336,94 @@ def run_verification_command(args: dict[str, Any]) -> dict[str, Any]:
             "returncode": completed.returncode,
         }
     return {"ok": True, "stdout": stdout, "stderr": stderr, "output": combined, "returncode": 0}
+
+
+def generate_code_task_diff(args: dict[str, Any]) -> str | None:
+    """Generate a unified diff preview for execute_code_task before HITL approval.
+    
+    This reads the current state of files that would be modified and generates
+    a preview showing the existing content. Since we can't predict exactly what
+    Aider will do, this provides a baseline diff showing what exists now.
+    
+    Returns None if diff generation fails.
+    """
+    try:
+        raw_files = args.get("files")
+        if not isinstance(raw_files, list) or not raw_files:
+            return None
+            
+        task_description = str(args.get("task_description") or "").strip()
+        
+        diff_lines = []
+        diff_lines.append(f"Task: {task_description}")
+        diff_lines.append("")
+        
+        for rel_path in raw_files[:10]:  # Limit to first 10 files to avoid huge diffs
+            try:
+                resolved_path = _resolve_repo_path(str(rel_path))
+                
+                if resolved_path.exists() and resolved_path.is_file():
+                    # Read current content
+                    try:
+                        current_content = resolved_path.read_text(encoding='utf-8')
+                        current_lines = current_content.splitlines(keepends=True)
+                        
+                        # Generate a preview showing current file state
+                        diff_lines.extend([
+                            f"--- {rel_path}",
+                            f"+++ {rel_path} (will be modified)",
+                            f"@@ -1,{len(current_lines)} +1,? @@",
+                        ])
+                        
+                        # Show first few and last few lines of current content
+                        preview_lines = min(10, len(current_lines))
+                        for i, line in enumerate(current_lines[:preview_lines]):
+                            diff_lines.append(f" {line.rstrip()}")
+                            
+                        if len(current_lines) > preview_lines:
+                            diff_lines.append(f" ... ({len(current_lines) - preview_lines} more lines)")
+                            
+                        diff_lines.append("")
+                        
+                    except UnicodeDecodeError:
+                        diff_lines.extend([
+                            f"--- {rel_path}",
+                            f"+++ {rel_path} (binary file, will be modified)",
+                            f"@@ Binary file @@",
+                            "",
+                        ])
+                else:
+                    # File doesn't exist, will be created
+                    diff_lines.extend([
+                        f"--- /dev/null",
+                        f"+++ {rel_path} (new file)",
+                        f"@@ -0,0 +1,? @@",
+                        f"+New file will be created",
+                        "",
+                    ])
+                    
+            except PathEscapeError:
+                diff_lines.extend([
+                    f"--- {rel_path} (path error)",
+                    f"+++ {rel_path} (cannot access)",
+                    f"@@ Path outside project root @@",
+                    "",
+                ])
+            except Exception:
+                diff_lines.extend([
+                    f"--- {rel_path}",
+                    f"+++ {rel_path} (will be modified)",
+                    f"@@ Cannot preview this file @@",
+                    "",
+                ])
+        
+        if len(raw_files) > 10:
+            diff_lines.append(f"... and {len(raw_files) - 10} more files")
+            
+        return "\n".join(diff_lines)
+        
+    except Exception:
+        return None
 
 
 def execute_code_task(args: dict[str, Any]) -> dict[str, Any]:

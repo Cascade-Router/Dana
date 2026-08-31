@@ -425,6 +425,68 @@
   color: #93c5fd;
 }
 
+.hitl-card__diff-section {
+  margin-top: 1rem;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #1a1a1a;
+}
+
+.hitl-card__diff-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  background: #262626;
+  border-bottom: 1px solid #3a3a3a;
+}
+
+.hitl-card__diff-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #e5e5e5;
+}
+
+.hitl-card__diff-toggle {
+  background: none;
+  border: 1px solid #3a3a3a;
+  color: #a3a3a3;
+  padding: 0.25rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.hitl-card__diff-toggle:hover {
+  background: #1a1a1a;
+  color: #e5e5e5;
+  border-color: #525252;
+}
+
+.hitl-card__diff {
+  margin: 0;
+  padding: 1rem;
+  background: #111;
+  font-family: ui-monospace, SFMono-Regular, Menlo, "Courier New", monospace;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: #e5e5e5;
+  overflow-x: auto;
+  white-space: pre;
+  max-height: 400px;
+  overflow-y: auto;
+  border: none;
+}
+
+.hitl-card__diff code {
+  background: none;
+  padding: 0;
+  font-family: inherit;
+  color: inherit;
+}
+
 .hitl-card__error {
   color: #f87171;
   margin-top: 0.35rem;
