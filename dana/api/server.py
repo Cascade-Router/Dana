@@ -91,6 +91,7 @@ from dana.platform import get_cad_engine, get_control_plane  # noqa: E402
 from dana.platform.factory import IS_HF_SPACE  # noqa: E402
 from dana.plugins.freecad.call_log import CadCallLog  # noqa: E402
 from dana.plugins.freecad.py_export import write_macro_script  # noqa: E402
+from dana.plugins.memory.core_memory import read_core_memory  # noqa: E402
 from dana.security.dry_run import is_dry_run_enabled  # noqa: E402
 from dana.plugins.os.desktop_vision import _capture_primary_monitor_jpeg_b64  # noqa: E402
 from dana.services.voice_service import VoiceService, VoiceState  # noqa: E402
@@ -622,6 +623,23 @@ async def _broadcast_plan_update(websocket: WebSocket, plan: dict[str, Any] | No
     await websocket.send_json({"type": "plan_update", "plan": plan})
 
 
+async def _broadcast_memory_update(websocket: WebSocket, memory: dict[str, str] | None) -> None:
+    """Pushes the Core Memory's current state (dana.plugins.memory.
+    core_memory's read_core_memory() dict — the exact ``{section: content}``
+    shape write_core_memory/replace_core_memory both produce and
+    format_core_memory_for_prompt reads) to the frontend's MemoryViewer,
+    as a ``memory_update`` event.
+
+    Called from ``_execute_and_continue`` whenever the MODEL successfully
+    calls update_core_memory as an ordinary tool dispatch. ``memory=None``
+    (a caller passing one through unconditionally) is a no-op here, so
+    a stray call after a FAILED mutation never broadcasts missing memory.
+    """
+    if memory is None:
+        return
+    await websocket.send_json({"type": "memory_update", "core_memory": memory})
+
+
 async def _speak_reply(websocket: WebSocket, text: str) -> None:
     """Synthesizes ``text`` through the existing Piper/pyttsx3 pipeline
     (dana.audio.multi_voice_tts, unchanged — same module the legacy
@@ -878,6 +896,14 @@ async def _execute_and_continue(
         # site) — push it to PlanChecklist right away rather than waiting
         # for this tool's own tool_result (which ChatPanel never renders).
         await _broadcast_plan_update(websocket, result.payload.get("plan"))
+
+    if call.tool_id == "update_core_memory" and result.ok:
+        # Core Memory UI: the MODEL just mutated the agent's persistent
+        # memory via update_core_memory — push the updated state to
+        # MemoryViewer right away rather than waiting for this tool's own
+        # tool_result (which ChatPanel never renders). Uses the same
+        # result.payload["memory"] shape write_core_memory already produces.
+        await _broadcast_memory_update(websocket, result.payload.get("memory"))
 
     mesh_url = None
     if result.ok and call.tool_id in _CAD_CREATE_TOOLS:
@@ -1687,6 +1713,12 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
             # here, not wait for the next create_plan/mark_task_completed
             # mutation's own "plan_update" broadcast (_broadcast_plan_update).
             "active_plan": _tb_get_active_plan(),
+            # MemoryViewer's initial seed: Core Memory is a single GLOBAL
+            # store (dana.plugins.memory.core_memory), not per-session —
+            # a reconnect/page-refresh must see the current state immediately
+            # here, not wait for the next update_core_memory mutation's own
+            # "memory_update" broadcast (_broadcast_memory_update).
+            "core_memory": read_core_memory(),
         }
     )
     session: dict[str, Any] = {

@@ -7,6 +7,12 @@ user preference, an active project's constraints, or a learned workflow,
 once written here, survives a server restart — unlike ``messages``, which
 lives only for one ``/ws/chat`` connection's lifetime.
 
+The frontend's MemoryViewer component (accessible via the 🧠 button in the
+topbar) displays the current memory state in real-time, updating automatically
+whenever the agent calls ``update_core_memory``. Memory updates are broadcast
+via WebSocket ``memory_update`` events from ``dana.api.server``'s
+``_broadcast_memory_update`` function.
+
 Deliberately separate from ``dana.plugins.os.file_system``'s sandboxed
 ``list_directory``/``read_file``/``write_file`` surface (arbitrary-path,
 ``os_tools``-gated, HITL-approved text I/O): core memory is one fixed file

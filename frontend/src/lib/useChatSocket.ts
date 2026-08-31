@@ -22,8 +22,10 @@ export type ServerEvent =
       driver_state: Record<string, unknown>;
       plugins: { plugins: string[]; tools: unknown[] };
       active_plan: PlanWire;
+      core_memory: Record<string, string>;
     }
   | { type: "plan_update"; plan: PlanWire }
+  | { type: "memory_update"; core_memory: Record<string, string> }
   | { type: "user_message"; content: string }
   | { type: "assistant_message"; content: string }
   | { type: "camera_animate"; position: [number, number, number]; target: [number, number, number] }
@@ -124,6 +126,10 @@ export type PlanState = {
 };
 
 const INITIAL_PLAN_STATE: PlanState = { objective: "", tasks: [], currentTaskId: null };
+
+export type MemoryState = Record<string, string>;
+
+const INITIAL_MEMORY_STATE: MemoryState = {};
 
 function toPlanState(wire: PlanWire): PlanState {
   return { objective: wire.objective, tasks: wire.tasks, currentTaskId: wire.current_task_id };
@@ -235,6 +241,7 @@ export function useChatSocket(
   const [driverState, setDriverState] = useState<Record<string, unknown> | null>(null);
   const [costState, setCostState] = useState<CostState>(INITIAL_COST_STATE);
   const [planState, setPlanState] = useState<PlanState>(INITIAL_PLAN_STATE);
+  const [memoryState, setMemoryState] = useState<MemoryState>(INITIAL_MEMORY_STATE);
   const [meshUrl, setMeshUrl] = useState<string | null>(null);
   const [cameraTarget, setCameraTarget] = useState<CameraTarget | null>(null);
   const [voiceState, setVoiceState] = useState<{ state: VoiceState; transcript: string }>({
@@ -321,6 +328,9 @@ export function useChatSocket(
       // so this is only ever the brief gap between reset and that reseed,
       // same as driverState/meshUrl above.
       setPlanState(INITIAL_PLAN_STATE);
+      // Core Memory is also a single GLOBAL store, not per-session —
+      // same reset-then-reseed pattern as planState above.
+      setMemoryState(INITIAL_MEMORY_STATE);
     }
 
     const query = requestedSessionId ? `?session_id=${encodeURIComponent(requestedSessionId)}` : "";
@@ -357,6 +367,7 @@ export function useChatSocket(
           setDriverState(data.driver_state);
           setSessionId(data.session_id);
           setPlanState(toPlanState(data.active_plan));
+          setMemoryState(data.core_memory);
           break;
         case "assistant_message": {
           const imageUrl = pendingImageUrlRef.current ?? undefined;
@@ -429,6 +440,9 @@ export function useChatSocket(
           break;
         case "plan_update":
           setPlanState(toPlanState(data.plan));
+          break;
+        case "memory_update":
+          setMemoryState(data.core_memory);
           break;
         case "voice_state":
           setVoiceState({ state: data.state, transcript: data.transcript });
@@ -592,6 +606,7 @@ export function useChatSocket(
     driverState,
     costState,
     planState,
+    memoryState,
     meshUrl,
     cameraTarget,
     voiceState,

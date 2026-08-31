@@ -5,6 +5,7 @@ import { PlanChecklist } from "./components/PlanChecklist";
 import { ChatSidebar } from "./components/ChatSidebar";
 import { EnvViewerWidget } from "./components/EnvViewerWidget";
 import { TerminalDrawer } from "./components/TerminalDrawer";
+import { MemoryViewer } from "./components/MemoryViewer";
 import { PluginProvider, usePlugins } from "./plugins/PluginContext";
 import { SecretsProvider, useSecrets } from "./secrets/SecretsContext";
 import { SecretsMenu } from "./secrets/SecretsMenu";
@@ -26,6 +27,7 @@ function AppShell() {
   const [secretsOpen, setSecretsOpen] = useState(false);
   const [envViewerOpen, setEnvViewerOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
 
   // Split-view (❐): "split" is today's existing chat+plugin layout (now at
   // an explicit 45/55 ratio instead of the old fixed sidebar width) —
@@ -108,6 +110,7 @@ function AppShell() {
     voiceState,
     costState,
     planState,
+    memoryState,
     liveActivity,
     turnActive,
     sessionId,
@@ -252,6 +255,14 @@ function AppShell() {
         >
           🔑
         </button>
+        <button
+          type="button"
+          className="app__secrets-btn"
+          title="Core Memory"
+          onClick={() => setMemoryOpen(true)}
+        >
+          🧠
+        </button>
         <button type="button" className="app__secrets-btn" title="Secrets" onClick={() => setSecretsOpen(true)}>
           ⚙
         </button>
@@ -292,6 +303,7 @@ function AppShell() {
       {secretsOpen && <SecretsMenu onClose={() => setSecretsOpen(false)} />}
       {envViewerOpen && <EnvViewerWidget onClose={() => setEnvViewerOpen(false)} />}
       {planOpen && <PlanChecklist plan={planState} onClose={() => setPlanOpen(false)} />}
+      {memoryOpen && <MemoryViewer memory={memoryState} onClose={() => setMemoryOpen(false)} />}
       <TerminalDrawer log={log} />
     </div>
   );
