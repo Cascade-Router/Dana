@@ -269,18 +269,10 @@ doc.recompute()
 _src_obj_{{ step.index }} = resolve_object(doc, {{ step.source_object|pyrepr }})
 if _src_obj_{{ step.index }} is None:
     raise RuntimeError("Object not found: " + {{ step.source_object|pyrepr }})
-import DraftVecUtils
 _copies_{{ step.index }} = []
 for _dx_{{ step.index }}, _dy_{{ step.index }}, _dz_{{ step.index }}, _rot_{{ step.index }} in {{ step.offsets|pyrepr }}:
     _c_{{ step.index }} = doc.copyObject(_src_obj_{{ step.index }}, False)
-    {# DraftVecUtils.add is the Draft workbench's own stable vector-sum
-       helper — used here (rather than the equivalent bare `+`) so this
-       array's placement math is expressed the same way FreeCAD's own
-       Draft array tooling does its own offset accumulation. #}
-    _base_{{ step.index }} = DraftVecUtils.add(
-        _src_obj_{{ step.index }}.Placement.Base,
-        App.Vector(_dx_{{ step.index }}, _dy_{{ step.index }}, _dz_{{ step.index }}),
-    )
+    _base_{{ step.index }} = _src_obj_{{ step.index }}.Placement.Base + App.Vector(_dx_{{ step.index }}, _dy_{{ step.index }}, _dz_{{ step.index }})
     _c_{{ step.index }}.Placement = App.Placement(
         _base_{{ step.index }},
         App.Rotation(App.Vector(0, 0, 1), _rot_{{ step.index }}).multiply(_src_obj_{{ step.index }}.Placement.Rotation),
