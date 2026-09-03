@@ -245,6 +245,63 @@
   text-overflow: ellipsis;
 }
 
+.env-viewer__section {
+  padding: 10px 14px 4px;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.env-viewer__section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #888;
+  margin-bottom: 6px;
+}
+
+.env-viewer__section .env-viewer__save {
+  padding: 0 0 8px;
+  border-bottom: none;
+}
+
+.env-viewer__toggle-row {
+  padding-bottom: 8px;
+}
+
+.env-viewer__section--danger {
+  margin: 8px 14px 10px;
+  padding: 12px 14px 10px;
+  background: rgba(255, 0, 0, 0.05);
+  border: 1px solid rgba(255, 0, 0, 0.35);
+  border-radius: 8px;
+}
+
+.env-viewer__section--danger .env-viewer__section-title {
+  color: #f87171;
+}
+
+.env-viewer__danger-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 2px 0 10px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #fca5a5;
+}
+
+.env-viewer__danger-warning svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: #f87171;
+}
+
+.env-viewer__save-btn--danger {
+  background: #3f2a2a;
+  border: 1px solid #5c3d3d;
+  color: #f0b7b7;
+}
+
 .env-viewer__footer {
   padding: 8px 12px;
   border-top: 1px solid #2a2a2a;

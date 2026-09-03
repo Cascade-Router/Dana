@@ -16,14 +16,10 @@ installConsoleCapture();
 // that ever changes.
 function formatLine(event: ServerEvent): string {
   switch (event.type) {
-    case "tool_call":
-      return `[tool_call] ${event.tool_id}(${JSON.stringify(event.arguments)})`;
-    case "tool_start":
-      return `[tool_start] ${event.tool_name} ${event.args_summary}`;
-    case "tool_complete":
-      return `[tool_complete] ${event.tool_name} status=${event.status}`;
-    case "tool_result":
-      return `[tool_result] ${event.tool_id} ok=${event.ok} duration_ms=${event.duration_ms} ${event.message}`;
+    case "tool_dispatch_start":
+      return `[tool_dispatch_start] ${event.tool_name}(${JSON.stringify(event.arguments)}) ${event.args_summary}`;
+    case "tool_dispatch_end":
+      return `[tool_dispatch_end] ${event.tool_id} status=${event.status} duration_ms=${event.duration_ms} ${event.message}`;
     case "assistant_message":
       return `[assistant] ${event.content}`;
     case "user_message":

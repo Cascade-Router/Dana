@@ -10,9 +10,9 @@ interface Props {
 }
 
 const {
-  title = "Dānā — Cybernetic Control-Plane Simulator",
+  title = "Dānā — Zero-Trust Autonomous CAD",
   description =
-    "Dānā is a Windows-native multi-agent orchestration engine. Meta-Broker corridor, epic task tracking, offline-first cybernetic control plane.",
+    "Dānā is an autonomous CAD orchestrator: deterministic verification, topological lineage through destructive operations, and self-healing scripts — offline-first, on your machine.",
   path = "/",
 } = Astro.props;
 
@@ -32,7 +32,17 @@ const canonical = new URL(pathname, Astro.site).toString();
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
     <link rel="icon" type="image/svg+xml" href={withBase("favicon.svg")} />
-    <link rel="preload" as="image" href={withBase("dana-logo.png")} fetchpriority="high" />
+    <!-- Only the typed webp preload — a browser without webp support just
+         skips it (falling back to the normal, un-preloaded <picture> PNG
+         fetch); an unconditional second PNG preload here would double-fetch
+         the logo on every webp-capable browser instead. -->
+    <link
+      rel="preload"
+      as="image"
+      href={withBase("dana-logo.webp")}
+      type="image/webp"
+      fetchpriority="high"
+    />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

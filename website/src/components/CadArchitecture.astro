@@ -1,0 +1,50 @@
+---
+/**
+ * CAD-orchestrator architecture pillars — additive to the existing
+ * BentoGrid (control-plane messaging), not a replacement: reuses the exact
+ * same `.bento-card` + grid convention (global.css, BentoGrid.astro) so it
+ * reads as one system rather than a bolted-on section.
+ */
+const pillars = [
+  {
+    title: "Deterministic Verification",
+    body: "Every geometric operation is checked against math-based telemetry — tolerances, volumes, and boundary conditions — not a visual guess.",
+    accent: "teal",
+  },
+  {
+    title: "Topological Lineage",
+    body: "Solids are tracked by identity through destructive cuts, booleans, and fillets — the feature tree survives operations that would otherwise orphan a reference.",
+    accent: "amber",
+  },
+  {
+    title: "Autonomous Self-Healing",
+    body: "A failing generated script is debugged and patched on the fly via Aider — the agent recovers and resumes the task instead of surfacing a stack trace.",
+    accent: "teal",
+  },
+];
+---
+
+<section id="architecture" class="scroll-mt-24 border-t border-ink-600 bg-ink-900">
+  <div class="mx-auto max-w-6xl px-6 py-20">
+    <div data-reveal class="max-w-2xl">
+      <h2 class="text-2xl font-semibold text-white sm:text-3xl">
+        A CAD kernel built to be audited, not trusted.
+      </h2>
+      <p class="mt-3 text-slate-400">
+        Three guarantees that hold whether or not a human is watching the session.
+      </p>
+    </div>
+
+    <div class="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {
+        pillars.map((p) => (
+          <article data-reveal class="bento-card">
+            <div class:list={["mb-4 h-1 w-12", p.accent === "teal" ? "bg-teal" : "bg-amber"]} />
+            <h3 class="text-lg font-semibold text-white">{p.title}</h3>
+            <p class="mt-3 text-sm leading-relaxed text-slate-400">{p.body}</p>
+          </article>
+        ))
+      }
+    </div>
+  </div>
+</section>

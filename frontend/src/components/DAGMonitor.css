@@ -1,29 +1,8 @@
-.dag-monitor {
-  border-top: 1px solid #2a2a2a;
-  background: #0d0d0d;
-  font-size: 0.78rem;
-  flex-shrink: 0;
-}
-
-.dag-monitor__toggle {
-  width: 100%;
-  text-align: left;
-  padding: 0.4rem 1rem;
-  background: none;
-  border: none;
-  color: #9ca3af;
-  cursor: pointer;
-  font-size: inherit;
-}
-
-.dag-monitor--open .dag-monitor__body {
-  height: 280px;
-}
-
-.dag-monitor__body {
-  height: 280px;
+.topology-tab {
+  height: 100%;
   display: flex;
-  border-top: 1px solid #1f1f1f;
+  font-size: 0.78rem;
+  background: #0d0d0d;
 }
 
 .dag-monitor__canvas {

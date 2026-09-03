@@ -21,7 +21,17 @@ jobs:
           mkdir -p _hf_deploy_stage
           cp app.py _hf_deploy_stage/app.py
           cp packages.txt _hf_deploy_stage/packages.txt
-          cp deploy/requirements-space.txt _hf_deploy_stage/requirements.txt
+          # deploy/requirements-space.txt doesn't exist (was never
+          # committed even though this step referenced it) — root
+          # requirements.txt is the proven-correct file already used for
+          # this exact codebase locally, so point at that instead of
+          # fabricating a hand-trimmed subset that risks silently omitting
+          # something app.py's own import chain actually needs at boot.
+          # It installs more than a minimal Space container strictly needs
+          # (the desktop/audio/Windows-only stack), which is real but
+          # separate follow-up work: trimming it requires verifying
+          # app.py's full transitive import graph, not guessing.
+          cp requirements.txt _hf_deploy_stage/requirements.txt
           cp deploy/space_README.md _hf_deploy_stage/README.md
 
           cp -r dana _hf_deploy_stage/dana

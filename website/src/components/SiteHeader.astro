@@ -3,6 +3,7 @@ import { withBase } from "../utils/withBase";
 
 const links = [
   { href: withBase("#features"), label: "Features" },
+  { href: withBase("#architecture"), label: "Architecture" },
   { href: withBase("#routing"), label: "Routing" },
   { href: withBase("#demo"), label: "Demo" },
   {
@@ -15,14 +16,17 @@ const links = [
 
 <header class="relative z-20 mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
   <a href={withBase()} class="group flex items-center gap-3 text-white">
-    <img
-      src={withBase("dana-logo.png")}
-      alt="Dānā"
-      width="36"
-      height="36"
-      class="h-9 w-9 object-contain"
-      decoding="async"
-    />
+    <picture>
+      <source srcset={withBase("dana-logo.webp")} type="image/webp" />
+      <img
+        src={withBase("dana-logo.png")}
+        alt="Dānā"
+        width="36"
+        height="36"
+        class="h-9 w-9 object-contain"
+        decoding="async"
+      />
+    </picture>
     <span class="text-lg font-semibold tracking-tight">Dānā</span>
   </a>
   <nav class="flex items-center gap-5 text-sm font-medium text-slate-300" aria-label="Primary">

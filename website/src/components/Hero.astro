@@ -1,5 +1,5 @@
 ---
-import FloatingLogo from "./FloatingLogo.astro";
+import HeroTerminal from "./HeroTerminal.astro";
 import { withBase } from "../utils/withBase";
 
 const downloadHref =
@@ -10,23 +10,24 @@ const hfSpaceHref = "https://huggingface.co/spaces/AMIXXM/Dana";
 <section class="relative overflow-hidden">
   <div class="trace-grid absolute inset-0 opacity-40" aria-hidden="true"></div>
   <div
-    class="relative mx-auto grid max-w-6xl items-center gap-10 px-6 pb-20 pt-8 lg:grid-cols-[1.05fr_0.95fr] lg:gap-14 lg:pb-28 lg:pt-14"
+    class="relative mx-auto grid max-w-6xl items-center gap-10 px-6 pb-20 pt-10 lg:grid-cols-[1.05fr_0.95fr] lg:gap-14 lg:pb-28 lg:pt-16"
   >
     <div class="order-2 lg:order-1">
       <p
-        class="animate-fade-up text-5xl font-bold tracking-tight text-white sm:text-6xl lg:text-7xl"
+        class="animate-fade-up font-mono text-xs font-medium uppercase tracking-[0.2em] text-teal sm:text-sm"
       >
         Dānā
       </p>
       <h1
-        class="mt-4 max-w-xl font-mono text-sm font-medium uppercase tracking-[0.14em] text-teal sm:text-base"
+        class="mt-5 max-w-xl text-4xl font-bold leading-[1.1] tracking-tight text-white sm:text-5xl lg:text-6xl"
         style="animation-delay: 60ms"
       >
-        Cybernetic Control-Plane Simulator
+        Zero-Trust Autonomous CAD
       </h1>
-      <p class="mt-4 max-w-lg text-base leading-relaxed text-slate-300 sm:text-lg">
-        Multi-agent orchestration for autonomous engineering — Meta-Broker corridor,
-        epic task tracking, and offline-first routing on your machine.
+      <p class="mt-6 max-w-lg text-base leading-relaxed text-slate-300 sm:text-lg">
+        An autonomous CAD orchestrator that verifies every cut mathematically, tracks
+        solids through destructive operations, and self-heals its own scripts —
+        offline-first, on your machine, by design.
       </p>
       <div class="mt-8 flex flex-wrap items-center gap-3">
         <a
@@ -57,7 +58,7 @@ const hfSpaceHref = "https://huggingface.co/spaces/AMIXXM/Dana";
     </div>
 
     <div class="order-1 flex justify-center lg:order-2 lg:justify-end" aria-hidden="false">
-      <FloatingLogo />
+      <HeroTerminal />
     </div>
   </div>
 </section>

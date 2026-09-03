@@ -1,12 +1,27 @@
 import { useCallback, useEffect, useState } from "react";
 import { connectGradioClient, sendGradioChatMessage } from "./gradioChatClient";
-import { type ApiKeys, type ChatMessage, type ConnectionState, type ServerEvent, useChatSocket } from "./useChatSocket";
+import {
+  type ApiKeys,
+  type ChatMessage,
+  type ConnectionState,
+  type MemoryState,
+  type ServerEvent,
+  type TopologyGraph,
+  useChatSocket,
+} from "./useChatSocket";
 
 // Forces a compile error the moment this hook's return shape drifts from
 // useChatSocket's — useChat.ts's `cond ? useGradioChat : useChatSocket`
 // needs both branches structurally compatible for every consumer's
 // destructuring to keep type-checking.
 type ChatHookResult = ReturnType<typeof useChatSocket>;
+
+const EMPTY_MEMORY_STATE: MemoryState = {};
+// No Topological Lineage Graph telemetry from app.py's bare Gradio "chat"
+// endpoint (it only ever emitted the old erratic dag_node_start/
+// tool_dispatch_* execution-path events into `log`, which DAGMonitor no
+// longer reads) — permanently empty, same convention as EMPTY_MEMORY_STATE.
+const EMPTY_TOPOLOGY_GRAPH: TopologyGraph = { nodes: {}, edges: [] };
 
 // The Gradio-backend counterpart to useChatSocket — same call signature and
 // return shape (see useChat.ts, which picks one or the other ONCE at module
@@ -24,11 +39,12 @@ type ChatHookResult = ReturnType<typeof useChatSocket>;
 // useChatSocket exposes, and CadPlugin/Viewer3D pick it up completely
 // unchanged, the same way they already do for the WS path's mesh_url.
 //
-// `log` IS real too now, for the same reason: app.py's _GradioSocket
-// captures dag_node_start/dag_node_complete into graph_out (data[5]) —
-// gradioChatClient.ts's GradioChatReply.dagEvents — so DAGMonitor.tsx's
-// buildGraph(log) renders the Execution Graph here exactly like it does
-// for the WS path, instead of staying permanently empty ("(0)").
+// `log` IS real too: app.py's _GradioSocket captures dag_node_start/
+// dag_node_complete into graph_out (data[5]) — gradioChatClient.ts's
+// GradioChatReply.dagEvents. DAGMonitor.tsx no longer reads `log` at all
+// (it renders the deterministic Topological Lineage Graph instead — see
+// EMPTY_TOPOLOGY_GRAPH above), but `log` itself is still kept/returned here
+// for TerminalDrawer's sake, which still consumes the raw event stream.
 export function useGradioChat(
   _apiKeys: ApiKeys = {},
   _activePlugins: string[] = [],
@@ -109,17 +125,35 @@ export function useGradioChat(
     messages,
     log,
     driverState: null,
+    // No usage/cost telemetry from app.py's bare Gradio "chat" endpoint (no
+    // token/model accounting there at all) — stays permanently empty, same
+    // convention as driverState/cameraTarget above; CostBar's own
+    // `!activeModel && segments.length === 0` check renders nothing for it.
+    costState: { activeModel: null, sessionTotalUsd: 0, byModel: {} },
+    // No Task Planner telemetry from app.py's bare Gradio "chat" endpoint
+    // either — same permanently-empty convention as costState above.
+    planState: { objective: "", tasks: [], currentTaskId: null },
+    // No Core Memory telemetry from app.py's bare Gradio "chat" endpoint
+    // either — same permanently-empty convention as costState/planState above.
+    memoryState: EMPTY_MEMORY_STATE,
+    topologyGraph: EMPTY_TOPOLOGY_GRAPH,
     meshUrl,
     cameraTarget: null,
     voiceState: { state: "idle" as const, transcript: "" },
     liveActivity: [],
     turnActive,
     sessionId: null,
+    // Always true here: app.py's _GradioSocket already auto-approves every
+    // hitl_approval_required unconditionally server-side (see its own
+    // docstring) — the toggle has nothing to turn on/off on this path, so
+    // it's just reported as permanently-on rather than a real control.
+    autoApprove: true,
     sendMessage,
     abortTurn,
     sendSelection: noop,
     respondHitl: noop,
     requestListen: noop,
     cancelListen: noop,
+    setAutoApprove: noop,
   };
 }

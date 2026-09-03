@@ -1,4 +1,5 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Brain, ClipboardList, Key, Lock, Zap } from "lucide-react";
 import { ChatPanel } from "./components/ChatPanel";
 import { CostBar } from "./components/CostBar";
 import { PlanChecklist } from "./components/PlanChecklist";
@@ -111,25 +112,38 @@ function AppShell() {
     costState,
     planState,
     memoryState,
+    topologyGraph,
     liveActivity,
     turnActive,
     sessionId,
+    autoApprove,
     sendMessage,
     abortTurn,
     sendSelection,
     respondHitl,
     requestListen,
     cancelListen,
+    setAutoApprove,
   } = useChat(apiKeys, activePlugins, requestedSessionId, initialMessages);
 
   const activePlugin = plugins.find((p) => p.id === activePluginId) ?? null;
   const isPluginFullScreen = activePlugin !== null && paneMode === "full";
+  // CadPlugin's InspectorDock now hosts Active Plan/Terminal itself (see
+  // CadPlugin.tsx) — the global floating badge/overlay/FAB below would just
+  // duplicate those over the same viewport, so they're suppressed only
+  // while CAD is the active tab. Workspace/coder plugins don't render an
+  // InspectorDock, so they keep the global chrome unchanged.
+  const isCadActive = activePlugin?.id === "cad";
 
   // Model indicator badge: polls the exact same source of truth
   // _call_llm_once resolves its own provider from (dana.core.model_provider.
   // tool_calling_provider, surfaced on /api/health as "provider") — a
   // status display, never a second guess at what a turn will actually do.
   const [provider, setProvider] = useState<string | null>(null);
+  // Slow Generation Warning System: the local model name, only meaningful
+  // once `provider === "ollama"` — see /api/health's own comment. Polled
+  // alongside `provider` rather than a second endpoint.
+  const [localModel, setLocalModel] = useState<string | null>(null);
   useEffect(() => {
     // No /api/health on the pure-Gradio HF backend — providerLabel below
     // hardcodes a status for this mode instead of polling for one.
@@ -139,7 +153,10 @@ function AppShell() {
       apiFetch("/api/health")
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
-          if (!cancelled && data) setProvider(typeof data.provider === "string" ? data.provider : null);
+          if (!cancelled && data) {
+            setProvider(typeof data.provider === "string" ? data.provider : null);
+            setLocalModel(typeof data.local_model === "string" ? data.local_model : null);
+          }
         })
         .catch(() => {
           if (!cancelled) setProvider(null);
@@ -157,6 +174,15 @@ function AppShell() {
     : provider
       ? `${provider}: Active`
       : "Offline";
+
+  // Slow Generation System (heavier local models, run for exact-artifact
+  // accuracy over speed, can take 2-3 minutes per turn — see
+  // dana.core.react_dispatch's _LOCAL_TOOL_CALL_TIMEOUT_SEC): shown only
+  // while a turn is actually in flight against the local Ollama provider,
+  // so the user sees it exactly while it's relevant — "still working," not
+  // "the app is frozen" — and it disappears the moment a reply lands.
+  const isLocalInferenceActive = provider === "ollama";
+  const showSlowGenerationWarning = isLocalInferenceActive && turnActive;
 
   // Single broadcast point: any plugin/orb window currently open re-renders
   // from this payload the instant it changes. Nothing downstream reaches
@@ -194,6 +220,12 @@ function AppShell() {
 
   return (
     <div className={`app ${activePlugin ? "app--with-plugin" : ""} ${isPluginFullScreen ? "app--plugin-fullscreen" : ""}`}>
+      {showSlowGenerationWarning && (
+        <div className="app__local-inference-banner" role="status">
+          🐢 Local Inference Active — generating with {localModel ?? "the local model"}. This can take a
+          few minutes; the app hasn&apos;t frozen.
+        </div>
+      )}
       <div className="app__topbar">
         <button
           type="button"
@@ -231,40 +263,42 @@ function AppShell() {
         <button
           type="button"
           className="app__model-badge"
-          title={`Active tool-calling provider: ${provider ?? "unknown"} — click to configure environment`}
+          title={`Active tool-calling provider: ${provider ?? "unknown"} — click to open Settings`}
           onClick={() => setEnvViewerOpen(true)}
         >
-          ⚡ {providerLabel}
+          <Zap size={13} strokeWidth={2.25} aria-hidden="true" />
+          {providerLabel}
         </button>
         <CostBar cost={costState} />
-        {planState.tasks.length > 0 && (
+        {!isCadActive && planState.tasks.length > 0 && (
           <button
             type="button"
             className="app__plan-badge"
             title={`Active Plan: ${planState.objective}`}
             onClick={() => setPlanOpen(true)}
           >
-            📋 {planState.tasks.filter((t) => t.status === "completed").length}/{planState.tasks.length}
+            <ClipboardList size={13} strokeWidth={2.25} aria-hidden="true" />
+            {planState.tasks.filter((t) => t.status === "completed").length}/{planState.tasks.length}
           </button>
         )}
         <button
           type="button"
-          className="app__secrets-btn"
-          title="Environment Variables"
+          className="app__icon-btn"
+          title="Settings"
           onClick={() => setEnvViewerOpen(true)}
         >
-          🔑
+          <Key size={16} strokeWidth={2} aria-hidden="true" />
         </button>
         <button
           type="button"
-          className="app__secrets-btn"
+          className="app__icon-btn"
           title="Core Memory"
           onClick={() => setMemoryOpen(true)}
         >
-          🧠
+          <Brain size={16} strokeWidth={2} aria-hidden="true" />
         </button>
-        <button type="button" className="app__secrets-btn" title="Secrets" onClick={() => setSecretsOpen(true)}>
-          ⚙
+        <button type="button" className="app__icon-btn" title="Secrets" onClick={() => setSecretsOpen(true)}>
+          <Lock size={16} strokeWidth={2} aria-hidden="true" />
         </button>
       </div>
 
@@ -293,6 +327,8 @@ function AppShell() {
                 cameraTarget={cameraTarget}
                 onSelect={sendSelection}
                 log={log}
+                topologyGraph={topologyGraph}
+                plan={planState}
                 sessionId={sessionId}
               />
             </Suspense>
@@ -301,10 +337,17 @@ function AppShell() {
       </div>
 
       {secretsOpen && <SecretsMenu onClose={() => setSecretsOpen(false)} />}
-      {envViewerOpen && <EnvViewerWidget onClose={() => setEnvViewerOpen(false)} />}
-      {planOpen && <PlanChecklist plan={planState} onClose={() => setPlanOpen(false)} />}
+      {envViewerOpen && (
+        <EnvViewerWidget
+          onClose={() => setEnvViewerOpen(false)}
+          onSessionsCleared={startNewChat}
+          autoApprove={autoApprove}
+          onToggleAutoApprove={setAutoApprove}
+        />
+      )}
+      {!isCadActive && planOpen && <PlanChecklist plan={planState} onClose={() => setPlanOpen(false)} />}
       {memoryOpen && <MemoryViewer memory={memoryState} onClose={() => setMemoryOpen(false)} />}
-      <TerminalDrawer log={log} />
+      {!isCadActive && <TerminalDrawer log={log} />}
     </div>
   );
 }

@@ -1,0 +1,45 @@
+---
+/**
+ * Hero's split-screen panel — a real, working UI element (not a stand-in
+ * video) previewing the three architecture pillars CadArchitecture.astro
+ * explains below: deterministic verification, topological lineage, and
+ * self-healing. Same typing-terminal engine as TerminalReveal.astro
+ * (../scripts/terminal_type), scroll-gated the same way.
+ */
+const lines = [
+  "$ dana verify boss_extrude_04 --tolerance 1e-6",
+  "✓ deterministic check passed  Δ=0.0000mm",
+  "$ dana lineage trace --session cnc_spindle",
+  "✓ 14 solids tracked across 3 destructive cuts",
+  "$ dana run cnc_post_process.py",
+  "⚠ AttributeError: 'NoneType' object has no attribute 'z'",
+  "→ self-heal: patching via aider…",
+  "✓ script recovered — task resumed in 2.1s",
+];
+---
+
+<div
+  data-reveal
+  class="dana-terminal-surface w-full max-w-md overflow-hidden rounded-none shadow-teal-glow"
+  style="min-height: 18rem"
+>
+  <div class="flex items-center gap-2 border-b border-ink-600 bg-ink-800 px-4 py-3">
+    <span class="h-2 w-2 bg-rose-500/80"></span>
+    <span class="h-2 w-2 bg-amber"></span>
+    <span class="h-2 w-2 bg-teal"></span>
+    <span class="ms-3 font-mono text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+      dana · cad kernel
+    </span>
+  </div>
+  <pre
+    id="hero-terminal"
+    class="h-[15rem] overflow-hidden p-5 font-mono text-[12.5px] leading-relaxed text-[#abb2bf] sm:text-sm"
+    data-lines={JSON.stringify(lines)}
+    aria-live="polite"
+  ><span class="tok-comment">// scroll into view to replay</span></pre>
+</div>
+
+<script>
+  import { initTypingTerminal } from "../scripts/terminal_type";
+  initTypingTerminal("hero-terminal");
+</script>

@@ -30,7 +30,7 @@ const CHILD_READY_EVENT = "dana://child-ready";
 const CAD_SELECT_EVENT = "dana://cad-select";
 const ORB_ACTIVATE_EVENT = "dana://orb-activate";
 
-export type PluginSyncState = {
+type PluginSyncState = {
   pluginId: PluginId;
   meshUrl: string | null;
   cameraTarget: CameraTarget | null;

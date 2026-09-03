@@ -30,12 +30,14 @@ from __future__ import annotations
 
 import json
 import mimetypes
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
+from dana.api.sessions import SESSIONS_DIR, is_valid_session_id, load_session
 from dana.paths import AGENT_WORKSPACE_DIR
 from dana.plugins.os.file_system import PathEscapeError, resolve_sandboxed_path
 
@@ -48,6 +50,39 @@ router = APIRouter(prefix="/api/workspace", tags=["workspace"])
 _MOUNTS_PATH = AGENT_WORKSPACE_DIR / "data" / "mounts.json"
 
 
+def _format_display_datetime(dt: datetime) -> str:
+    """"Mon D, HH:MM" in the server's local time — avoids %-d/%#d (not
+    portable between Linux and Windows strftime) by formatting the
+    zero-padded day separately."""
+    local = dt.astimezone()
+    return f"{local.strftime('%b')} {local.day}, {local.strftime('%H:%M')}"
+
+
+def _session_display(path: Path) -> tuple[str, str]:
+    """One ``load_session()`` call → (humanized label, sort key) for a
+    ``data/sessions/<uuid>.json`` leaf, reusing the SAME title/created_at
+    metadata ChatSidebar already renders (dana.api.sessions.load_session) —
+    a session reads identically in both places instead of showing a raw
+    UUID here. Falls back to the file's own mtime for both the label
+    ("Session • <mtime>") and the sort key if the record fails to load
+    (corrupt/foreign file), rather than a bare UUID.
+    """
+    session_id = path.stem
+    session = load_session(session_id) if is_valid_session_id(session_id) else None
+    if session is not None:
+        try:
+            created = datetime.fromisoformat(session["created_at"])
+        except ValueError:
+            created = datetime.now(timezone.utc)
+        return f"{session['title']} • {_format_display_datetime(created)}", session["updated_at"]
+
+    try:
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        mtime = datetime.now(timezone.utc)
+    return f"Session • {_format_display_datetime(mtime)}", mtime.isoformat()
+
+
 def _build_tree(path: Path, rel_path: str, *, display_name: str | None = None) -> dict[str, Any]:
     """Recursive directory walk into the same JSON shape the frontend's
     WorkspacePlugin renders. A symlinked directory is deliberately NOT
@@ -57,13 +92,28 @@ def _build_tree(path: Path, rel_path: str, *, display_name: str | None = None) -
     """
     name = display_name if display_name is not None else path.name
     if path.is_dir() and not path.is_symlink():
-        children = sorted(path.iterdir(), key=lambda p: (0 if p.is_dir() else 1, p.name.lower()))
+        entries = list(path.iterdir())
+        # data/sessions/*.json humanization: one metadata dict, reused for
+        # both the display label AND recency ordering (most-recent first,
+        # matching ChatSidebar's own list_sessions()) — so the Workspace
+        # tree's dates read top-to-bottom instead of shuffled by raw UUID.
+        # Every other directory keeps the plain dirs-first/alphabetical sort.
+        session_meta = {child: _session_display(child) for child in entries} if path == SESSIONS_DIR else {}
+        if session_meta:
+            entries.sort(key=lambda p: session_meta[p][1], reverse=True)
+        else:
+            entries.sort(key=lambda p: (0 if p.is_dir() else 1, p.name.lower()))
         return {
             "name": name,
             "path": rel_path,
             "type": "directory",
             "children": [
-                _build_tree(child, f"{rel_path}/{child.name}" if rel_path else child.name) for child in children
+                _build_tree(
+                    child,
+                    f"{rel_path}/{child.name}" if rel_path else child.name,
+                    display_name=session_meta[child][0] if child in session_meta else None,
+                )
+                for child in entries
             ],
         }
     try:

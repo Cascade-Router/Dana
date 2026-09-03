@@ -17,28 +17,29 @@ type CoderRun = {
   } | null;
 };
 
-// Pairs each "software_engineering" domain tool_call with the tool_result
-// that follows it — dana/api/server.py dispatches one tool call at a time
-// per turn (see ChatPanel's AgentActivityFeed matching comment), so a
-// tool_call is always immediately followed by its own tool_result, never
-// interleaved with another call to the same or a different tool.
+// Pairs each "software_engineering" domain tool_dispatch_start with the
+// tool_dispatch_end that follows it — dana/api/server.py dispatches one
+// tool call at a time per turn (see ChatPanel's AgentActivityFeed matching
+// comment), so a tool_dispatch_start is always immediately followed by its
+// own tool_dispatch_end, never interleaved with another call to the same or
+// a different tool.
 function buildRuns(log: ServerEvent[]): CoderRun[] {
   const runs: CoderRun[] = [];
   let pending: CoderRun | null = null;
 
   for (const event of log) {
-    if (event.type === "tool_call" && CODER_TOOL_IDS.has(event.tool_id)) {
+    if (event.type === "tool_dispatch_start" && CODER_TOOL_IDS.has(event.tool_name)) {
       pending = {
-        key: `${runs.length}:${event.tool_id}`,
-        toolId: event.tool_id as CoderRun["toolId"],
+        key: `${runs.length}:${event.tool_name}`,
+        toolId: event.tool_name as CoderRun["toolId"],
         arguments: event.arguments,
         result: null,
       };
       runs.push(pending);
-    } else if (event.type === "tool_result" && pending && event.tool_id === pending.toolId && !pending.result) {
+    } else if (event.type === "tool_dispatch_end" && pending && event.tool_id === pending.toolId && !pending.result) {
       pending.result = {
-        ok: event.ok,
-        payload: event.payload,
+        ok: event.status === "success",
+        payload: event.output,
         message: event.message,
         durationMs: event.duration_ms,
       };

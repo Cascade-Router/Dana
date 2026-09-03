@@ -13,6 +13,20 @@ type PlanTask = {
 
 type PlanWire = { objective: string; tasks: PlanTask[]; current_task_id: number | null };
 
+// dana.core.react_dispatch's session-scoped Topological Lineage Graph (TLG)
+// wire shape — exactly what get_topology_dag() returns and
+// _record_topology_node populates as a side effect of every successful
+// CAD-mutating tool dispatch (dana/api/server.py's _CAD_CREATE_TOOLS gate).
+// Deterministic build-up of the actual CAD feature tree (create -> boolean
+// -> fillet -> ...), NOT the erratic ReAct execution path (retries, errors,
+// branches) the old dag_node_start/tool_dispatch_* events described — see
+// DAGMonitor.tsx's buildLineageGraph, which reads this shape directly.
+export type TopologyNode = { id: string; label: string; type: string };
+export type TopologyEdge = { source: string; target: string };
+export type TopologyGraph = { nodes: Record<string, TopologyNode>; edges: TopologyEdge[] };
+
+const INITIAL_TOPOLOGY_GRAPH: TopologyGraph = { nodes: {}, edges: [] };
+
 // Mirrors the JSON shapes dana/api/server.py's `/ws/chat` sends —
 // keep these two in sync by hand (no shared schema generation yet).
 export type ServerEvent =
@@ -23,17 +37,44 @@ export type ServerEvent =
       plugins: { plugins: string[]; tools: unknown[] };
       active_plan: PlanWire;
       core_memory: Record<string, string>;
+      // DAG Monitor's initial seed: this session's own Topological Lineage
+      // Graph (per-session, unlike active_plan/core_memory above), so a
+      // reconnect/page-refresh shows THIS session's accumulated CAD feature
+      // tree immediately — see dana/api/server.py's ws_chat handler.
+      topology_dag: TopologyGraph;
+      // Session-Specific Terminal History: this session's on-disk log
+      // (dana.api.sessions' "terminal_log"), empty for a brand-new session
+      // — same event shapes as every other ServerEvent variant below, since
+      // dana/api/server.py's _log_terminal_event mirrors the exact dict
+      // already sent over the wire for each one.
+      terminal_log: ServerEvent[];
     }
   | { type: "plan_update"; plan: PlanWire }
   | { type: "memory_update"; core_memory: Record<string, string> }
+  | {
+      // Topological Lineage Graph: dana/api/server.py's
+      // _broadcast_topology_update, fired right after every successful
+      // CAD-mutating tool dispatch (create/boolean/edge-op/feature-on-face
+      // — see _CAD_CREATE_TOOLS). `graph` is always the session's FULL
+      // current graph (not a delta) — same "resend the whole thing" shape
+      // plan_update/memory_update already use, so DAGMonitor can just
+      // replace its state wholesale rather than reconcile a diff.
+      type: "topology_update";
+      graph: TopologyGraph;
+    }
   | { type: "user_message"; content: string }
   | { type: "assistant_message"; content: string }
   | { type: "camera_animate"; position: [number, number, number]; target: [number, number, number] }
   | {
       // Still used ONLY for a "parse-N" node (the LLM's own reasoning step,
       // one per ReAct iteration) — a tool dispatch's node_id/label/node_type
-      // moved to "tool_dispatch_start" below (WebSocket Consolidation).
-      // DAGMonitor.tsx's buildGraph tells the two apart by node_id prefix.
+      // moved to "tool_dispatch_start" below (WebSocket Consolidation). No
+      // frontend consumer currently reads this event — DAGMonitor.tsx now
+      // renders the deterministic "topology_update" graph above instead of
+      // the ReAct loop's own (possibly erratic — retries, errors, branches)
+      // execution path this describes; kept in the union (and still
+      // captured into Terminal History's `log`) for future
+      // execution-tracing UI.
       type: "dag_node_start";
       node_id: string;
       label: string;
@@ -51,8 +92,9 @@ export type ServerEvent =
   | {
       // WebSocket Consolidation: replaces the old dag_node_start(dispatch) +
       // "tool_call" + "tool_start" trio with one event — see dana/api/server.py's
-      // _send_tool_dispatch_start. Read by DAGMonitor (node_id/label/node_type)
-      // and ChatPanel's Agent Activity feed (tool_name/args_summary) alike.
+      // _send_tool_dispatch_start. Read by ChatPanel's Agent Activity feed
+      // (tool_name/args_summary) below; DAGMonitor.tsx no longer reads this
+      // (see the dag_node_start note above — same reasoning).
       type: "tool_dispatch_start";
       node_id: string;
       label: string;
@@ -87,6 +129,7 @@ export type ServerEvent =
         action_name: string;
         description: string;
         parameters: Record<string, unknown>;
+        diff?: string;
       };
     }
   | { type: "voice_state"; state: VoiceState; transcript: string }
@@ -142,6 +185,7 @@ export type HitlRequest = {
   actionName: string;
   description: string;
   parameters: Record<string, unknown>;
+  diff?: string;
   resolution?: "approved" | "cancelled";
 };
 
@@ -242,6 +286,7 @@ export function useChatSocket(
   const [costState, setCostState] = useState<CostState>(INITIAL_COST_STATE);
   const [planState, setPlanState] = useState<PlanState>(INITIAL_PLAN_STATE);
   const [memoryState, setMemoryState] = useState<MemoryState>(INITIAL_MEMORY_STATE);
+  const [topologyGraph, setTopologyGraph] = useState<TopologyGraph>(INITIAL_TOPOLOGY_GRAPH);
   const [meshUrl, setMeshUrl] = useState<string | null>(null);
   const [cameraTarget, setCameraTarget] = useState<CameraTarget | null>(null);
   const [voiceState, setVoiceState] = useState<{ state: VoiceState; transcript: string }>({
@@ -265,6 +310,12 @@ export function useChatSocket(
   // like a voice turn) until its final "assistant_message" lands — exactly
   // the window ChatPanel's "Stop Generating" button should be visible for.
   const [turnActive, setTurnActive] = useState(false);
+  // Settings toggle: mirrors dana/api/server.py's session["auto_approve"].
+  // Local UI state only (the server never echoes it back) — reset to false
+  // below on every (re)connect since each new websocket connection gets a
+  // brand-new backend session with auto_approve defaulting to False, even
+  // when resuming a previously-saved chat's message history.
+  const [autoApprove, setAutoApproveState] = useState(false);
   const apiKeysRef = useRef<ApiKeys>(apiKeys);
   apiKeysRef.current = apiKeys;
   const activePluginsRef = useRef<string[]>(activePlugins);
@@ -287,6 +338,11 @@ export function useChatSocket(
     const sessionChanged = previousSessionIdRef.current !== requestedSessionId;
     const previousSessionId = previousSessionIdRef.current;
     previousSessionIdRef.current = requestedSessionId;
+
+    // Every run of this effect opens a brand-new websocket connection, which
+    // gets a brand-new backend session (auto_approve defaults to False there
+    // too) — see this state's own comment above.
+    setAutoApproveState(false);
 
     if (sessionChanged) {
       // Stash the outgoing session's log before clearing `log` below, then
@@ -331,6 +387,10 @@ export function useChatSocket(
       // Core Memory is also a single GLOBAL store, not per-session —
       // same reset-then-reseed pattern as planState above.
       setMemoryState(INITIAL_MEMORY_STATE);
+      // The Topological Lineage Graph IS per-session (unlike planState/
+      // memoryState above) — reseeded from the new connection's own "ready"
+      // event below, same as meshUrl/driverState/cameraTarget.
+      setTopologyGraph(INITIAL_TOPOLOGY_GRAPH);
     }
 
     const query = requestedSessionId ? `?session_id=${encodeURIComponent(requestedSessionId)}` : "";
@@ -368,6 +428,21 @@ export function useChatSocket(
           setSessionId(data.session_id);
           setPlanState(toPlanState(data.active_plan));
           setMemoryState(data.core_memory);
+          setTopologyGraph(data.topology_dag ?? INITIAL_TOPOLOGY_GRAPH);
+          // Session-Specific Terminal History: seed `log` from the
+          // session's ON-DISK history the first time this browser tab
+          // visits it (logCacheRef has nothing cached yet for it) — a
+          // same-tab revisit already restored its own in-memory cache
+          // before this "ready" arrived (see the sessionChanged block in
+          // the connect effect above), which must never be clobbered by
+          // the persisted copy. This is what makes picking an older chat
+          // from the sidebar populate the Terminal History panel with THAT
+          // session's own past activity even after a page reload or a
+          // fresh server process, not just within the same tab session.
+          if (!logCacheRef.current[data.session_id] && data.terminal_log?.length) {
+            setLog(data.terminal_log);
+            logCacheRef.current[data.session_id] = data.terminal_log;
+          }
           break;
         case "assistant_message": {
           const imageUrl = pendingImageUrlRef.current ?? undefined;
@@ -444,6 +519,9 @@ export function useChatSocket(
         case "memory_update":
           setMemoryState(data.core_memory);
           break;
+        case "topology_update":
+          setTopologyGraph(data.graph);
+          break;
         case "voice_state":
           setVoiceState({ state: data.state, transcript: data.transcript });
           break;
@@ -480,6 +558,7 @@ export function useChatSocket(
                 actionName: p.action_name,
                 description: p.description,
                 parameters: p.parameters,
+                diff: p.diff,
               },
             },
           ]);
@@ -599,6 +678,17 @@ export function useChatSocket(
     []
   );
 
+  // Settings toggle: bypasses HITL approval for every mutating tool call for
+  // the rest of THIS session — see dana/api/server.py's "set_auto_approve"
+  // handler and the session["auto_approve"] check in _run_react_loop. No
+  // carve-out on the backend side: enabling this covers arbitrary-script
+  // tools too, not just the narrow always-approved geometry ops.
+  const setAutoApprove = useCallback((enabled: boolean) => {
+    setAutoApproveState(enabled);
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    socketRef.current.send(JSON.stringify({ type: "set_auto_approve", payload: { enabled } }));
+  }, []);
+
   return {
     connection,
     messages,
@@ -607,17 +697,20 @@ export function useChatSocket(
     costState,
     planState,
     memoryState,
+    topologyGraph,
     meshUrl,
     cameraTarget,
     voiceState,
     liveActivity,
     turnActive,
     sessionId,
+    autoApprove,
     sendMessage,
     abortTurn,
     sendSelection,
     respondHitl,
     requestListen,
     cancelListen,
+    setAutoApprove,
   };
 }

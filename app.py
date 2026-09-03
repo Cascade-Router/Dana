@@ -25,15 +25,35 @@ through `_GradioSocket`, a duck-typed stand-in for the `WebSocket` those
 functions normally stream events to. Every mocked-CAD/mocked-control-plane
 behavior those functions already have for `IS_HF_SPACE` (dana.platform.
 factory) comes along for free, unchanged — including which mesh format a
-CAD tool call actually produces (dana.plugins.freecad's export_mesh_stl:
-always `.stl`, there is no `.glb` export anywhere in this codebase).
-`gr.Model3D` accepts `.stl` natively, so this serves that real file
-directly rather than converting it to a format nothing here produces.
+CAD tool call actually produces by default (dana.plugins.freecad's
+export_mesh_stl: always `.stl`). `gr.Model3D` accepts `.stl` natively, so
+this serves that real file directly by default; `_convert_step_to_mesh`
+below additionally converts the turn's "best-effort STEP sibling" artifact
+(dana/api/server.py's automatic `export_model(..., "step", ...)` call) into
+a `.glb` for preview instead, whenever headless FreeCAD is actually
+available — a no-op today (the mock engine never produces a usable
+`.step`), functional once packages.txt's `freecad` apt package is wired in
+as this Space's real driver.
+
+Sandbox Hardening: `_harden_tool_registry()` below permanently strips
+`execute_terminal_command`/`execute_code_task`/`search_codebase` out of
+the shared tool registry before `gr.Blocks` boots — even with every
+IS_HF_SPACE mock already in place, these three should never be queuable at
+all on this entry point, not just fail closed once dispatched.
+
+Backend tracing (FSM/dispatch/DAG prints) is also tee'd into a bounded
+buffer and surfaced live via the visible `logs_out` textbox — see
+`_TeeStream`/`_tail_logs` below.
 """
 
 from __future__ import annotations
 
+import collections
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +63,181 @@ import spaces
 from dana.api import artifacts_registry
 from dana.api.server import _MESH_REGISTRY, _process_user_text, _resolve_react_hitl, _resolve_visual_capture
 from dana.api.sessions import new_session_id
+from dana.core import react_dispatch
 from dana.plugins.freecad.call_log import CadCallLog
+
+
+def _harden_tool_registry() -> None:
+    """Sandbox Hardening — called once below, before `with gr.Blocks(...)`
+    boots. Even with mock CAD/control-plane drivers, the highest-risk tools
+    must not be QUEUABLE at all here, not just fail closed once dispatched.
+    Reuses the exact registries react_dispatch.refresh_plugin_tools() itself
+    already mutates at import time (TOOL_HANDLERS, _PLUGIN_TOOL_SCHEMAS)
+    rather than building a second, parallel allowlist mechanism.
+
+    Two layers, deliberately not just one:
+    - `TOOL_HANDLERS.pop(...)` is the actual DISPATCH gate (see
+      react_dispatch's turn loop: `if call.tool_id not in TOOL_HANDLERS or
+      call.tool_id not in allowed_tool_ids: ... retry`) — this alone makes
+      all three permanently undispatchable here, full stop, regardless of
+      what the model's tool schema still says.
+    - `_PLUGIN_TOOL_SCHEMAS.pop(...)` additionally stops execute_code_task/
+      search_codebase from being OFFERED to the model at all, so a turn
+      never wastes a round-trip on a call that would just come back
+      "unknown tool_id".
+      execute_terminal_command doesn't need this second step: it's a
+      native, tools.json-sourced schema gated behind the "os_tools"
+      capability domain, which a fresh Gradio session never activates by
+      default (see _new_session's empty active_plugins/capability_unlocked_
+      at_turn below) — and its handler ALREADY hard-refuses via
+      IS_HF_SPACE regardless (react_dispatch._tool_execute_terminal_
+      command). Popping it from TOOL_HANDLERS here is redundant
+      defense-in-depth for that one specifically, not a gap-fix — kept
+      anyway since "the tool doesn't exist" is a strictly stronger
+      guarantee than "the tool exists but refuses when called".
+
+    Only effective against tools registered by the time this runs (import
+    time, before any user turn) — there is no hot-reload endpoint on this
+    Gradio entry point that could call refresh_plugin_tools() again mid
+    -process and silently undo this, but if one is ever added here, it
+    would need to re-apply this hardening afterward.
+    """
+    for tool_id in ("execute_terminal_command", "execute_code_task", "search_codebase"):
+        react_dispatch.TOOL_HANDLERS.pop(tool_id, None)
+    for tool_id in ("execute_code_task", "search_codebase"):
+        react_dispatch._PLUGIN_TOOL_SCHEMAS.pop(tool_id, None)
+    react_dispatch._tool_ids_for_plugins.cache_clear()
+    react_dispatch._llm_tools_schema_cached.cache_clear()
+
+
+_harden_tool_registry()
+
+
+class _TeeStream:
+    """Tees every line written to `stream` out to `_LOG_BUFFER` (a bounded
+    deque) in addition to writing it through unchanged — the Gradio-mode
+    counterpart to dana.api.server's `_BroadcastStream` (which broadcasts
+    over `/ws/chat` instead), reimplemented locally rather than reused
+    because installing it requires starting FastAPI's lifespan, which this
+    file's own module docstring already rules out (ZeroGPU ASGI conflict).
+
+    Captures ALL stdout/stderr lines, not a real logging-level filter: this
+    codebase's own backend tracing is almost entirely plain `print(...)`
+    calls (this file's own `_respond` included) rather than a leveled
+    `logging` hierarchy, so "the INFO logs" and "everything written to
+    stdout/stderr" are, in practice, the same thing on this path today.
+    """
+
+    def __init__(self, original: Any) -> None:
+        self._original = original
+        self._buffer = ""
+
+    def write(self, s: str) -> int:
+        self._original.write(s)
+        self._buffer += s
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            if line.strip():
+                _LOG_BUFFER.append(line)
+        return len(s)
+
+    def flush(self) -> None:
+        self._original.flush()
+
+
+_LOG_BUFFER: collections.deque[str] = collections.deque(maxlen=400)
+
+
+def _install_log_tee() -> None:
+    if not isinstance(sys.stdout, _TeeStream):
+        sys.stdout = _TeeStream(sys.stdout)
+    if not isinstance(sys.stderr, _TeeStream):
+        sys.stderr = _TeeStream(sys.stderr)
+
+
+_install_log_tee()
+
+
+_FREECAD_STEP_TO_MESH_MACRO = """
+import sys
+import FreeCAD
+import Part
+import Mesh
+import MeshPart
+
+step_path, out_path = sys.argv[1], sys.argv[2]
+doc = FreeCAD.newDocument("dana_convert")
+Part.insert(step_path, doc.Name)
+doc.recompute()
+
+combined = Mesh.Mesh()
+for obj in doc.Objects:
+    if hasattr(obj, "Shape") and obj.Shape.Volume > 0:
+        combined.addMesh(MeshPart.meshFromShape(Shape=obj.Shape, LinearDeflection=0.1, AngularDeflection=0.5))
+
+if combined.CountFacets == 0:
+    sys.exit(1)
+combined.write(out_path)
+"""
+
+
+def _convert_step_to_mesh(step_path: str, out_format: str = "glb") -> dict[str, Any]:
+    """Converts a `.step`/`.stp` CAD file into a browser-renderable mesh
+    (`.glb` by default) for `gr.Model3D` — a two-stage pipeline since
+    neither half can do this alone: trimesh (already a hard dependency,
+    see requirements.txt) reads mesh formats but not STEP/BREP; FreeCAD
+    reads STEP but this codebase's headless HF Space path is mock-only
+    today (dana/platform/factory.py's IS_HF_SPACE branch still hardcodes
+    MockFreeCADEngine, whose export_model always returns ok=False for
+    "step" — no B-rep writer, by design).
+
+    Contingent on packages.txt's `freecad` apt package actually being
+    installed on this container AND a real FreeCAD-backed engine
+    eventually being wired in as the IS_HF_SPACE driver — returns a clear,
+    honest error rather than crashing when `freecadcmd` isn't on PATH,
+    which is the current default reality (the mock engine never produces a
+    usable `.step` file for this function to even be called on in the
+    first place; see the STEP-artifact check in `_respond` below).
+    """
+    freecadcmd = shutil.which("freecadcmd") or shutil.which("FreeCADCmd")
+    if freecadcmd is None:
+        return {
+            "ok": False,
+            "error": "freecadcmd not found on PATH — headless FreeCAD isn't installed/wired in this environment yet.",
+        }
+
+    source = Path(step_path)
+    if not source.is_file():
+        return {"ok": False, "error": f"_convert_step_to_mesh: source not found: {step_path}"}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        macro_path = Path(tmp) / "step_to_mesh.py"
+        macro_path.write_text(_FREECAD_STEP_TO_MESH_MACRO, encoding="utf-8")
+        stl_path = Path(tmp) / "converted.stl"
+        try:
+            proc = subprocess.run(
+                [freecadcmd, str(macro_path), str(source), str(stl_path)],
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "_convert_step_to_mesh: freecadcmd timed out after 90s"}
+        if proc.returncode != 0 or not stl_path.is_file():
+            return {"ok": False, "error": f"_convert_step_to_mesh: freecadcmd failed: {proc.stderr.strip()[-500:]}"}
+
+        try:
+            import trimesh
+
+            mesh = trimesh.load(stl_path, force="mesh")
+            out_fd, out_name = tempfile.mkstemp(suffix=f".{out_format}")
+            os.close(out_fd)
+            out_path = Path(out_name)
+            mesh.export(out_path)
+        except Exception as exc:  # noqa: BLE001 — best-effort; a re-export failure must never crash the turn
+            return {"ok": False, "error": f"_convert_step_to_mesh: mesh re-export failed: {exc}"}
+
+    return {"ok": True, "path": str(out_path)}
 
 
 def _new_session() -> dict[str, Any]:
@@ -121,7 +315,16 @@ class _GradioSocket:
         elif kind == "tool_result":
             mesh_url = payload.get("mesh_url")
             if mesh_url:
-                token = mesh_url.rsplit("/", 1)[-1].removesuffix(".stl")
+                # `_MESH_REGISTRY` is keyed by a bare uuid4 hex token with NO
+                # extension (see dana/api/server.py's _register_mesh) — the
+                # extension is only appended when building `mesh_url`
+                # itself, and it isn't always ".stl" (a URDF assembly is
+                # "{token}.urdf", generate_3d_from_image can be "{token}.obj"
+                # /".glb"). A bare `.removesuffix(".stl")` here silently left
+                # the extension attached (and therefore never matched the
+                # registry) for every one of those non-STL cases — Path.stem
+                # strips whichever suffix is actually present.
+                token = Path(mesh_url).stem
                 path = _MESH_REGISTRY.get(token)
                 if path is not None:
                     self.mesh_path = str(path)
@@ -139,16 +342,24 @@ class _GradioSocket:
             )
 
 
+def _tail_logs(n: int = 40) -> str:
+    """Last `n` captured stdout/stderr lines (see `_TeeStream`/`_LOG_BUFFER`
+    above) — read fresh on every yield so `logs_out` shows this turn's own
+    FSM/dispatch/DAG tracing, not a stale snapshot from page load."""
+    return "\n".join(list(_LOG_BUFFER)[-n:])
+
+
 async def _respond(message: str, chatbot_history: list, session: dict[str, Any] | None):
     """Bound to `api_name="chat"` below. Outputs are ordered
-    `(text_out, file_out, chatbot, mesh_preview, session_state, graph_out)`
-    — text_out/file_out FIRST specifically so a REST/JS caller's
+    `(text_out, file_out, chatbot, mesh_preview, session_state, graph_out,
+    logs_out)` — text_out/file_out FIRST specifically so a REST/JS caller's
     `result.data[0]`/`[1]` are the plain reply string and mesh path,
     never this function's internal chatbot-message-list bookkeeping
     (frontend/src/lib/gradioChatClient.ts already reads `data[0]` as a
     plain string; reordering these would silently break it). `graph_out`
-    is appended LAST rather than inserted earlier for the same reason —
-    every existing positional read stays valid.
+    and `logs_out` are appended LAST, in the order they were added, rather
+    than inserted earlier for the same reason — every existing positional
+    read stays valid.
 
     This yields twice, not once — but that's an honest "show a pending
     state, then the real one" UI improvement, not a token-level LLM
@@ -159,7 +370,7 @@ async def _respond(message: str, chatbot_history: list, session: dict[str, Any] 
     """
     trimmed = (message or "").strip()
     if not trimmed:
-        yield "", None, chatbot_history, None, session, []
+        yield "", None, chatbot_history, None, session, [], _tail_logs()
         return
     # Session-persistence trace (item 3): `session` is whatever gr.State
     # handed back for THIS browser tab's session_hash — a fresh dict only on
@@ -183,7 +394,7 @@ async def _respond(message: str, chatbot_history: list, session: dict[str, Any] 
         {"role": "user", "content": trimmed},
         {"role": "assistant", "content": "…"},
     ]
-    yield "…", None, pending_history, None, session, []
+    yield "…", None, pending_history, None, session, [], _tail_logs()
 
     socket = _GradioSocket(session)
     await _process_user_text(socket, session, trimmed)
@@ -192,14 +403,36 @@ async def _respond(message: str, chatbot_history: list, session: dict[str, Any] 
         {"role": "user", "content": trimmed},
         {"role": "assistant", "content": reply},
     ]
+
+    # Prefer a freshly-converted STEP artifact over the plain tessellated
+    # STL, if one exists AND headless FreeCAD is actually available (see
+    # _convert_step_to_mesh's own docstring) — on the current mock-only
+    # deployment this is a cheap no-op every turn (shutil.which() finds
+    # nothing, no subprocess ever spawned); it only starts doing real work
+    # once packages.txt's `freecad` apt package is actually wired in as
+    # this Space's driver.
+    mesh_path = socket.mesh_path
+    step_artifacts = [
+        a
+        for a in artifacts_registry.list_artifacts(session["session_id"])
+        if a.get("format") == "step"
+    ]
+    if step_artifacts:
+        newest_step = max(step_artifacts, key=lambda a: a["modified_at"])
+        converted = _convert_step_to_mesh(newest_step["path"])
+        if converted.get("ok"):
+            mesh_path = converted["path"]
+        else:
+            print(f"[app.py] STEP mesh preview skipped: {converted.get('error')}", file=sys.stderr, flush=True)
+
     print(
-        f"[app.py] Chat turn complete. Exported mesh path: {socket.mesh_path}, "
+        f"[app.py] Chat turn complete. Exported mesh path: {mesh_path}, "
         f"Registry items: {len(artifacts_registry.list_artifacts())}, "
         f"DAG events: {len(socket.dag_events)}",
         file=sys.stderr,
         flush=True,
     )
-    yield reply, socket.mesh_path, final_history, socket.mesh_path, session, socket.dag_events
+    yield reply, mesh_path, final_history, mesh_path, session, socket.dag_events, _tail_logs()
 
 
 def _list_artifact_files() -> list[str]:
@@ -253,7 +486,19 @@ with gr.Blocks(css=_CUSTOM_CSS, title="Dānā") as demo:
     # went unnoticed in local testing — dev and the deployed Space were on
     # different major versions the whole time.
     chatbot = gr.Chatbot(label="Dānā", height=420, type="messages")
-    mesh_preview = gr.Model3D(label="Generated mesh (.stl)")
+    # Label says both formats now: this still serves the mock engine's
+    # plain .stl by default, but prefers a freshly-converted .glb instead
+    # whenever a real STEP artifact exists AND headless FreeCAD is actually
+    # wired in (see _convert_step_to_mesh) — gr.Model3D accepts either
+    # natively, no component-level change needed for that upgrade path.
+    mesh_preview = gr.Model3D(label="Generated mesh (.stl / .glb)")
+    logs_out = gr.Textbox(
+        label="Backend Log (FSM / Topological DAG)",
+        interactive=False,
+        lines=8,
+        max_lines=8,
+        autoscroll=True,
+    )
     # label="message" is load-bearing, not cosmetic (show_label=False hides
     # it visually only): frontend/src/lib/gradioChatClient.ts already calls
     # client.predict("/chat", { message }) — the JS/Python clients resolve a
@@ -276,7 +521,10 @@ with gr.Blocks(css=_CUSTOM_CSS, title="Dānā") as demo:
     # _outputs so it doesn't renumber any existing positional read.
     graph_out = gr.JSON(visible=False)
 
-    _outputs = [text_out, file_out, chatbot, mesh_preview, session_state, graph_out]
+    # logs_out appended LAST, after graph_out — same "never renumber an
+    # existing positional read" rule graph_out's own comment above states;
+    # gradioChatClient.ts's data[0]/data[1]/data[5] reads all stay valid.
+    _outputs = [text_out, file_out, chatbot, mesh_preview, session_state, graph_out, logs_out]
 
     msg.submit(_respond, inputs=[msg, chatbot, session_state], outputs=_outputs, api_name="chat").then(
         lambda: "", None, msg

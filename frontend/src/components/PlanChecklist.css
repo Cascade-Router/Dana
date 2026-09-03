@@ -1,0 +1,128 @@
+.plan-checklist {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+
+.plan-checklist__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.plan-checklist__panel {
+  position: absolute;
+  top: 48px;
+  right: 16px;
+  width: 340px;
+  max-height: min(70vh, 480px);
+  display: flex;
+  flex-direction: column;
+  background: #1c1c1c;
+  border: 1px solid #2f2f2f;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.plan-checklist__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.plan-checklist__header h2 {
+  font-size: 14px;
+  margin: 0;
+  font-weight: 600;
+}
+
+.plan-checklist__close {
+  background: none;
+  border: none;
+  color: #aaa;
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.plan-checklist__empty {
+  padding: 16px 14px;
+  color: #888;
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.plan-checklist__objective {
+  padding: 10px 14px;
+  color: #9adf9a;
+  font-size: 12.5px;
+  font-weight: 600;
+  border-bottom: 1px solid #2a2a2a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-checklist__list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 8px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.plan-checklist__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+
+.plan-checklist__marker {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+}
+
+.plan-checklist__text {
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* Pending — normal-but-muted, not yet reached. */
+.plan-checklist__item--pending {
+  color: #999;
+}
+
+.plan-checklist__item--pending .plan-checklist__marker {
+  color: #666;
+}
+
+/* Active — the "YOU ARE HERE" step, matches _format_active_plan_for_prompt's
+   own pointer to the exact same task server-side. */
+.plan-checklist__item--active {
+  color: #eee;
+  background: color-mix(in srgb, #60a5fa 12%, transparent);
+}
+
+.plan-checklist__item--active .plan-checklist__marker {
+  color: #60a5fa;
+}
+
+/* Completed — muted + strikethrough, visually distinct from pending (dim
+   but NOT struck) and active (bright, unstruck). */
+.plan-checklist__item--completed {
+  color: #6b6b6b;
+  text-decoration: line-through;
+}
+
+.plan-checklist__item--completed .plan-checklist__marker {
+  color: #34d399;
+  text-decoration: none;
+}

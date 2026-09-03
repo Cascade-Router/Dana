@@ -24,7 +24,7 @@ function resolveHttpBase(): string {
 // abstraction) needs this same check to avoid a guaranteed failed fetch.
 export const IS_GRADIO_MODE = Boolean(import.meta.env.VITE_HF_SPACE_URL);
 
-export const API_HTTP_BASE = resolveHttpBase();
+const API_HTTP_BASE = resolveHttpBase();
 
 export const API_WS_BASE = API_HTTP_BASE.replace(/^http/, "ws");
 

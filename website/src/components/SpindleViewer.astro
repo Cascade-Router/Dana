@@ -1,0 +1,133 @@
+---
+/**
+ * Full-width interactive 3D viewer — <model-viewer> (Google's web
+ * component), not @react-three/fiber: this Astro build ships zero JS
+ * framework runtime today (no @astrojs/react island installed anywhere —
+ * see BaseLayout.astro/global.css, and the README's "no animation libs on
+ * the critical path" stance). <model-viewer> drops in as one dependency
+ * with no framework binding, matching that constraint.
+ *
+ * Perf, matching this site's existing "don't init until visible" pattern
+ * (TerminalReveal.astro): the model-viewer JS module (~180KB) is only
+ * dynamically imported once this section nears the viewport (see the
+ * <script> below), and the element's own `loading="lazy"` defers the GLB
+ * fetch itself the same way.
+ *
+ * REQUIRES an actual asset at website/public/models/cnc-spindle.glb — none
+ * exists in this repo yet (nothing to repurpose was found anywhere in it).
+ * The <div slot="error"> fallback below covers that file being missing so
+ * this section degrades to a clear message instead of a blank box until
+ * that file is added.
+ */
+import { withBase } from "../utils/withBase";
+
+const modelSrc = withBase("models/cnc-spindle.glb");
+---
+
+<section id="spindle" class="scroll-mt-24 border-t border-ink-600 bg-ink-800/40">
+  <div class="mx-auto max-w-6xl px-6 py-20">
+    <div data-reveal class="max-w-2xl">
+      <h2 class="text-2xl font-semibold text-white sm:text-3xl">
+        See the geometry, not a render.
+      </h2>
+      <p class="mt-3 text-slate-400">
+        A CNC spindle mounting bracket generated end-to-end by Dānā — drag to orbit,
+        scroll to zoom.
+      </p>
+    </div>
+
+    <div
+      data-reveal
+      class="spindle-viewer mt-10 overflow-hidden rounded-none border border-ink-600 bg-ink-900"
+    >
+      <div id="spindle-viewer-mount" data-model-src={modelSrc}>
+        <div class="spindle-viewer__placeholder" aria-hidden="true">
+          <span class="font-mono text-xs uppercase tracking-[0.14em] text-slate-500">
+            Loading viewer…
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .spindle-viewer {
+    /* Reserved aspect ratio — the real <model-viewer> swaps in at the same
+       footprint once mounted, so there's no layout shift either way. */
+    aspect-ratio: 16 / 9;
+  }
+
+  .spindle-viewer__placeholder {
+    display: flex;
+    height: 100%;
+    width: 100%;
+    align-items: center;
+    justify-content: center;
+  }
+
+  model-viewer {
+    width: 100%;
+    height: 100%;
+    --poster-color: transparent;
+  }
+</style>
+
+<script>
+  const mount = document.getElementById("spindle-viewer-mount");
+  if (mount) {
+    const load = async () => {
+      // Dynamic import: the model-viewer library's JS is only fetched/
+      // parsed once this section is actually reachable — never on initial
+      // page load, so it can't compete with the hero's LCP.
+      await import("@google/model-viewer");
+
+      const modelSrc = mount.getAttribute("data-model-src") || "";
+      mount.innerHTML = "";
+
+      const viewer = document.createElement("model-viewer");
+      viewer.setAttribute("src", modelSrc);
+      viewer.setAttribute("alt", "CNC spindle mounting bracket — interactive 3D model");
+      viewer.setAttribute("camera-controls", "");
+      viewer.setAttribute("touch-action", "pan-y");
+      viewer.setAttribute("loading", "lazy");
+      viewer.setAttribute("environment-image", "neutral");
+      viewer.setAttribute("shadow-intensity", "1");
+      viewer.setAttribute("exposure", "1");
+      if (!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)) {
+        viewer.setAttribute("auto-rotate", "");
+        viewer.setAttribute("rotation-per-second", "18deg");
+      }
+
+      // <model-viewer> has no "error" slot — a failed/missing .glb fires a
+      // real `error` CustomEvent (detail.type === "loadfailure") instead,
+      // so the fallback message has to be swapped in imperatively.
+      viewer.addEventListener("error", (event) => {
+        const detail = (event as CustomEvent).detail;
+        if (detail?.type !== "loadfailure") return;
+        mount.innerHTML =
+          '<div class="flex h-full items-center justify-center p-6 text-center text-sm text-slate-400">' +
+          "Model not found yet — drop cnc-spindle.glb into website/public/models/ to enable this viewer." +
+          "</div>";
+      });
+
+      mount.appendChild(viewer);
+    };
+
+    if ("IntersectionObserver" in window) {
+      const io = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            io.disconnect();
+            void load();
+          }
+        },
+        { rootMargin: "200px 0px" },
+      );
+      io.observe(mount);
+    } else {
+      void load();
+    }
+  }
+</script>

@@ -33,6 +33,21 @@ body {
   flex-shrink: 0;
 }
 
+/* Slow Generation Warning System — shown only while a turn is running
+   against the local Ollama provider (see App.tsx's showSlowGenerationWarning),
+   so a multi-minute heavy-local-model turn reads as "still working," not
+   "the app is frozen." Non-intrusive: a thin, non-blocking strip above the
+   topbar, not a modal — it never interrupts anything the user is doing. */
+.app__local-inference-banner {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  text-align: center;
+  color: #fde68a;
+  background: color-mix(in srgb, #f59e0b 16%, #141414);
+  border-bottom: 1px solid color-mix(in srgb, #f59e0b 40%, transparent);
+}
+
 .app__tab-group {
   display: flex;
   align-items: center;
@@ -96,7 +111,7 @@ body {
 .app__model-badge {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   font-size: 11.5px;
   color: #9adf9a;
   background: color-mix(in srgb, #34d399 12%, transparent);
@@ -107,22 +122,93 @@ body {
   cursor: pointer;
 }
 
+.app__model-badge svg,
+.app__plan-badge svg {
+  flex-shrink: 0;
+}
+
 .app__model-badge:hover {
   background: color-mix(in srgb, #34d399 22%, transparent);
   border-color: color-mix(in srgb, #34d399 45%, transparent);
 }
 
-.app__secrets-btn {
+.app__plan-badge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: #93c5fd;
+  background: color-mix(in srgb, #60a5fa 12%, transparent);
+  border: 1px solid color-mix(in srgb, #60a5fa 30%, transparent);
+  padding: 4px 9px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.app__plan-badge:hover {
+  background: color-mix(in srgb, #60a5fa 22%, transparent);
+  border-color: color-mix(in srgb, #60a5fa 45%, transparent);
+}
+
+.cost-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: #ccc;
+  background: #1a1a1a;
+  border: 1px solid #2e2e2e;
+  padding: 4px 9px;
+  border-radius: 999px;
+}
+
+.cost-bar__model {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #9adf9a;
+}
+
+.cost-bar__track {
+  display: flex;
+  width: 64px;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #2a2a2a;
+}
+
+.cost-bar__segment {
+  height: 100%;
+}
+
+.cost-bar__empty {
+  width: 100%;
+  height: 100%;
+}
+
+.cost-bar__total {
+  font-variant-numeric: tabular-nums;
+  color: #eee;
+}
+
+.app__icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
   background: none;
   border: none;
   color: #aaa;
-  font-size: 15px;
   cursor: pointer;
-  padding: 6px 9px;
+  padding: 0;
   border-radius: 6px;
 }
 
-.app__secrets-btn:hover {
+.app__icon-btn:hover {
   background: #202020;
   color: #eee;
 }
