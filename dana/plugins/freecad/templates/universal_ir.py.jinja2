@@ -1,0 +1,325 @@
+{# Universal CAD IR script template — the ONE Jinja2 template
+   dana.plugins.freecad.ir.render_ir_script renders for all three
+   consumers (engine.py's adapter, py_export.py's replay, skill_compiler's
+   compiled skills). Supersedes the former compiled_skill.py.jinja2 (this
+   file's direct ancestor) and is meant to eventually supersede
+   macro_export.py.jinja2 too, once py_export's own remaining
+   not-yet-migrated kinds are ported here (see ir.py's module docstring).
+
+   `doc_mode`:
+     "session"    — open (or start, if absent) the session's existing
+                    Session_Active.FCStd and save back to it. What
+                    real-time engine.py execution and a compiled skill's
+                    own run(args) both need.
+     "new"        — always create a brand-new, never-saved-back standalone
+                    document named `document_name`. What py_export.py's
+                    one-off human-readable macro export needs.
+     "standalone" — open/create NO document up front at all; a single
+                    self-contained step (currently only "pattern") owns
+                    its ENTIRE document lifecycle itself. See
+                    ir.render_ir_script's own docstring.
+
+   `marker`, when non-empty, appends engine.py's own NAME/BBOX/VOLUME/PATH
+   print contract (_SESSION_RESULT_PRINT, extended with a VOLUME line for
+   Deterministic Post-Conditions -- see _execute_ir_tool's own docstring)
+   so _run_freecad_script-style stdout parsing keeps working. Empty for a
+   plain macro meant for a human to read, not a machine to parse.
+   `final_path_expr` (a raw source expression, not data) supplies the PATH
+   half of that print block when
+   `doc_mode == "standalone"`, where there is no single shared session path.
+
+   `steps` have already been through every Python-level rewrite the
+   caller needed (compiled-skill parameter substitution, name-collision
+   prefixing) before reaching this template — see ir.py's own docstring
+   for that separation of concerns. This template only renders. #}
+import FreeCAD as App
+import Part
+import Mesh
+
+{# Available to every step's own block, not just by-name kinds that use it
+   today — a single shared definition here rather than each new kind
+   deciding whether to duplicate it. Textually identical to engine.py's own
+   _RESOLVE_OBJECT_SNIPPET (kept in sync manually until that legacy
+   per-tool snippet-string family is itself retired). #}
+def resolve_object(doc, target_name):
+    obj = doc.getObject(target_name)
+    if obj is not None:
+        return obj
+    matches = [o for o in doc.Objects if o.Label == target_name]
+    if matches:
+        return matches[0]
+    matches = [o for o in doc.Objects if target_name.lower() == o.Name.lower()]
+    if matches:
+        return matches[0]
+    return None
+
+{% if doc_mode == "session" %}
+import os
+_session_path = {{ session_path|pyrepr }}
+_session_existed = os.path.isfile(_session_path)
+if _session_existed:
+    doc = App.openDocument(_session_path)
+else:
+    doc = App.newDocument("Session_Active")
+{% elif doc_mode == "new" %}
+doc = App.newDocument({{ document_name|pyrepr }})
+{% endif %}
+{# doc_mode == "standalone": no `doc` bound here at all — the step's own
+   block below creates whichever document(s) it needs. #}
+
+{% for step in steps %}
+# Step {{ step.index }}: {{ step.tool_id }} ({{ step.kind }})
+{% if step.kind == "box" %}
+{{ step.var }} = doc.addObject("Part::Box", {{ step.name|pyrepr }})
+{{ step.var }}.Length = {{ step.length|pyrepr }}
+{{ step.var }}.Width = {{ step.width|pyrepr }}
+{{ step.var }}.Height = {{ step.height|pyrepr }}
+{% if step.placement != (0.0, 0.0, 0.0) %}
+{{ step.var }}.Placement = App.Placement(App.Vector{{ step.placement|pyrepr }}, App.Rotation())
+{% endif %}
+doc.recompute()
+
+{% elif step.kind == "cylinder" %}
+{{ step.var }} = doc.addObject("Part::Cylinder", {{ step.name|pyrepr }})
+{{ step.var }}.Radius = {{ step.radius|pyrepr }}
+{{ step.var }}.Height = {{ step.height|pyrepr }}
+{% if step.placement != (0.0, 0.0, 0.0) %}
+{{ step.var }}.Placement = App.Placement(App.Vector{{ step.placement|pyrepr }}, App.Rotation())
+{% endif %}
+doc.recompute()
+
+{% elif step.kind == "boolean" %}
+{{ step.var }} = doc.addObject({{ step.feature_type|pyrepr }}, {{ step.name|pyrepr }})
+_base_{{ step.index }} = doc.getObject({{ step.base_object|pyrepr }})
+_tool_{{ step.index }} = doc.getObject({{ step.tool_object|pyrepr }})
+if _base_{{ step.index }} is None:
+    raise RuntimeError("no object named " + {{ step.base_object|pyrepr }} + " in the session document")
+if _tool_{{ step.index }} is None:
+    raise RuntimeError("no object named " + {{ step.tool_object|pyrepr }} + " in the session document")
+{% if step.operation == "cut" %}
+{{ step.var }}.Base = _base_{{ step.index }}
+{{ step.var }}.Tool = _tool_{{ step.index }}
+{% else %}
+{{ step.var }}.Shapes = [_base_{{ step.index }}, _tool_{{ step.index }}]
+{% endif %}
+_base_{{ step.index }}.Visibility = False
+_tool_{{ step.index }}.Visibility = False
+doc.recompute()
+_bbox_{{ step.index }} = {{ step.var }}.Shape.BoundBox
+_bbox_collapsed_{{ step.index }} = (
+    _bbox_{{ step.index }}.XMin > _bbox_{{ step.index }}.XMax
+    or abs(_bbox_{{ step.index }}.XMin) > 1e300 or abs(_bbox_{{ step.index }}.XMax) > 1e300
+)
+if {{ step.var }}.Shape.isNull() or _bbox_collapsed_{{ step.index }} or {{ step.var }}.Shape.Volume < 1e-6:
+    doc.removeObject({{ step.var }}.Name)
+    raise RuntimeError(
+        "Topology collapse: boolean '" + {{ step.operation|pyrepr }} + "' destroyed the geometry "
+        "(zero volume or a null shape) or produced a collapsed bounding box. Verify the tool "
+        "object actually overlaps the base object and isn't identical to it."
+    )
+
+{% elif step.kind == "face_profile" %}
+_target_{{ step.index }} = doc.getObject({{ step.object_name|pyrepr }})
+if _target_{{ step.index }} is None:
+    raise RuntimeError("no object named " + {{ step.object_name|pyrepr }} + " in the session document")
+{# `bb` deliberately unindexed: ir.py's _FACE_ORIGIN_EXPR entries are fixed
+   source-code fragments (e.g. "bb.XMax") shared by every face_profile step,
+   not per-step data — indexing this name would require indexing those
+   fragments too. Safe because `bb` is only ever read on the very next
+   line, before any later step (face_profile or otherwise) could reassign
+   it. #}
+bb = _target_{{ step.index }}.Shape.BoundBox
+_origin_{{ step.index }} = App.Vector({{ step.origin_expr[0] }}, {{ step.origin_expr[1] }}, {{ step.origin_expr[2] }})
+_normal_{{ step.index }} = App.Vector{{ step.normal|pyrepr }}
+_u_axis_{{ step.index }} = App.Vector{{ step.u_axis|pyrepr }}
+_v_axis_{{ step.index }} = App.Vector{{ step.v_axis|pyrepr }}
+_center_{{ step.index }} = _origin_{{ step.index }} + _u_axis_{{ step.index }} * {{ step.u|pyrepr }} + _v_axis_{{ step.index }} * {{ step.v|pyrepr }}
+_faces_{{ step.index }} = _target_{{ step.index }}.Shape.Faces
+_nearest_{{ step.index }} = min(_faces_{{ step.index }}, key=lambda f: f.CenterOfMass.distanceToPoint(_center_{{ step.index }})) if _faces_{{ step.index }} else None
+if (
+    _nearest_{{ step.index }} is None
+    or not isinstance(_nearest_{{ step.index }}.Surface, Part.Plane)
+    or abs(_nearest_{{ step.index }}.Surface.Axis.dot(_normal_{{ step.index }})) < 0.99
+):
+    raise RuntimeError(
+        "face " + {{ step.face|pyrepr }} + " of '" + {{ step.object_name|pyrepr }} + "' is not a flat "
+        "bounding-box face on this object — create_feature_on_face only supports box-like "
+        "(prismatic) objects"
+    )
+_start_{{ step.index }} = _center_{{ step.index }} + _normal_{{ step.index }} * ({{ step.push_sign|pyrepr }} * {{ step.clearance|pyrepr }})
+{% if step.shape == "circle" %}
+_tool_face_{{ step.index }} = Part.Face(Part.Wire([Part.Circle(_start_{{ step.index }}, _normal_{{ step.index }}, {{ step.radius|pyrepr }}).toShape()]))
+{% else %}
+_hw_{{ step.index }} = {{ (step.width / 2.0)|pyrepr }}
+_hl_{{ step.index }} = {{ (step.length / 2.0)|pyrepr }}
+_corners_{{ step.index }} = [
+    _start_{{ step.index }} - _u_axis_{{ step.index }} * _hw_{{ step.index }} - _v_axis_{{ step.index }} * _hl_{{ step.index }},
+    _start_{{ step.index }} + _u_axis_{{ step.index }} * _hw_{{ step.index }} - _v_axis_{{ step.index }} * _hl_{{ step.index }},
+    _start_{{ step.index }} + _u_axis_{{ step.index }} * _hw_{{ step.index }} + _v_axis_{{ step.index }} * _hl_{{ step.index }},
+    _start_{{ step.index }} - _u_axis_{{ step.index }} * _hw_{{ step.index }} + _v_axis_{{ step.index }} * _hl_{{ step.index }},
+]
+_tool_face_{{ step.index }} = Part.Face(Part.makePolygon(_corners_{{ step.index }} + [_corners_{{ step.index }}[0]]))
+{% endif %}
+{{ step.var }} = doc.addObject("Part::Feature", {{ step.name|pyrepr }})
+{{ step.var }}.Shape = _tool_face_{{ step.index }}.extrude(_normal_{{ step.index }} * ({{ step.extrude_sign|pyrepr }} * ({{ step.extent|pyrepr }} + {{ step.clearance|pyrepr }})))
+doc.recompute()
+
+{% elif step.kind == "edge_operation" %}
+_target_{{ step.index }} = doc.getObject({{ step.target_object|pyrepr }})
+if _target_{{ step.index }} is None:
+    raise RuntimeError("no object named " + {{ step.target_object|pyrepr }} + " in the session document")
+{# A multi-boolean-cut chain's result is frequently a Part::Compound
+   wrapping the real solid rather than the solid itself, and stray coplanar
+   seams left behind by earlier booleans can split what should be one face
+   into several — unwrap to the first real solid and heal those seams
+   (removeSplitter) before any face/edge matching, same as production
+   parity requires. The healed shape is bound to its OWN Part::Feature
+   rather than reusing _target_ as {{ step.var }}.Base directly — edge
+   indices below are computed against the HEALED shape's edge list, so
+   Base must resolve to that same shape or the fillet/chamfer would round
+   the wrong edges. #}
+_shape_{{ step.index }} = _target_{{ step.index }}.Shape
+if _shape_{{ step.index }}.ShapeType == "Compound" and _shape_{{ step.index }}.Solids:
+    _shape_{{ step.index }} = _shape_{{ step.index }}.Solids[0]
+_shape_{{ step.index }} = _shape_{{ step.index }}.removeSplitter()
+_healed_{{ step.index }} = doc.addObject("Part::Feature", {{ step.name|pyrepr }} + "_Healed")
+_healed_{{ step.index }}.Shape = _shape_{{ step.index }}
+_faces_{{ step.index }} = _healed_{{ step.index }}.Shape.Faces
+_edges_{{ step.index }} = _healed_{{ step.index }}.Shape.Edges
+if not _faces_{{ step.index }} or not _edges_{{ step.index }}:
+    raise RuntimeError("target object has no faces or edges")
+{% if step.centroid %}
+_point_{{ step.index }} = App.Vector{{ step.centroid|pyrepr }}
+_nearest_face_{{ step.index }} = min(_faces_{{ step.index }}, key=lambda f: f.CenterOfMass.distanceToPoint(_point_{{ step.index }}))
+_edge_indices_{{ step.index }} = [
+    i for i, edge in enumerate(_edges_{{ step.index }}, start=1)
+    if any(edge.isSame(face_edge) for face_edge in _nearest_face_{{ step.index }}.Edges)
+]
+if not _edge_indices_{{ step.index }}:
+    raise RuntimeError("no edges found on the nearest face")
+{% else %}
+_edge_indices_{{ step.index }} = list(range(1, len(_edges_{{ step.index }}) + 1))
+if not _edge_indices_{{ step.index }}:
+    raise RuntimeError("target object has no edges")
+{% endif %}
+{{ step.var }} = doc.addObject({{ step.feature_type|pyrepr }}, {{ step.name|pyrepr }})
+{{ step.var }}.Base = _healed_{{ step.index }}
+{{ step.var }}.Edges = [(i, {{ step.value|pyrepr }}, {{ step.value|pyrepr }}) for i in _edge_indices_{{ step.index }}]
+doc.recompute()
+_bbox_{{ step.index }} = {{ step.var }}.Shape.BoundBox
+_bbox_collapsed_{{ step.index }} = (
+    _bbox_{{ step.index }}.XMin > _bbox_{{ step.index }}.XMax
+    or abs(_bbox_{{ step.index }}.XMin) > 1e300 or abs(_bbox_{{ step.index }}.XMax) > 1e300
+)
+if {{ step.var }}.Shape.isNull() or _bbox_collapsed_{{ step.index }} or {{ step.var }}.Shape.Volume < 1e-6:
+    doc.removeObject({{ step.var }}.Name)
+    raise RuntimeError(
+        "Topology collapse: '" + {{ step.feature_type|pyrepr }} + "' destroyed the geometry (zero volume or "
+        "a null shape) or produced a collapsed bounding box. If this was a fillet/chamfer, the radius is "
+        "likely too large for the surrounding geometry -- try a smaller value or target specific edges."
+    )
+
+{% elif step.kind == "modify_parameter" %}
+_target_obj_{{ step.index }} = doc.getObject({{ step.target_object|pyrepr }})
+if _target_obj_{{ step.index }} is None:
+    raise RuntimeError("no object named " + {{ step.target_object|pyrepr }} + " in the session document")
+setattr(_target_obj_{{ step.index }}, {{ step.parameter_name|pyrepr }}, {{ step.new_value|pyrepr }})
+doc.recompute()
+
+{% elif step.kind == "modify_placement" %}
+_target_obj_{{ step.index }} = doc.getObject({{ step.target_object|pyrepr }})
+if _target_obj_{{ step.index }} is None:
+    raise RuntimeError("no object named " + {{ step.target_object|pyrepr }} + " in the session document")
+{% if step.rotation %}
+_rotation_{{ step.index }} = App.Rotation({{ step.rotation[0]|pyrepr }}, {{ step.rotation[1]|pyrepr }}, {{ step.rotation[2]|pyrepr }})
+{% else %}
+_rotation_{{ step.index }} = _target_obj_{{ step.index }}.Placement.Rotation
+{% endif %}
+_target_obj_{{ step.index }}.Placement = App.Placement(
+    App.Vector({{ step.x|pyrepr }}, {{ step.y|pyrepr }}, {{ step.z|pyrepr }}), _rotation_{{ step.index }}
+)
+doc.recompute()
+
+{% elif step.kind == "mesh_solidify" %}
+_mesh_obj_{{ step.index }} = doc.addObject("Mesh::Feature", "DanaTempMesh")
+_mesh_obj_{{ step.index }}.Mesh = Mesh.Mesh({{ step.mesh_path|pyrepr }})
+_shape_{{ step.index }} = Part.Shape()
+_shape_{{ step.index }}.makeShapeFromMesh(_mesh_obj_{{ step.index }}.Mesh.Topology, {{ step.tolerance|pyrepr }}, False)
+_shell_{{ step.index }} = Part.Shell(_shape_{{ step.index }}.Faces)
+_solid_{{ step.index }} = Part.makeSolid(_shell_{{ step.index }})
+_solid_{{ step.index }} = _solid_{{ step.index }}.removeSplitter()
+if _solid_{{ step.index }}.isNull():
+    raise RuntimeError(
+        "mesh-to-solid conversion produced an empty/invalid solid — the source mesh may not be watertight"
+    )
+{{ step.var }} = doc.addObject("Part::Feature", {{ step.name|pyrepr }})
+{{ step.var }}.Shape = _solid_{{ step.index }}
+doc.removeObject(_mesh_obj_{{ step.index }}.Name)
+doc.recompute()
+
+{% elif step.kind == "pattern" %}
+{# Document Lifecycle Unification: source_object resolves by NAME against
+   the ALREADY-OPEN `doc` this template bound at the top (session or new —
+   both bind `doc` before any step runs) — never a separate
+   App.openDocument/saveAs of its own the way this kind used to. Every copy
+   is added to, and the resulting Part::Compound is left in, that SAME
+   `doc`, exactly like every other creation kind above, so a LATER step (in
+   this same script) or a later tool call (in this same session) can
+   resolve it by name same as a box or a boolean result. #}
+_src_obj_{{ step.index }} = resolve_object(doc, {{ step.source_object|pyrepr }})
+if _src_obj_{{ step.index }} is None:
+    raise RuntimeError("Object not found: " + {{ step.source_object|pyrepr }})
+import DraftVecUtils
+_copies_{{ step.index }} = []
+for _dx_{{ step.index }}, _dy_{{ step.index }}, _dz_{{ step.index }}, _rot_{{ step.index }} in {{ step.offsets|pyrepr }}:
+    _c_{{ step.index }} = doc.copyObject(_src_obj_{{ step.index }}, False)
+    {# DraftVecUtils.add is the Draft workbench's own stable vector-sum
+       helper — used here (rather than the equivalent bare `+`) so this
+       array's placement math is expressed the same way FreeCAD's own
+       Draft array tooling does its own offset accumulation. #}
+    _base_{{ step.index }} = DraftVecUtils.add(
+        _src_obj_{{ step.index }}.Placement.Base,
+        App.Vector(_dx_{{ step.index }}, _dy_{{ step.index }}, _dz_{{ step.index }}),
+    )
+    _c_{{ step.index }}.Placement = App.Placement(
+        _base_{{ step.index }},
+        App.Rotation(App.Vector(0, 0, 1), _rot_{{ step.index }}).multiply(_src_obj_{{ step.index }}.Placement.Rotation),
+    )
+    _copies_{{ step.index }}.append(_c_{{ step.index }})
+{{ step.var }} = doc.addObject("Part::Compound", {{ step.name|pyrepr }})
+{{ step.var }}.Links = _copies_{{ step.index }}
+{# The source is topologically CONSUMED by its own array, same convention
+   perform_freecad_boolean/perform_freecad_edge_operation already use for
+   their own inputs: index 0 of a linear/grid pattern's own offsets is
+   always (0, 0, 0, 0) -- the source's OWN current position -- so leaving
+   it independently visible would show a redundant duplicate coincident
+   with the array's own first copy. Only the returned compound is valid to
+   reference from here on, never `source_object` again. #}
+_src_obj_{{ step.index }}.Visibility = False
+doc.recompute()
+
+{% else %}
+raise RuntimeError("Universal IR: unsupported step kind '{{ step.kind }}' at step {{ step.index }} — "
+                    "register it in dana.plugins.freecad.ir and add its rendering block here")
+{% endif %}
+{% endfor %}
+
+{% if doc_mode == "session" %}
+if _session_existed:
+    doc.save()
+else:
+    doc.saveAs(_session_path)
+{% endif %}
+
+{% if marker %}
+_final_obj = {{ final_var }}
+_bbox = _final_obj.Shape.BoundBox
+print("{{ marker }}_BBOX " + str([_bbox.XMin, _bbox.YMin, _bbox.ZMin, _bbox.XMax, _bbox.YMax, _bbox.ZMax]))
+print("{{ marker }}_VOLUME " + str(_final_obj.Shape.Volume))
+print("{{ marker }}_NAME " + _final_obj.Name)
+{% if doc_mode == "session" %}
+print("{{ marker }} path=" + _session_path)
+{% elif doc_mode == "standalone" %}
+print("{{ marker }} path=" + {{ final_path_expr }})
+{% endif %}
+{% endif %}
