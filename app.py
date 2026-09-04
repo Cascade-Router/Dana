@@ -298,12 +298,18 @@ class _GradioSocket:
     - visual_capture_request: resolved with an error (no live screen to
       capture) — same as any other tool failure the model can recover from.
 
-    tool_result is inspected (not just discarded) for `mesh_url` — the
-    REST-style path (e.g. "/api/mesh/<token>.stl") dana.api.server would
-    normally serve, meaningless here since this app never mounts that
-    FastAPI app at all. `_MESH_REGISTRY[token]` (same process, same
+    tool_dispatch_end is inspected (not just discarded) for `mesh_url` —
+    the REST-style path (e.g. "/api/mesh/<token>.stl") dana.api.server
+    would normally serve, meaningless here since this app never mounts
+    that FastAPI app at all. `_MESH_REGISTRY[token]` (same process, same
     dict — _register_mesh populates it synchronously before that event is
     even sent) resolves it back to the real local file path instead.
+    (This used to key off a "tool_result" event — server.py's
+    _send_tool_dispatch_end consolidated "tool_complete"/dag_node_complete/
+    "tool_result" into one "tool_dispatch_end" event, but this socket was
+    never updated to match, so every mesh_url silently stopped arriving
+    here — mesh_preview/file_out stayed None even though the tool
+    succeeded and its .stl was registered in artifacts_registry just fine.)
 
     dag_node_start/dag_node_complete ARE also captured now (into
     `dag_events`, in arrival order) — this is exactly what frontend/src/
@@ -312,8 +318,8 @@ class _GradioSocket:
     frontend hook (useGradioChat.ts) had no source for it at all and the
     graph stayed permanently empty ("(0)"), even though dana.api.server's
     ReAct loop was emitting these events into this same _GradioSocket the
-    whole time. tool_call/tool_start/tool_complete/camera_animate/... are
-    still discarded — no consumer for those on this text-only chat.
+    whole time. tool_dispatch_start/camera_animate/... are still
+    discarded — no consumer for those on this text-only chat.
     """
 
     def __init__(self, session: dict[str, Any]) -> None:
@@ -326,7 +332,7 @@ class _GradioSocket:
         kind = payload.get("type")
         if kind == "assistant_message":
             self.final_reply = payload["content"]
-        elif kind == "tool_result":
+        elif kind == "tool_dispatch_end":
             mesh_url = payload.get("mesh_url")
             if mesh_url:
                 # `_MESH_REGISTRY` is keyed by a bare uuid4 hex token with NO
