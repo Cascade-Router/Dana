@@ -17,7 +17,7 @@ import pytest
 
 trimesh = pytest.importorskip("trimesh")
 
-from dana.platform.mock import MockFreeCADEngine, _star_polygon_vertices
+from dana.platform.mock import MockFreeCADEngine, _regular_polygon_vertices, _star_polygon_vertices
 
 
 @pytest.fixture
@@ -83,4 +83,38 @@ def test_star_polygon_vertices_alternate_outer_and_inner_radius() -> None:
 
 def test_star_prism_rejects_too_few_points(engine: MockFreeCADEngine) -> None:
     result = engine.create_star_prism(2, 50, 20, 5)
+    assert result["ok"] is False
+
+
+def test_polygon_is_watertight_with_correct_volume(engine: MockFreeCADEngine) -> None:
+    """Same shoelace-area-times-height check as the star prism above — the
+    fan-from-centroid triangulation is exact for any convex polygon (a
+    regular N-gon is trivially convex), so this isn't just "some positive
+    number"."""
+    sides, radius, height = 6, 50.0, 10.0
+    vertices = _regular_polygon_vertices(sides, radius)
+
+    n = len(vertices)
+    shoelace = 0.0
+    for i in range(n):
+        x1, y1 = vertices[i]
+        x2, y2 = vertices[(i + 1) % n]
+        shoelace += x1 * y2 - x2 * y1
+    polygon_area = abs(shoelace) / 2.0
+
+    result = engine.create_polygon(sides, radius, height)
+    mesh = trimesh.load(result["path"])
+    assert mesh.is_watertight
+    assert math.isclose(mesh.volume, polygon_area * height, rel_tol=1e-6)
+
+
+def test_regular_polygon_vertices_are_evenly_spaced_on_radius() -> None:
+    vertices = _regular_polygon_vertices(8, 40.0)
+    assert len(vertices) == 8
+    for x, y in vertices:
+        assert math.isclose(math.hypot(x, y), 40.0, rel_tol=1e-9)
+
+
+def test_polygon_rejects_too_few_sides(engine: MockFreeCADEngine) -> None:
+    result = engine.create_polygon(2, 50, 5)
     assert result["ok"] is False

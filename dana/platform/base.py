@@ -93,21 +93,18 @@ class BaseCADEngine(ABC):
     def apply_edge_operation(
         self,
         operation: str,
-        target_path: str,
+        target_object: str,
         value: float,
         face_centroid: tuple[float, float, float] | None = None,
         name: str | None = None,
-        target_object: str | None = None,
     ) -> dict[str, Any]:
         """Round (``"fillet"``) or bevel (``"chamfer"``) the edges of a
-        previously-created solid by ``value`` mm. Without ``face_centroid``,
-        every edge of the object is targeted (a global fillet/chamfer);
-        with it, only the edges bounding the object's face nearest that
-        point are targeted. ``target_object``, when given, is resolved by
-        NAME (exact Name, then Label, then case-insensitive Name) rather
-        than by blindly picking the one object nothing else references —
-        required once ``target_path`` can point at a shared multi-object
-        document. Returns a result dict including
+        previously-created solid by ``value`` mm, resolved by NAME —
+        exactly ``apply_boolean``'s by-name/no-path story — against this
+        driver's own shared session state. Without ``face_centroid``, every
+        edge of the object is targeted (a global fillet/chamfer); with it,
+        only the edges bounding the object's face nearest that point are
+        targeted. Returns a result dict including
         ``{"ok": bool, "path": str, "name": str}``."""
 
     @abstractmethod
@@ -148,6 +145,21 @@ class BaseCADEngine(ABC):
         star polygon (vertices alternating ``outer_radius``/``inner_radius``)
         extruded ``height`` units along Z, translated by ``placement``
         (global X/Y/Z offset in mm). Same result shape as ``create_box``."""
+
+    @abstractmethod
+    def create_polygon(
+        self,
+        sides: int,
+        radius: float,
+        height: float,
+        name: str = "Polygon",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> dict[str, Any]:
+        """Create an extruded regular N-gon (``sides`` >= 3, evenly spaced,
+        inscribed in ``radius``), translated by ``placement`` (global X/Y/Z
+        offset in mm). Same result shape as ``create_box``. The dedicated
+        primitive for a hexagon/pentagon/octagon/... — no ``create_star_prism``
+        degenerate-radius trick needed."""
 
     @abstractmethod
     def export_mesh_stl(
@@ -288,6 +300,35 @@ class BaseCADEngine(ABC):
         solid — a higher-leverage primitive than ``create_extrusion`` for
         profiles with rounded/arc edges a straight-edged polyline can't
         express. Same result shape as ``create_box``."""
+
+    @abstractmethod
+    def create_feature_on_face(
+        self,
+        object_name: str,
+        face: str,
+        shape: str,
+        u: float,
+        v: float,
+        extent: float,
+        operation: str,
+        radius: float | None = None,
+        width: float | None = None,
+        length: float | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        """Add or cut a circle/rectangle feature directly on a named face
+        (``"top"``/``"bottom"``/``"front"``/``"back"``/``"left"``/
+        ``"right"``, FreeCAD's own standard-view convention) of an existing
+        object, at local 2D (``u``, ``v``) coordinates on that face —
+        offloads the 3D placement/rotation math a caller would otherwise
+        need for a feature on a non-Z face onto the driver instead.
+        ``operation="cut"`` subtracts the shape (a hole/pocket/slot);
+        ``operation="add"`` unions it onto the surface (a boss/tab). Only
+        supports a genuinely flat target face (a box-like/prismatic
+        object) — fails with a clear error on a curved one. Returns the
+        same result shape as ``apply_boolean``, since ``object_name`` is
+        CONSUMED by the underlying boolean step exactly like any other
+        boolean call — only the returned name is valid afterward."""
 
     @abstractmethod
     def batch_pattern_array(

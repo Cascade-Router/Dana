@@ -40,6 +40,49 @@ _MOCK_WINDOWS: list[dict[str, Any]] = [
 # go through _mock_object_registry() below, never this dict directly.
 _MOCK_OBJECT_REGISTRY: dict[str, dict[str, str]] = {}
 
+# Mirrors dana.plugins.freecad.ir's _FACE_NORMAL/_FACE_U_AXIS/_FACE_V_AXIS
+# tables (the Universal CAD IR's create_feature_on_face composite resolver)
+# for create_feature_on_face's mock — same values, duplicated rather than
+# shared, matching this file's existing convention of keeping its own small
+# operation-name lookup tables independent of engine.py's (see
+# apply_boolean's mesh_ops/feature_types/default_names below, each a mock-
+# local re-derivation of engine.py's _BOOLEAN_FEATURE_TYPE/_DEFAULT_BOOLEAN_NAME).
+_MOCK_FACE_NORMAL: dict[str, tuple[float, float, float]] = {
+    "top": (0.0, 0.0, 1.0),
+    "bottom": (0.0, 0.0, -1.0),
+    "front": (0.0, -1.0, 0.0),
+    "back": (0.0, 1.0, 0.0),
+    "right": (1.0, 0.0, 0.0),
+    "left": (-1.0, 0.0, 0.0),
+}
+_MOCK_FACE_U_AXIS: dict[str, tuple[float, float, float]] = {
+    "top": (1.0, 0.0, 0.0),
+    "bottom": (1.0, 0.0, 0.0),
+    "front": (1.0, 0.0, 0.0),
+    "back": (-1.0, 0.0, 0.0),
+    "right": (0.0, 1.0, 0.0),
+    "left": (0.0, -1.0, 0.0),
+}
+_MOCK_FACE_V_AXIS: dict[str, tuple[float, float, float]] = {
+    "top": (0.0, 1.0, 0.0),
+    "bottom": (0.0, -1.0, 0.0),
+    "front": (0.0, 0.0, 1.0),
+    "back": (0.0, 0.0, 1.0),
+    "right": (0.0, 0.0, 1.0),
+    "left": (0.0, 0.0, 1.0),
+}
+# Which bbox axis (0=x, 1=y, 2=z) and extreme (True=max, False=min) is this
+# face's own coordinate — the other two axes always use the bbox center.
+_MOCK_FACE_EXTREME_AXIS: dict[str, tuple[int, bool]] = {
+    "top": (2, True),
+    "bottom": (2, False),
+    "front": (1, False),
+    "back": (1, True),
+    "right": (0, True),
+    "left": (0, False),
+}
+_MOCK_FACE_FEATURE_CLEARANCE = 0.5
+
 
 def _mock_object_registry() -> dict[str, str]:
     """THIS session's own slice of ``_MOCK_OBJECT_REGISTRY``."""
@@ -106,6 +149,21 @@ def _star_polygon_vertices(points: int, outer_radius: float, inner_radius: float
         radius = outer_radius if i % 2 == 0 else inner_radius
         vertices.append([radius * math.cos(angle), radius * math.sin(angle)])
     return vertices
+
+
+def _regular_polygon_vertices(sides: int, radius: float) -> list[list[float]]:
+    """Mirrors dana.plugins.freecad.engine's own helper of the same name —
+    duplicated, not imported, since that module assumes a real FreeCADCmd
+    binary is reachable and this one deliberately doesn't."""
+    import math
+
+    return [
+        [
+            radius * math.cos((2 * math.pi / sides) * i - math.pi / 2),
+            radius * math.sin((2 * math.pi / sides) * i - math.pi / 2),
+        ]
+        for i in range(sides)
+    ]
 
 
 class MockControlPlane(BaseControlPlane):
@@ -259,17 +317,11 @@ class MockFreeCADEngine(BaseCADEngine):
     def apply_edge_operation(
         self,
         operation: str,
-        target_path: str,
+        target_object: str,
         value: float,
         face_centroid: tuple[float, float, float] | None = None,
         name: str | None = None,
-        target_object: str | None = None,
     ) -> dict[str, Any]:
-        # target_object is accepted for interface parity with the real
-        # engine but unused here: every mock object already lives in its
-        # OWN dedicated mesh file (see _MOCK_OBJECT_REGISTRY), so
-        # target_path alone is never ambiguous the way a shared
-        # Session_Active.FCStd path can be for the real FreeCAD driver.
         import trimesh
 
         op = (operation or "").strip().lower()
@@ -278,6 +330,9 @@ class MockFreeCADEngine(BaseCADEngine):
         if op not in feature_types:
             return {"ok": False, "error": f"apply_edge_operation: unknown operation '{operation}' — must be fillet or chamfer"}
 
+        target_path = _mock_object_registry().get(target_object)
+        if not target_path:
+            return {"ok": False, "error": f"apply_edge_operation: no object named {target_object!r} in this session"}
         target = Path(target_path)
         if not target.is_file():
             return {"ok": False, "error": f"apply_edge_operation: target_path not found: {target_path}"}
@@ -293,6 +348,7 @@ class MockFreeCADEngine(BaseCADEngine):
         mesh = trimesh.load(target, force="mesh")
         out_path = _mesh_output_path(resolved_name)
         mesh.export(out_path)
+        _mock_object_registry()[resolved_name] = str(out_path)
         return {
             "ok": True,
             "name": resolved_name,
@@ -396,6 +452,36 @@ class MockFreeCADEngine(BaseCADEngine):
             "inner_radius": float(inner_radius),
             "height": float(height),
         }
+        out_path = _mesh_output_path(name)
+        mesh.export(out_path)
+        return {
+            "ok": True,
+            "name": name,
+            "type": "Part::Feature",
+            "bounding_box": _bbox(mesh),
+            "dimensions": dims,
+            "placement": list(placement),
+            "path": str(out_path),
+            "gui_shown": False,
+            "driver": "mock",
+            "note": _MOCK_NOTE_CAD,
+        }
+
+    def create_polygon(
+        self,
+        sides: int,
+        radius: float,
+        height: float,
+        name: str = "Polygon",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> dict[str, Any]:
+        if int(sides) < 3:
+            return {"ok": False, "error": "create_polygon requires at least 3 sides"}
+
+        vertices2d = _regular_polygon_vertices(int(sides), float(radius))
+        mesh = _fan_triangulated_extrusion(vertices2d, float(height))
+        mesh.apply_translation(placement)
+        dims = {"sides": int(sides), "radius": float(radius), "height": float(height)}
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
         return {
@@ -768,11 +854,120 @@ class MockFreeCADEngine(BaseCADEngine):
             "note": note,
         }
 
+    def create_feature_on_face(
+        self,
+        object_name: str,
+        face: str,
+        shape: str,
+        u: float,
+        v: float,
+        extent: float,
+        operation: str,
+        radius: float | None = None,
+        width: float | None = None,
+        length: float | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        import numpy as np
+        import trimesh
+
+        op = (operation or "").strip().lower()
+        if op not in ("cut", "add"):
+            return {"ok": False, "error": f"create_feature_on_face: unknown operation '{operation}' — must be 'cut' or 'add'"}
+        shape_key = (shape or "").strip().lower()
+        if shape_key not in ("circle", "rectangle"):
+            return {"ok": False, "error": f"create_feature_on_face: unknown shape '{shape}' — must be 'circle' or 'rectangle'"}
+        face_key = (face or "").strip().lower()
+        if face_key not in _MOCK_FACE_NORMAL:
+            return {"ok": False, "error": f"create_feature_on_face: unknown face '{face}' — must be one of {sorted(_MOCK_FACE_NORMAL)}"}
+        if shape_key == "circle" and (radius is None or float(radius) <= 0):
+            return {"ok": False, "error": "create_feature_on_face requires a positive radius for shape='circle'"}
+        if shape_key == "rectangle" and (
+            width is None or length is None or float(width) <= 0 or float(length) <= 0
+        ):
+            return {"ok": False, "error": "create_feature_on_face requires positive width/length for shape='rectangle'"}
+
+        base_path = _mock_object_registry().get(object_name)
+        if not base_path:
+            return {"ok": False, "error": f"create_feature_on_face: no object named {object_name!r} in this session"}
+        base = Path(base_path)
+        if not base.is_file():
+            return {"ok": False, "error": f"create_feature_on_face: object path not found: {base_path}"}
+        base_mesh = trimesh.load(base, force="mesh")
+
+        # Same face-resolution math as the real engine's _face_axes +
+        # _FACE_ORIGIN_EXPR, against this mesh's own bounds instead of a
+        # FreeCAD BoundBox — no genuine flat-face verification here (unlike
+        # the real driver's Part.Plane check), since a headless trimesh
+        # object has no reliable per-face surface-type introspection; this
+        # mock always assumes the requested face is flat, matching every
+        # other mock stub's "best-effort, not geometrically rigorous" style.
+        lo, hi = (np.array(bound) for bound in base_mesh.bounds)
+        center = (lo + hi) / 2.0
+        axis_i, use_max = _MOCK_FACE_EXTREME_AXIS[face_key]
+        face_origin = center.copy()
+        face_origin[axis_i] = hi[axis_i] if use_max else lo[axis_i]
+        normal = np.array(_MOCK_FACE_NORMAL[face_key])
+        u_axis = np.array(_MOCK_FACE_U_AXIS[face_key])
+        v_axis = np.array(_MOCK_FACE_V_AXIS[face_key])
+        center_point = face_origin + u_axis * float(u) + v_axis * float(v)
+
+        clearance = _MOCK_FACE_FEATURE_CLEARANCE
+        push_sign = 1.0 if op == "cut" else -1.0
+        extrude_sign = -1.0 if op == "cut" else 1.0
+        span_start = push_sign * clearance
+        span_end = span_start + extrude_sign * (float(extent) + clearance)
+        mid_offset = (span_start + span_end) / 2.0
+        total_height = abs(span_end - span_start)
+
+        if shape_key == "circle":
+            tool_mesh = trimesh.creation.cylinder(radius=float(radius), height=total_height)
+        else:
+            tool_mesh = trimesh.creation.box(extents=(float(width), float(length), total_height))
+        tool_mesh.apply_translation((0.0, 0.0, mid_offset))
+        rotation = np.eye(4)
+        rotation[:3, 0] = u_axis
+        rotation[:3, 1] = v_axis
+        rotation[:3, 2] = normal
+        tool_mesh.apply_transform(rotation)
+        tool_mesh.apply_translation(center_point)
+
+        mesh_ops = {"cut": "difference", "add": "union"}
+        feature_types = {"cut": "Part::Cut", "add": "Part::MultiFuse"}
+        default_names = {"cut": "Cut", "add": "Fusion"}
+        try:
+            result_mesh = getattr(base_mesh, mesh_ops[op])(tool_mesh)
+            engine_note = _MOCK_NOTE_CAD
+        except BaseException:  # noqa: BLE001 — boolean engine unavailable in this container
+            result_mesh = base_mesh
+            engine_note = f"{_MOCK_NOTE_CAD}; boolean engine unavailable, returned base unmodified"
+
+        resolved_name = name or default_names[op]
+        out_path = _mesh_output_path(resolved_name)
+        result_mesh.export(out_path)
+        _mock_object_registry()[resolved_name] = str(out_path)
+        return {
+            "ok": True,
+            "name": resolved_name,
+            "type": feature_types[op],
+            "operation": "cut" if op == "cut" else "union",
+            "bounding_box": _bbox(result_mesh),
+            "dimensions": {
+                "face": face_key, "shape": shape_key, "u": float(u), "v": float(v),
+                "extent": float(extent), "operation": op,
+            },
+            "path": str(out_path),
+            "gui_shown": False,
+            "driver": "mock",
+            "note": engine_note,
+        }
+
     def batch_pattern_array(
         self,
         source_path: str,
         pattern_type: str,
         *,
+        source_object: str | None = None,
         count_x: int = 1,
         count_y: int = 1,
         spacing_x: float | None = None,
@@ -784,6 +979,13 @@ class MockFreeCADEngine(BaseCADEngine):
         import math
 
         import trimesh
+
+        # source_object (real engine's by-name fix — see
+        # dana.plugins.freecad.ir's "pattern" kind) is accepted for call-site
+        # signature compatibility only: this mock never has more than one
+        # object per mesh file, so there's no "wrong object" heuristic to fix
+        # here in the first place.
+        del source_object
 
         # Reuses the real engine's pure offset-math helper directly — it's
         # plain arithmetic with no FreeCAD import at module scope (see

@@ -116,18 +116,15 @@ class RealFreeCADEngine(BaseCADEngine):
     def apply_edge_operation(
         self,
         operation: str,
-        target_path: str,
+        target_object: str,
         value: float,
         face_centroid: tuple[float, float, float] | None = None,
         name: str | None = None,
-        target_object: str | None = None,
     ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
         return json.loads(
-            engine.apply_edge_operation(
-                operation, target_path, value, face_centroid=face_centroid, name=name, target_object=target_object
-            )
+            engine.apply_edge_operation(operation, target_object, value, face_centroid=face_centroid, name=name)
         )
 
     def create_extrusion(
@@ -166,6 +163,18 @@ class RealFreeCADEngine(BaseCADEngine):
         return json.loads(
             engine.create_star_prism(points, outer_radius, inner_radius, height, name, placement=placement)
         )
+
+    def create_polygon(
+        self,
+        sides: int,
+        radius: float,
+        height: float,
+        name: str = "Polygon",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.create_polygon(sides, radius, height, name, placement=placement))
 
     def export_mesh_stl(
         self, source_path: str, name: str | None = None, target_object: str | None = None
@@ -264,11 +273,35 @@ class RealFreeCADEngine(BaseCADEngine):
             engine.create_sketch_extrude(segments, height, start=start, plane=plane, name=name, placement=placement)
         )
 
+    def create_feature_on_face(
+        self,
+        object_name: str,
+        face: str,
+        shape: str,
+        u: float,
+        v: float,
+        extent: float,
+        operation: str,
+        radius: float | None = None,
+        width: float | None = None,
+        length: float | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(
+            engine.create_feature_on_face(
+                object_name, face, shape, u, v, extent, operation,
+                radius=radius, width=width, length=length, name=name,
+            )
+        )
+
     def batch_pattern_array(
         self,
         source_path: str,
         pattern_type: str,
         *,
+        source_object: str | None = None,
         count_x: int = 1,
         count_y: int = 1,
         spacing_x: float | None = None,
@@ -283,6 +316,7 @@ class RealFreeCADEngine(BaseCADEngine):
             engine.batch_pattern_array(
                 source_path,
                 pattern_type,
+                source_object=source_object,
                 count_x=count_x,
                 count_y=count_y,
                 spacing_x=spacing_x,
