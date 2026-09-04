@@ -9,9 +9,11 @@ LLM, no websocket, no fixtures beyond plain dicts.
 from __future__ import annotations
 
 import copy
+import json
 
 from dana.core.context_manager import (
     OMITTED_IMAGE_PLACEHOLDER,
+    compress_tool_output_history,
     prune_message_history,
     prune_tool_output_history,
 )
@@ -265,3 +267,121 @@ def test_prune_tool_output_history_does_not_mutate_the_input() -> None:
 
     assert messages == before  # untouched
     assert result != messages  # pruning actually happened
+
+
+# --------------------------------------------------------------------------
+# compress_tool_output_history — local-model JSON-structure-aware compression
+# --------------------------------------------------------------------------
+
+
+def _box_payload(name: str, *, ok: bool = True) -> str:
+    """Shaped like a real create_freecad_box tool result: preserved fields
+    (name/type/bounding_box/dimensions/placement/path) alongside a large
+    low-signal field (a long unlocked_tools-style list) that should be
+    dropped once this result is stale."""
+    return json.dumps(
+        {
+            "ok": ok,
+            "name": name,
+            "type": "Part::Box",
+            "bounding_box": [0.0, 0.0, 0.0, 60.0, 40.0, 20.0],
+            "dimensions": {"length": 60.0, "width": 40.0, "height": 20.0},
+            "placement": [0.0, 0.0, 0.0],
+            "path": "C:\\Users\\Amix\\Desktop\\DANA\\freecad_output\\sessions\\abc\\Session_Active.FCStd",
+            "unlocked_tools": [f"tool_{i}_with_a_fairly_long_descriptive_name" for i in range(28)],
+            "gui_shown": False,
+        }
+    )
+
+
+def _error_payload(message: str) -> str:
+    return json.dumps({"ok": False, "status": "error", "reason": message, "suggestion": "try a different length"})
+
+
+def test_short_tool_output_is_never_compressed_regardless_of_age() -> None:
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "go"},
+        *_tool_cycle("call_1", '{"ok": true}'),
+        *_tool_cycle("call_2", '{"ok": true}'),
+        *_tool_cycle("call_3", '{"ok": true}'),
+    ]
+    compressed = compress_tool_output_history(messages, keep_recent=1, truncate_threshold=500)
+    assert compressed == messages
+
+
+def test_stale_json_tool_output_keeps_preserved_fields_drops_large_ones() -> None:
+    """The core requirement: a stale result's name/type/bounding_box/
+    dimensions/placement/path survive verbatim; its large unlocked_tools
+    list does not."""
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
+    messages += _tool_cycle("call_0", _box_payload("Box0"))
+    messages += _tool_cycle("call_1", _box_payload("Box1"))
+    messages += _tool_cycle("call_2", _box_payload("Box2"))  # kept recent
+
+    compressed = compress_tool_output_history(messages, keep_recent=1, truncate_threshold=300)
+
+    tool_messages = [m for m in compressed if m["role"] == "tool"]
+    stale = json.loads(tool_messages[0]["content"])
+    assert stale["name"] == "Box0"
+    assert stale["type"] == "Part::Box"
+    assert stale["bounding_box"] == [0.0, 0.0, 0.0, 60.0, 40.0, 20.0]
+    assert stale["dimensions"] == {"length": 60.0, "width": 40.0, "height": 20.0}
+    assert stale["placement"] == [0.0, 0.0, 0.0]
+    assert "Session_Active.FCStd" in stale["path"]
+    assert "unlocked_tools" not in stale
+
+    # Most recent stays byte-for-byte intact.
+    assert tool_messages[2]["content"] == _box_payload("Box2")
+
+
+def test_unresolved_error_is_never_compressed_no_matter_how_old() -> None:
+    """A stale error result must survive verbatim — the model's own
+    "stop after the same error repeats" instruction depends on it."""
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
+    error = _error_payload("length must be positive")
+    messages += _tool_cycle("call_0", error)
+    for i in range(1, 4):
+        messages += _tool_cycle(f"call_{i}", _box_payload(f"Box{i}"))
+
+    compressed = compress_tool_output_history(messages, keep_recent=1, truncate_threshold=50)
+
+    tool_messages = [m for m in compressed if m["role"] == "tool"]
+    assert tool_messages[0]["content"] == error
+
+
+def test_non_json_tool_output_falls_back_to_head_tail_truncation() -> None:
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
+    raw = _long_output("gitgrep")
+    messages += _tool_cycle("call_0", raw)
+    messages += _tool_cycle("call_1", "short")
+
+    compressed = compress_tool_output_history(messages, keep_recent=1, truncate_threshold=200, head_chars=50, tail_chars=50)
+
+    tool_messages = [m for m in compressed if m["role"] == "tool"]
+    assert tool_messages[0]["content"] != raw
+    assert raw[:50] in tool_messages[0]["content"]
+    assert raw[-50:] in tool_messages[0]["content"]
+
+
+def test_compress_tool_output_history_never_changes_message_count_or_order() -> None:
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
+    for i in range(6):
+        messages += _tool_cycle(f"call_{i}", _box_payload(f"Box{i}"))
+
+    compressed = compress_tool_output_history(messages, keep_recent=1, truncate_threshold=50)
+
+    assert len(compressed) == len(messages)
+    assert [m["role"] for m in compressed] == [m["role"] for m in messages]
+
+
+def test_compress_tool_output_history_does_not_mutate_the_input() -> None:
+    messages = [{"role": "system", "content": "sys"}]
+    for i in range(3):
+        messages += _tool_cycle(f"call_{i}", _box_payload(f"Box{i}"))
+    before = copy.deepcopy(messages)
+
+    result = compress_tool_output_history(messages, keep_recent=1, truncate_threshold=50)
+
+    assert messages == before
+    assert result != messages
