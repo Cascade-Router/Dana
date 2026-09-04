@@ -24,7 +24,28 @@ from unittest.mock import patch
 import pytest
 
 from dana.core import react_dispatch as rd
+from dana.session_context import set_session_id
 from dana.tools.schema import ToolCall
+
+
+@pytest.fixture(autouse=True)
+def _plan_gate_open() -> None:
+    """Every dispatch test in this module exercises tool MECHANICS, not the
+    Plan-and-Execute Gatekeeper itself (see the dedicated
+    test_plan_gatekeeper_* tests below for that) — so the gate is
+    pre-opened for the (default, ambient) session every test here runs
+    under, exactly as if create_plan had already been called.
+
+    Safe to leave open with no explicit teardown here: tests/conftest.py's
+    own ``_reset_plan_gate_state`` (a global safety net, same rationale as
+    its ``_reset_task_board_plan``/``_reset_user_skills_registry``
+    neighbors) clears ``_PLAN_STATE_REGISTRY`` after EVERY test in the
+    whole suite, so this can never leak a permanently-open gate into some
+    other test module. The dedicated test_plan_gatekeeper_* tests below run
+    under their OWN isolated session_id (never touched here) instead of
+    relying on toggling this one.
+    """
+    rd._set_has_plan(True, "test-harness plan")
 
 
 class _FakeProvider:
@@ -273,7 +294,15 @@ def test_next_react_turn_prunes_stale_tool_output_before_calling_the_llm(
     must actually apply dana.core.context_manager.prune_tool_output_history to
     the payload it hands the model, not just have the pure function exist.
     A long-ago tool result gets truncated; message count/order (the strict
-    tool_calls/tool-result pairing OpenAI/Groq require) stays identical."""
+    tool_calls/tool-result pairing OpenAI/Groq require) stays identical.
+
+    Forces the resolved provider to a non-Ollama one — ``_call_llm_once``
+    routes Ollama through ``compress_tool_output_history`` instead (a
+    different keep_recent default and compression strategy; see
+    ``test_next_react_turn_compresses_stale_tool_output_for_ollama`` below)
+    — so this test's cloud-path assertions stay deterministic regardless of
+    the ambient DANA_CLOUD_PRIMARY/.env state."""
+    monkeypatch.setattr(rd, "tool_calling_provider", lambda: "openrouter")
     fake = _mock_llm(monkeypatch, content="done")
     stale_output = "OLDSTUFF-" * 200  # 1800 chars, well past the truncation threshold
     fresh_output = "NEWSTUFF-" * 200
@@ -309,6 +338,65 @@ def test_next_react_turn_prunes_stale_tool_output_before_calling_the_llm(
 
     # The caller's own messages list must never be mutated in place.
     assert messages[3]["content"] == stale_output
+
+
+def test_next_react_turn_compresses_stale_tool_output_for_ollama(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """For the local Ollama provider specifically, _call_llm_once routes
+    through dana.core.context_manager.compress_tool_output_history instead
+    of prune_tool_output_history — JSON-structure-aware compression
+    (keep_recent=4) rather than a blind character slice. A stale JSON tool
+    result keeps its name/bounding_box fields verbatim and drops a large
+    low-signal field; an unresolved error stays untouched even though it's
+    the oldest message in the chain."""
+    monkeypatch.setattr(rd, "tool_calling_provider", lambda: "ollama")
+    fake = _mock_llm(monkeypatch, content="done")
+
+    def _box_result(name: str) -> str:
+        return json.dumps(
+            {
+                "ok": True,
+                "name": name,
+                "bounding_box": [0.0, 0.0, 0.0, 60.0, 40.0, 20.0],
+                "unlocked_tools": [f"tool_{i}_with_a_fairly_long_descriptive_name" for i in range(28)],
+            }
+        )
+
+    error_result = json.dumps({"ok": False, "status": "error", "reason": "length must be positive"})
+
+    def _tool_cycle(call_id: str, content: str) -> list[dict]:
+        return [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": call_id, "type": "function", "function": {"name": "create_freecad_box", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": call_id, "content": content},
+        ]
+
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}]
+    messages += _tool_cycle("call_0", error_result)
+    for i in range(1, 6):
+        messages += _tool_cycle(f"call_{i}", _box_result(f"Box{i}"))
+
+    asyncio.run(rd.next_react_turn(messages))
+
+    sent_messages = fake.calls[0]["messages"]
+    assert len(sent_messages) == len(messages)  # count never changes
+    sent_tool_contents = [m["content"] for m in sent_messages if m["role"] == "tool"]
+
+    # 6 tool messages total, keep_recent=4 -> the 2 OLDEST (call_0's error,
+    # call_1's box result) are stale; call_0 still stays verbatim (unresolved
+    # error), only call_1 actually gets compressed.
+    assert sent_tool_contents[0] == error_result
+    stale = json.loads(sent_tool_contents[1])
+    assert stale["name"] == "Box1"
+    assert stale["bounding_box"] == [0.0, 0.0, 0.0, 60.0, 40.0, 20.0]
+    assert "unlocked_tools" not in stale
+    # The 4 most recent box results stay byte-for-byte intact.
+    for i in range(2, 6):
+        assert sent_tool_contents[i] == _box_result(f"Box{i}")
 
 
 def test_next_react_turn_unknown_tool_id_yields_final(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -578,6 +666,40 @@ def test_dispatch_star_prism_rejects_too_few_points() -> None:
     result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
     assert result.ok is False
     assert "at least 3 points" in result.message
+
+
+# --------------------------------------------------------------------------
+# Regular polygon primitive: create_freecad_polygon
+# --------------------------------------------------------------------------
+
+
+def test_describe_tool_call_polygon() -> None:
+    call = ToolCall(tool_id="create_freecad_polygon", arguments={"sides": 6, "radius": 50, "height": 10})
+    description = rd.describe_tool_call(call)
+    assert "6" in description and "50" in description and "10" in description
+
+
+def test_dispatch_polygon_via_mock_engine() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    call = ToolCall(tool_id="create_freecad_polygon", arguments={"sides": 6, "radius": 50, "height": 10})
+    result = rd.dispatch_tool_call(call, MockFreeCADEngine(), MockControlPlane())
+    assert result.ok is True
+    assert result.payload["dimensions"] == {"sides": 6, "radius": 50.0, "height": 10.0}
+    bbox = result.payload["bounding_box"]
+    assert bbox[2] == 0.0 and bbox[5] == 10.0  # Z spans exactly the extrusion height
+
+
+def test_dispatch_polygon_rejects_too_few_sides() -> None:
+    call = ToolCall(tool_id="create_freecad_polygon", arguments={"sides": 2, "radius": 50, "height": 10})
+    result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
+    assert result.ok is False
+    assert "at least 3 sides" in result.message
+
+
+def test_polygon_is_mutating_and_registered_in_freecad_domain() -> None:
+    assert rd.is_mutating_tool("create_freecad_polygon") is True
+    assert "create_freecad_polygon" in rd._FREECAD_TOOL_IDS
 
 
 def test_extract_placement_defaults_to_origin() -> None:
@@ -1794,6 +1916,71 @@ def test_core_system_prompt_routes_coding_requests_to_software_engineering() -> 
 
 
 # --------------------------------------------------------------------------
+# Dynamic Domain Locking — unload_capability(tool_id=...)/
+# load_capability(tool_id=...) hide/unhide one SPECIFIC tool_id, independent
+# of any domain boundary (create_freecad_cylinder and batch_pattern_array
+# are both members of the same "freecad" domain, so no domain-level
+# unload_capability call could ever suppress just one of them).
+# --------------------------------------------------------------------------
+
+
+def test_unload_capability_with_tool_id_hides_one_specific_tool() -> None:
+    result = rd._tool_unload_capability({"tool_id": "create_freecad_cylinder"}, None, None)
+    assert result["ok"] is True
+    assert result["hidden_tool_id"] == "create_freecad_cylinder"
+    assert "domain" not in result
+
+
+def test_unload_capability_with_unknown_tool_id_errors() -> None:
+    result = rd._tool_unload_capability({"tool_id": "not_a_real_tool"}, None, None)
+    assert result["ok"] is False
+
+
+def test_load_capability_with_tool_id_unhides_one_specific_tool() -> None:
+    result = rd._tool_load_capability({"tool_id": "create_freecad_cylinder"}, None, None)
+    assert result["ok"] is True
+    assert result["unhidden_tool_id"] == "create_freecad_cylinder"
+
+
+def test_load_capability_with_unknown_tool_id_errors() -> None:
+    result = rd._tool_load_capability({"tool_id": "not_a_real_tool"}, None, None)
+    assert result["ok"] is False
+
+
+def test_unload_capability_tool_id_takes_priority_over_domain() -> None:
+    # tool_id branch must short-circuit before the domain branch even
+    # inspects args.get("domain") — passing both should still hide the tool.
+    result = rd._tool_unload_capability({"tool_id": "create_freecad_cylinder", "domain": "freecad"}, None, None)
+    assert result["hidden_tool_id"] == "create_freecad_cylinder"
+
+
+def test_llm_tools_schema_hidden_tool_ids_removes_tool_even_though_domain_active() -> None:
+    # create_freecad_cylinder and batch_pattern_array are both in the
+    # "freecad" domain — hiding one must not affect the other, and the
+    # domain itself must stay otherwise fully offered. active_plugins=None
+    # bypasses Pillar 1's separate semantic-narrowing/token-budget behavior
+    # (this module's own "legacy, not capability-aware caller" contract),
+    # isolating the hidden_tool_ids subtraction this test actually targets.
+    schema = rd._llm_tools_schema(None, hidden_tool_ids=frozenset({"create_freecad_cylinder"}))
+    names = {s["function"]["name"] for s in schema}
+    assert "create_freecad_cylinder" not in names
+    assert "batch_pattern_array" in names
+    assert "create_freecad_box" in names
+
+
+def test_llm_tools_schema_force_include_overrides_a_hide() -> None:
+    # An explicit force_include (e.g. load_specific_tool) is a deliberate
+    # override and must win even over a standing hide.
+    schema = rd._llm_tools_schema(
+        None,
+        hidden_tool_ids=frozenset({"create_freecad_cylinder"}),
+        force_include=frozenset({"create_freecad_cylinder"}),
+    )
+    names = {s["function"]["name"] for s in schema}
+    assert "create_freecad_cylinder" in names
+
+
+# --------------------------------------------------------------------------
 # Semantic RAG "context drop" regression — a tool load_capability just
 # unlocked (e.g. execute_code_task right after
 # load_capability(domain="software_engineering")) must survive Pillar 1's
@@ -2231,7 +2418,11 @@ def test_next_react_turn_does_not_prewarm_software_engineering_for_unrelated_cha
 
 
 def test_local_tool_call_timeout_is_positive_and_bounded() -> None:
-    assert 0 < rd._LOCAL_TOOL_CALL_TIMEOUT_SEC < 90.0
+    # Raised to 600s to accommodate a heavier local model (e.g. a
+    # 14B-parameter qwen2.5-coder) run for exact-artifact accuracy over
+    # speed, which can legitimately take 2-3 minutes per turn — this is now
+    # a genuine "the connection is dead" backstop, not a UX-latency budget.
+    assert 0 < rd._LOCAL_TOOL_CALL_TIMEOUT_SEC <= 900.0
 
 
 def test_timeout_apology_text_attributes_local_provider_correctly() -> None:
@@ -2276,3 +2467,385 @@ def test_call_llm_once_timeout_attributes_apology_to_the_actual_cloud_provider(
     result = asyncio.run(rd._call_llm_once([{"role": "user", "content": "hi"}]))
     assert "cloud model (groq)" in result["content"]
     assert "local" not in result["content"].lower()
+
+
+# Plan-and-Execute Gatekeeper (Phase 6). Each test below runs under its OWN
+# isolated session_id — never the shared (default) ambient one the
+# `_plan_gate_open` autouse fixture pre-opens for every other test in this
+# module — so these can freely exercise the CLOSED-gate state without
+# fighting that fixture or leaking a closed gate into later tests.
+
+
+def test_plan_gatekeeper_blocks_geometry_tool_without_plan() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    set_session_id("gatekeeper-blocks-without-plan")
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+
+    result = rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"name": "GatekeeperBoxA"}),
+        engine,
+        control_plane,
+    )
+    assert result.ok is False
+    assert "create_plan" in result.message
+    # Never reached the engine at all — no object was registered.
+    assert "GatekeeperBoxA" not in rd._object_registry()
+
+
+def test_plan_gatekeeper_unblocks_after_create_plan() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    set_session_id("gatekeeper-unblocks-after-plan")
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+
+    assert rd._get_has_plan() is False
+    plan_result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="create_plan",
+            arguments={"objective": "Bracket with a mounting hole", "tasks": ["Create box", "Create cylinder", "Cut"]},
+        ),
+        engine,
+        control_plane,
+    )
+    assert plan_result.ok is True
+    assert rd._get_has_plan() is True
+
+    result = rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"name": "GatekeeperBoxB"}),
+        engine,
+        control_plane,
+    )
+    assert result.ok is True
+    assert result.payload["name"] == "GatekeeperBoxB"
+
+
+def test_plan_gatekeeper_does_not_block_non_restricted_tools() -> None:
+    """The gate only covers _RESTRICTED_GEOMETRY_TOOLS — an ordinary
+    non-geometry tool (here, a read-only introspection call) must dispatch
+    normally even with no plan at all."""
+    set_session_id("gatekeeper-non-restricted-tool")
+    result = rd.dispatch_tool_call(
+        ToolCall(tool_id="check_plugin_registry", arguments={}),
+        engine=None,
+        control_plane=None,
+    )
+    assert result.ok is True
+
+
+def test_build_system_prompt_omits_anchor_when_no_plan() -> None:
+    set_session_id("gatekeeper-prompt-no-plan")
+    prompt = rd.build_system_prompt(None, session_id="gatekeeper-prompt-no-plan")
+    assert "ACTIVE PLAN" not in prompt
+
+
+def test_build_system_prompt_includes_active_plan_anchor_after_create_plan() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    set_session_id("gatekeeper-prompt-with-plan")
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="create_plan",
+            arguments={"objective": "Motor mount", "tasks": ["Create MotorBracket", "Cut Mounting_Hole"]},
+        ),
+        engine,
+        control_plane,
+    )
+
+    prompt = rd.build_system_prompt(None, session_id="gatekeeper-prompt-with-plan")
+    assert "=== ACTIVE PLAN ===" in prompt
+    assert "Motor mount" in prompt
+    assert "Create MotorBracket" in prompt
+    # The anchor is the literal LAST thing appended to the prompt.
+    assert prompt.rstrip().endswith("Stick to this naming convention and topological strategy.")
+
+
+# ---------------------------------------------------------------------------
+# Plan-and-Execute Finite State Machine (Phases 1-4)
+# ---------------------------------------------------------------------------
+
+
+def test_fsm_transition_table_matches_spec() -> None:
+    assert rd._fsm_transition("planning", "create_plan_succeeded") == "executing"
+    assert rd._fsm_transition("executing", "expected_tool_dispatched") == "validating"
+    assert rd._fsm_transition("validating", "tool_ok") == "executing"
+    assert rd._fsm_transition("validating", "tool_failed") == "executing"
+    assert rd._fsm_transition("done", "create_plan_succeeded") == "executing"
+
+
+def test_fsm_transition_unknown_pair_is_a_noop() -> None:
+    """An out-of-sequence or already-resolved (state, event) pair must never
+    raise -- same defensive posture task_board.mark_task_completed already
+    takes for an unknown task_id."""
+    assert rd._fsm_transition("executing", "some_unknown_event") == "executing"
+    assert rd._fsm_transition("planning", "tool_ok") == "planning"
+
+
+def test_create_plan_seeds_expected_tool_ids_and_executing_state() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    set_session_id("fsm-create-plan-seeds-state")
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="create_plan",
+            arguments={"objective": "Bracket", "tasks": ["Create a box", "Cut a hole"]},
+        ),
+        engine,
+        control_plane,
+    )
+    assert rd._get_fsm_state("fsm-create-plan-seeds-state") == "executing"
+    active = rd._active_task("fsm-create-plan-seeds-state")
+    assert active is not None and active["id"] == 1
+    entry = rd._PLAN_STATE_REGISTRY["fsm-create-plan-seeds-state"]
+    assert len(entry["tasks"]) == 2
+    # Every task gets a real (possibly empty) expected_tool_ids frozenset --
+    # the FIELD always exists, regardless of whether the semantic mapping
+    # found a confident match for this particular description.
+    for task in entry["tasks"]:
+        assert isinstance(task["expected_tool_ids"], frozenset)
+
+
+def _seed_two_task_plan(
+    session_id: str, tool_for_task_1: frozenset[str], tool_for_task_2: frozenset[str]
+) -> None:
+    """Deterministic FSM-mechanics test setup, bypassing the real semantic
+    narrowing call (_tool_create_plan's own narrow_tool_ids_by_query) so
+    these tests exercise ONLY the FSM's own transition/gating logic against
+    a KNOWN mapping, not the embedding backend's actual ranking."""
+    set_session_id(session_id)
+    rd._set_has_plan(True, "Objective: test\n1. task one\n2. task two")
+    rd._set_session_plan_tasks(
+        "test objective",
+        [
+            {"id": 1, "description": "task one", "status": "active", "expected_tool_ids": tool_for_task_1},
+            {"id": 2, "description": "task two", "status": "pending", "expected_tool_ids": tool_for_task_2},
+        ],
+        session_id=session_id,
+    )
+    rd._PLAN_STATE_REGISTRY[session_id]["fsm_state"] = "executing"
+
+
+def test_dispatch_auto_advances_on_expected_tool_success() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    sid = "fsm-auto-advance"
+    _seed_two_task_plan(sid, frozenset({"create_freecad_box"}), frozenset({"perform_freecad_boolean"}))
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+
+    result = rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"name": "AutoAdvanceBox"}),
+        engine,
+        control_plane,
+    )
+    assert result.ok is True
+    assert "Task 1 complete" in result.payload.get("message", "")
+    entry = rd._PLAN_STATE_REGISTRY[sid]
+    assert entry["fsm_state"] == "executing"  # resolved straight back to executing (next task active)
+    tasks_by_id = {t["id"]: t for t in entry["tasks"]}
+    assert tasks_by_id[1]["status"] == "completed"
+    assert tasks_by_id[2]["status"] == "active"
+
+
+def test_dispatch_advances_to_done_after_last_task() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    sid = "fsm-advance-to-done"
+    set_session_id(sid)
+    rd._set_has_plan(True, "Objective: test\n1. only task")
+    rd._set_session_plan_tasks(
+        "test objective",
+        [{"id": 1, "description": "only task", "status": "active", "expected_tool_ids": frozenset({"create_freecad_box"})}],
+        session_id=sid,
+    )
+    rd._PLAN_STATE_REGISTRY[sid]["fsm_state"] = "executing"
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+
+    result = rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"name": "LastBox"}),
+        engine,
+        control_plane,
+    )
+    assert result.ok is True
+    assert rd._PLAN_STATE_REGISTRY[sid]["fsm_state"] == "done"
+
+
+def test_dispatch_does_not_advance_on_failed_expected_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    sid = "fsm-no-advance-on-failure"
+    _seed_two_task_plan(sid, frozenset({"create_freecad_box"}), frozenset({"perform_freecad_boolean"}))
+    monkeypatch.setitem(
+        rd.TOOL_HANDLERS, "create_freecad_box", lambda args, engine, cp: {"ok": False, "error": "boom"}
+    )
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+
+    result = rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"name": "WillFail"}),
+        engine,
+        control_plane,
+    )
+    assert result.ok is False
+    entry = rd._PLAN_STATE_REGISTRY[sid]
+    assert entry["fsm_state"] == "executing"  # never left "executing" for the failed dispatch
+    tasks_by_id = {t["id"]: t for t in entry["tasks"]}
+    assert tasks_by_id[1]["status"] == "active"  # unchanged -- the model retries the SAME task
+
+
+def test_dispatch_hard_blocks_tool_belonging_to_a_different_pending_task() -> None:
+    """Hard-Blocking Policy, case 2: `perform_freecad_boolean` is task 2's
+    own expected tool, not task 1's (the active one) -- positive evidence
+    of skipping ahead, so this must be refused with an actionable reason."""
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    sid = "fsm-hard-block-out-of-order"
+    _seed_two_task_plan(sid, frozenset({"create_freecad_box"}), frozenset({"perform_freecad_boolean"}))
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+
+    result = rd.dispatch_tool_call(
+        ToolCall(tool_id="perform_freecad_boolean", arguments={"operation": "cut", "base_object": "A", "tool_object": "B"}),
+        engine,
+        control_plane,
+    )
+    assert result.ok is False
+    assert "out of order" in result.message.lower()
+    assert "task 2" in result.message.lower()
+    # Never reached the engine -- the active task's own status is untouched.
+    entry = rd._PLAN_STATE_REGISTRY[sid]
+    tasks_by_id = {t["id"]: t for t in entry["tasks"]}
+    assert tasks_by_id[1]["status"] == "active"
+    assert tasks_by_id[2]["status"] == "pending"
+
+
+def test_dispatch_allows_unmapped_tool_without_advancing() -> None:
+    """Hard-Blocking Policy, case 3: a geometry tool that belongs to NO task
+    in the plan (a k=3 mapping gap, not evidence of skipping ahead) must be
+    ALLOWED through -- refusing on pure absence of evidence is exactly how
+    an unrecoverable stall happens."""
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    sid = "fsm-allow-unmapped-tool"
+    _seed_two_task_plan(sid, frozenset({"create_freecad_box"}), frozenset())
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+
+    result = rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_cylinder", arguments={"name": "UnmappedCylinder"}),
+        engine,
+        control_plane,
+    )
+    assert result.ok is True
+    # Allowed, but NOT auto-advanced -- create_freecad_cylinder isn't task 1's
+    # expected tool, so there's nothing to confirm the task actually finished.
+    entry = rd._PLAN_STATE_REGISTRY[sid]
+    tasks_by_id = {t["id"]: t for t in entry["tasks"]}
+    assert tasks_by_id[1]["status"] == "active"
+
+
+def test_dispatch_parks_validating_for_task_with_no_expected_tools() -> None:
+    """A task the k=3 mapping found nothing tool-shaped for (empty
+    expected_tool_ids) cannot auto-advance -- ANY successful geometry tool
+    while it's active parks the FSM in "validating" instead, awaiting an
+    explicit mark_task_completed (see _build_validator_prompt)."""
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    sid = "fsm-park-validating"
+    set_session_id(sid)
+    # mark_task_completed's manual-override path (exercised below) validates
+    # against task_board's own GLOBAL plan, not this session-scoped registry
+    # -- seed both, mirroring exactly what the real _tool_create_plan does.
+    rd._tb_create_plan("test objective", ["inspect the assembly"])
+    rd._set_has_plan(True, "Objective: test\n1. inspect the assembly")
+    rd._set_session_plan_tasks(
+        "test objective",
+        [{"id": 1, "description": "inspect the assembly", "status": "active", "expected_tool_ids": frozenset()}],
+        session_id=sid,
+    )
+    rd._PLAN_STATE_REGISTRY[sid]["fsm_state"] = "executing"
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+
+    result = rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"name": "InspectionAid"}),
+        engine,
+        control_plane,
+    )
+    assert result.ok is True
+    assert "no fixed tool signature" in result.payload.get("message", "")
+    entry = rd._PLAN_STATE_REGISTRY[sid]
+    assert entry["fsm_state"] == "validating"
+    assert entry["last_validation"] == {"task_id": 1, "tool_id": "create_freecad_box", "ok": True}
+
+    # mark_task_completed is the manual override that resolves it.
+    resolve_result = rd.dispatch_tool_call(
+        ToolCall(tool_id="mark_task_completed", arguments={"task_id": 1}), engine, control_plane
+    )
+    assert resolve_result.ok is True
+    assert rd._PLAN_STATE_REGISTRY[sid]["fsm_state"] == "done"
+
+
+def test_build_system_prompt_planning_phase_excludes_geometry_rulebook() -> None:
+    set_session_id("fsm-prompt-planning")
+    prompt = rd.build_system_prompt(None, active_plugins=frozenset({"freecad_essential"}), session_id="fsm-prompt-planning")
+    assert "=== PLANNING PHASE ===" in prompt
+    assert "## Engineering Rules" not in prompt
+    assert "create_freecad_box" not in prompt
+    assert "CAD co-pilot for FreeCAD" not in prompt
+    assert "create_plan" in prompt
+
+
+def test_build_system_prompt_executing_phase_shows_only_current_task() -> None:
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    sid = "fsm-prompt-executing"
+    set_session_id(sid)
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="create_plan",
+            arguments={"objective": "Widget", "tasks": ["Create a box", "Create a cylinder", "Cut a hole"]},
+        ),
+        engine,
+        control_plane,
+    )
+    prompt = rd.build_system_prompt(None, active_plugins=frozenset({"freecad_essential"}), session_id=sid)
+    assert "=== EXECUTING PHASE ===" in prompt
+    assert "CURRENT ACTIVE TASK 1" in prompt
+    assert "2 task(s) remain after this one" in prompt
+    assert "=== PLANNING PHASE ===" not in prompt
+
+
+def test_next_react_turn_hard_restricts_tools_during_planning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 2/3: with no plan yet, the schema offered to the model must
+    contain ONLY create_plan/search_tool_catalog/check_plugin_registry/
+    core tools -- never a single geometry tool, structurally."""
+    sid = "fsm-hard-restrict-planning"
+    set_session_id(sid)
+    fake = _mock_llm(
+        monkeypatch,
+        tool_calls=[ToolCall(tool_id="create_plan", arguments={"objective": "x", "tasks": ["y"]})],
+    )
+    asyncio.run(
+        rd.next_react_turn(
+            [{"role": "system", "content": "sys"}, {"role": "user", "content": "build a box"}],
+            None,
+            raw_text="build a box",
+            active_plugins=frozenset({"freecad_essential"}),
+            session_id=sid,
+        )
+    )
+    offered_tool_ids = {t["function"]["name"] for t in fake.calls[-1]["tools"]}
+    assert "create_freecad_box" not in offered_tool_ids
+    assert "create_plan" in offered_tool_ids
+    assert "search_tool_catalog" in offered_tool_ids
+    assert "check_plugin_registry" in offered_tool_ids

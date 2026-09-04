@@ -162,10 +162,10 @@ def test_take_canvas_screenshot_suspends_for_visual_capture_then_resumes(
             }
         )
 
-        tool_result = _drain_until(ws, "tool_result")
-        assert tool_result["tool_id"] == "take_canvas_screenshot"
-        assert tool_result["ok"] is True
-        assert "image_b64" not in tool_result["payload"]  # never re-sent over the wire
+        dispatch_end = _drain_until(ws, "tool_dispatch_end")
+        assert dispatch_end["tool_id"] == "take_canvas_screenshot"
+        assert dispatch_end["status"] == "success"
+        assert "image_b64" not in dispatch_end["output"]  # never re-sent over the wire
 
         assistant = _drain_until(ws, "assistant_message")
         assert assistant["content"] == "The assembly looks correct."

@@ -31,6 +31,18 @@ def _mock_platform(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server_module, "get_control_plane", lambda: MockControlPlane())
 
 
+@pytest.fixture(autouse=True)
+def _disable_permanent_hitl_whitelist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """create_freecad_box is used below as the representative "a mutating
+    tool" fixture — written before dana.api.server._HITL_ALWAYS_APPROVED_TOOLS
+    permanently exempted FreeCAD's geometry-CRUD tools (create_freecad_box
+    included) from HITL approval. Cleared here so those tests keep
+    exercising the HITL suspension path unaffected by that later, unrelated
+    feature — same fix already applied in tests/api/test_ws_chat.py's and
+    tests/api/test_sessions_api.py's fixtures of the same name."""
+    monkeypatch.setattr(server_module, "_HITL_ALWAYS_APPROVED_TOOLS", frozenset())
+
+
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(server_module.app)
@@ -138,7 +150,19 @@ def test_selection_reference_fallback_still_works_with_attachment_present(
     now a multimodal array, not a plain string."""
     _capture_messages(monkeypatch, tool_calls=[ToolCall(tool_id="create_freecad_box", arguments={})])
     with client.websocket_connect("/ws/chat") as ws:
-        ws.receive_json()  # ready
+        ready = ws.receive_json()  # ready
+        # Plan-and-Execute FSM: create_freecad_box is now schema-gated on an
+        # active plan one level EARLIER than dispatch_tool_call's own
+        # Gatekeeper (next_react_turn's own hard_restrict_to during the
+        # PLANNING phase — see build_system_prompt/_llm_tools_schema) — a
+        # session with no plan yet is never even OFFERED it, so the mocked
+        # LLM's hardcoded create_freecad_box tool_call would otherwise be
+        # rejected as "not offered" and this turn would end in plain text
+        # instead of ever reaching HITL. Pre-open the gate for this test's
+        # own session (same lightweight bypass test_plan_gatekeeper_* tests
+        # use), since this test is about the selection-reference fallback,
+        # not plan-gating itself.
+        rd._set_has_plan(True, "test-harness plan", session_id=ready["session_id"])
         ws.send_json({"type": "update_context", "active_plugins": ["freecad"]})
         ws.send_json(
             {

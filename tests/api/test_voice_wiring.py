@@ -122,10 +122,10 @@ def test_finalized_transcript_dispatches_through_connected_session(
             service.emit("processing", "system status")
 
             _drain_until(ws, "voice_state")
-            tool_call = _drain_until(ws, "tool_call")
-            assert tool_call["tool_id"] == "system_state"
-            tool_result = _drain_until(ws, "tool_result")
-            assert tool_result["ok"] is True
+            dispatch_start = _drain_until(ws, "tool_dispatch_start")
+            assert dispatch_start["tool_name"] == "system_state"
+            dispatch_end = _drain_until(ws, "tool_dispatch_end")
+            assert dispatch_end["status"] == "success"
 
 
 def test_final_turn_triggers_tts_and_speaking_state(

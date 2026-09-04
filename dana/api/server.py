@@ -64,7 +64,8 @@ from dana.api.sessions import router as _sessions_router  # noqa: E402
 from dana.api.system import router as _system_router  # noqa: E402
 from dana.api.workspace import load_mounted_directories  # noqa: E402
 from dana.api.workspace import router as _workspace_router  # noqa: E402
-from dana.core.model_provider import tool_calling_provider  # noqa: E402
+from dana.core import telemetry  # noqa: E402
+from dana.core.model_provider import local_model_name, tool_calling_provider  # noqa: E402
 from dana.plugins.planning.task_board import create_plan as _tb_create_plan  # noqa: E402
 from dana.plugins.planning.task_board import get_active_plan as _tb_get_active_plan  # noqa: E402
 from dana.core.react_dispatch import (  # noqa: E402
@@ -79,6 +80,7 @@ from dana.core.react_dispatch import (  # noqa: E402
     domains_for_tool_id,
     driver_state,
     extract_user_text,
+    get_topology_dag,
     is_mutating_tool,
     is_visual_inspection_tool,
     next_react_turn,
@@ -226,6 +228,30 @@ _voice_service: VoiceService | None = None
 _event_loop: asyncio.AbstractEventLoop | None = None
 
 
+# Session-Specific Terminal History: caps one session's persisted log the
+# same way the frontend's own live buffer already is (useChatSocket.ts's
+# MAX_LOG_LINES) — mirrored server-side too so an on-disk session file
+# can't grow unbounded over a very long-lived conversation.
+_TERMINAL_LOG_MAX_ENTRIES = 500
+
+
+def _log_terminal_event(session: dict[str, Any], event: dict[str, Any]) -> None:
+    """Mirrors one ServerEvent (already sent over the websocket) onto this
+    session's own persisted terminal log (dana.api.sessions' "terminal_log"
+    field), so re-opening this session later — a fresh connection, or a
+    fresh server process — can re-populate the frontend's Terminal History
+    panel instead of showing it empty until new activity happens. Called
+    from the same handful of choke points every one of these event TYPES
+    already funnels through (_send_tool_dispatch_start/_end, _finish_turn,
+    _process_user_text), so this never has to track every websocket.send_json
+    call site in this module individually.
+    """
+    log: list[dict[str, Any]] = session.setdefault("terminal_log", [])
+    log.append(event)
+    if len(log) > _TERMINAL_LOG_MAX_ENTRIES:
+        del log[: len(log) - _TERMINAL_LOG_MAX_ENTRIES]
+
+
 async def _broadcast(message: dict[str, Any]) -> None:
     dead: list[WebSocket] = []
     for ws in list(_active_sessions):
@@ -361,8 +387,11 @@ def health() -> dict[str, Any]:
     # resolves its own ReAct-loop provider from (dana.core.model_provider.
     # tool_calling_provider) — this is a status read, never a second
     # decision, so the frontend's model-indicator badge can never disagree
-    # with what a real turn is actually about to do.
-    return {"ok": True, "provider": tool_calling_provider(), **driver_state()}
+    # with what a real turn is actually about to do. "local_model" is only
+    # meaningful when provider=="ollama" — surfaced regardless so the
+    # frontend's Slow Generation Warning banner can name the actual model
+    # in flight without a second round-trip to /api/system/env.
+    return {"ok": True, "provider": tool_calling_provider(), "local_model": local_model_name(), **driver_state()}
 
 
 @app.get("/api/plugins")
@@ -454,6 +483,7 @@ _CAD_CREATE_TOOLS = frozenset(
         "align_freecad_objects",
         "create_assembly_mate",
         "create_freecad_sketch_extrude",
+        "create_freecad_feature_on_face",
         "batch_pattern_array",
         "insert_standard_part",
         "import_and_solidify_mesh",
@@ -490,7 +520,7 @@ async def _dag_complete(
     )
 
 
-async def _send_tool_dispatch_start(websocket: WebSocket, node_id: str, call: Any) -> None:
+async def _send_tool_dispatch_start(websocket: WebSocket, session: dict[str, Any], node_id: str, call: Any) -> None:
     """Consolidated replacement for the old dag_node_start(dispatch) +
     "tool_call" + "tool_start" trio — ONE event per tool dispatch instead of
     three (WebSocket Consolidation). Carries everything either consumer used
@@ -507,21 +537,21 @@ async def _send_tool_dispatch_start(websocket: WebSocket, node_id: str, call: An
     non-mutating dispatch, _resolve_react_hitl's post-approval dispatch, and
     _resolve_visual_capture's take_canvas_screenshot resolution.
     """
-    await websocket.send_json(
-        {
-            "type": "tool_dispatch_start",
-            "node_id": node_id,
-            "label": call.tool_id,
-            "node_type": _node_type_for(call.tool_id),
-            "tool_name": call.tool_id,
-            "arguments": call.arguments,
-            "args_summary": _summarize_tool_args(call.tool_id, call.arguments),
-        }
-    )
+    event = {
+        "type": "tool_dispatch_start",
+        "node_id": node_id,
+        "label": call.tool_id,
+        "node_type": _node_type_for(call.tool_id),
+        "tool_name": call.tool_id,
+        "arguments": call.arguments,
+        "args_summary": _summarize_tool_args(call.tool_id, call.arguments),
+    }
+    await websocket.send_json(event)
+    _log_terminal_event(session, event)
 
 
 async def _send_tool_dispatch_end(
-    websocket: WebSocket, node_id: str, call: Any, result: ToolResult, mesh_url: str | None
+    websocket: WebSocket, session: dict[str, Any], node_id: str, call: Any, result: ToolResult, mesh_url: str | None
 ) -> None:
     """Consolidated replacement for the old "tool_complete" +
     dag_node_complete(dispatch) + "tool_result" trio — the result payload is
@@ -550,18 +580,18 @@ async def _send_tool_dispatch_end(
     instead of its own faster one — a deliberate, minor trade-off of this
     consolidation, not an oversight.
     """
-    await websocket.send_json(
-        {
-            "type": "tool_dispatch_end",
-            "node_id": node_id,
-            "tool_id": call.tool_id,
-            "status": "success" if result.ok else "error",
-            "output": result.payload,
-            "message": result.message,
-            "duration_ms": result.duration_ms,
-            "mesh_url": mesh_url,
-        }
-    )
+    event = {
+        "type": "tool_dispatch_end",
+        "node_id": node_id,
+        "tool_id": call.tool_id,
+        "status": "success" if result.ok else "error",
+        "output": result.payload,
+        "message": result.message,
+        "duration_ms": result.duration_ms,
+        "mesh_url": mesh_url,
+    }
+    await websocket.send_json(event)
+    _log_terminal_event(session, event)
 
 
 async def _broadcast_usage_update(
@@ -621,6 +651,23 @@ async def _broadcast_plan_update(websocket: WebSocket, plan: dict[str, Any] | No
     if not plan:
         return
     await websocket.send_json({"type": "plan_update", "plan": plan})
+
+
+async def _broadcast_topology_update(websocket: WebSocket) -> None:
+    """Pushes this session's current Topological Lineage Graph
+    (dana.core.react_dispatch's session-scoped ``{"nodes", "edges"}`` —
+    populated as a side effect of every successful CAD-mutating dispatch,
+    see ``_record_topology_node``) to the frontend's DAG Monitor, as a
+    ``topology_update`` event — same one-event-per-mutation shape
+    ``_broadcast_plan_update``/``_broadcast_memory_update`` already use for
+    their own global state.
+
+    Reads via ``get_topology_dag()`` with NO explicit session_id — this is
+    only ever called from within ``_execute_and_continue``, downstream of
+    that function's own ``set_session_id(session["session_id"])``, so the
+    ambient contextvar already resolves to the right session's graph.
+    """
+    await websocket.send_json({"type": "topology_update", "graph": get_topology_dag()})
 
 
 async def _broadcast_memory_update(websocket: WebSocket, memory: dict[str, str] | None) -> None:
@@ -702,6 +749,7 @@ _HITL_ALWAYS_APPROVED_TOOLS: frozenset[str] = frozenset(
         "create_freecad_extrusion",
         "create_freecad_pipe",
         "create_freecad_sketch_extrude",
+        "create_freecad_feature_on_face",
         "perform_freecad_boolean",
         "perform_freecad_edge_operation",
         "modify_freecad_parameter",
@@ -780,6 +828,45 @@ def _summarize_tool_args(tool_id: str, arguments: dict[str, Any]) -> str:
     return text
 
 
+def _generate_code_diff(call: Any) -> str | None:
+    """Best-effort unified diff for the HITL approval card's optional code
+    preview — covers write_file/edit_file only; every other mutating tool_id
+    (FreeCAD geometry ops, etc.) has no "before/after text" to diff, so this
+    returns None rather than guessing.
+    """
+    import difflib
+
+    path = str(call.arguments.get("path") or "")
+    if not path:
+        return None
+
+    try:
+        old_content = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        old_content = ""
+
+    if call.tool_id == "write_file":
+        new_content = str(call.arguments.get("content") or "")
+    elif call.tool_id == "edit_file":
+        search_block = str(call.arguments.get("search_block") or "")
+        replace_block = str(call.arguments.get("replace_block") or "")
+        if search_block not in old_content:
+            return None
+        new_content = old_content.replace(search_block, replace_block, 1)
+    else:
+        return None
+
+    diff = "".join(
+        difflib.unified_diff(
+            old_content.splitlines(keepends=True),
+            new_content.splitlines(keepends=True),
+            fromfile=path,
+            tofile=path,
+        )
+    )
+    return diff or None
+
+
 async def _execute_and_continue(
     websocket: WebSocket,
     session: dict[str, Any],
@@ -788,7 +875,7 @@ async def _execute_and_continue(
     call: Any,
     tool_call_id: str,
     node_id: str,
-    last_failure: tuple[str, str] | None = None,
+    last_failure: tuple[str, str, int] | None = None,
     last_call: tuple[str, str, int] | None = None,
 ) -> None:
     """Runs an already-approved (or never-gated) tool call, streams its
@@ -808,20 +895,24 @@ async def _execute_and_continue(
     (node_id/output/duration_ms) off the same one event, rather than two
     separate ones each consumer used to get.
 
-    ``last_failure`` is ``(tool_id, error_message)`` from the PREVIOUS
-    iteration's dispatch, if it failed — the deterministic backstop for the
-    "insane retry loop" bug (a model blindly re-issuing the exact same
-    failing non-mutating call, e.g. generate_2d_blueprint hitting a file-
-    lock error, over and over until _MAX_REACT_ITERATIONS). A same-tool,
-    same-message failure TWICE in a row stops the turn immediately with a
-    clear explanation instead of looping a third time — this is a runtime
-    guarantee, not just the system prompt's new "don't retry a repeated
-    identical error" instruction, since a quirky local model can't be
-    trusted to reliably follow that on its own (see this same session's
-    earlier live findings on tool-name hallucination). Only threaded
-    through the auto-dispatched (non-mutating) path — a HITL-gated mutating
-    tool already has a human in the loop re-approving each retry, which is
-    its own safety valve.
+    ``last_failure`` is ``(tool_id, error_message, consecutive_count)`` from
+    the PREVIOUS iteration's dispatch, if it failed — the deterministic
+    backstop for the "insane retry loop" bug (a model blindly re-issuing the
+    exact same failing non-mutating call, e.g. generate_2d_blueprint hitting
+    a file-lock error, over and over until _MAX_REACT_ITERATIONS). A
+    same-tool, same-message failure is tracked across consecutive turns: the
+    2nd occurrence forces an explicit "ABORT this exact approach" system
+    message instead of the normal fix-and-retry nudge (giving the model one
+    real chance to change strategy), and the 3rd occurrence stops the turn
+    immediately with a clear explanation instead of looping a fourth time —
+    this is a runtime guarantee, not just the system prompt's own "don't
+    retry a repeated identical error" instruction, since a quirky local
+    model can't be trusted to reliably follow that on its own (see this same
+    session's earlier live findings on tool-name hallucination). Only
+    threaded through the auto-dispatched (non-mutating, or permanently
+    HITL-exempt — see _HITL_ALWAYS_APPROVED_TOOLS) path — a HITL-gated
+    mutating tool already has a human in the loop re-approving each retry,
+    which is its own safety valve.
 
     ``last_call`` is ``(tool_id, args_signature, repeat_count)`` from the
     PREVIOUS iteration — a broader backstop than ``last_failure``: a live
@@ -868,6 +959,13 @@ async def _execute_and_continue(
         # @lru_cache'd, keyed on the resulting frozenset's value). Stamped
         # via _touch_capability_domains (not a permanent union) so it also
         # starts its P1 decay clock at THIS turn, not turn 0.
+        # Dynamic Domain Locking: load_capability(tool_id=...) un-hides one
+        # specific tool a prior unload_capability(tool_id=...) hid — the
+        # inverse of the hidden_tool_id branch below, same session-scoped
+        # set (never persisted, never touching active_plugins/domains).
+        unhidden = result.payload.get("unhidden_tool_id")
+        if isinstance(unhidden, str) and unhidden:
+            session.setdefault("hidden_tool_ids", set()).discard(unhidden)
         domain = result.payload.get("domain")
         if isinstance(domain, str) and domain:
             _touch_capability_domains(session, frozenset({domain}))
@@ -878,6 +976,17 @@ async def _execute_and_continue(
         # domains) — session["active_plugins"] (the frontend's own tab
         # state) is a completely separate dict this never touches, same
         # boundary _effective_capabilities already draws.
+        #
+        # Dynamic Domain Locking: unload_capability(tool_id=...) hides one
+        # SPECIFIC tool_id from this session's tool schema, independent of
+        # any domain — session["hidden_tool_ids"] is subtracted from the
+        # effective tool set every turn (see _run_react_loop's
+        # next_react_turn call), regardless of which domain(s) are active.
+        # Unlike capability_unlocked_at_turn this has no decay clock: a hide
+        # only lifts via an explicit load_capability(tool_id=...) call.
+        hidden = result.payload.get("hidden_tool_id")
+        if isinstance(hidden, str) and hidden:
+            session.setdefault("hidden_tool_ids", set()).add(hidden)
         domain = result.payload.get("domain")
         if isinstance(domain, str) and domain:
             session.get("capability_unlocked_at_turn", {}).pop(domain, None)
@@ -907,6 +1016,17 @@ async def _execute_and_continue(
 
     mesh_url = None
     if result.ok and call.tool_id in _CAD_CREATE_TOOLS:
+        # Topological Lineage Graph: this is exactly the tool_id set whose
+        # payload carries both "name" and "path" (the read-only inspection
+        # tools like get_freecad_bounding_box/inspect_spatial_properties/
+        # export_freecad_model are deliberately excluded from it) — the same
+        # condition dispatch_tool_call itself used to decide whether this
+        # call just added a node to session["topology_dag"]. Push the
+        # freshly updated graph to the frontend's DAG Monitor right away,
+        # same "broadcast immediately after a successful mutation" pattern
+        # _broadcast_plan_update/_broadcast_memory_update already use.
+        await _broadcast_topology_update(websocket)
+
         # target_object scopes both exports to the ONE object this call
         # actually produced — result.payload["name"] — rather than every
         # object in result.payload["path"]'s document. Necessary now that
@@ -1042,7 +1162,7 @@ async def _execute_and_continue(
             token = _register_mesh(path)
             mesh_url = f"/api/mesh/{token}.{mesh_format}"
 
-    await _send_tool_dispatch_end(websocket, node_id, call, result, mesh_url)
+    await _send_tool_dispatch_end(websocket, session, node_id, call, result, mesh_url)
 
     if call.tool_id == "manipulate_camera" and result.ok:
         await websocket.send_json(
@@ -1051,18 +1171,31 @@ async def _execute_and_continue(
 
     messages.append(build_tool_result_message(tool_call_id, result))
 
-    current_failure = None if result.ok else (call.tool_id, result.message)
-    if current_failure is not None and current_failure == last_failure:
-        # Same tool, same exact error message, two turns in a row — stop
-        # here rather than trusting the model to notice and self-correct.
+    current_failure_key = None if result.ok else (call.tool_id, result.message)
+    failure_repeat_count = (
+        last_failure[2] + 1
+        if current_failure_key is not None
+        and last_failure is not None
+        and (last_failure[0], last_failure[1]) == current_failure_key
+        else (1 if current_failure_key is not None else 0)
+    )
+    if failure_repeat_count >= 3:
+        # Same tool, same exact error message, three turns in a row — the
+        # ABORT-this-approach nudge below already gave the model one extra
+        # turn (after occurrence #2) to change strategy, and it produced the
+        # exact same failure anyway. Stop here rather than trusting a fourth
+        # attempt to do anything different.
         await _finish_turn(
             websocket,
             session,
             messages,
-            f"'{call.tool_id}' failed with the same error twice in a row, so I stopped instead of "
-            f"retrying again: {result.message}",
+            f"'{call.tool_id}' failed with the same error {failure_repeat_count} times in a row, so I "
+            f"stopped instead of retrying again: {result.message}",
         )
         return
+    current_failure = (
+        (call.tool_id, result.message, failure_repeat_count) if current_failure_key is not None else None
+    )
 
     # Broader backstop than the failure check above: catches a call that
     # keeps SUCCEEDING with zero progress (see this function's own
@@ -1087,7 +1220,22 @@ async def _execute_and_continue(
         )
         return
 
-    if not result.ok:
+    if not result.ok and failure_repeat_count >= 2:
+        # Same exact error twice in a row and the plain "fix and retry"
+        # nudge below already isn't landing — force an explicit
+        # abort-this-approach directive before the hard-stop above gets one
+        # more identical failure to trigger on (occurrence #3).
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    f"[SYSTEM: Tool '{call.tool_id}' failed {failure_repeat_count} times with "
+                    "identical error. ABORT this exact approach. You must switch to an "
+                    "alternative method or halt and ask for clarification.]"
+                ),
+            }
+        )
+    elif not result.ok:
         # A blunt, turn-specific reinforcement on top of the standing
         # "SELF-CORRECT ON ERROR" system-prompt rule (dana.core.react_dispatch's
         # _CORE_SYSTEM_PROMPT/_FREECAD_SYSTEM_PROMPT) — this fires only on an
@@ -1118,11 +1266,7 @@ async def _execute_and_continue(
             }
         )
 
-    print(
-        f"[ReAct] Continuing loop after '{call.tool_id}' -> iteration {loop_count + 1}",
-        file=sys.stderr,
-        flush=True,
-    )
+    telemetry.debug("[ReAct] Continuing loop after '%s' -> iteration %d", call.tool_id, loop_count + 1)
     await _run_react_loop(
         websocket,
         session,
@@ -1162,6 +1306,8 @@ def _persist_turn(session: dict[str, Any], user_text: str, assistant_text: str) 
         title=session["session_title"],
         created_at=session.get("session_created_at"),
         messages=history,
+        working_memory=session.get("working_memory"),
+        terminal_log=session.get("terminal_log"),
     )
     # Pins the ORIGINAL created_at from here on — save_session only stamps
     # a fresh "now" when it receives None, so this must be captured back
@@ -1179,7 +1325,9 @@ async def _finish_turn(websocket: WebSocket, session: dict[str, Any], messages: 
     not happen for a real turn, but a defensive no-op is cheaper than a
     KeyError reaching a client-facing coroutine.
     """
-    await websocket.send_json({"type": "assistant_message", "content": content})
+    event = {"type": "assistant_message", "content": content}
+    await websocket.send_json(event)
+    _log_terminal_event(session, event)
     user_text = _first_user_text(messages)
     if user_text:
         _persist_turn(session, user_text, content)
@@ -1252,7 +1400,7 @@ async def _run_react_loop(
     session: dict[str, Any],
     messages: list[dict[str, Any]],
     loop_count: int,
-    last_failure: tuple[str, str] | None = None,
+    last_failure: tuple[str, str, int] | None = None,
     last_call: tuple[str, str, int] | None = None,
 ) -> None:
     """The multi-step ReAct loop for one user turn: ask the LLM what to do
@@ -1306,6 +1454,14 @@ async def _run_react_loop(
         raw_text=raw_text,
         api_keys=session.get("api_keys"),
         active_plugins=_effective_capabilities(session),
+        hidden_tool_ids=frozenset(session.get("hidden_tool_ids") or ()),
+        # Plan-and-Execute FSM: next_react_turn reads ITS OWN FSM state
+        # (_get_fsm_state/_active_task) from this explicit session_id, not
+        # the ambient contextvar — same reasoning build_system_prompt's own
+        # session_id param already documents: this runs before
+        # _execute_and_continue's own set_session_id has fired for a
+        # freshly (re)connected session's first turn.
+        session_id=session["session_id"],
     )
     parse_ms = int((time.perf_counter() - parse_start) * 1000)
 
@@ -1339,7 +1495,7 @@ async def _run_react_loop(
         # so anything appended to THIS turn's list is discarded the moment
         # this function returns).
         error_detail = turn.content or "no further detail available"
-        print(f"[react-loop] model call failed: {error_detail}", file=sys.stderr, flush=True)
+        telemetry.log_error(stage="react_loop_model_call", detail=error_detail)
         reply = "I ran into a problem talking to the model — please try again."
         await _finish_turn(websocket, session, messages, reply)
         return
@@ -1374,12 +1530,12 @@ async def _run_react_loop(
             # function — this never loops forever) forces the model to
             # either retry, try something else, or actually say it failed.
             await _dag_complete(websocket, node_id, "error", {"final": True, "rejected": "unacknowledged_failure"}, parse_ms)
-            failed_tool_id, failure_message = last_failure
-            print(
-                f"[ReAct] Rejecting unacknowledged-failure termination after '{failed_tool_id}' "
-                f"failed ({failure_message!r}) -> iteration {loop_count + 1}",
-                file=sys.stderr,
-                flush=True,
+            failed_tool_id, failure_message, _failure_repeat_count = last_failure
+            telemetry.log_error(
+                stage="unacknowledged_failure_rejected",
+                tool_id=failed_tool_id,
+                failure_message=failure_message,
+                iteration=loop_count + 1,
             )
             messages.append(
                 {
@@ -1438,17 +1594,20 @@ async def _run_react_loop(
     # _HITL_ALWAYS_APPROVED_TOOLS is the same idea, permanently, for a small
     # explicit set of narrow geometry-CRUD tools (see its own comment for
     # why execute_freecad_script/modify_existing_freecad_document are
-    # deliberately never in it).
+    # deliberately never in it). session["auto_approve"] is the user's own
+    # explicit global override (Settings toggle -> "set_auto_approve") and,
+    # unlike the other two, has NO carve-out — it bypasses HITL for every
+    # mutating tool, arbitrary-script tools included, while enabled.
     if (
         is_mutating_tool(call.tool_id)
+        and not session.get("auto_approve")
         and call.tool_id not in _HITL_ALWAYS_APPROVED_TOOLS
         and call.tool_id not in session.get("hitl_approved_tools", set())
     ):
-        print(
-            f"[ReAct] '{call.tool_id}' is mutating -> suspending loop for HITL approval "
+        telemetry.debug(
+            "[ReAct] '%s' is mutating -> suspending loop for HITL approval "
             "(app.py's _GradioSocket auto-approves this immediately on the HF Space path)",
-            file=sys.stderr,
-            flush=True,
+            call.tool_id,
         )
         request_id = uuid.uuid4().hex
         session["react_state"] = {
@@ -1459,17 +1618,16 @@ async def _run_react_loop(
             "request_id": request_id,
             "created_at": time.monotonic(),  # P3 — see the matching visual_state comment above
         }
-        await websocket.send_json(
-            {
-                "type": "hitl_approval_required",
-                "payload": {
-                    "request_id": request_id,
-                    "action_name": call.tool_id,
-                    "description": describe_tool_call(call),
-                    "parameters": call.arguments,
-                },
-            }
-        )
+        payload = {
+            "request_id": request_id,
+            "action_name": call.tool_id,
+            "description": describe_tool_call(call),
+            "parameters": call.arguments,
+        }
+        diff = _generate_code_diff(call)
+        if diff is not None:
+            payload["diff"] = diff
+        await websocket.send_json({"type": "hitl_approval_required", "payload": payload})
         return
 
     # Non-mutating: "tool_dispatch_start" fires only now, right as execution
@@ -1477,7 +1635,7 @@ async def _run_react_loop(
     # approval, in _resolve_react_hitl (never pre-approval — a client must
     # not see a dispatch-start event for something that hasn't run yet).
     dispatch_node_id = f"dispatch-{loop_count}"
-    await _send_tool_dispatch_start(websocket, dispatch_node_id, call)
+    await _send_tool_dispatch_start(websocket, session, dispatch_node_id, call)
     await _execute_and_continue(
         websocket,
         session,
@@ -1501,11 +1659,11 @@ async def _resolve_react_hitl(websocket: WebSocket, session: dict[str, Any], res
     if not response.get("approved"):
         # Never dispatched — no "tool_call"/dag node was ever opened for a
         # call awaiting approval, so there's nothing to dag-complete either.
-        print(f"[ReAct] HITL request for '{call.tool_id}' was rejected — turn ends here", file=sys.stderr, flush=True)
+        telemetry.debug("[ReAct] HITL request for '%s' was rejected — turn ends here", call.tool_id)
         await _finish_turn(websocket, session, state["messages"], "Cancelled — no changes were made.")
         return
 
-    print(f"[ReAct] HITL request for '{call.tool_id}' approved -> dispatching", file=sys.stderr, flush=True)
+    telemetry.debug("[ReAct] HITL request for '%s' approved -> dispatching", call.tool_id)
     # Remembered for the rest of this session only (session dict, never
     # persisted) — the next call to THIS SAME tool_id skips the approval
     # prompt entirely (see the is_mutating_tool check in _run_react_loop).
@@ -1519,7 +1677,7 @@ async def _resolve_react_hitl(websocket: WebSocket, session: dict[str, Any], res
 
     loop_count = state["loop_count"]
     dispatch_node_id = f"dispatch-{loop_count}"
-    await _send_tool_dispatch_start(websocket, dispatch_node_id, call)
+    await _send_tool_dispatch_start(websocket, session, dispatch_node_id, call)
 
     await _execute_and_continue(
         websocket, session, state["messages"], loop_count, call, state["tool_call_id"], dispatch_node_id
@@ -1545,7 +1703,7 @@ async def _resolve_visual_capture(websocket: WebSocket, session: dict[str, Any],
     result = ToolResult(call.tool_id, bool(payload.get("ok")), payload, message, 0)
 
     dispatch_node_id = f"dispatch-{state['loop_count']}"
-    await _send_tool_dispatch_start(websocket, dispatch_node_id, call)
+    await _send_tool_dispatch_start(websocket, session, dispatch_node_id, call)
     # The client already has the image bytes it just sent — no need to blast
     # the full base64 back over the wire a second time (same trim the old
     # standalone "tool_result" send already applied here).
@@ -1556,7 +1714,7 @@ async def _resolve_visual_capture(websocket: WebSocket, session: dict[str, Any],
         result.message,
         result.duration_ms,
     )
-    await _send_tool_dispatch_end(websocket, dispatch_node_id, call, trimmed_result, None)
+    await _send_tool_dispatch_end(websocket, session, dispatch_node_id, call, trimmed_result, None)
 
     messages = state["messages"]
     messages.append(build_tool_result_message(state["tool_call_id"], result))
@@ -1654,6 +1812,17 @@ async def _process_user_text(
             }
         )
         return
+    telemetry.log_request(session_id=session.get("session_id"), text=user_text)
+    # Terminal History: the frontend already renders the user's own chat
+    # bubble locally the instant it's sent (useChatSocket.ts's sendMessage
+    # updates `messages` directly, not via a websocket round-trip) — this
+    # "user_message" event exists only for the Terminal History panel's own
+    # feed (and, via _log_terminal_event, the session's persisted terminal
+    # log), so a resumed/replayed session's Terminal History shows the same
+    # user/assistant/tool-dispatch timeline a live one does.
+    user_message_event = {"type": "user_message", "content": user_text}
+    await websocket.send_json(user_message_event)
+    _log_terminal_event(session, user_message_event)
     # A genuinely NEW turn always starts with a clean abort flag — guards
     # against an "abort_turn" that arrived just after the PREVIOUS turn had
     # already finished (nothing left in flight for it to cancel) from
@@ -1681,6 +1850,13 @@ async def _process_user_text(
                 active_plugins=_effective_capabilities(session),
                 mounted_directories=load_mounted_directories(),
                 working_memory=(session.get("working_memory") or {}).get("summary", ""),
+                # Plan-and-Execute Gatekeeper's Persistent Plan Anchor needs
+                # THIS session's id explicitly — build_system_prompt runs
+                # here, before _execute_and_continue's own
+                # set_session_id(session["session_id"]) has fired for this
+                # turn, so the ambient contextvar can't be trusted yet (see
+                # build_system_prompt's own docstring).
+                session_id=session["session_id"],
             ),
         },
         build_user_message(user_text, attachments),
@@ -1719,6 +1895,23 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
             # here, not wait for the next update_core_memory mutation's own
             # "memory_update" broadcast (_broadcast_memory_update).
             "core_memory": read_core_memory(),
+            # DAG Monitor's initial seed: the Topological Lineage Graph is
+            # per-SESSION (unlike active_plan/core_memory above), so a
+            # reconnect/page-refresh needs THIS session's own accumulated
+            # graph immediately here, not wait for the next mutating CAD
+            # tool's own "topology_update" broadcast
+            # (_broadcast_topology_update). Only reflects geometry built
+            # since this process started — dana.core.react_dispatch's
+            # topology_dag registry is in-memory, like _OBJECT_PATH_REGISTRY,
+            # not persisted to dana.api.sessions.
+            "topology_dag": get_topology_dag(resolved_session_id),
+            # Session-Specific Terminal History: this session's persisted
+            # log (dana.api.sessions' "terminal_log"), empty for a brand-new
+            # session — lets the frontend's Terminal History panel populate
+            # with THIS session's own past activity on connect/resume,
+            # instead of either staying empty or carrying over whatever a
+            # PREVIOUSLY connected session happened to leave in its live feed.
+            "terminal_log": list(stored["terminal_log"]) if stored else [],
         }
     )
     session: dict[str, Any] = {
@@ -1762,14 +1955,30 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
         # actually gets mutated. "update_context" unloading a plugin must
         # never clear this.
         "capability_unlocked_at_turn": {},
+        # Dynamic Domain Locking — individual tool_ids the AGENT itself hid
+        # via unload_capability(tool_id=...), independent of any domain (see
+        # that tool's own docstring/schema). Subtracted from every turn's
+        # effective tool set (_run_react_loop's next_react_turn call) until
+        # explicitly lifted via load_capability(tool_id=...) — no decay
+        # clock, unlike capability_unlocked_at_turn above. Never touches
+        # active_plugins/capability_unlocked_at_turn.
+        "hidden_tool_ids": set(),
         # Pillar 3 (dana.core.context_distiller) — rolling, local-model-
         # distilled summary of prior turns in THIS session. Populated by
         # schedule_distillation (called from _finish_turn) after each turn
         # completes; read by _process_user_text into the NEXT turn's system
-        # prompt. Starts empty — build_system_prompt's empty-state
-        # convention (same as core memory/the active plan) omits the
-        # section entirely until there's something to show.
-        "working_memory": {"summary": "", "turn": 0},
+        # prompt. Hydrated from disk (dana.api.sessions) when resuming a
+        # previously-saved session, same as chat_history above — otherwise
+        # starts empty, build_system_prompt's empty-state convention (same
+        # as core memory/the active plan) omitting the section entirely
+        # until there's something to show.
+        "working_memory": stored["working_memory"] if stored else {"summary": "", "turn": 0},
+        # Session-Specific Terminal History (dana.api.sessions' "terminal_log")
+        # — hydrated from disk exactly like chat_history/working_memory above
+        # when resuming a previously-saved session; _log_terminal_event
+        # appends to this list at every relevant choke point, and
+        # _persist_turn saves it back to disk alongside messages each turn.
+        "terminal_log": list(stored["terminal_log"]) if stored else [],
         # Incremented once per NEW user turn (_process_user_text) — the
         # clock _effective_capabilities' decay logic measures "turns of
         # disuse" against. Deliberately NOT incremented per ReAct-loop
@@ -1792,6 +2001,13 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
         # connection (even resuming the same on-disk chat) starts empty, so
         # this never silently skips approval on a brand-new session.
         "hitl_approved_tools": set(),
+        # User-controlled global HITL bypass (Settings toggle -> "set_auto_approve"
+        # below). False by default: a fresh connection never silently skips
+        # approval unless the user explicitly opted in for THIS session. Applies
+        # to every mutating tool with no carve-out — including arbitrary-script
+        # tools that are otherwise never in _HITL_ALWAYS_APPROVED_TOOLS — so a
+        # turn can execute destructive actions unattended once enabled.
+        "auto_approve": False,
     }
     _active_sessions[websocket] = session
     try:
@@ -1861,6 +2077,16 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
                     await _finish_turn(websocket, session, pending["messages"], "Generation aborted by user.")
                 else:
                     session["abort_requested"] = True
+                continue
+
+            if msg_type == "set_auto_approve":
+                # Settings toggle: bypass HITL approval entirely for the rest of
+                # this session (see the flag's own comment in the session-init
+                # dict above, and the gate in _run_react_loop). Does not resolve
+                # any approval already suspended and awaiting a response —
+                # only affects mutating tool calls dispatched from now on.
+                payload = data.get("payload") or {}
+                session["auto_approve"] = bool(payload.get("enabled", False))
                 continue
 
             if msg_type == "hitl_response":

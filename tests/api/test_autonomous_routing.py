@@ -142,11 +142,11 @@ def test_load_capability_exposes_list_directory_on_the_next_turn(
         ws.receive_json()  # ready
         ws.send_json({"text": "what's in the current directory?"})
 
-        load_call = _drain_until(ws, "tool_call")
-        assert load_call["tool_id"] == "load_capability"
-        load_result = _drain_until(ws, "tool_result")
-        assert load_result["ok"] is True
-        assert load_result["payload"]["unlocked_tools"] == [
+        load_call = _drain_until(ws, "tool_dispatch_start")
+        assert load_call["tool_name"] == "load_capability"
+        load_result = _drain_until(ws, "tool_dispatch_end")
+        assert load_result["status"] == "success"
+        assert load_result["output"]["unlocked_tools"] == [
             "analyze_desktop_screen",
             "edit_file",
             "execute_terminal_command",
@@ -160,10 +160,10 @@ def test_load_capability_exposes_list_directory_on_the_next_turn(
             "write_file",
         ]
 
-        list_call = _drain_until(ws, "tool_call")
-        assert list_call["tool_id"] == "list_directory"
-        list_result = _drain_until(ws, "tool_result")
-        assert list_result["ok"] is True
+        list_call = _drain_until(ws, "tool_dispatch_start")
+        assert list_call["tool_name"] == "list_directory"
+        list_result = _drain_until(ws, "tool_dispatch_end")
+        assert list_result["status"] == "success"
 
         assistant = _drain_until(ws, "assistant_message")
         assert assistant["content"] == "Here's what's in that directory."
@@ -197,15 +197,15 @@ def test_deactivating_frontend_plugin_does_not_clear_agent_loaded_capability(
         ws.receive_json()  # ready
         ws.send_json({"type": "update_context", "active_plugins": ["freecad"]})
         ws.send_json({"text": "load os tools"})
-        _drain_until(ws, "tool_result")  # load_capability's own dispatch result
+        _drain_until(ws, "tool_dispatch_end")  # load_capability's own dispatch result
         _drain_until(ws, "assistant_message")
 
         # Frontend closes the CAD tab entirely.
         ws.send_json({"type": "update_context", "active_plugins": []})
 
         ws.send_json({"text": "now list the directory"})
-        list_call = _drain_until(ws, "tool_call")
-        assert list_call["tool_id"] == "list_directory"
+        list_call = _drain_until(ws, "tool_dispatch_start")
+        assert list_call["tool_name"] == "list_directory"
         _drain_until(ws, "assistant_message")
 
     last_tool_names = {t["function"]["name"] for t in fake.calls[-1]["tools"]}

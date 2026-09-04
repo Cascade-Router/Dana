@@ -12,6 +12,22 @@ import pytest
 from dana.plugins.freecad import engine
 
 
+@pytest.fixture(autouse=True)
+def _plan_gate_open() -> None:
+    """This module's dispatch_tool_call integration test builds its own
+    Base/Shaft primitives as setup — dana.core.react_dispatch's
+    Plan-and-Execute Gatekeeper now requires create_plan before any
+    geometry-mutating tool (including those two primitives) dispatches; see
+    tests/core/test_react_dispatch.py's own dedicated gatekeeper tests for
+    that feature itself. Safe to leave open with no explicit teardown here
+    — tests/conftest.py's own ``_reset_plan_gate_state`` clears the
+    underlying registry after every test in the whole suite.
+    """
+    import dana.core.react_dispatch as react_dispatch
+
+    react_dispatch._set_has_plan(True, "test-harness plan")
+
+
 def _bbox(x_min, y_min, z_min, x_max, y_max, z_max):
     return {"x_min": x_min, "y_min": y_min, "z_min": z_min, "x_max": x_max, "y_max": y_max, "z_max": z_max}
 

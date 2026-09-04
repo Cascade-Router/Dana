@@ -29,7 +29,7 @@ def test_ensure_stdio_idempotent_when_present(monkeypatch) -> None:
     before_out = sys.stdout
     assert ensure_stdio() is False
     assert sys.stdout is before_out
-    print("[PASS] ensure_stdio leaves real streams alone")
+    # print("[PASS] ensure_stdio leaves real streams alone")
 
 
 def test_null_stdio_buffer_chain() -> None:

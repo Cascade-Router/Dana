@@ -51,6 +51,25 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch, *turns: list[ToolCall] | str) -> 
 
 
 @pytest.fixture(autouse=True)
+def _plan_gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module's tests are about HITL approval, DAG event streaming, and
+    canvas-selection injection — not about dana.core.react_dispatch's
+    Plan-and-Execute Gatekeeper (which requires a create_plan call before
+    any geometry-mutating tool dispatches; see
+    tests/core/test_react_dispatch.py's own dedicated gatekeeper tests for
+    that). Each test here opens a fresh WebSocket with its own
+    server-generated session_id, so there's no fixed session_id to
+    pre-seed _set_has_plan for ahead of time the way the unit tests do —
+    patching _get_has_plan itself to always report "already planned" is the
+    simplest way to keep this module's mocked tool-call sequences (which
+    predate the gatekeeper) dispatching exactly as before.
+    """
+    import dana.core.react_dispatch as react_dispatch
+
+    monkeypatch.setattr(react_dispatch, "_get_has_plan", lambda *_a, **_k: True)
+
+
+@pytest.fixture(autouse=True)
 def _mock_platform(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server_module, "get_cad_engine", lambda: MockFreeCADEngine())
     monkeypatch.setattr(server_module, "get_control_plane", lambda: MockControlPlane())
@@ -140,17 +159,13 @@ def test_safe_tool_streams_dag_events_then_loops_to_final_text(
         parse_complete = _drain_until(ws, "dag_node_complete")
         assert parse_complete["node_id"] == "parse-0" and parse_complete["status"] == "success"
 
-        dispatch_start = _drain_until(ws, "dag_node_start")
+        dispatch_start = _drain_until(ws, "tool_dispatch_start")
         assert dispatch_start["node_id"] == "dispatch-0"
+        assert dispatch_start["tool_name"] == "system_state"
 
-        tool_call = _drain_until(ws, "tool_call")
-        assert tool_call["tool_id"] == "system_state"
-
-        dispatch_complete = _drain_until(ws, "dag_node_complete")
-        assert dispatch_complete["node_id"] == "dispatch-0" and dispatch_complete["status"] == "success"
-
-        tool_result = _drain_until(ws, "tool_result")
-        assert tool_result["ok"] is True
+        dispatch_end = _drain_until(ws, "tool_dispatch_end")
+        assert dispatch_end["node_id"] == "dispatch-0"
+        assert dispatch_end["status"] == "success"
 
         # Second loop iteration: the LLM sees the tool result and produces
         # its own final text — no synthesized "control_plane=..." summary.
@@ -224,12 +239,12 @@ def test_mutating_tool_requires_hitl_approval_then_proceeds(
 
         ws.send_json({"type": "hitl_response", "payload": {"request_id": request_id, "approved": True}})
 
-        tool_call = _drain_until(ws, "tool_call")
-        assert tool_call["tool_id"] == "create_freecad_box"
+        dispatch_start = _drain_until(ws, "tool_dispatch_start")
+        assert dispatch_start["tool_name"] == "create_freecad_box"
 
-        tool_result = _drain_until(ws, "tool_result")
-        assert tool_result["ok"] is True
-        assert tool_result["mesh_url"] is not None
+        dispatch_end = _drain_until(ws, "tool_dispatch_end")
+        assert dispatch_end["status"] == "success"
+        assert dispatch_end["mesh_url"] is not None
 
         # Loop continues after approval+execution — falls back to "Done."
         # since only one turn was queued, and terminates cleanly.
@@ -257,13 +272,13 @@ def test_hitl_always_approved_tools_skip_approval_entirely(
         for _ in range(6):
             msg = ws.receive_json()
             seen_types.append(msg["type"])
-            if msg["type"] == "tool_call":
-                assert msg["tool_id"] == "create_freecad_box"
+            if msg["type"] == "tool_dispatch_start":
+                assert msg["tool_name"] == "create_freecad_box"
                 break
         assert "hitl_approval_required" not in seen_types, f"expected no approval prompt, got: {seen_types}"
 
-        tool_result = _drain_until(ws, "tool_result")
-        assert tool_result["ok"] is True
+        dispatch_end = _drain_until(ws, "tool_dispatch_end")
+        assert dispatch_end["status"] == "success"
 
 
 def test_cad_mutation_auto_injects_screenshot_and_visual_verification(
@@ -308,10 +323,10 @@ def test_cad_mutation_auto_injects_screenshot_and_visual_verification(
         _activate_freecad(ws)
         ws.send_json({"text": "build a small box"})
 
-        tool_result = _drain_until(ws, "tool_result")
-        assert tool_result["ok"] is True
-        assert tool_result["payload"]["screenshot_path"] == "/fake/last_cad_viewport.png"
-        assert tool_result["payload"]["visual_verification"] == "a single rectangular box, no visible defects"
+        dispatch_end = _drain_until(ws, "tool_dispatch_end")
+        assert dispatch_end["status"] == "success"
+        assert dispatch_end["output"]["screenshot_path"] == "/fake/last_cad_viewport.png"
+        assert dispatch_end["output"]["visual_verification"] == "a single rectangular box, no visible defects"
 
 
 def test_cad_mutation_visual_verification_failure_does_not_fail_the_tool(
@@ -331,9 +346,9 @@ def test_cad_mutation_visual_verification_failure_does_not_fail_the_tool(
         _activate_freecad(ws)
         ws.send_json({"text": "build a small box"})
 
-        tool_result = _drain_until(ws, "tool_result")
-        assert tool_result["ok"] is True
-        assert "screenshot_path" not in tool_result["payload"]
+        dispatch_end = _drain_until(ws, "tool_dispatch_end")
+        assert dispatch_end["status"] == "success"
+        assert "screenshot_path" not in dispatch_end["output"]
 
 
 def test_hitl_whitelist_never_covers_script_execution_tools(
@@ -395,29 +410,33 @@ def test_hitl_session_allowlist_skips_approval_on_repeat_tool(
         request_id = approval["payload"]["request_id"]
         ws.send_json({"type": "hitl_response", "payload": {"request_id": request_id, "approved": True}})
 
-        _drain_until(ws, "tool_call")
-        _drain_until(ws, "tool_result")
+        _drain_until(ws, "tool_dispatch_start")
+        _drain_until(ws, "tool_dispatch_end")
         assistant = _drain_until(ws, "assistant_message")
         assert assistant["content"] == "Done."
 
         # Second, separate turn — same tool_id. No hitl_approval_required
-        # this time: it must go straight to tool_call/tool_result.
+        # this time: it must go straight to tool_dispatch_start/tool_dispatch_end.
         ws.send_json({"text": "now build a small 10x10x10 box"})
 
+        # limit=20 (not a small hardcoded count): incidental events between
+        # here and the tool_dispatch_start (e.g. "usage_update", Cost Tracking's
+        # per-iteration broadcast) must never make this loop fall through
+        # before it ever sees a tool_dispatch_start.
         seen_types = []
-        for _ in range(6):
+        for _ in range(20):
             msg = ws.receive_json()
             seen_types.append(msg["type"])
-            if msg["type"] == "tool_call":
-                assert msg["tool_id"] == "create_freecad_box"
+            if msg["type"] == "tool_dispatch_start":
+                assert msg["tool_name"] == "create_freecad_box"
                 break
         assert "hitl_approval_required" not in seen_types, (
             f"expected no second approval prompt, got message sequence: {seen_types}"
         )
-        assert "tool_call" in seen_types, f"never saw a tool_call, got: {seen_types}"
+        assert "tool_dispatch_start" in seen_types, f"never saw a tool_dispatch_start, got: {seen_types}"
 
-        tool_result = _drain_until(ws, "tool_result")
-        assert tool_result["ok"] is True
+        dispatch_end = _drain_until(ws, "tool_dispatch_end")
+        assert dispatch_end["status"] == "success"
 
 
 def test_mutating_tool_cancelled_when_not_approved(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -455,8 +474,8 @@ def test_hitl_modify_overrides_parameters_before_dispatch(
             }
         )
 
-        tool_call = _drain_until(ws, "tool_call")
-        assert tool_call["arguments"]["length"] == "99"
+        dispatch_start = _drain_until(ws, "tool_dispatch_start")
+        assert dispatch_start["arguments"]["length"] == "99"
 
 
 def test_canvas_selection_feeds_camera_target(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -472,9 +491,9 @@ def test_canvas_selection_feeds_camera_target(client: TestClient, monkeypatch: p
         _mock_llm(monkeypatch, [ToolCall(tool_id="manipulate_camera", arguments={"preset": "top"})])
         ws.send_json({"text": "look at it from the top"})
 
-        tool_call = _drain_until(ws, "tool_call")
-        assert tool_call["tool_id"] == "manipulate_camera"
-        assert tool_call["arguments"]["target"] == [5.0, 6.0, 7.0]
+        dispatch_start = _drain_until(ws, "tool_dispatch_start")
+        assert dispatch_start["tool_name"] == "manipulate_camera"
+        assert dispatch_start["arguments"]["target"] == [5.0, 6.0, 7.0]
 
         camera_animate = _drain_until(ws, "camera_animate")
         assert camera_animate["target"] == [5.0, 6.0, 7.0]
@@ -507,8 +526,8 @@ def test_canvas_selection_injects_target_position_on_mutating_tool(
                 "payload": {"request_id": approval["payload"]["request_id"], "approved": True},
             }
         )
-        tool_result = _drain_until(ws, "tool_result")
-        assert tool_result["ok"] is True
+        dispatch_end = _drain_until(ws, "tool_dispatch_end")
+        assert dispatch_end["status"] == "success"
 
 
 # --------------------------------------------------------------------------
@@ -532,16 +551,16 @@ def test_multi_step_loop_chains_two_tool_calls_before_final_text(
         ws.receive_json()  # ready
         ws.send_json({"text": "check everything"})
 
-        first_call = _drain_until(ws, "tool_call")
-        assert first_call["tool_id"] == "system_state"
-        _drain_until(ws, "tool_result")
+        first_call = _drain_until(ws, "tool_dispatch_start")
+        assert first_call["tool_name"] == "system_state"
+        _drain_until(ws, "tool_dispatch_end")
 
         second_parse_start = _drain_until(ws, "dag_node_start")
         assert second_parse_start["node_id"] == "parse-1"
 
-        second_call = _drain_until(ws, "tool_call")
-        assert second_call["tool_id"] == "check_plugin_registry"
-        _drain_until(ws, "tool_result")
+        second_call = _drain_until(ws, "tool_dispatch_start")
+        assert second_call["tool_name"] == "check_plugin_registry"
+        _drain_until(ws, "tool_dispatch_end")
 
         assistant = _drain_until(ws, "assistant_message")
         assert assistant["content"] == "Checked both system state and the plugin registry."
@@ -564,7 +583,7 @@ def test_multi_step_loop_suspends_for_hitl_mid_chain_and_resumes(
         _activate_freecad(ws)
         ws.send_json({"text": "check status then build a box"})
 
-        _drain_until(ws, "tool_result")  # system_state, no HITL
+        _drain_until(ws, "tool_dispatch_end")  # system_state, no HITL
 
         approval = _drain_until(ws, "hitl_approval_required")
         assert approval["payload"]["action_name"] == "create_freecad_box"
@@ -576,30 +595,57 @@ def test_multi_step_loop_suspends_for_hitl_mid_chain_and_resumes(
             }
         )
 
-        tool_call = _drain_until(ws, "tool_call")
-        assert tool_call["tool_id"] == "create_freecad_box"
-        tool_result = _drain_until(ws, "tool_result")
-        assert tool_result["ok"] is True
+        dispatch_start = _drain_until(ws, "tool_dispatch_start")
+        assert dispatch_start["tool_name"] == "create_freecad_box"
+        dispatch_end = _drain_until(ws, "tool_dispatch_end")
+        assert dispatch_end["status"] == "success"
 
         assistant = _drain_until(ws, "assistant_message")
         assert assistant["content"] == "Built the box after checking system state."
 
 
-def test_react_loop_stops_at_max_iterations(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A model stuck proposing the same non-mutating tool call forever must
-    be forcefully stopped, not left to run indefinitely."""
+def test_react_loop_stops_on_repeated_identical_call(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A model stuck proposing the exact same non-mutating tool call (same
+    tool_id, same arguments) must be stopped after the third repeat, not
+    left to cycle all the way to _MAX_REACT_ITERATIONS — the live bug this
+    guards against: local-Ollama fallback calling
+    load_capability({"domain": "freecad_full"}) over 20 times in a row,
+    never itself a "failure" (it succeeds every time), so the older
+    same-failure-twice guard never caught it. system_state stands in here
+    as any cheap, always-succeeding, argument-less non-mutating tool."""
     endless_tool_call = [ToolCall(tool_id="system_state", arguments={})]
-    # dana.api.server._MAX_REACT_ITERATIONS is 30 — queue more canned turns
-    # than that so the loop actually reaches the cap instead of running out
-    # of mock responses first (which would fall back to a "Done." final turn).
-    _mock_llm(monkeypatch, *([endless_tool_call] * 32))  # far more turns than the cap allows
+    _mock_llm(monkeypatch, *([endless_tool_call] * 10))  # far more than the 3-repeat guard allows
     with client.websocket_connect("/ws/chat") as ws:
         ws.receive_json()  # ready
         ws.send_json({"text": "loop forever"})
 
-        # 30 full iterations (dag_start/dag_complete/tool_call/tool_result per
-        # iteration, plus any tee'd server_log lines) produce well more than
-        # 200 websocket messages before the cap's own assistant_message —
+        assistant = _drain_until(ws, "assistant_message", limit=100)
+        assert "same arguments" in assistant["content"]
+        assert "3 times in a row" in assistant["content"]
+
+
+def test_react_loop_stops_at_max_iterations(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The raw _MAX_REACT_ITERATIONS cap must still fire and report a clear
+    fallback message when a model keeps proposing tool calls indefinitely
+    but VARIES them enough (alternating tool_id here) that the repeated-
+    identical-call guard (see test_react_loop_stops_on_repeated_identical_call
+    above) never trips first."""
+    alternating_calls = [
+        [ToolCall(tool_id="system_state", arguments={})],
+        [ToolCall(tool_id="check_plugin_registry", arguments={})],
+    ]
+    # dana.api.server._MAX_REACT_ITERATIONS is 30 — queue more canned turns
+    # than that so the loop actually reaches the cap instead of running out
+    # of mock responses first (which would fall back to a "Done." final turn).
+    _mock_llm(monkeypatch, *(alternating_calls * 16))  # 32 turns, far more than the cap allows
+    with client.websocket_connect("/ws/chat") as ws:
+        ws.receive_json()  # ready
+        ws.send_json({"text": "loop forever"})
+
+        # 30 full iterations (dag_start/dag_complete/tool_dispatch_start/
+        # tool_dispatch_end per iteration, plus any tee'd server_log lines)
+        # produce well more than 200 websocket messages before the cap's
+        # own assistant_message —
         # generous headroom here rather than hand-computing an exact count.
         assistant = _drain_until(ws, "assistant_message", limit=500)
         assert "maximum number of reasoning steps" in assistant["content"]
@@ -755,16 +801,16 @@ def test_update_context_with_non_list_active_plugins_is_ignored_not_fatal(
 
 
 # --------------------------------------------------------------------------
-# Agent Activity feed — "tool_start"/"tool_complete". Plugin-agnostic
-# transparency events the ChatPanel renders inline (unlike "dag_node_start"/
-# "tool_call"/"dag_node_complete", which only the CadPlugin's DAG Monitor
-# ever renders) — so a user doing OS/web work with no plugin tab open can
-# still see what the agent is doing turn-by-turn, not just a silent wait
-# until the final assistant_message.
+# Agent Activity feed — "tool_dispatch_start"/"tool_dispatch_end". Plugin-
+# agnostic transparency events the ChatPanel renders inline (unlike
+# "dag_node_start"/"dag_node_complete" for a "parse-N" node, which only the
+# CadPlugin's DAG Monitor ever renders) — so a user doing OS/web work with
+# no plugin tab open can still see what the agent is doing turn-by-turn,
+# not just a silent wait until the final assistant_message.
 # --------------------------------------------------------------------------
 
 
-def test_tool_start_and_tool_complete_emitted_for_non_mutating_tool(
+def test_tool_dispatch_start_and_end_emitted_for_non_mutating_tool(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _mock_llm(monkeypatch, [ToolCall(tool_id="system_state", arguments={})], "The system is healthy.")
@@ -772,20 +818,21 @@ def test_tool_start_and_tool_complete_emitted_for_non_mutating_tool(
         ws.receive_json()  # ready
         ws.send_json({"text": "system status"})
 
-        tool_start = _drain_until(ws, "tool_start")
-        assert tool_start == {"type": "tool_start", "tool_name": "system_state", "args_summary": ""}
+        dispatch_start = _drain_until(ws, "tool_dispatch_start")
+        assert dispatch_start["tool_name"] == "system_state"
+        assert dispatch_start["args_summary"] == ""
 
-        tool_complete = _drain_until(ws, "tool_complete")
-        assert tool_complete == {"type": "tool_complete", "tool_name": "system_state", "status": "success"}
+        dispatch_end = _drain_until(ws, "tool_dispatch_end")
+        assert dispatch_end["tool_id"] == "system_state"
+        assert dispatch_end["status"] == "success"
 
-        # Both fire strictly before the tool_result/assistant_message that
-        # close out the turn — a live consumer sees them WHILE the turn is
-        # still in flight, not only after the fact.
-        _drain_until(ws, "tool_result")
+        # Both fire strictly before the assistant_message that closes out
+        # the turn — a live consumer sees them WHILE the turn is still in
+        # flight, not only after the fact.
         _drain_until(ws, "assistant_message")
 
 
-def test_tool_start_args_summary_surfaces_the_identifying_argument(
+def test_tool_dispatch_start_args_summary_surfaces_the_identifying_argument(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _mock_llm(monkeypatch, [ToolCall(tool_id="search_web", arguments={"query": "gearbox torque rating", "max_results": 3})])
@@ -794,12 +841,12 @@ def test_tool_start_args_summary_surfaces_the_identifying_argument(
         ws.send_json({"type": "update_context", "active_plugins": ["web_tools"]})
         ws.send_json({"text": "look up gearbox torque ratings"})
 
-        tool_start = _drain_until(ws, "tool_start")
-        assert tool_start["tool_name"] == "search_web"
-        assert tool_start["args_summary"] == "gearbox torque rating"
+        dispatch_start = _drain_until(ws, "tool_dispatch_start")
+        assert dispatch_start["tool_name"] == "search_web"
+        assert dispatch_start["args_summary"] == "gearbox torque rating"
 
 
-def test_tool_start_args_summary_is_truncated_for_long_values(
+def test_tool_dispatch_start_args_summary_is_truncated_for_long_values(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     long_content = "x" * 500
@@ -814,19 +861,19 @@ def test_tool_start_args_summary_is_truncated_for_long_values(
             {"type": "hitl_response", "payload": {"request_id": approval["payload"]["request_id"], "approved": True}}
         )
 
-        tool_start = _drain_until(ws, "tool_start")
+        dispatch_start = _drain_until(ws, "tool_dispatch_start")
         # write_file's args_summary key is "path" (short + identifying) —
         # never the (here, 500-char) "content" value.
-        assert tool_start["args_summary"] == "notes.txt"
-        assert len(tool_start["args_summary"]) <= 80
+        assert dispatch_start["args_summary"] == "notes.txt"
+        assert len(dispatch_start["args_summary"]) <= 80
 
 
-def test_tool_start_is_deferred_until_after_hitl_approval(
+def test_tool_dispatch_start_is_deferred_until_after_hitl_approval(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A mutating tool must not be reported as "started" while it's still
-    only a pending HITL proposal — tool_start belongs to actual dispatch,
-    which for a mutating tool only happens post-approval."""
+    only a pending HITL proposal — tool_dispatch_start belongs to actual
+    dispatch, which for a mutating tool only happens post-approval."""
     _mock_llm(monkeypatch, [ToolCall(tool_id="create_freecad_box", arguments={"length": 60, "width": 40, "height": 20})])
     with client.websocket_connect("/ws/chat") as ws:
         ws.receive_json()  # ready
@@ -839,23 +886,27 @@ def test_tool_start_is_deferred_until_after_hitl_approval(
             {"type": "hitl_response", "payload": {"request_id": approval["payload"]["request_id"], "approved": True}}
         )
 
-        tool_start = _drain_until(ws, "tool_start")
-        assert tool_start["tool_name"] == "create_freecad_box"
+        dispatch_start = _drain_until(ws, "tool_dispatch_start")
+        assert dispatch_start["tool_name"] == "create_freecad_box"
 
-        tool_complete = _drain_until(ws, "tool_complete")
-        assert tool_complete == {"type": "tool_complete", "tool_name": "create_freecad_box", "status": "success"}
+        dispatch_end = _drain_until(ws, "tool_dispatch_end")
+        assert dispatch_end["tool_id"] == "create_freecad_box"
+        assert dispatch_end["status"] == "success"
 
 
-def test_tool_complete_status_is_error_when_the_tool_fails(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tool_dispatch_end_status_is_error_when_the_tool_fails(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _mock_llm(monkeypatch, [ToolCall(tool_id="read_file", arguments={"path": "does_not_exist.txt"})], "No such file.")
     with client.websocket_connect("/ws/chat") as ws:
         ws.receive_json()  # ready
         ws.send_json({"type": "update_context", "active_plugins": ["os_tools"]})
         ws.send_json({"text": "read does_not_exist.txt"})
 
-        _drain_until(ws, "tool_start")
-        tool_complete = _drain_until(ws, "tool_complete")
-        assert tool_complete == {"type": "tool_complete", "tool_name": "read_file", "status": "error"}
+        _drain_until(ws, "tool_dispatch_start")
+        dispatch_end = _drain_until(ws, "tool_dispatch_end")
+        assert dispatch_end["tool_id"] == "read_file"
+        assert dispatch_end["status"] == "error"
 
 
 def test_tool_failure_injects_system_override_directive_for_next_turn(
@@ -865,7 +916,16 @@ def test_tool_failure_injects_system_override_directive_for_next_turn(
     into the very next LLM call after an actual tool failure — on top of the
     standing system-prompt rule, this is what the next next_react_turn call
     literally sees, guarding against the model hallucinating success instead
-    of noticing `ok: false` and retrying."""
+    of noticing `ok: false` and retrying.
+
+    A fresh ``_RecordingProvider()`` is constructed for every turn (the
+    ``ModelProvider`` patch below), so its ``_turns`` script always resets
+    and the SAME read_file failure repeats every call — this doubles as the
+    identical-failure circuit breaker's own regression test: occurrence #2
+    must get the stronger "ABORT this exact approach" nudge (not the plain
+    fix-and-retry one), and occurrence #3 must hard-stop the turn instead of
+    calling the LLM a 4th time.
+    """
     import dana.core.react_dispatch as react_dispatch
 
     captured_messages: list[list[dict[str, Any]]] = []
@@ -893,11 +953,16 @@ def test_tool_failure_injects_system_override_directive_for_next_turn(
 
         _drain_until(ws, "assistant_message")
 
-    assert len(captured_messages) == 2
+    assert len(captured_messages) == 3
     second_call_messages = captured_messages[1]
     assert any(
         m.get("role") == "system" and "SYSTEM OVERRIDE" in m.get("content", "")
         for m in second_call_messages
+    )
+    third_call_messages = captured_messages[2]
+    assert any(
+        m.get("role") == "system" and "ABORT this exact approach" in m.get("content", "")
+        for m in third_call_messages
     )
 
 
@@ -921,7 +986,7 @@ def test_abort_turn_during_pending_hitl_cancels_and_prevents_dispatch(
     the LLM proposes create_freecad_box, which suspends for HITL approval —
     the loop hands control back to ws_chat's receive loop right there.
     Sending "abort_turn" instead of a hitl_response there must cancel the
-    pending call outright: it must never dispatch (no tool_start/tool_call
+    pending call outright: it must never dispatch (no tool_dispatch_start
     for it anywhere before the abort's own assistant_message), and the
     loop must not continue to a third iteration's final text.
     """
@@ -936,7 +1001,7 @@ def test_abort_turn_during_pending_hitl_cancels_and_prevents_dispatch(
         _activate_freecad(ws)
         ws.send_json({"text": "check status then build a box"})
 
-        _drain_until(ws, "tool_result")  # system_state, non-mutating, runs immediately
+        _drain_until(ws, "tool_dispatch_end")  # system_state, non-mutating, runs immediately
 
         approval = _drain_until(ws, "hitl_approval_required")
         assert approval["payload"]["action_name"] == "create_freecad_box"
@@ -954,7 +1019,7 @@ def test_abort_turn_during_pending_hitl_cancels_and_prevents_dispatch(
         assert assistant is not None, "assistant_message never arrived after abort_turn"
         assert assistant["content"] == "Generation aborted by user."
         assert not any(m.get("tool_id") == "create_freecad_box" for m in seen_before_final)
-        assert not any(m["type"] in ("tool_start", "tool_call") and m.get("tool_name", m.get("tool_id")) == "create_freecad_box" for m in seen_before_final)
+        assert not any(m["type"] == "tool_dispatch_start" and m.get("tool_name") == "create_freecad_box" for m in seen_before_final)
 
 
 def test_hitl_response_after_aborted_turn_is_ignored_as_stale(
@@ -1176,13 +1241,13 @@ def test_execute_code_task_requires_hitl_approval_with_files_then_dispatches(
 
         ws.send_json({"type": "hitl_response", "payload": {"request_id": request_id, "approved": True}})
 
-        tool_call = _drain_until(ws, "tool_call")
-        assert tool_call["tool_id"] == "execute_code_task"
-        assert tool_call["arguments"] == task_args
+        dispatch_start = _drain_until(ws, "tool_dispatch_start")
+        assert dispatch_start["tool_name"] == "execute_code_task"
+        assert dispatch_start["arguments"] == task_args
 
-        tool_result = _drain_until(ws, "tool_result")
-        assert tool_result["ok"] is True
-        assert "abcdef1" in tool_result["payload"]["stdout"]
+        dispatch_end = _drain_until(ws, "tool_dispatch_end")
+        assert dispatch_end["status"] == "success"
+        assert "abcdef1" in dispatch_end["output"]["stdout"]
 
         assistant = _drain_until(ws, "assistant_message")
         assert assistant["content"] == "Done."
@@ -1221,9 +1286,59 @@ def test_verification_gate_rejects_unacknowledged_failure_then_accepts_admission
         _activate_freecad(ws)
         ws.send_json({"text": "fuse AI_Part and BaseBox"})
 
-        tool_result = _drain_until(ws, "tool_result")
-        assert tool_result["ok"] is False
+        dispatch_end = _drain_until(ws, "tool_dispatch_end")
+        assert dispatch_end["status"] == "error"
 
         assistant = _drain_until(ws, "assistant_message")
         assert "wasn't able to complete" in assistant["content"]
         assert "fused result is (0, 0, 0, 50, 50, 50)" not in assistant["content"]
+
+
+def test_unload_capability_tool_id_hides_tool_from_the_very_next_turn(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dynamic Domain Locking end-to-end: unload_capability(tool_id=...)
+    must actually remove that tool_id from the VERY NEXT turn's offered
+    tools= schema, not just report success — dana.api.server's
+    _execute_and_continue is what writes session["hidden_tool_ids"], and
+    _run_react_loop's next_react_turn call is what reads it back every
+    iteration. Uses "freecad_essential" (not "freecad") — it's in
+    _NARROWING_EXEMPT_DOMAINS, so create_freecad_cylinder is unconditionally
+    offered whenever active regardless of Pillar 1's separate query-relevance
+    narrowing, isolating this test from that unrelated behavior.
+    """
+    import dana.core.react_dispatch as react_dispatch
+
+    captured_tools: list[list[dict[str, Any]]] = []
+
+    class _RecordingProvider:
+        def __init__(self, turns: list[Any]) -> None:
+            self._turns = list(turns)
+
+        def complete_with_tool_calls(self, messages: Any, *, tools: Any, provider: Any = None, **kwargs: Any) -> dict:
+            captured_tools.append(tools)
+            turn = self._turns.pop(0) if self._turns else "Done."
+            if isinstance(turn, str):
+                return {"content": turn, "tool_calls": [], "provider": "test"}
+            return {"content": "", "tool_calls": turn, "provider": "test"}
+
+    fake = _RecordingProvider(
+        [
+            [ToolCall(tool_id="unload_capability", arguments={"tool_id": "create_freecad_cylinder"})],
+            "Done.",
+        ]
+    )
+    monkeypatch.setattr(react_dispatch, "ModelProvider", lambda **_kwargs: fake)
+
+    with client.websocket_connect("/ws/chat") as ws:
+        ws.receive_json()  # ready
+        ws.send_json({"type": "update_context", "active_plugins": ["freecad_essential"]})
+        ws.send_json({"text": "stop letting yourself reach for create_freecad_cylinder directly"})
+
+        _drain_until(ws, "assistant_message")
+
+    assert len(captured_tools) == 2
+    first_names = {t["function"]["name"] for t in captured_tools[0]}
+    second_names = {t["function"]["name"] for t in captured_tools[1]}
+    assert "create_freecad_cylinder" in first_names
+    assert "create_freecad_cylinder" not in second_names

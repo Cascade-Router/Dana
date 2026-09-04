@@ -12,6 +12,7 @@ tests, not LLM-quality tests.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,41 @@ def _sessions_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _mock_platform(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server_module, "get_cad_engine", lambda: MockFreeCADEngine())
     monkeypatch.setattr(server_module, "get_control_plane", lambda: MockControlPlane())
+
+
+@pytest.fixture(autouse=True)
+def _disable_permanent_hitl_whitelist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The HITL tests below use create_freecad_box as their representative
+    "a mutating tool" fixture — written before
+    dana.api.server._HITL_ALWAYS_APPROVED_TOOLS permanently exempted
+    FreeCAD's geometry-CRUD tools (create_freecad_box included) from HITL
+    approval. Cleared here so those tests keep exercising generic HITL
+    protocol mechanics (approve/reject/bounce) unaffected by that later,
+    unrelated feature — same fix already applied in
+    tests/api/test_ws_chat.py's fixture of the same name."""
+    monkeypatch.setattr(server_module, "_HITL_ALWAYS_APPROVED_TOOLS", frozenset())
+
+
+@pytest.fixture(autouse=True)
+def _plan_gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This module's tests are about HITL/abort/bounce persistence, not
+    dana.core.react_dispatch's Plan-and-Execute Gatekeeper/FSM (which now
+    hides create_freecad_box from the model entirely — via
+    next_react_turn's own hard_restrict_to during the PLANNING phase —
+    until a create_plan call succeeds; see
+    tests/core/test_react_dispatch.py's own dedicated gatekeeper/FSM tests
+    for that). Each test here opens a fresh WebSocket with its own
+    server-generated session_id, so there's no fixed session_id to
+    pre-seed _set_has_plan for ahead of time — patching _get_has_plan
+    itself to always report "already planned" is the simplest way to keep
+    this module's mocked create_freecad_box tool-call sequences (which
+    predate the gatekeeper/FSM) dispatching exactly as before. Same fix
+    already applied in tests/api/test_ws_chat.py's fixture of the same
+    name.
+    """
+    import dana.core.react_dispatch as react_dispatch
+
+    monkeypatch.setattr(react_dispatch, "_get_has_plan", lambda *_a, **_k: True)
 
 
 @pytest.fixture
@@ -98,6 +134,42 @@ def test_save_and_load_session_round_trips(_sessions_dir: Path) -> None:
     assert loaded is not None
     assert loaded["title"] == "Build a box"
     assert loaded["messages"] == [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
+
+
+def test_save_and_load_session_round_trips_working_memory(_sessions_dir: Path) -> None:
+    sessions_module.save_session(
+        "abc123",
+        title="Build a box",
+        created_at=None,
+        messages=[],
+        working_memory={"summary": "User created a box and asked for a cylinder next.", "turn": 3},
+    )
+
+    loaded = sessions_module.load_session("abc123")
+    assert loaded is not None
+    assert loaded["working_memory"] == {"summary": "User created a box and asked for a cylinder next.", "turn": 3}
+
+
+def test_save_session_defaults_working_memory_when_omitted(_sessions_dir: Path) -> None:
+    record = sessions_module.save_session("abc123", title="T", created_at=None, messages=[])
+    assert record["working_memory"] == {"summary": "", "turn": 0}
+    assert sessions_module.load_session("abc123")["working_memory"] == {"summary": "", "turn": 0}
+
+
+def test_load_session_sanitizes_corrupt_working_memory(_sessions_dir: Path) -> None:
+    """A session file saved before working_memory existed (missing key
+    entirely) or with a foreign/malformed value must still load cleanly,
+    degrading to the same empty-state shape a brand-new session starts
+    with, rather than crashing or losing the rest of the record."""
+    sessions_module.save_session("no-memory-key", title="T", created_at=None, messages=[])
+    path = sessions_module._session_path("no-memory-key")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    del raw["working_memory"]
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    assert sessions_module.load_session("no-memory-key")["working_memory"] == {"summary": "", "turn": 0}
+
+    sessions_module.save_session("bad-memory-shape", title="T", created_at=None, messages=[], working_memory="oops")
+    assert sessions_module.load_session("bad-memory-shape")["working_memory"] == {"summary": "", "turn": 0}
 
 
 def test_load_session_returns_none_when_missing() -> None:
@@ -238,6 +310,80 @@ def test_reconnecting_with_session_id_hydrates_prior_history_and_appends(
     # Title stays whatever the FIRST turn derived — a later turn in the
     # same session must never overwrite it.
     assert stored["title"] == "First message"
+
+
+def test_working_memory_persists_across_reconnect_and_reenters_system_prompt(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end Cross-Session Memory check: a distilled summary produced
+    mid-session (1) ends up in the on-disk record once a later turn saves
+    it, and (2) comes back into the NEXT connection's live session state
+    and actual system prompt — not just the on-disk file — when that
+    session is resumed.
+
+    ``schedule_distillation`` is normally fire-and-forget and hits a real
+    local Ollama model (dana.core.context_distiller) — irrelevant to what's
+    being verified here, so it's replaced with a synchronous stub that
+    writes a known summary straight into ``session["working_memory"]``,
+    same as the real one eventually would.
+    """
+    captured_messages: list[list[dict[str, Any]]] = []
+
+    class _RecordingProvider:
+        def __init__(self, turns: list[str]) -> None:
+            self._turns = list(turns)
+
+        def complete_with_tool_calls(self, messages: Any, *, tools: Any, provider: Any = None, **kwargs: Any) -> dict:
+            captured_messages.append(messages)
+            turn = self._turns.pop(0) if self._turns else "Done."
+            return {"content": turn, "tool_calls": [], "provider": "test"}
+
+    import dana.core.react_dispatch as react_dispatch
+
+    def _use_reply(text: str) -> None:
+        provider = _RecordingProvider([text])
+        monkeypatch.setattr(react_dispatch, "ModelProvider", lambda **_kwargs: provider)
+
+    monkeypatch.setattr(
+        server_module,
+        "schedule_distillation",
+        lambda session, user_text, assistant_text: session.__setitem__(
+            "working_memory", {"summary": "User created a box and asked for a cylinder next.", "turn": 1}
+        ),
+    )
+
+    _use_reply("First reply.")
+    with client.websocket_connect("/ws/chat") as ws:
+        ready = ws.receive_json()
+        session_id = ready["session_id"]
+        ws.send_json({"text": "First message"})
+        _drain_until(ws, "assistant_message")
+
+        # The stubbed distillation above ran (updating in-memory state) only
+        # AFTER this first turn's own _persist_turn call already saved to
+        # disk — same one-turn-lag the real local-model distiller has. A
+        # second turn is needed for _persist_turn to actually pick up the
+        # now-populated working_memory.
+        _use_reply("Second reply.")
+        ws.send_json({"text": "Second message"})
+        _drain_until(ws, "assistant_message")
+
+    stored = sessions_module.load_session(session_id)
+    assert stored is not None
+    assert stored["working_memory"] == {"summary": "User created a box and asked for a cylinder next.", "turn": 1}
+
+    # Reconnect as a brand-new WebSocket/session dict — the distilled
+    # context must come back from disk into the live session, not just sit
+    # in the file.
+    _use_reply("Third reply.")
+    with client.websocket_connect(f"/ws/chat?session_id={session_id}") as ws:
+        ready2 = ws.receive_json()
+        assert ready2["session_id"] == session_id
+        ws.send_json({"text": "Third message"})
+        _drain_until(ws, "assistant_message")
+
+    system_prompt = captured_messages[-1][0]["content"]
+    assert "User created a box and asked for a cylinder next." in system_prompt
 
 
 def test_invalid_session_id_query_param_is_ignored_and_gets_a_fresh_id(client: TestClient) -> None:

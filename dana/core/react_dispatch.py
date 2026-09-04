@@ -18,15 +18,19 @@ import inspect
 import json
 import math
 import re
-import sys
 import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable
 from functools import lru_cache
-from typing import Any
+from typing import Any, Literal
 
-from dana.core.context_manager import prune_message_history, prune_tool_output_history
+from dana.core import telemetry
+from dana.core.context_manager import (
+    compress_tool_output_history,
+    prune_message_history,
+    prune_tool_output_history,
+)
 from dana.core.model_provider import ModelProvider, tool_calling_provider
 from dana.core.skill_loader import delete_skill, load_user_skills, read_skill_source, save_skill
 from dana.core.tool_retrieval import narrow_tool_ids_by_query
@@ -37,6 +41,7 @@ from dana.platform import factory as platform_factory
 from dana.platform import get_cad_engine, get_control_plane
 from dana.plugins.freecad.call_log import CadCallLog
 from dana.plugins.freecad.error_digest import digest_error
+from dana.plugins.freecad import skill_compiler
 from dana.plugins.memory.core_memory import format_core_memory_for_prompt, write_core_memory
 from dana.plugins.os.background_services import list_background_services as _fs_list_background_services
 from dana.plugins.os.background_services import start_background_service as _fs_start_background_service
@@ -60,12 +65,13 @@ from dana.security.dry_run import is_dry_run_enabled
 from dana.tools.cad_vision import analyze_cad_blueprint, capture_cad_viewport
 from dana.tools.schema import (
     ToolCall,
+    ToolParameterSpec,
     ToolSpec,
     load_tool_registry,
     openai_tools_schema,
     to_openai_function_schema,
 )
-from dana.tools.schema_minify import minify_tool_schemas
+from dana.tools.schema_minify import minify_tool_schemas, should_strip_tool_schemas, strip_tool_schemas
 
 
 class ToolResult:
@@ -196,7 +202,24 @@ def _tool_load_capability(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[
     is built from active_plugins UNION whatever hasn't yet decayed out of
     that dict (dana.api.server._effective_capabilities), so the very next
     turn already sees whatever this call unlocked.
+
+    Dynamic Domain Locking: also accepts ``tool_id`` INSTEAD OF ``domain`` —
+    the inverse of ``unload_capability``'s own ``tool_id`` branch, un-hiding
+    one specific tool_id this session previously hid (see that function's
+    docstring for why domain granularity alone can't express "hide just
+    this one tool"). Still stateless: server.py's ``_execute_and_continue``
+    is what actually removes the id from ``session["hidden_tool_ids"]``
+    once this reports success.
     """
+    tool_id = str(args.get("tool_id") or "").strip()
+    if tool_id:
+        if tool_id not in TOOL_HANDLERS:
+            return {"ok": False, "error": f"Unknown tool_id {tool_id!r} — nothing to unhide."}
+        return {
+            "ok": True,
+            "unhidden_tool_id": tool_id,
+            "message": f"Unhid '{tool_id}' — available again starting next turn.",
+        }
     domain = str(args.get("domain") or "").strip()
     # "freecad" defaults to the trimmed essential set (see
     # _FREECAD_ESSENTIAL_TOOL_IDS) rather than all 24 FreeCAD tools — the
@@ -255,7 +278,31 @@ def _tool_unload_capability(args: dict[str, Any], _engine: Any, _cp: Any) -> dic
     pops the domain from session["capability_unlocked_at_turn"] once
     dispatch_tool_call reports success (see server.py's
     _execute_and_continue) — this handler has no session object to mutate.
+
+    Dynamic Domain Locking: also accepts ``tool_id`` INSTEAD OF ``domain`` —
+    hides one specific tool_id from THIS session's tool schema even while
+    its domain stays active (e.g. hide ``create_freecad_cylinder`` to force
+    ``batch_pattern_array`` for a repeated-feature request) — something a
+    domain boundary can't express on its own, since a domain's tools are
+    always all-or-nothing (``create_freecad_cylinder`` and
+    ``batch_pattern_array`` are both members of the same "freecad" domain).
+    Stateless like the domain branch above: server.py's
+    ``_execute_and_continue`` is what actually adds the id to
+    ``session["hidden_tool_ids"]`` once this reports success.
     """
+    tool_id = str(args.get("tool_id") or "").strip()
+    if tool_id:
+        if tool_id not in TOOL_HANDLERS:
+            return {"ok": False, "error": f"Unknown tool_id {tool_id!r} — nothing to hide."}
+        return {
+            "ok": True,
+            "hidden_tool_id": tool_id,
+            "message": (
+                f"Hid '{tool_id}' — it won't be offered starting next turn even though its domain "
+                "stays active. Use the higher-leverage alternative instead. Call load_capability "
+                f"with tool_id='{tool_id}' to unhide it if it's genuinely needed again."
+            ),
+        }
     domain = str(args.get("domain") or "").strip()
     if domain not in _CAPABILITY_TOOL_IDS:
         return {
@@ -439,11 +486,158 @@ def _tool_update_core_memory(args: dict[str, Any], _engine: Any, _cp: Any) -> di
 # would need to review/approve before it happens.
 def _tool_create_plan(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
     raw_tasks = args.get("tasks")
-    tasks = [str(t) for t in raw_tasks] if isinstance(raw_tasks, list) else []
-    return _tb_create_plan(str(args.get("objective") or ""), tasks)
+    # Deterministic LLM-Driven Mapping (Plan-and-Execute FSM, Phase 1
+    # revision): each entry is normally a {"description": str,
+    # "expected_tools": [str]} object (tools.json's create_plan schema) —
+    # the PLANNER declares the exact tool(s) it intends for each task, since
+    # it holds the real semantic context a k=3 embedding guess over a short
+    # task description never reliably could. A bare string is still
+    # accepted (a legacy caller, or a completion that ignores the object
+    # shape) and treated as a task with no declared expected_tools — the
+    # SAME "no fixed tool signature" case a genuinely tool-less task (a
+    # pure visual inspection) already produces, handled identically below.
+    descriptions: list[str] = []
+    expected_tools_by_task: list[frozenset[str]] = []
+    # Fix #1 — Strict Plan Validation (Kill Tool Hallucinations): collected
+    # across EVERY task before anything is created, so one retry can name
+    # every bad tool_id at once instead of a fix-one-fail-on-the-next loop.
+    # A prior version of this function silently intersected each task's
+    # declared expected_tools with `_RESTRICTED_GEOMETRY_TOOLS` below and
+    # nothing else — a genuinely non-existent tool_id (e.g. the Planner
+    # hallucinating "perform_freecad_pattern_array" for the real
+    # "batch_pattern_array") landed in that intersection's "doesn't match
+    # anything" bucket EXACTLY like a real-but-irrelevant tool_id would,
+    # silently producing an EMPTY `expected_tool_ids` — which
+    # `_tool_mark_task_completed`'s own False-Success-Blocker treats as "no
+    # fixed tool signature", never gating that task's completion at all.
+    # That silent drop is what let a hallucinated name bypass the blocker
+    # entirely. Existence is now checked HERE, against TOOL_HANDLERS — the
+    # actual live dispatch registry, not just this turn's capability-
+    # narrowed schema — before the geometry-only intersection below ever
+    # runs, so a hallucinated tool_id is a hard, plan-wide rejection instead
+    # of a silently-accepted no-op task.
+    hallucinated: list[tuple[int, str]] = []
+    for i, entry in enumerate(raw_tasks if isinstance(raw_tasks, list) else [], start=1):
+        if isinstance(entry, dict):
+            descriptions.append(str(entry.get("description") or ""))
+            raw_expected = entry.get("expected_tools")
+            declared = frozenset(str(x) for x in raw_expected) if isinstance(raw_expected, list) else frozenset()
+            hallucinated.extend((i, tool_id) for tool_id in sorted(declared) if tool_id not in TOOL_HANDLERS)
+            expected_tools_by_task.append(declared)
+        else:
+            descriptions.append(str(entry))
+            expected_tools_by_task.append(frozenset())
+
+    if hallucinated:
+        bad_ids = sorted({tool_id for _task_num, tool_id in hallucinated})
+        detail = "; ".join(f"task {task_num}: '{tool_id}'" for task_num, tool_id in hallucinated)
+        telemetry.log_error(stage="create_plan_rejected", hallucinated_tool_ids=bad_ids, detail=detail)
+        raise RuntimeError(
+            f"create_plan rejected — expected_tools names {bad_ids} which do not exist in the tool "
+            f"catalog ({detail}). Nothing was created. Check the tools you have actually been "
+            "offered (or call check_plugin_registry) for the EXACT tool_id and retry create_plan "
+            "with corrected names."
+        )
+
+    result = _tb_create_plan(str(args.get("objective") or ""), descriptions)
+    if result.get("ok"):
+        # Plan-and-Execute Gatekeeper (Phase 6): a successful create_plan
+        # unlocks this SESSION's geometry-mutating tools (see
+        # _RESTRICTED_GEOMETRY_TOOLS/dispatch_tool_call) and anchors
+        # `plan_text` into every later turn's system prompt (see
+        # _get_active_plan/build_system_prompt) — formatted from the same
+        # objective/tasks just sent to task_board, not re-derived from its
+        # snapshot, so this stays independent of that module's own shape.
+        objective = str(args.get("objective") or "").strip()
+        plan_lines = [f"Objective: {objective}", *(f"{i}. {t}" for i, t in enumerate(descriptions, start=1))]
+        _set_has_plan(True, "\n".join(plan_lines))
+        # Session-scoped structured mirror of the same objective/tasks, kept
+        # ONLY so `_get_active_plan` can render the Focused Plan Anchor (see
+        # its own docstring) — `plan_text` above stays the flat verbatim
+        # fallback for callers (tests included) that only ever called
+        # `_set_has_plan` directly with a plain string and never populate
+        # `tasks` at all.
+        #
+        # Plan-and-Execute FSM (Phase 1, revised): `expected_tool_ids` comes
+        # straight from the Planner's OWN per-task `expected_tools`
+        # declaration (parsed into `expected_tools_by_task` above), never a
+        # semantic guess computed after the fact. The former approach —
+        # `narrow_tool_ids_by_query(_RESTRICTED_GEOMETRY_TOOLS, t, k=3)`
+        # scoring each task's short description against every geometry
+        # tool's embedding — could and did silently misfire: a description
+        # like "Export the final model as STEP" scoring create_freecad_box/
+        # perform_freecad_boolean into ITS top-3 (short descriptions carry
+        # too little signal for embeddings to reliably tell sequential CAD
+        # steps apart). The Planner holds the real semantic context for its
+        # own plan; declaring intent explicitly is strictly more reliable
+        # than inferring it from a few words after the fact — and, since
+        # Fix #1 above, every declared tool_id is ALREADY known to exist in
+        # TOOL_HANDLERS by the time execution reaches here (a hallucinated
+        # one aborted the whole create_plan call before this point).
+        #
+        # Universal FSM Enforcement (Geometry Filter REMOVED): a prior
+        # revision intersected `declared` with `_RESTRICTED_GEOMETRY_TOOLS`
+        # here — "the only tool_ids the FSM machinery consults" at the
+        # time — so a Planner declaring a genuinely real, non-geometry tool
+        # (e.g. `execute_freecad_script`, `batch_pattern_array` was still
+        # geometry-scoped then too) came back with an EMPTY
+        # `expected_tool_ids`, indistinguishable from "no fixed tool
+        # signature at all". That was a second hallucination-shaped hole,
+        # not just the first one Fix #1 closed: the model could declare
+        # `execute_freecad_script`, have that silently dropped, build
+        # something by an entirely different, UNDECLARED means, and still
+        # pass `_tool_mark_task_completed`'s gate — which only ever fires
+        # when `expected_tool_ids` is non-empty. `expected_tool_ids` now
+        # perfectly mirrors what the Planner declared (already existence-
+        # validated above) with NO further narrowing — `dispatch_tool_call`'s
+        # out-of-order check and task-advancement tracking are correspondingly
+        # broadened (see `_fsm_out_of_order_check`'s own module-level
+        # comment) to enforce and track EVERY declared tool_id, not only
+        # ones in `_RESTRICTED_GEOMETRY_TOOLS`.
+        task_objs = [
+            {
+                "id": i,
+                "description": t,
+                "status": "active" if i == 1 else "pending",
+                "expected_tool_ids": expected_tools_by_task[i - 1],
+                # Fix #2 — The False Success Blocker: every tool_id
+                # successfully dispatched while THIS task was active (see
+                # _advance_fsm_on_dispatch), regardless of whether it
+                # matched expected_tool_ids — checked against
+                # expected_tool_ids by _tool_mark_task_completed before it
+                # will let a manual completion through.
+                "executed_tools": set(),
+            }
+            for i, t in enumerate(descriptions, start=1)
+        ]
+        _set_session_plan_tasks(objective, task_objs)
+        entry = _PLAN_STATE_REGISTRY.setdefault(get_session_id(), {})
+        entry["fsm_state"] = _fsm_transition(entry.get("fsm_state", "planning"), "create_plan_succeeded")
+        telemetry.log_plan_created(objective=objective, task_count=len(task_objs))
+    return result
 
 
 def _tool_mark_task_completed(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    """Manual half of task advancement — see the automatic half,
+    ``_advance_fsm_on_dispatch``, and the Plan-and-Execute FSM's own
+    module-level docstring for why BOTH exist (a task with no fixed
+    ``expected_tool_ids`` can only ever be closed out manually).
+
+    Fix #2 — The False Success Blocker: when the Planner declared
+    ``expected_tools`` for this task (``_tool_create_plan``'s own per-task
+    ``expected_tool_ids``), at least one of them must have been
+    SUCCESSFULLY dispatched while the task was active (tracked in its
+    ``executed_tools`` set by ``_advance_fsm_on_dispatch``) before this call
+    is allowed to close it out. Without this, a task like "add the mounting
+    hole pattern" (``expected_tools=["batch_pattern_array"]``) could be
+    marked complete having never actually run the required operation — the
+    exact hallucinated-completion failure mode this fix exists to block.
+    Note this gate is normally moot for the auto-advance path: a
+    successfully dispatched expected tool already closes the task out via
+    ``_advance_fsm_on_dispatch`` itself, so reaching THIS function with the
+    task still "active" and a non-empty ``expected_tool_ids`` means, by
+    construction, that none of them has succeeded yet.
+    """
     try:
         task_id = int(args.get("task_id"))
     except (TypeError, ValueError):
@@ -457,7 +651,108 @@ def _tool_mark_task_completed(args: dict[str, Any], _engine: Any, _cp: Any) -> d
         except (TypeError, ValueError):
             return {"ok": False, "error": f"next_task_id must be an integer, got: {raw_next_task_id!r}"}
 
-    return _tb_mark_task_completed(task_id, next_task_id)
+    entry = _PLAN_STATE_REGISTRY.get(get_session_id())
+    tasks = entry.get("tasks") if entry else None
+    task = next((t for t in tasks if t.get("id") == task_id), None) if tasks else None
+    if task is not None:
+        expected = task.get("expected_tool_ids") or frozenset()
+        executed = task.get("executed_tools") or set()
+        if expected and not (expected & executed):
+            missing = sorted(expected)
+            telemetry.log_error(
+                stage="mark_task_completed_rejected", task_id=task_id, missing_expected_tools=missing
+            )
+            return {
+                "ok": False,
+                "error": (
+                    f"Task {task_id} declared expected_tools {missing} when the plan was created, "
+                    "but none of them has been successfully executed yet. You must execute one of "
+                    f"the required tool(s) (e.g. {missing[0]}) before calling mark_task_completed — "
+                    "completing a task without running its required operation is not allowed."
+                ),
+            }
+
+    result = _tb_mark_task_completed(task_id, next_task_id)
+    if result.get("ok"):
+        # Keep the session-scoped Focused Plan Anchor (_get_active_plan) in
+        # sync with task_board's own global state — see _set_session_plan_tasks.
+        _mark_session_task_completed(task_id, next_task_id)
+        telemetry.log_task_state_change(task_id=task_id, status="completed", next_task_id=next_task_id)
+    return result
+
+
+# Composite Skill Compiler — turns a completed Plan-and-Execute run
+# (create_plan -> N successful geometry calls) into a single, permanently
+# reusable, parameterized tool. See dana.plugins.freecad.skill_compiler's
+# own module docstring for the compiler itself; this handler is only the
+# orchestration glue: slice this session's CadCallLog since its last
+# create_plan, compile it, then hand the result to the SAME save_skill/
+# refresh_user_skills pipeline save_new_skill already uses — a compiled
+# skill IS a user skill, just machine-authored, so it gets hot-reload,
+# HITL gating (see its "read_only" ABSENCE in tools.json), and now (see
+# refresh_user_skills's own docstring) embedding-index registration for
+# free, with zero new dispatch-side machinery.
+#
+# Always core (see _CORE_TOOL_IDS above): compiling what a plan just built
+# must never be gated behind a specific plugin tab, same reasoning as
+# create_plan/save_new_skill, which this composes.
+def _tool_compile_plan_as_skill(
+    args: dict[str, Any], _engine: Any, _cp: Any, *, call_log: CadCallLog | None = None
+) -> dict[str, Any]:
+    skill_name = str(args.get("skill_name") or "").strip()
+    description = str(args.get("description") or "").strip()
+    if not skill_name:
+        return {"ok": False, "error": "compile_plan_as_skill requires skill_name"}
+    if not description:
+        return {"ok": False, "error": "compile_plan_as_skill requires description"}
+    if skill_name in TOOL_HANDLERS and skill_name not in _USER_SKILL_TOOL_IDS:
+        return {
+            "ok": False,
+            "error": f"'{skill_name}' collides with an existing built-in tool id — choose a different skill_name",
+        }
+
+    raw_tokens = args.get("expose_parameters")
+    expose_tokens = [str(t) for t in raw_tokens] if isinstance(raw_tokens, list) else None
+
+    records = skill_compiler.slice_records_since_plan(list(call_log.records) if call_log else [])
+    compiled = skill_compiler.compile_call_log_to_skill(
+        records, skill_name=skill_name, description=description, expose_tokens=expose_tokens
+    )
+    if not compiled.get("ok"):
+        if compiled.get("invalid_expose_tokens"):
+            # Fix #5 — Skill Compilation Integrity: surface the rejection as
+            # a first-class ERROR event, not just a return value the caller
+            # might not log at all.
+            telemetry.log_error(
+                stage="compile_plan_as_skill_rejected",
+                skill_name=skill_name,
+                invalid_expose_tokens=compiled["invalid_expose_tokens"],
+            )
+        return compiled
+
+    save_result = save_skill(skill_name, compiled["python_code"], compiled["schema"])
+    if not save_result.get("ok"):
+        return save_result
+
+    refresh_result = refresh_user_skills()
+    if skill_name not in _USER_SKILL_TOOL_IDS:
+        skipped = refresh_result.get("skipped", [])
+        reason = next(
+            (s["reason"] for s in skipped if s["file"] == f"{skill_name}.py"), "unknown validation failure"
+        )
+        return {"ok": False, "error": f"skill file written to disk but failed to load: {reason}"}
+
+    return {
+        "ok": True,
+        "skill_name": skill_name,
+        "parameter_count": compiled["parameter_count"],
+        "step_count": compiled["step_count"],
+        "skipped": compiled.get("skipped") or [],
+        "message": (
+            f"Compiled '{skill_name}' from {compiled['step_count']} step(s) with "
+            f"{compiled['parameter_count']} exposed parameter(s) — available as a tool starting next turn."
+        ),
+    }
 
 
 # Autonomous Skill Acquisition — save_new_skill (dana.core.skill_loader).
@@ -872,6 +1167,19 @@ def _tool_create_freecad_star_prism(args: dict[str, Any], engine: Any, _cp: Any)
     )
 
 
+def _tool_create_freecad_polygon(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    sides = int(args.get("sides", 6))
+    if sides < 3:
+        return {"ok": False, "error": "create_freecad_polygon requires at least 3 sides"}
+    return engine.create_polygon(
+        sides,
+        float(args.get("radius", 50)),
+        float(args.get("height", 10)),
+        name=str(args.get("name") or "Polygon"),
+        placement=_extract_placement(args),
+    )
+
+
 # Maps a FreeCAD object's LLM-visible label (e.g. "Box") to the on-disk
 # .FCStd/.stl path it was last saved to — every create_*/perform_freecad_boolean
 # call spawns a brand-new document/subprocess (see dana.plugins.freecad.engine's
@@ -896,6 +1204,686 @@ def _object_registry() -> dict[str, str]:
     already had for a session's first-ever object."""
     return _OBJECT_PATH_REGISTRY.setdefault(get_session_id(), {})
 
+
+# Topological Lineage Graph (TLG) — Phase 5: replaces the flat
+# active_solid/consumed-ancestors scheme (Phase 4) with a real DAG the
+# frontend's DAG Monitor can render directly, and which derives "is this
+# name still usable" from actual graph structure instead of a
+# hand-maintained consumed-set. {"nodes": {name: {"id", "label", "type"}},
+# "edges": [{"source", "target"}, ...]} — session-scoped exactly like
+# _OBJECT_PATH_REGISTRY, for the same cross-session-collision reason.
+_TOPOLOGY_DAG_REGISTRY: dict[str, dict[str, Any]] = {}
+
+
+def get_topology_dag(session_id: str | None = None) -> dict[str, Any]:
+    """This session's Topological Lineage Graph. An explicit ``session_id``
+    lets a caller outside the dispatch_tool_call call chain (e.g. the
+    WebSocket "ready" handler seeding a reconnect) ask for a specific
+    session's graph instead of relying on the ambient contextvar — the same
+    override ``dana.session_context.session_scoped_dir`` already supports.
+    Never returns ``None`` — a session with no geometry yet gets a fresh
+    empty graph rather than a ``KeyError``.
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    return _TOPOLOGY_DAG_REGISTRY.setdefault(sid, {"nodes": {}, "edges": []})
+
+
+def resolve_living_leaf(object_name: str) -> str:
+    """Topological Amnesia mitigation (Phase 5): follows this session's
+    topology_dag edges forward from ``object_name`` until reaching a node
+    with no outgoing edge — a "living" leaf that hasn't itself been
+    consumed by any later boolean/edge/feature operation. A name with no
+    outgoing edge (never consumed, or not a known node at all) is returned
+    unchanged — an unrecognized name is left for the caller's own existing
+    "unknown object" validation to report, not something this should paper
+    over.
+
+    This is what makes a stale LLM reference silently self-heal with no
+    tool-id-specific bookkeeping: a throwaway cutting-tool primitive (e.g. a
+    Mounting_Hole cylinder) never GETS an outgoing edge until it's actually
+    fed into a boolean as an input, so ``resolve_living_leaf("Mounting_Hole")``
+    correctly returns it unchanged right up until that happens — unlike a
+    single "most recently created" pointer, which hijacked onto it the
+    instant it was created (the exact "cut the hole from itself, emit an
+    empty STEP file" incident Phase 4's refinement had to special-case
+    around with a tool-id allowlist).
+    """
+    dag = get_topology_dag()
+    current = object_name
+    seen = {current}
+    while True:
+        next_hop = None
+        for edge in dag["edges"]:
+            if edge["source"] == current:
+                next_hop = edge["target"]  # last match wins: the most recent consumption
+        if next_hop is None or next_hop in seen:
+            return current
+        seen.add(next_hop)
+        current = next_hop
+
+
+# tool_id -> the argument key names on THAT tool's call that reference an
+# EXISTING object this session already created — eligible for silent
+# resolve_living_leaf redirection, and recorded as a topology_dag input edge
+# once the call succeeds. NOT every tool with a same-named key belongs here:
+# import_and_solidify_mesh's own "object_name" names the BRAND-NEW object
+# being created, not a reference to an existing one, so redirecting it would
+# silently rename the caller's intended output — it's deliberately absent.
+_TOPOLOGY_INPUT_ARG_KEYS: dict[str, tuple[str, ...]] = {
+    "perform_freecad_boolean": ("base_object", "tool_object"),
+    "perform_freecad_edge_operation": ("target_object",),
+    "create_freecad_feature_on_face": ("object_name",),
+    "modify_freecad_parameter": ("target_object",),
+}
+# export_freecad_model's target_objects is list-valued (not a single name)
+# and never produces its own topology_dag node — an export is a terminal
+# read, not a new object — so it's redirected separately in
+# _apply_topology_redirects rather than folded into the dict above.
+_EXPORT_TARGETS_ARG_KEY = "target_objects"
+
+# Fix #3 — Kill Silent Auto-Redirection: perform_freecad_edge_operation
+# (a fillet/chamfer radius) and create_freecad_feature_on_face (a feature
+# anchored at named face coordinates) are TARGETED single-object
+# operations — resolve_living_leaf's forward DAG walk exists to self-heal a
+# STALE reference by retargeting onto whatever most recently consumed it
+# (see its own docstring), but for a targeted op that "self-heal" is exactly
+# the failure mode this fix removes: silently walking onto the WRONG
+# consumer (e.g. an unrelated mounting hole that happens to share the same
+# base object) operates on geometry the model never named, with only a
+# warning buried in the result message to ever notice. perform_freecad_
+# boolean/modify_freecad_parameter are deliberately NOT in this set — a
+# boolean chain genuinely benefits from "the object I just referenced got
+# consumed earlier this same turn" self-healing, and a wrong guess there is
+# far more visible (the whole boolean fails or produces an obviously wrong
+# shape) than a fillet silently landing on the wrong feature.
+_STRICT_RESOLUTION_TOOLS = frozenset({"perform_freecad_edge_operation", "create_freecad_feature_on_face"})
+
+
+def _resolve_strict_target(tool_id: str, key: str, requested: str) -> str:
+    """Fix #3's actual resolution: the requested name must be EXACTLY a
+    currently-live object in this session's topology_dag — never a fuzzy or
+    probabilistic guess. Raises ``RuntimeError`` (caught by
+    ``dispatch_tool_call``'s own try/except, surfaced as an ordinary
+    digested tool failure) the instant either check fails, instead of
+    returning some other name the caller never asked for:
+
+    1. Unknown entirely (never created, or a typo) — nothing to resolve.
+    2. Known but already CONSUMED by a later operation (has an outgoing
+       topology_dag edge) — this is the exact "stale reference" case
+       resolve_living_leaf used to silently walk past; now it's a hard
+       failure naming the actual current object, so the model corrects its
+       OWN next call instead of an invisible substitution correcting it.
+
+    A UUID-prefixed alias (``f"{prefix}_{requested}"`` — skill_compiler's
+    own ``_apply_name_prefix``/``execute_compiled_steps`` naming convention
+    for a compiled skill's internal objects) is accepted when it resolves
+    unambiguously (exactly one live match) — this is a deterministic,
+    exact-suffix match against a known naming convention, not a fuzzy guess,
+    and is the one case genuinely named in this fix's own requirements.
+    """
+    dag = get_topology_dag()
+    nodes = dag["nodes"]
+    if requested in nodes:
+        live_name = requested
+    else:
+        alias_matches = [
+            n for n in nodes if n.endswith(f"_{requested}") and len(n) > len(requested)
+        ]
+        if len(alias_matches) == 1:
+            live_name = alias_matches[0]
+        elif alias_matches:
+            raise RuntimeError(
+                f"{tool_id}: '{requested}' does not exist, and {len(alias_matches)} differently-"
+                f"prefixed objects share that suffix ({sorted(alias_matches)}) — ambiguous, "
+                "refusing to guess which one you mean. Name the exact object."
+            )
+        else:
+            raise RuntimeError(
+                f"{tool_id}: no object named '{requested}' exists in this session. Refusing to "
+                "guess — verify the exact object name and retry with it exactly."
+            )
+    consumers = [edge["target"] for edge in dag["edges"] if edge["source"] == live_name]
+    if consumers:
+        raise RuntimeError(
+            f"{tool_id}: '{live_name}' has already been consumed by a later operation "
+            f"(-> '{consumers[-1]}') and no longer reflects the current geometry. If you mean "
+            f"the current result, target '{consumers[-1]}' explicitly — it will never be "
+            "substituted automatically."
+        )
+    return live_name
+
+
+def _apply_topology_redirects(
+    tool_id: str, arguments: dict[str, Any]
+) -> tuple[dict[str, Any], list[str], str | None]:
+    """The Silent Override, centralized: called once per dispatch, BEFORE
+    the handler runs, so every consuming/terminal tool gets the same
+    redirect logic instead of each duplicating its own call to
+    resolve_living_leaf. Returns the (possibly rewritten) arguments the
+    handler should actually run against, the resolved input object names
+    this call consumes (for _record_topology_node's edge-recording once the
+    call succeeds), and a combined warning string — surfaced back into the
+    LLM-visible payload — for any redirect that actually fired.
+
+    ``tool_id in _STRICT_RESOLUTION_TOOLS`` (Fix #3) never reaches
+    resolve_living_leaf at all — see ``_resolve_strict_target``, which
+    raises instead of substituting.
+    """
+    keys = _TOPOLOGY_INPUT_ARG_KEYS.get(tool_id, ())
+    if not keys and tool_id != "export_freecad_model":
+        return arguments, [], None
+
+    resolved = dict(arguments)
+    input_names: list[str] = []
+    warnings: list[str] = []
+    strict = tool_id in _STRICT_RESOLUTION_TOOLS
+
+    for key in keys:
+        raw = resolved.get(key)
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        requested = raw.strip()
+        if strict:
+            live_name = _resolve_strict_target(tool_id, key, requested)
+            resolved[key] = live_name
+            input_names.append(live_name)
+            continue
+        living = resolve_living_leaf(requested)
+        if living != requested:
+            warnings.append(
+                f"Note: Auto-redirected '{key}' from '{requested}' to '{living}' to reflect "
+                "recent boolean/feature operations."
+            )
+        resolved[key] = living
+        input_names.append(living)
+
+    if tool_id == "export_freecad_model":
+        raw_list = resolved.get(_EXPORT_TARGETS_ARG_KEY)
+        if isinstance(raw_list, list):
+            new_list = []
+            for raw_name in raw_list:
+                requested = str(raw_name).strip()
+                living = resolve_living_leaf(requested) if requested else requested
+                if living != requested:
+                    warnings.append(
+                        f"Note: Auto-redirected a target_objects entry from '{requested}' to "
+                        f"'{living}' to reflect recent boolean/feature operations."
+                    )
+                new_list.append(living)
+            resolved[_EXPORT_TARGETS_ARG_KEY] = new_list
+            # Deliberately NOT added to input_names — export never produces
+            # a topology_dag node of its own for these to be edges into.
+
+    return resolved, input_names, (" ".join(warnings) or None)
+
+
+def _record_topology_node(output_name: str, input_object_names: Iterable[str]) -> None:
+    """Adds ``output_name`` as a topology_dag node and, for every input this
+    call actually consumed (already resolved to ITS OWN living leaf by
+    ``_apply_topology_redirects``), an edge recording that consumption. A
+    self-edge (an in-place mutation like modify_freecad_parameter, whose
+    output name equals its own input) is skipped — that's a same-object
+    update, not a lineage step.
+
+    Pure state mutation only — broadcasting the updated graph to the
+    frontend is dana.api.server's job (mirroring how it already broadcasts
+    plan_update/memory_update: a direct call site check right after
+    dispatch_tool_call returns, not a callback registered here), since this
+    module stays UI-agnostic and never imports the WebSocket layer.
+    """
+    dag = get_topology_dag()
+    dag["nodes"][output_name] = {"id": output_name, "label": output_name, "type": "geometry"}
+    for input_name in input_object_names:
+        if input_name and input_name != output_name and input_name in dag["nodes"]:
+            dag["edges"].append({"source": input_name, "target": output_name})
+
+
+# Plan-and-Execute Gatekeeper — Phase 6: forces the LLM to call create_plan
+# (outlining its step-by-step topological sequence, boolean strategy, and
+# object naming convention) BEFORE it's allowed to dispatch any
+# geometry-mutating tool, instead of improvising a boolean chain turn by
+# turn and hallucinating object names along the way — the same failure mode
+# the topology_dag/resolve_living_leaf machinery above heals AFTER the fact;
+# this is the prevention half.
+#
+# Session-scoped exactly like topology_dag/_OBJECT_PATH_REGISTRY, and
+# DELIBERATELY SEPARATE from dana.plugins.planning.task_board's own plan
+# (the GLOBAL objective/tasks store PlanChecklist and GET /api/planner
+# read): that store has no concept of "session" at all, so gating a
+# session's own CAD workspace on it would let session B's geometry unlock
+# the instant session A calls create_plan, and vice versa leave session B
+# blocked forever behind a plan it never made. `plan_text` is stored
+# verbatim (whatever _tool_create_plan formats it as) rather than derived
+# from task_board's own snapshot, so this stays fully independent of that
+# module's shape.
+_PLAN_STATE_REGISTRY: dict[str, dict[str, Any]] = {}
+
+
+def _get_has_plan(session_id: str | None = None) -> bool:
+    sid = session_id if session_id is not None else get_session_id()
+    return bool(_PLAN_STATE_REGISTRY.get(sid, {}).get("has_plan"))
+
+
+def _set_has_plan(status: bool, plan_text: str, session_id: str | None = None) -> None:
+    sid = session_id if session_id is not None else get_session_id()
+    _PLAN_STATE_REGISTRY[sid] = {"has_plan": status, "plan_text": plan_text}
+
+
+def _set_session_plan_tasks(
+    objective: str, tasks: list[dict[str, Any]], session_id: str | None = None
+) -> None:
+    """Mirrors ``_tool_create_plan``'s objective/tasks into THIS session's
+    entry of ``_PLAN_STATE_REGISTRY``, alongside (never replacing) the
+    ``has_plan``/``plan_text`` keys ``_set_has_plan`` already wrote — this
+    must run AFTER ``_set_has_plan`` in the same call, since that function
+    overwrites the whole per-session dict rather than merging into it.
+
+    Only ``_tool_create_plan`` ever populates ``tasks`` this way; a caller
+    (mostly tests) that pokes ``_set_has_plan`` directly with a bare string
+    leaves ``tasks`` unset, and ``_get_active_plan`` falls back to that
+    plain ``plan_text`` string for them — see its own docstring.
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    entry = _PLAN_STATE_REGISTRY.setdefault(sid, {})
+    entry["objective"] = objective
+    entry["tasks"] = tasks
+
+
+def _mark_session_task_completed(
+    task_id: int, next_task_id: int | None, session_id: str | None = None
+) -> None:
+    """Applies the SAME status transition ``_tb_mark_task_completed`` just
+    applied to task_board's global plan onto THIS session's own structured
+    task list (see ``_set_session_plan_tasks``), so the next turn's Focused
+    Plan Anchor (``_get_active_plan``) reflects it. A no-op if this session
+    never called ``create_plan`` (no ``tasks`` key yet) — nothing to keep in
+    sync.
+
+    Also the MANUAL half of the Plan-and-Execute FSM's advancement (the
+    AUTOMATIC half is ``_advance_fsm_on_dispatch``, below, called from
+    ``dispatch_tool_call``'s own success path) — ``mark_task_completed``
+    stays a callable tool specifically for a task with no fixed
+    ``expected_tool_ids`` (a visual-only inspection, an under-specified
+    task the planner's k=3 narrowing simply missed) — see this module's own
+    Plan-and-Execute FSM docstring block below for the full design.
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    entry = _PLAN_STATE_REGISTRY.get(sid)
+    tasks = entry.get("tasks") if entry else None
+    if not tasks:
+        return
+    for task in tasks:
+        if task.get("id") == task_id:
+            task["status"] = "completed"
+        elif next_task_id is not None and task.get("id") == next_task_id:
+            task["status"] = "active"
+    if entry.get("fsm_state") in ("executing", "validating"):
+        entry["fsm_state"] = "executing" if any(t.get("status") in ("pending", "active") for t in tasks) else "done"
+
+
+# ---------------------------------------------------------------------------
+# Plan-and-Execute Finite State Machine (FSM) — the code-enforced replacement
+# for relying on prompt text ("execute ONE task at a time", "call
+# mark_task_completed") to keep the model from treating a multi-task plan as
+# one big batch to blast through in a single unsupervised run (the
+# "completionist reflex"). Four states, session-scoped in the SAME
+# ``_PLAN_STATE_REGISTRY`` entry the plan itself already lives in (not a
+# second parallel registry) since the two are never meaningfully separate —
+# there is no FSM state without an active plan to be executing:
+#
+#   planning   -- no plan yet (or the previous one finished); the ONLY tool
+#                 schema offered is create_plan + discovery tools (see
+#                 next_react_turn's `hard_restrict_to`) — a geometry tool
+#                 physically cannot be named because it isn't in the
+#                 payload the model ever sees, not because a rule asked it
+#                 not to.
+#   executing  -- a plan exists; exactly one task is "active", and ONLY that
+#                 task's own `expected_tool_ids` (plus core tools) are
+#                 offered/protected from narrowing (next_react_turn's
+#                 `narrowing_query`/`task_tool_ids`).
+#   validating -- entered the instant a dispatched tool matches the active
+#                 task's `expected_tool_ids` (Phase 1's "expected_tool_
+#                 dispatched" event) — for that common, tool-mapped case
+#                 this is DELIBERATELY momentary: `ok`/`failure` is already
+#                 fully known at the exact point of dispatch, so
+#                 `_advance_fsm_on_dispatch` resolves straight back to
+#                 "executing" (next task, or "done") in the SAME function
+#                 call, before any further LLM turn happens — there is
+#                 nothing a dedicated extra turn could add for THIS case.
+#                 It only genuinely PERSISTS across a turn boundary for a
+#                 task with an EMPTY `expected_tool_ids` (nothing to
+#                 auto-match against), where it waits for an explicit
+#                 `mark_task_completed` — this is the one case
+#                 `_build_validator_prompt` is actually shown for.
+#   done       -- every task completed; geometry tools fall back to the
+#                 SAME unrestricted, ad-hoc "idle" prompt/schema a session
+#                 that never called create_plan gets (see _RESTRICTED_
+#                 GEOMETRY_TOOLS's own docstring on why post-plan cleanup
+#                 must stay reachable, not re-gated).
+# ---------------------------------------------------------------------------
+
+_FSM_TABLE: dict[tuple[str, str], str] = {
+    ("planning", "create_plan_succeeded"): "executing",
+    ("executing", "expected_tool_dispatched"): "validating",
+    ("validating", "tool_ok"): "executing",
+    ("validating", "tool_failed"): "executing",
+    ("done", "create_plan_succeeded"): "executing",
+}
+
+
+def _fsm_transition(current: str, event: str) -> str:
+    """Pure state-machine step — no session lookup, no side effect, so it's
+    unit-testable with no FreeCAD/LLM/session machinery involved at all. An
+    ``(current, event)`` pair with no table entry is a no-op (returns
+    ``current`` unchanged) rather than a ``KeyError`` — an out-of-sequence
+    or already-resolved event must never crash a turn, the same defensive
+    posture ``task_board.mark_task_completed`` already takes for an unknown
+    ``task_id``.
+    """
+    return _FSM_TABLE.get((current, event), current)
+
+
+def _get_fsm_state(session_id: str | None = None) -> str:
+    """This session's current FSM state — ``"planning"`` for any session
+    with no entry yet (including one that only ever called ``_set_has_plan``
+    directly with a bare string, never populating ``tasks``/``fsm_state`` at
+    all — that legacy shape has no FSM concept, so it's treated exactly like
+    "hasn't started planning"), never a ``KeyError``.
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    return _PLAN_STATE_REGISTRY.get(sid, {}).get("fsm_state", "planning")
+
+
+def _active_task(session_id: str | None = None) -> dict[str, Any] | None:
+    """The one task currently ``"active"`` in THIS session's structured plan,
+    or ``None`` if there isn't one (no plan yet, or every task is done).
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    tasks = _PLAN_STATE_REGISTRY.get(sid, {}).get("tasks") or []
+    return next((t for t in tasks if t.get("status") == "active"), None)
+
+
+def _pending_task_count(session_id: str | None = None) -> int:
+    """How many tasks remain AFTER the current active one — folded into the
+    Executor prompt as "N task(s) remain after this one" instead of naming
+    them, so the Executor knows there's more work without being tempted to
+    look ahead at what it is (see ``_build_executor_prompt``).
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    tasks = _PLAN_STATE_REGISTRY.get(sid, {}).get("tasks") or []
+    return sum(1 for t in tasks if t.get("status") == "pending")
+
+
+# FSM Policy RESTORATION (Plan-and-Execute FSM, Phase 4, re-reverted): a
+# geometry tool that ISN'T the active task's own `expected_tool_ids` USED to
+# hard-block outright, then that hard block was REMOVED (see git history —
+# the "FSM Policy Downgrade" this comment used to describe) because
+# under-specifying a task's tools looked like a normal, recoverable mistake
+# rather than evidence of running the plan out of order, and a wrong block
+# risked refusing a tool the current task genuinely needed with nothing
+# correct left to retry.
+#
+# That removal opened a WORSE hole in practice: with no out-of-order check
+# at all, `dispatch_tool_call` never refused a dispatch on expected-tool
+# grounds, so the model executed an entire multi-task CAD build while
+# nominally still sitting on Task 1, then called `mark_task_completed` six
+# times in a row at the very end — the FSM state never meaningfully tracked
+# what the model was actually doing turn by turn, only rubber-stamped it
+# retroactively. The risk the original removal was guarding against no
+# longer applies: `expected_tool_ids` is now BOTH Planner-declared AND
+# existence-validated at `create_plan` time (Fix #1 — Strict Plan
+# Validation, above) rather than an embedding guess, so "this tool isn't in
+# the active task's own declared set" is a reliable signal of running ahead
+# of the plan, not of an under-specified task.
+# `_fsm_out_of_order_check` below is that hard block, restored — called
+# from `dispatch_tool_call` BEFORE the handler ever runs (see its own call
+# site) so a mismatched tool never reaches FreeCAD (or any other plugin) at
+# all, not just never auto-advances the plan.
+#
+# Universal FSM Enforcement (closes a SECOND hole the geometry-only scope
+# left open): this check, its tracking counterpart `_advance_fsm_on_dispatch`,
+# and `_tool_create_plan`'s own `expected_tool_ids` computation were ALL
+# originally scoped to `_RESTRICTED_GEOMETRY_TOOLS` only. A Planner that
+# declared a genuinely real, non-geometry tool for a task (e.g.
+# `execute_freecad_script`, `batch_pattern_array` back when it was still
+# geometry-scoped, `search_web`, ...) got that name silently narrowed away
+# to an EMPTY `expected_tool_ids` — indistinguishable from "no fixed tool
+# signature at all" — which let the model ignore its own declared tool
+# entirely, do the work some other, undeclared way, and still pass
+# `_tool_mark_task_completed`'s gate (which only fires when
+# `expected_tool_ids` is non-empty). Both this check and
+# `_advance_fsm_on_dispatch` now apply to EVERY tool_id except the
+# always-available plan-management/discovery/self-teaching primitives in
+# `_CORE_TOOL_IDS` (see `dispatch_tool_call`'s own call sites) — a
+# Planner-declared tool is enforced no matter which plugin/domain it
+# belongs to.
+
+
+def _fsm_out_of_order_check(tool_id: str, session_id: str | None = None) -> str | None:
+    """Hard-blocks a dispatch (any tool_id outside `_CORE_TOOL_IDS` — see
+    the Universal FSM Enforcement comment above) that doesn't belong to the
+    CURRENTLY ACTIVE task's own declared ``expected_tool_ids`` — returns a
+    human-readable rejection reason for ``dispatch_tool_call`` to surface as
+    an ordinary digested tool failure, or ``None`` if the dispatch may
+    proceed to the handler.
+
+    Deliberately still permissive for the two cases that are NOT "running
+    ahead of the plan":
+
+    - No active plan, or the FSM isn't in "executing" — nothing declared to
+      check against yet (planning/done), or momentarily "validating" (see
+      ``_advance_fsm_on_dispatch``'s own docstring on why that state is
+      resolved within the SAME dispatch that entered it for a tool-mapped
+      task — a later dispatch is never actually observed mid-"validating"
+      for that case).
+    - The active task's own ``expected_tool_ids`` came back EMPTY (a
+      genuinely tool-less task, or one the Planner declared with no fixed
+      tool signature) — there is nothing to enforce, so any non-core tool
+      is let through exactly as before, parked in "validating" by
+      ``_advance_fsm_on_dispatch`` once it succeeds.
+
+    Everything else — a tool that belongs to neither "no fixed signature"
+    nor the active task's own declared set (e.g. a later task's tool,
+    dispatched early, or an undeclared tool used to route around a
+    declared one) — is refused outright.
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    entry = _PLAN_STATE_REGISTRY.get(sid)
+    if not entry or not entry.get("has_plan") or entry.get("fsm_state") != "executing":
+        return None
+    active = _active_task(sid)
+    if active is None:
+        return None
+    expected = active.get("expected_tool_ids") or frozenset()
+    if not expected or tool_id in expected:
+        return None
+    telemetry.log_error(
+        stage="fsm_out_of_order_blocked",
+        tool_id=tool_id,
+        active_task_id=active["id"],
+        expected_tool_ids=sorted(expected),
+    )
+    return (
+        f"Execution blocked: '{tool_id}' is not one of task {active['id']}'s declared "
+        f"expected_tools ({sorted(expected)}) — \"{active.get('description')}\". You are still on "
+        f"task {active['id']}; call one of its declared tool(s) for the CURRENT task, or call "
+        f"mark_task_completed(task_id={active['id']}, ...) to advance to the task that actually "
+        "needs this tool first. Tools cannot be executed out of order."
+    )
+
+
+def _advance_fsm_on_dispatch(tool_id: str, ok: bool, session_id: str | None = None) -> str | None:
+    """Deterministic Task Advancement (Plan-and-Execute FSM, Phase 4) — the
+    code-enforced replacement for trusting the model to remember a SEPARATE
+    ``mark_task_completed`` call after the work it was actually for. Called
+    from ``dispatch_tool_call``'s own success/failure branch for every
+    dispatch OUTSIDE ``_CORE_TOOL_IDS`` (Universal FSM Enforcement — see the
+    module-level comment above ``_fsm_out_of_order_check``) that actually
+    REACHED the handler; a no-op (returns ``None``) whenever this dispatch
+    has nothing to do with FSM advancement at all — no plan, wrong phase, or
+    a task with no fixed ``expected_tool_ids`` to match against. A tool that
+    belongs to neither the active task's own declared set nor an empty
+    ("no fixed signature") one never reaches here at all anymore —
+    ``_fsm_out_of_order_check`` (see the module-level comment above it)
+    refuses it BEFORE the handler runs, so this function only ever sees a
+    tool_id that was either an exact match or unconstrained.
+
+    Mirrors the update onto task_board's own GLOBAL plan too
+    (``_tb_mark_task_completed``) — the SAME dual-write
+    ``_tool_mark_task_completed`` already does for the manual path, so the
+    frontend's PlanChecklist (reads task_board, not this session-scoped
+    registry) never drifts out of sync with a session's own auto-advanced
+    view.
+
+    A task whose ``expected_tool_ids`` came back EMPTY at ``create_plan``
+    time (the Planner omitted ``expected_tools`` for it — a pure visual
+    inspection, say, or simply under-specified) can never satisfy the
+    "tool_id in expected_tool_ids" match above, so it would otherwise never
+    reach "validating" at all. For that case ONLY, any successfully
+    dispatched non-core tool while it's active PARKS the FSM in
+    "validating" (task status untouched — still "active") and records
+    ``last_validation``, genuinely persisting across the next turn boundary
+    so ``_build_validator_prompt`` has something concrete to show — the
+    ONE case that prompt is actually reached for; see its own docstring.
+
+    Returns a short human-readable note folded into the tool's own result
+    payload — the model should always see WHY the plan did or didn't move,
+    never a silent state change it has no way to notice.
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    entry = _PLAN_STATE_REGISTRY.get(sid)
+    if not entry or not entry.get("has_plan") or entry.get("fsm_state") != "executing":
+        return None
+    tasks = entry.get("tasks") or []
+    active = next((t for t in tasks if t.get("status") == "active"), None)
+    if active is None:
+        return None
+    if ok:
+        # Fix #2 — The False Success Blocker: record every tool successfully
+        # dispatched while this task was active, regardless of whether it
+        # matches expected_tool_ids — _tool_mark_task_completed's own gate
+        # checks this set directly rather than inferring "was something run"
+        # from FSM state alone.
+        active.setdefault("executed_tools", set()).add(tool_id)
+    expected = active.get("expected_tool_ids") or frozenset()
+    if not expected:
+        if not ok:
+            return None  # a failed ad-hoc attempt has nothing to park a validation on
+        entry["fsm_state"] = "validating"
+        entry["last_validation"] = {"task_id": active["id"], "tool_id": tool_id, "ok": True}
+        return (
+            f"[Plan] Task {active['id']} has no fixed tool signature -- call "
+            f"mark_task_completed(task_id={active['id']}) once you've confirmed it's done."
+        )
+    if tool_id not in expected:
+        return None
+    # "expected_tool_dispatched" -> validating, resolved immediately below —
+    # see this block's own module-level docstring on why VALIDATING is
+    # deliberately momentary for a tool-mapped task: ok/failure is already
+    # fully known right here, before any further LLM turn.
+    entry["fsm_state"] = _fsm_transition("executing", "expected_tool_dispatched")
+    if not ok:
+        entry["fsm_state"] = _fsm_transition(entry["fsm_state"], "tool_failed")
+        return None  # nothing to advance -- the model retries the SAME active task
+    active["status"] = "completed"
+    next_task = next((t for t in tasks if t.get("status") == "pending"), None)
+    _tb_mark_task_completed(active["id"], next_task["id"] if next_task else None)
+    telemetry.log_task_state_change(
+        task_id=active["id"], status="completed", auto_advanced_by=tool_id, next_task_id=next_task["id"] if next_task else None
+    )
+    if next_task is not None:
+        next_task["status"] = "active"
+        entry["fsm_state"] = _fsm_transition("validating", "tool_ok")
+        return f"[Plan] Task {active['id']} complete -- now on task {next_task['id']}: {next_task['description']}."
+    entry["fsm_state"] = "done"
+    return f"[Plan] Task {active['id']} complete -- all tasks in the plan are now done."
+
+
+def _format_focused_plan_anchor(objective: str, tasks: list[dict[str, Any]]) -> str:
+    """Renders THIS session's structured plan as the Focused Plan Anchor —
+    unlike task_board's own "## Current Active Plan" block (a flat dump of
+    every task, done and pending alike — see ``_format_active_plan_for_prompt``),
+    this deliberately DROPS completed tasks entirely and separates the
+    single current task from the rest, so a model returning from several
+    unrelated tool calls sees "what do I do RIGHT NOW", not the whole
+    project's history, and isn't tempted to re-execute the entire plan in
+    one turn.
+    """
+    pending = [t for t in tasks if t.get("status") == "pending"]
+    active = next((t for t in tasks if t.get("status") == "active"), None)
+
+    lines = [f"Objective: {objective}", ""]
+    if pending:
+        lines.append("Pending Tasks:")
+        lines.extend(f"[ ] Task {t.get('id')}: {t.get('description')}" for t in pending)
+        lines.append("")
+    if active is not None:
+        lines.append(f"--> CURRENT ACTIVE TASK: {active.get('id')}: {active.get('description')}")
+        lines.append(
+            "ACTION REQUIRED: Execute ONLY the geometry tools for this specific task, then "
+            "call `mark_task_completed` to advance."
+        )
+    else:
+        lines.append(
+            "--> No task is currently marked active. If tasks remain pending, call "
+            "mark_task_completed with a next_task_id to resume; otherwise the plan is done."
+        )
+    return "\n".join(lines)
+
+
+def _get_active_plan(session_id: str | None = None) -> str:
+    """This session's Focused Plan Anchor — ``build_system_prompt`` appends
+    this (wrapped in ``=== ACTIVE PLAN ===`` markers) to every turn's system
+    prompt while non-empty, so a model that just spent several turns on
+    unrelated tool calls still opens its NEXT turn already reminded which
+    ONE task is active right now, not just gated from deviating from a plan
+    it can no longer see.
+
+    Prefers the structured objective/tasks ``_set_session_plan_tasks``
+    populated (rendered via ``_format_focused_plan_anchor``, which hides
+    completed tasks and highlights only the current one) whenever this
+    session's ``create_plan`` call went through the real tool handler.
+    Falls back to the flat verbatim ``plan_text`` ``_set_has_plan`` stored
+    for any caller (tests, mostly) that set that directly with a bare
+    string and never populated structured tasks at all.
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    entry = _PLAN_STATE_REGISTRY.get(sid)
+    if not entry or not entry.get("has_plan"):
+        return ""
+    tasks = entry.get("tasks")
+    if tasks:
+        return _format_focused_plan_anchor(entry.get("objective") or "", tasks)
+    return entry.get("plan_text") or ""
+
+
+# tool_ids that create new geometry or otherwise mutate the CAD workspace's
+# topology — gated behind _get_has_plan() in dispatch_tool_call below.
+# Deliberately excludes tools that only ADJUST already-existing geometry
+# without creating new topology (modify_freecad_parameter,
+# align_freecad_objects, create_assembly_mate) — those can't themselves
+# cause a boolean-chain naming hallucination, so gating them too would only
+# block legitimate post-plan cleanup with no corresponding benefit.
+_RESTRICTED_GEOMETRY_TOOLS = frozenset(
+    {
+        "create_freecad_box",
+        "create_freecad_cylinder",
+        "create_freecad_extrusion",
+        "create_freecad_pyramid",
+        "create_freecad_star_prism",
+        "create_freecad_polygon",
+        "create_freecad_pipe",
+        "create_freecad_sketch_extrude",
+        "perform_freecad_boolean",
+        "perform_freecad_edge_operation",
+        "create_freecad_feature_on_face",
+        "batch_pattern_array",
+        "insert_standard_part",
+        "import_and_solidify_mesh",
+    }
+)
+
+
 _BOOLEAN_OPERATIONS = frozenset({"cut", "union", "intersect"})
 
 
@@ -910,6 +1898,10 @@ def _tool_perform_freecad_boolean(args: dict[str, Any], engine: Any, _cp: Any) -
     tool_name = str(args.get("tool_object") or "").strip()
     if not base_name or not tool_name:
         return {"ok": False, "error": "perform_freecad_boolean requires base_object and tool_object"}
+    # base_object/tool_object have already been redirected to their
+    # resolve_living_leaf by dispatch_tool_call's _apply_topology_redirects,
+    # before this handler ever runs — see that function's docstring.
+    #
     # Existence is still checked against _OBJECT_PATH_REGISTRY (populated by
     # dispatch_tool_call as a side effect of every successful create/modify
     # call), but the resolved PATH itself is no longer what's passed down —
@@ -942,8 +1934,16 @@ def _tool_perform_freecad_edge_operation(args: dict[str, Any], engine: Any, _cp:
     target_name = str(args.get("target_object") or "").strip()
     if not target_name:
         return {"ok": False, "error": "perform_freecad_edge_operation requires target_object"}
-    target_path = _object_registry().get(target_name)
-    if not target_path:
+    # target_object has already been redirected to its resolve_living_leaf
+    # by dispatch_tool_call's _apply_topology_redirects, before this handler
+    # ever runs — this is the exact "fillet the base object after a boolean
+    # chain already consumed it" case that mechanism exists for.
+    #
+    # Existence check only — see perform_freecad_boolean's matching comment
+    # on why the resolved PATH itself is no longer what gets passed down:
+    # apply_edge_operation now resolves target_object by NAME against the
+    # shared session, same as apply_boolean/modify_parameter.
+    if target_name not in _object_registry():
         return {
             "ok": False,
             "error": f"unknown target_object '{target_name}' — create it first with a create_freecad_* tool",
@@ -964,11 +1964,10 @@ def _tool_perform_freecad_edge_operation(args: dict[str, Any], engine: Any, _cp:
 
     return engine.apply_edge_operation(
         operation,
-        target_path,
+        target_name,
         value,
         face_centroid=face_centroid,
         name=str(args.get("name") or "").strip() or None,
-        target_object=target_name,
     )
 
 
@@ -1212,6 +2211,10 @@ def _tool_export_freecad_model(args: dict[str, Any], engine: Any, _cp: Any) -> d
     if not filename:
         return {"ok": False, "error": "export_freecad_model requires filename"}
 
+    # target_objects entries have already been redirected to their
+    # resolve_living_leaf by dispatch_tool_call's _apply_topology_redirects,
+    # before this handler ever runs — exporting "MotorBracket" after it's
+    # been cut into "Cut_Mounting_Holes" is exactly the case that heals.
     target_paths = []
     resolved_names = []
     for raw_name in target_names:
@@ -1282,6 +2285,43 @@ def _tool_create_freecad_sketch_extrude(args: dict[str, Any], engine: Any, _cp: 
     )
 
 
+def _tool_create_freecad_feature_on_face(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    object_name = str(args.get("object_name") or "").strip()
+    if not object_name:
+        return {"ok": False, "error": "create_freecad_feature_on_face requires object_name"}
+    # object_name has already been redirected to its resolve_living_leaf by
+    # dispatch_tool_call's _apply_topology_redirects, before this handler
+    # ever runs — see that function's docstring.
+    try:
+        u = float(args.get("u"))
+        v = float(args.get("v"))
+        extent = float(args.get("extent"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "create_freecad_feature_on_face requires numeric u, v, extent"}
+    radius = args.get("radius")
+    width = args.get("width")
+    length = args.get("length")
+    try:
+        radius = float(radius) if radius is not None else None
+        width = float(width) if width is not None else None
+        length = float(length) if length is not None else None
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "create_freecad_feature_on_face: radius/width/length must be numeric if given"}
+    return engine.create_feature_on_face(
+        object_name,
+        str(args.get("face") or ""),
+        str(args.get("shape") or ""),
+        u,
+        v,
+        extent,
+        str(args.get("operation") or ""),
+        radius=radius,
+        width=width,
+        length=length,
+        name=str(args.get("name")) if args.get("name") else None,
+    )
+
+
 _PATTERN_TYPES = frozenset({"linear", "grid", "circular"})
 
 
@@ -1301,6 +2341,7 @@ def _tool_batch_pattern_array(args: dict[str, Any], engine: Any, _cp: Any) -> di
     return engine.batch_pattern_array(
         source_path,
         pattern_type,
+        source_object=source_name,
         count_x=int(args.get("count_x", 1)),
         count_y=int(args.get("count_y", 1)),
         spacing_x=args.get("spacing_x"),
@@ -1347,6 +2388,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "create_freecad_cylinder": _tool_create_cylinder,
     "create_freecad_pyramid": _tool_create_freecad_pyramid,
     "create_freecad_star_prism": _tool_create_freecad_star_prism,
+    "create_freecad_polygon": _tool_create_freecad_polygon,
     "create_freecad_extrusion": _tool_create_freecad_extrusion,
     "perform_freecad_boolean": _tool_perform_freecad_boolean,
     "perform_freecad_edge_operation": _tool_perform_freecad_edge_operation,
@@ -1360,6 +2402,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "export_freecad_model": _tool_export_freecad_model,
     "generate_2d_blueprint": _tool_generate_2d_blueprint,
     "create_freecad_sketch_extrude": _tool_create_freecad_sketch_extrude,
+    "create_freecad_feature_on_face": _tool_create_freecad_feature_on_face,
     "batch_pattern_array": _tool_batch_pattern_array,
     "insert_standard_part": _tool_insert_standard_part,
     "resync_workspace": _tool_resync_workspace,
@@ -1374,6 +2417,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "update_core_memory": _tool_update_core_memory,
     "create_plan": _tool_create_plan,
     "mark_task_completed": _tool_mark_task_completed,
+    "compile_plan_as_skill": _tool_compile_plan_as_skill,
     "save_new_skill": _tool_save_new_skill,
     "read_skill_source": _tool_read_skill_source,
     "delete_skill": _tool_delete_skill,
@@ -1522,6 +2566,11 @@ def describe_tool_call(call: ToolCall) -> str:
             f"Create a sharp-edged {points}-point star prism (outer radius {outer}mm, "
             f"inner radius {inner}mm, thickness {height}mm) in FreeCAD."
         )
+    if call.tool_id == "create_freecad_polygon":
+        sides = call.arguments.get("sides", 6)
+        radius = call.arguments.get("radius", 50)
+        height = call.arguments.get("height", 10)
+        return f"Create a regular {sides}-sided polygon (radius {radius}mm, thickness {height}mm) in FreeCAD."
     if call.tool_id == "perform_freecad_boolean":
         operation = str(call.arguments.get("operation") or "?")
         base = call.arguments.get("base_object", "?")
@@ -1586,6 +2635,12 @@ def describe_tool_call(call: ToolCall) -> str:
         plane = str(call.arguments.get("plane") or "XY").upper()
         segment_count = len(call.arguments.get("segments") or [])
         return f"Sketch a {segment_count}-segment profile on the {plane} plane and extrude it {height}mm in FreeCAD."
+    if call.tool_id == "create_freecad_feature_on_face":
+        target = call.arguments.get("object_name", "?")
+        face = str(call.arguments.get("face") or "?")
+        shape = str(call.arguments.get("shape") or "?")
+        op = "Cut" if call.arguments.get("operation") == "cut" else "Add"
+        return f"{op} a {shape} on the {face} face of `{target}` in FreeCAD."
     if call.tool_id == "batch_pattern_array":
         source = call.arguments.get("source_object", "?")
         pattern = str(call.arguments.get("pattern_type") or "?")
@@ -1697,6 +2752,9 @@ _CORE_TOOL_IDS = frozenset(
         # always available so a long-horizon goal can be broken down in ANY session, plugin or not.
         "mark_task_completed",  # same reasoning — updating progress on the current plan must
         # never be gated behind a specific plugin being active.
+        "compile_plan_as_skill",  # Composite Skill Compiler — see
+        # dana.plugins.freecad.skill_compiler; always available for the same "not gated behind
+        # a specific plugin" reasoning as create_plan/save_new_skill, which this composes.
     }
 )
 
@@ -1707,6 +2765,7 @@ _FREECAD_TOOL_IDS = frozenset(
         "create_freecad_extrusion",
         "create_freecad_pyramid",
         "create_freecad_star_prism",
+        "create_freecad_polygon",
         "perform_freecad_boolean",
         "perform_freecad_edge_operation",
         "modify_freecad_parameter",
@@ -1719,6 +2778,7 @@ _FREECAD_TOOL_IDS = frozenset(
         "export_freecad_model",
         "generate_2d_blueprint",
         "create_freecad_sketch_extrude",
+        "create_freecad_feature_on_face",
         "batch_pattern_array",
         "insert_standard_part",
         "manipulate_camera",
@@ -1947,26 +3007,82 @@ def refresh_user_skills() -> dict[str, Any]:
     (global state they read internally) just changed, so a stale cached
     result for the exact same ``active_plugins`` frozenset would otherwise
     keep being served for the rest of the process's lifetime.
+
+    Also (re)registers every loaded skill into ``dana.tools.registry
+    .get_tool_registry()`` — the SEPARATE embedding-indexed catalog
+    ``search_tool_catalog``/Pillar 1's ``narrow_tool_ids_by_query`` actually
+    read from, distinct from the ``load_tool_registry()``-backed cache
+    ``_llm_tools_schema_cached`` uses for the wire schema. Before this, a
+    user skill was dispatchable and offered in ``tools=`` (universe #1
+    above) but invisible to semantic search/narrowing (universe #2) — it
+    could only survive a turn's narrowing pass via ``sticky_ids``/
+    ``always_include``, never be FOUND by ``search_tool_catalog`` or a
+    fresh top-K narrowing match on a cold turn. ``source="forge"`` marks
+    these as runtime-synthesized (as opposed to ``"tools.json"``-defined)
+    for anything downstream that cares about provenance; ``dynamic=False``
+    (ToolSpec's default) keeps ``is_bindable_tool`` returning True even
+    with no ``callable`` bound on the registry entry — actual dispatch
+    still goes exclusively through ``TOOL_HANDLERS``/``dispatch_tool_call``,
+    never ``ToolRegistry.execute()``.
     """
     global _LLM_TOOL_IDS
     result = load_user_skills()
     fresh_skills: dict[str, dict[str, Any]] = result.get("skills", {})
 
+    tool_registry = get_tool_registry()
     for stale_id in _USER_SKILL_TOOL_IDS - fresh_skills.keys():
         TOOL_HANDLERS.pop(stale_id, None)
         _USER_SKILL_SCHEMAS.pop(stale_id, None)
+        tool_registry.unregister(stale_id)
 
     _USER_SKILL_TOOL_IDS.clear()
     for tool_id, entry in fresh_skills.items():
         TOOL_HANDLERS[tool_id] = _wrap_skill_handler(entry["handler"])
         _USER_SKILL_SCHEMAS[tool_id] = entry["schema"]
         _USER_SKILL_TOOL_IDS.add(tool_id)
+        tool_registry.register(
+            _tool_spec_from_openai_schema(tool_id, entry["schema"]),
+            source="forge",
+            metadata={"origin": "user_skill"},
+        )
 
     _CAPABILITY_TOOL_IDS["user_skills"] = frozenset(_USER_SKILL_TOOL_IDS)
     _LLM_TOOL_IDS = _CORE_TOOL_IDS.union(*_CAPABILITY_TOOL_IDS.values())
     _tool_ids_for_plugins.cache_clear()
     _llm_tools_schema_cached.cache_clear()
     return result
+
+
+def _tool_spec_from_openai_schema(tool_id: str, schema: dict[str, Any]) -> ToolSpec:
+    """Builds a ``dana.tools.schema.ToolSpec`` — the shape
+    ``dana.tools.registry.ToolRegistry.register`` needs for its embedding
+    index — from a full OpenAI-wire tool schema (``{"type": "function",
+    "function": {...}}``, the shape both ``_USER_SKILL_SCHEMAS`` and a
+    compiled skill's own schema already use). Populates ``parameters`` too
+    (not just the description) so the embedded text
+    (``dana.tools.registry._spec_schema_text``) includes each parameter's
+    name/description/type — the same retrieval signal a natively
+    ``tools.json``-defined tool already gets, not a degraded copy.
+    """
+    fn = schema.get("function") or {}
+    props = ((fn.get("parameters") or {}).get("properties")) or {}
+    required = set((fn.get("parameters") or {}).get("required") or ())
+    params = tuple(
+        ToolParameterSpec(
+            name=str(name),
+            type=str(prop.get("type") or "string"),
+            required=name in required,
+            enum=tuple(str(e) for e in (prop.get("enum") or [])),
+            description_en=str(prop.get("description") or ""),
+        )
+        for name, prop in props.items()
+    )
+    return ToolSpec(
+        id=tool_id,
+        description_en=str(fn.get("description") or tool_id),
+        description_fa="",
+        parameters=params,
+    )
 
 
 def list_user_skills() -> dict[str, dict[str, Any]]:
@@ -2109,11 +3225,12 @@ def refresh_plugin_tools() -> dict[str, Any]:
         ids = domain_tool_ids.setdefault(domain, set())
         for spec, fn in tools:
             if spec.id in _NATIVE_TOOL_IDS:
-                print(
-                    f"[react_dispatch] WARNING: plugin domain {domain!r} declares tool_id "
-                    f"{spec.id!r}, which collides with an existing built-in handler — skipping "
-                    "the plugin's version; the built-in remains authoritative.",
-                    flush=True,
+                telemetry.debug(
+                    "plugin domain %r declares tool_id %r, which collides with an existing "
+                    "built-in handler — skipping the plugin's version; the built-in remains "
+                    "authoritative.",
+                    domain,
+                    spec.id,
                 )
                 continue
             TOOL_HANDLERS[spec.id] = _wrap_plugin_handler(fn)
@@ -2210,6 +3327,42 @@ def _llm_tools_schema_cached(tool_ids: frozenset[str]) -> tuple[dict[str, Any], 
 # same-order-of-magnitude case "freecad"/"freecad_full" above are excluded for.
 _NARROWING_EXEMPT_DOMAINS = ("freecad_essential", "software_engineering", "os_tools")
 
+# Per-TOOL narrowing exemption, one level more granular than the per-DOMAIN
+# exemption above. All five of these are already members of
+# _FREECAD_ESSENTIAL_TOOL_IDS, so in the common case (CAD tab open, or the
+# agent's own load_capability("freecad"/"freecad_essential") redirect) they're
+# ALREADY protected by "freecad_essential" being in _NARROWING_EXEMPT_DOMAINS.
+# This is the backstop for the one case that isn't: a session where
+# "freecad_essential" has decayed out of active_plugins (P1's per-session
+# decay, dana.api.server._effective_capabilities) while "freecad_full" is
+# still active on its own — that raw ~26-tool set is deliberately NOT
+# narrowing-exempt (see the comment above _NARROWING_EXEMPT_DOMAINS on why),
+# so without this, a query whose wording doesn't happen to score
+# create_freecad_box/cylinder highly could silently narrow the model's own
+# most basic geometry primitives out of tools= for that turn — indistinguishable,
+# from the model's side, from those tools never having existed, and the exact
+# shape of bug that produces a hallucinated tool name instead. Folded ONLY
+# into narrow_tool_ids_by_query's `always_include` below (Pillar 1's
+# query-relevance narrowing) — deliberately NOT into
+# _cap_schemas_by_token_budget's `must_keep` (Pillar 1's hard per-turn TOKEN
+# ceiling): that cap exists specifically to guarantee a Groq TPM 429 can
+# never happen again (see the module comment above _TOOL_TOKEN_BUDGET), and
+# `must_keep` is NEVER trimmed even when it alone busts the budget — adding
+# 5 more (potentially large) FreeCAD schemas to that unconditional set
+# measurably pushed the "freecad"/"freecad_full" regression tests past
+# their ceiling. Only ever keeps ids already present in the candidate set,
+# so listing one here that isn't currently eligible (no freecad domain
+# active at all) is always a safe no-op, never a capability leak.
+_ALWAYS_EXEMPT_TOOLS = frozenset(
+    {
+        "create_freecad_box",
+        "create_freecad_cylinder",
+        "perform_freecad_boolean",
+        "perform_freecad_edge_operation",
+        "export_freecad_model",
+    }
+)
+
 
 def _llm_tools_schema(
     active_plugins: frozenset[str] | None = None,
@@ -2217,13 +3370,21 @@ def _llm_tools_schema(
     query: str = "",
     sticky_ids: frozenset[str] = frozenset(),
     force_include: frozenset[str] = frozenset(),
+    hidden_tool_ids: frozenset[str] = frozenset(),
+    task_tool_ids: frozenset[str] = frozenset(),
+    hard_restrict_to: frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build this turn's ``tools=`` payload — capability-gated tool ids,
     optionally narrowed by semantic relevance to ``query`` (Pillar 1:
     ``dana.core.tool_retrieval.narrow_tool_ids_by_query``, a no-op when
     ``query`` is empty or the allowed set is already small), then minified
     (Pillar 2: ``dana.tools.schema_minify.minify_tool_schemas``, condenses
-    verbose descriptions without touching the OpenAI wire contract).
+    verbose descriptions without touching the OpenAI wire contract), then —
+    for this turn's resolved tool-calling provider only (local Ollama by
+    default, or any provider when ``DANA_MINIFY_TOOL_SCHEMAS=true`` — see
+    ``should_strip_tool_schemas``) — stripped further still
+    (``dana.tools.schema_minify.strip_tool_schemas`` drops every description
+    outright instead of condensing it, on top of the Pillar-2 pass above).
 
     ``sticky_ids`` (tool ids already dispatched earlier in THIS turn's
     multi-step ReAct chain — see ``_sticky_tool_ids_from_messages``) always
@@ -2240,8 +3401,43 @@ def _llm_tools_schema(
     active domain covers it. Callers should also fold ``force_include`` into
     ``sticky_ids`` so the same id survives the token-budget cap below, not
     just domain gating.
+
+    ``hidden_tool_ids`` (Dynamic Domain Locking — ``unload_capability``
+    called with a ``tool_id`` instead of a ``domain``, see
+    ``_tool_unload_capability``) is the inverse of ``force_include``:
+    subtracted from the domain-gated set BEFORE ``force_include`` is
+    unioned back in, so a hide can suppress an otherwise-reachable tool
+    (e.g. ``create_freecad_cylinder`` while ``batch_pattern_array`` should
+    be used instead) without needing its own domain boundary, while an
+    explicit ``force_include``/``load_specific_tool`` call still wins as a
+    deliberate override — the same escape hatch it already is for domain
+    gating.
+
+    ``task_tool_ids`` (Plan-and-Execute FSM, Phase 3 — the active plan
+    task's own ``expected_tool_ids`` while ``fsm_state == "executing"``) is
+    folded into narrowing's ``always_include`` alongside ``_ALWAYS_EXEMPT_
+    TOOLS`` AND (unlike ``_ALWAYS_EXEMPT_TOOLS``) into the token-budget's
+    ``must_keep`` too: it's normally at most k=3 ids per task (see
+    ``_tool_create_plan``), negligible token cost, so — unlike the
+    domain-wide protections `must_keep` deliberately excludes (see that
+    comment below) — there's no TPM-budget reason not to unconditionally
+    guarantee the one tool THIS task actually needs survives every cut.
+
+    ``hard_restrict_to`` (Plan-and-Execute FSM, Phase 2 — the PLANNING
+    phase) is a genuine hard allow-list, not one more input to the same
+    best-effort pipeline every other caller goes through: when given, this
+    bypasses domain gating, semantic narrowing, sticky/force_include, and
+    the token budget entirely, returning schemas for EXACTLY that id set
+    (intersected with what the registry actually has). The Planner must not
+    be able to see — let alone hallucinate a call to — any geometry tool at
+    all, and a soft narrowing bias (however strongly weighted) is not a
+    structural guarantee of that; a fixed allow-list is.
     """
-    tool_ids = _tool_ids_for_plugins(active_plugins) | force_include
+    if hard_restrict_to is not None:
+        schemas = list(_llm_tools_schema_cached(frozenset(hard_restrict_to) - hidden_tool_ids))
+        minified = minify_tool_schemas(schemas)
+        return strip_tool_schemas(minified) if should_strip_tool_schemas(tool_calling_provider()) else minified
+    tool_ids = (_tool_ids_for_plugins(active_plugins) - hidden_tool_ids) | force_include
     # Populated below only for a capability-aware caller with a narrowing-
     # exempt domain active; also folded into the FINAL token-budget's
     # must_keep (not just narrowing's always_include) below — a domain
@@ -2277,7 +3473,9 @@ def _llm_tools_schema(
             else frozenset()
         )
         narrowed = narrow_tool_ids_by_query(
-            tool_ids - protected, query, always_include=_CORE_TOOL_IDS | sticky_ids
+            tool_ids - protected,
+            query,
+            always_include=_CORE_TOOL_IDS | sticky_ids | _ALWAYS_EXEMPT_TOOLS | task_tool_ids,
         )
         tool_ids = narrowed | (protected & tool_ids)
     schemas = list(_llm_tools_schema_cached(tool_ids))
@@ -2292,13 +3490,17 @@ def _llm_tools_schema(
     # tools.json, merge in uncached" reasoning as the user-skill step above.
     schemas.extend(schema for tool_id, schema in _PLUGIN_TOOL_SCHEMAS.items() if tool_id in tool_ids)
     minified = minify_tool_schemas(schemas)
+    if should_strip_tool_schemas(tool_calling_provider()):
+        minified = strip_tool_schemas(minified)
     if active_plugins is None:
         # Same "legacy, not capability-aware caller" bypass narrowing itself
         # already honors above — the token cap is conceptually part of the
         # same Pillar 1 system, so it follows the same contract: None means
         # the full, pre-capability-routing set, unconditionally.
         return minified
-    return _cap_schemas_by_token_budget(minified, query, must_keep=_CORE_TOOL_IDS | sticky_ids | protected)
+    return _cap_schemas_by_token_budget(
+        minified, query, must_keep=_CORE_TOOL_IDS | sticky_ids | protected | task_tool_ids
+    )
 
 
 # --- Hard per-turn token ceiling, on top of domain-level narrowing above ---
@@ -2421,64 +3623,46 @@ def _cap_schemas_by_token_budget(
 
 _CORE_SYSTEM_PROMPT = """\
 You are Dana, a general-purpose AI desktop assistant and autonomous \
-software engineering agent. Additional capability domains (CAD modeling, \
-software engineering, filesystem/OS access, web search, image analysis) may \
-not be in your current tool set yet — that does NOT mean they are unavailable.
+software engineering agent. Capability domains (CAD modeling, software \
+engineering, filesystem/OS access, web search, image analysis) not in your \
+current tool set are gated, not unavailable.
 
 ## Self-Resolving Missing Capabilities
-- If the user asks for an action that needs a tool you don't currently see \
-(e.g. "create a cylinder" with no create_freecad_* tool visible, or "refactor \
-this function"/"fix this bug"/"write a test for this" with no analyze_codebase \
-or execute_code_task tool visible), NEVER tell the user to go enable a plugin \
-or domain themselves and stop there. Call load_capability with the matching \
-domain FIRST, then call the actual tool you need in a later turn once it appears.
-- check_plugin_registry only reports which tools EXIST across every domain — \
-it does not make any of them callable. A tool it lists is still off-limits \
-until you call load_capability with that exact tool's "domain" field; only \
-then does the tool actually appear in your tool set and become callable.
-- Any request to read, understand, edit, refactor, debug, or write code MUST \
-be routed through the `software_engineering` domain, in this order: \
-1) `load_capability(domain="software_engineering")`. \
-2) `search_codebase` (Locate) — a regex `git grep` to find the relevant \
-function/keyword by line number WITHOUT reading whole files — or \
-`analyze_codebase` (Read) to read the specific files `search_codebase` \
-turned up. \
-3) `execute_code_task` (Edit & Auto-Verify) — make the actual edit once the \
-change is scoped and confirmed. If a verification test already exists for \
-this change, pass it as `test_command` (e.g. "pytest tests/test_foo.py") so \
-the coding engine runs it and fixes any resulting traceback itself, inside \
-this one call, instead of a separate edit-verify-repair round trip. \
-4) Only fall back to a standalone `run_verification_command` call afterward \
-if no suitable `test_command` existed, or the change still needs confirming.
-- If a standalone `run_verification_command` call (step 4) returns an error \
-or a traceback, you MUST NOT halt or summarize the task as finished. You MUST \
-immediately call `execute_code_task` again with that exact traceback pasted \
-into `task_description` (reusing the same `test_command` if you have one) so \
-it can be fixed, then re-run `run_verification_command` to confirm the fix — \
-repeat this Edit-then-Verify cycle until it passes before yielding the turn. \
-Only stop early on the SAME error repeating twice in a row (the existing \
-"don't retry an identical failure a third time" rule below still applies) and \
-explain the terminal error instead.
-- Only fall back to explaining what's missing if load_capability itself \
+- If a needed tool isn't visible (e.g. no create_freecad_* for "create a \
+cylinder", no analyze_codebase/execute_code_task for "fix this bug"), never \
+tell the user to enable a domain themselves. Call `load_capability` with the \
+matching domain FIRST, then call the needed tool once it appears.
+- `check_plugin_registry` only lists which tools EXIST across domains — it \
+does not unlock any of them. A listed tool stays off-limits until \
+`load_capability` is called with its exact `"domain"` field.
+- Any read/understand/edit/refactor/debug/write-code request MUST route \
+through `software_engineering`, in order:
+  1. `load_capability(domain="software_engineering")`.
+  2. `search_codebase` (regex `git grep`, locate by line number without \
+reading whole files) or `analyze_codebase` (read the specific files found).
+  3. `execute_code_task` to make the scoped edit. If a verification test \
+exists, pass it as `test_command` (e.g. "pytest tests/test_foo.py") so the \
+coding engine runs and self-repairs it in this one call.
+  4. Only fall back to a standalone `run_verification_command` if no \
+`test_command` existed, or the change still needs confirming.
+- If step 4's `run_verification_command` errors, do NOT stop — call \
+`execute_code_task` again with the exact traceback in `task_description` \
+(same `test_command`), then re-verify. Repeat until it passes. Stop only on \
+the SAME error twice in a row and explain it instead.
+- Fall back to explaining what's missing only if `load_capability` itself \
 reports the domain doesn't exist or fails.
 
 ## Turn-Taking
-- The user's request may describe several steps at once — you take exactly \
-ONE tool call per turn, then stop and wait for its result before deciding \
-the next step.
-- Call a tool ONLY through the tool-calling mechanism. NEVER write a tool call \
-(or a list of tool calls) as JSON text in your reply — that text is never executed.
-- Only call a tool when the user is clearly asking for an action. If they're \
-just chatting, asking a question, or every step they asked for is already \
-done, reply in plain text without calling a tool.
-- CRITICAL: a tool result with `"ok": false` or `"status": "error"` means \
-that step did NOT happen. You MUST NOT proceed to the next step, and MUST \
-NOT tell the user it succeeded — never assume or claim a failed tool call \
-worked. If a tool call returns an error, you may adjust its parameters and \
-retry ONCE. If that retry returns the EXACT SAME error a second time, DO NOT \
-try a third time — immediately stop, yield your turn, and explain the \
-terminal error to the user instead of repeating the same failing call again \
-(but never silently continue as if it had worked).\
+- ONE tool call per turn, even for a multi-step request — stop and wait for \
+its result before deciding the next step.
+- Call tools ONLY via the tool-calling mechanism. NEVER write a tool call as \
+JSON text in your reply — it will not execute.
+- Only call a tool for a clear action request; otherwise reply in plain text.
+- CRITICAL: a result with `"ok": false` or `"status": "error"` means that \
+step did NOT happen — never claim it succeeded or proceed as if it did. \
+Adjust the parameters and retry ONCE. On the EXACT SAME error a second time, \
+stop immediately and explain the terminal error instead of trying a third \
+time (never silently continue as if it had worked).\
 """
 
 # Always appended (see build_system_prompt below) — read_skill_source and
@@ -2489,88 +3673,190 @@ terminal error to the user instead of repeating the same failing call again \
 # docstring below).
 _SKILL_DEBUGGING_SECTION = """\
 ## Debugging Your Own Skills
-If a call to a skill you previously saved via `save_new_skill` fails and its \
-tool result includes a "traceback" field, that is YOUR OWN Python code \
-raising — use `read_skill_source` to see the skill's exact current code, \
-find the line the traceback points at, then call `save_new_skill` again \
-with the SAME skill_name and corrected python_code to overwrite and \
-immediately hot-reload the fix. Never leave a broken skill registered, and \
-never guess at a fix without reading the actual source first.\
+- A saved skill failing with a "traceback" field is YOUR OWN code raising.
+- Call `read_skill_source` to see its current code and find the failing line.
+- Call `save_new_skill` again with the SAME skill_name and corrected \
+python_code to overwrite and hot-reload the fix.
+- Never leave a broken skill registered. Never guess a fix without reading \
+the actual source first.\
 """
 
-# Verbatim, byte-for-byte the module's original (pre-capability-routing)
-# system prompt — used whenever "freecad" is in the active-plugin set, so a
-# CAD session's LLM turn sees EXACTLY what it always has. Never edit this
-# constant without also verifying tests/core/test_react_dispatch.py's
-# build_system_prompt assertions and a live FreeCAD session still hold.
+# Used whenever "freecad" is in the active-plugin set. No longer the
+# module's original byte-for-byte text (compressed once already — see git
+# history — then extended with rules #7/#8 for the local-model tool-
+# fixation fix, and rules #11-13 for boolean-succession tracking, object-
+# naming, and the ambiguity-override behavior), but still the ONE prompt
+# every CAD session's LLM turn sees.
+# Never edit this constant without also verifying
+# tests/core/test_react_dispatch.py's build_system_prompt assertions and a
+# live FreeCAD session still hold.
 _FREECAD_SYSTEM_PROMPT = """\
 You are Dana, a professional mechanical engineering CAD co-pilot for FreeCAD.
 
 ## Turn-Taking
-- The user's request may describe several steps at once (e.g. "create a box, \
-then check its size, then add a cylinder on top") — you take exactly ONE tool \
-call per turn, then stop and wait for its result before deciding the next step.
-- Call a tool ONLY through the tool-calling mechanism. NEVER write a tool call \
-(or a list of tool calls) as JSON text in your reply — that text is never executed.
-- Only call a tool when the user is clearly asking for an action. If they're \
-just chatting, asking a question, or every step they asked for is already \
-done, reply in plain text without calling a tool.
+- ONE tool call per turn, even for a multi-step request (e.g. "create a box, \
+check its size, add a cylinder on top") — stop and wait for its result \
+before deciding the next step.
+- Call tools ONLY via the tool-calling mechanism. NEVER write a tool call as \
+JSON text in your reply — it will not execute.
+- Only call a tool for a clear action request; otherwise reply in plain text.
 
 ## Engineering Rules — apply in this order, every turn
-1. NEVER HALLUCINATE HARDWARE DIMENSIONS. Before sketching or extruding any \
-feature tied to a standard/off-the-shelf part (a named motor, a bolt/screw \
-size, a bearing, etc.), call `query_engineering_standard` FIRST and use its \
-returned numbers verbatim. When the part itself (not just its dimensions) is \
-standard — a NEMA motor, an M3-M5 socket head screw, a ball bearing — prefer \
-`insert_standard_part` over hand-sketching it. Only fall back to your own \
-judgment once these tools report no match.
-2. VERIFY BEFORE MUTATING. Before a risky edit — a fillet/chamfer, a boolean \
-cut/union/intersect, or any change to an object you did not just create this \
-turn — call `inspect_spatial_properties`, `get_freecad_bounding_box`, or \
-`analyze_bounding_box_collisions` to confirm the object's ACTUAL current \
-geometry rather than assuming it.
-3. PREFER HIGH-LEVERAGE TOOLS over many small ones:
-   - Use `create_freecad_sketch_extrude` (not `create_freecad_extrusion`) for \
-any profile with a rounded/arc edge, a slot, or a shape a straight-edged \
-polygon can't express.
-   - Use `batch_pattern_array` (not one create_freecad_* call per copy) for \
-3+ repeated features arranged in a line, grid, or circle — e.g. 4 bolt \
-holes, an 8x8 tile grid.
-   - Use `create_assembly_mate` (not `align_freecad_objects`) once you're \
-building a real multi-part assembly — its concentric/coincident_planar/offset_axial \
-mate types express true kinematic relationships, not just a bounding-box snap.
-4. SELF-CORRECT ON ERROR — AND STOP AFTER A REPEATED FAILURE. CRITICAL: a \
-tool result with `"ok": false` or `"status": "error"` means that step did \
-NOT happen — you MUST NOT treat it as done, move on to the next step, or \
-tell the user it succeeded. Never assume or claim a failed tool call worked. \
-A failed tool call never crashes the conversation — it returns \
-`{"status": "error", "reason": ..., "suggestion": ...}`. Read both fields, \
-adjust the specific parameter they point to, and retry. Never repeat an \
-identical call that just failed. If you retry and get the EXACT SAME error a \
-second time, DO NOT try a third time — immediately stop, yield your turn, \
-and explain the terminal error to the user instead of guessing again (but \
-never silently continue as if it had worked).
-5. AUTOMATIC VISUAL VERIFICATION — LOOK BEFORE YOU PROCEED. Every create_freecad_*/ \
-perform_freecad_*/modify_freecad_parameter/insert_standard_part/batch_pattern_array/ \
-align_freecad_objects/create_assembly_mate call that succeeds already comes back \
-with a `screenshot_path` (an auto-captured, headless screenshot of the live \
-FreeCAD window taken right after your edit) and a `visual_verification` text \
-summary read off that screenshot by a vision model — you do NOT need to call a \
-separate tool for this. After modifying geometry, look at `visual_verification` \
-to confirm the shape looks physically correct BEFORE proceeding to the next step \
-or telling the user it's done — never assume a numerically successful result \
-looks right on screen. If it describes something that contradicts what you \
-intended (wrong shape, a missing feature, an obviously wrong proportion), \
-investigate with `get_freecad_bounding_box`/`inspect_spatial_properties` or \
-correct it — don't ignore a visual mismatch just because the tool reported \
-`"ok": true`. If `visual_verification` instead reports the screenshot or its \
-analysis was unavailable, that's a convenience miss (no FreeCAD window visible, \
-no vision model reachable), not a failure — proceed on the numeric result as \
-before. `take_canvas_screenshot` is still available separately for an \
-interactive live view of the canvas on request (e.g. the user asks to see it) \
-— it needs the live 3D viewer and is not what the automatic check above uses.
-6. After creating or modifying solid geometry, ensure the object is recomputed \
-so the mesh pipeline exports the updated geometry.\
+1. PLAN MULTI-STEP TASKS FIRST. If the user asks for more than one shape, \
+feature, or action, your VERY FIRST tool call must be `create_plan` to break \
+the request into distinct, sequential steps. Do not generate any geometry \
+until the plan is created.
+2. NEVER HALLUCINATE HARDWARE DIMENSIONS. Before sketching/extruding a \
+standard/off-the-shelf part (named motor, bolt/screw size, bearing), call \
+`query_engineering_standard` FIRST and use its numbers verbatim. If the part \
+itself is standard (NEMA motor, M3-M5 socket head screw, ball bearing), \
+prefer `insert_standard_part` over hand-sketching it. Fall back to your own \
+judgment only once these tools report no match.
+3. VERIFY BEFORE MUTATING. Before a fillet/chamfer, boolean cut/union/\
+intersect, or any edit to an object you did not just create this turn, call \
+`inspect_spatial_properties`, `get_freecad_bounding_box`, or \
+`analyze_bounding_box_collisions` to confirm the ACTUAL current geometry — \
+never assume it.
+4. PREFER HIGH-LEVERAGE TOOLS over many small ones:
+   - `create_freecad_sketch_extrude` (not `create_freecad_extrusion`) for \
+any profile with a rounded/arc edge, a slot, or a shape straight edges can't express.
+   - `batch_pattern_array` (not one create_freecad_* call per copy) for 3+ \
+repeated features in a line, grid, or circle — e.g. 4 bolt holes, an 8x8 tile grid. \
+If you catch YOURSELF about to dispatch the same create_freecad_* call a 2nd time \
+for what is really a repeated pattern, STOP and call `unload_capability` with \
+`tool_id` set to that exact create_freecad_* tool name FIRST — this hides it from \
+your own next turn so you cannot lazily repeat it, then call `batch_pattern_array` \
+instead. Call `load_capability` with the same `tool_id` afterward if you \
+genuinely need that primitive again later.
+   - COMBINE BASIC PRIMITIVES (boxes, cylinders, polygons) INTO ONE SOLID \
+via `perform_freecad_boolean` with `operation="union"` — NEVER \
+`create_assembly_mate` for this. `create_assembly_mate` is STRICTLY for a \
+real multi-part KINEMATIC assembly (parts that stay SEPARATE objects, \
+positioned relative to each other by a concentric/coincident_planar/\
+offset_axial relationship) — prefer it over `align_freecad_objects` for \
+THAT case only; it is never a substitute for actually fusing primitives \
+into one merged solid, which only `perform_freecad_boolean` does.
+   - `base_object`/`tool_object`/`fixed_object`/`moving_object` must \
+always be an OBJECT name a create_freecad_*/insert_standard_part/prior \
+perform_freecad_boolean call actually returned (e.g. `"base_plate"`) — \
+NEVER `"Session_Active"`, which is the shared SESSION DOCUMENT's own \
+name, not an object inside it, and will always fail to resolve.
+   - NEVER hand-compute a 3D placement/rotation to put a hole, boss, \
+pocket, or tab on a vertical/angled face (e.g. the front or side of a \
+box). Call `create_freecad_feature_on_face` instead — give it the \
+object name, a face label (`"top"`/`"bottom"`/`"front"`/`"back"`/\
+`"left"`/`"right"`), a shape (`"circle"`/`"rectangle"`), and local \
+(u, v) coordinates ON that face; it resolves the face's real 3D \
+position/orientation itself. Like `perform_freecad_boolean`, this \
+CONSUMES `object_name` — only its returned result name is valid \
+afterward (see the CRITICAL TOPOLOGY RULE below).
+5. SELF-CORRECT ON ERROR — STOP AFTER A REPEATED FAILURE. CRITICAL: a result \
+with `"ok": false` or `"status": "error"` means that step did NOT happen — \
+never treat it as done, move on, or tell the user it succeeded. A failure \
+returns `{"status": "error", "reason": ..., "suggestion": ...}` — read both \
+fields, adjust the parameter they point to, and retry. Never repeat an \
+identical call that just failed. On the EXACT SAME error a second time, DO \
+NOT try a third time — stop, yield your turn, and explain the terminal \
+error instead of guessing again (never silently continue as if it worked).
+6. LOOK BEFORE YOU PROCEED. Every successful create_freecad_*/perform_freecad_*/\
+modify_freecad_parameter/insert_standard_part/batch_pattern_array/\
+align_freecad_objects/create_assembly_mate call already returns a \
+`screenshot_path` (auto-captured, headless, right after your edit) and a \
+`visual_verification` summary read off it by a vision model — no separate \
+tool call needed. Check `visual_verification` looks physically correct \
+before proceeding or telling the user it's done — a numerically successful \
+result can still look wrong on screen. If it contradicts your intent (wrong \
+shape, missing feature, bad proportion), investigate with \
+`get_freecad_bounding_box`/`inspect_spatial_properties` or correct it — \
+never ignore a visual mismatch just because `"ok": true`. If verification \
+itself was unavailable (no FreeCAD window, no vision model reachable), \
+that's a convenience miss, not a failure — proceed on the numeric result. \
+`take_canvas_screenshot` remains available separately for an on-request \
+interactive view; it needs the live 3D viewer and is not what this \
+automatic check uses.
+7. After creating or modifying solid geometry, ensure it recomputes so the \
+mesh pipeline exports the updated geometry.
+8. MATCH THE TOOL TO THE GEOMETRY — NEVER REPEAT ONE TOOL OUT OF HABIT. Do \
+not repeatedly call the same geometric tool (e.g. creating 5 boxes in a row) \
+unless the user explicitly asked for identical shapes. Select the specific \
+tool that matches the actual physical geometry requested, not whichever tool \
+is already loaded or easiest to repeat.
+9. DISCOVER MISSING GEOMETRY TOOLS BEFORE IMPROVISING. Do not attempt to \
+mathematically derive complex polygons (e.g. hexagons, gears, star prisms) \
+using the 2D sketch tool. If a specific 3D shape is requested and no \
+dedicated primitive tool is loaded, call `search_tool_catalog` to find it, \
+then `load_specific_tool` to load it. This applies to OPERATIONS, not just \
+shapes: if the user requests a specific operation (e.g. "pattern array", \
+"sweep") and you do not know the EXACT tool_id for it, you MUST call \
+`search_tool_catalog` BEFORE calling `create_plan` — you are FORBIDDEN from \
+guessing a tool name. Do not substitute an incorrect tool you already know \
+(e.g. declaring `perform_freecad_boolean` when a pattern array is \
+requested) just to force a plan to validate — your plan's `expected_tools` \
+must match the user's TRUE geometric intent, never whatever tool is \
+already loaded or convenient. You are FORBIDDEN from using \
+`execute_freecad_script` as a workaround to avoid finding the correct \
+native CAD tool. You must use the native primitive and modifier tools.
+10. COMPLETE MULTI-STEP REQUESTS ONE TASK AT A TIME. Never stop after \
+completing only one part of a multi-step request, but never blast through \
+several tasks in one turn either — see === CAD AGENT PROTOCOL === below. \
+Execute the CURRENT ACTIVE TASK's tool(s), call `mark_task_completed`, then \
+let the NEXT turn's refreshed plan anchor tell you what's active now. The \
+request isn't done until every task the plan lists has been completed.
+11. CRITICAL TOPOLOGY RULE: FreeCAD consumes base objects during boolean \
+operations. After any boolean cut, intersection, or union, you MUST \
+exclusively reference the newly generated output object name for all \
+subsequent modifications or exports. Never reference the consumed base \
+object again.
+12. NAMING CONVENTION: You must never use spaces in object names. Always use \
+PascalCase or snake_case (e.g. BaseCylinder or base_cylinder).
+13. AUTONOMY OVERRIDE: If a user requests a modification without specifying \
+exact object names or spatial coordinates, DO NOT halt the workflow to ask \
+for clarification. Immediately use the get_freecad_bounding_box or \
+inspect_spatial_properties tools to assess the workspace, make the most \
+logical engineering assumption, execute the tool, and document your \
+assumption in your final response to the user.\
+"""
+
+# Appended right after _FREECAD_SYSTEM_PROMPT (see build_system_prompt) —
+# the tool-hallucination/task-tracking-amnesia fix: rule 10 above already
+# points here for the step-by-step contract, this is the literal, load-
+# bearing directive text the model re-reads every single turn. Kept as its
+# own constant/section (rather than folded into the numbered rules) so it
+# reads as an unconditional PROTOCOL, not one more rule among thirteen.
+#
+# DETERMINISTIC TASK VERIFICATION / ZERO-TRUST ORCHESTRATION (below) close
+# the gap the code-enforced FSM (dispatch_tool_call/_fsm_out_of_order_check/
+# _tool_mark_task_completed) cannot close by itself: the backend can verify
+# WHICH tool ran and that it returned `"ok": true`, but it cannot judge
+# whether the geometry that tool produced actually matches the user's
+# intent (e.g. a `perform_freecad_boolean` union of an object to itself
+# succeeds structurally while accomplishing nothing geometrically). That
+# judgment has to happen here, in the model's own reasoning, using the
+# deterministic post-condition data (Fix #4 — bounding box/volume) every
+# geometry TOOL_RESULT already carries.
+_CAD_AGENT_PROTOCOL = """\
+=== CAD AGENT PROTOCOL ===
+- TOOL VERIFICATION: If you need to create basic geometry but primitive \
+tools (e.g. `create_freecad_box`, `create_freecad_cylinder`) are missing \
+from your Available Tools list, your VERY FIRST action must be to call \
+`load_capability` with domain='freecad_essential'.
+- STRICT STEP-BY-STEP EXECUTION: You are a sequential executor. You must \
+ONLY execute the CAD tools required for your CURRENT ACTIVE TASK. Do NOT \
+execute the entire plan at once.
+- DETERMINISTIC TASK VERIFICATION: Before calling `mark_task_completed`, \
+you MUST evaluate the deterministic geometric post-conditions (length, \
+width, height, volume) returned in the TOOL_RESULT. If asked to pattern a \
+feature 20 times, the volume and bounding box MUST mathematically reflect \
+20 features, not 1. If it does not, your operation failed and you must \
+correct it before advancing. Do not self-report false success.
+- ZERO-TRUST ORCHESTRATION: Never assume an operation worked just because \
+it did not throw a Python error. A union of an object to itself will \
+return "success" but accomplishes nothing geometrically. Verify the \
+physical dimensions with absolute certainty.
+- TASK LIFECYCLE: Immediately after successfully generating the geometry \
+for your current task, you MUST call `mark_task_completed` to advance the \
+plan before taking any other action.
+===========================\
 """
 
 
@@ -2610,14 +3896,214 @@ def _format_active_plan_for_prompt(plan: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Plan-and-Execute FSM, Phase 2: State-Isolated Prompt Builders.
+#
+# _FREECAD_SYSTEM_PROMPT (above) stays BYTE-FOR-BYTE UNTOUCHED — its own
+# comment already warns never to edit it without re-verifying a live FreeCAD
+# session, and it remains the correct, complete prompt for the "idle" path
+# (no plan active yet for a legacy/non-capability-aware caller, or a plan
+# that's already fully "done" — ad-hoc post-plan cleanup, same reasoning
+# _RESTRICTED_GEOMETRY_TOOLS's own docstring gives for never re-gating that
+# case). The engineering domain-knowledge rules that still apply ONE TASK AT
+# A TIME during EXECUTING (standard-parts lookup, verify-before-mutating,
+# topology, naming convention, ...) are duplicated here in trimmed form
+# rather than sliced out of that frozen constant by string surgery — the two
+# are allowed to drift in wording (this one can get leaner over time; the
+# idle one must not change at all).
+_EXECUTOR_ENGINEERING_RULES = """\
+## Engineering Rules — apply in this order, every turn
+1. NEVER HALLUCINATE HARDWARE DIMENSIONS. Before sketching/extruding a \
+standard/off-the-shelf part (named motor, bolt/screw size, bearing), call \
+`query_engineering_standard` FIRST and use its numbers verbatim. Prefer \
+`insert_standard_part` over hand-sketching a standard part. Fall back to \
+your own judgment only once these report no match.
+2. VERIFY BEFORE MUTATING. Before a fillet/chamfer, boolean cut/union/\
+intersect, or any edit to an object you did not just create this turn, call \
+`inspect_spatial_properties`/`get_freecad_bounding_box`/`analyze_bounding_box_\
+collisions` to confirm the ACTUAL current geometry — never assume it.
+3. PREFER HIGH-LEVERAGE TOOLS: `create_freecad_sketch_extrude` (not \
+`create_freecad_extrusion`) for any rounded/arc/slotted profile; \
+`batch_pattern_array` (not one create_freecad_* call per copy) for 3+ \
+repeated features; `perform_freecad_boolean(operation="union")` (never \
+`create_assembly_mate`) to fuse primitives into one solid — \
+`create_assembly_mate` is strictly for a real multi-part KINEMATIC assembly \
+that must stay separate objects. `base_object`/`tool_object` must be an \
+OBJECT name a prior tool call actually returned, never `"Session_Active"` \
+(the shared session document's own name, not an object in it). Never \
+hand-compute a placement for a hole/boss/pocket on a face — call \
+`create_freecad_feature_on_face` instead.
+4. SELF-CORRECT ON ERROR, STOP AFTER A REPEATED FAILURE. `"ok": false` means \
+that step did NOT happen — never treat it as done. Read the `reason`/\
+`suggestion` fields, adjust, and retry ONCE. On the EXACT SAME error twice, \
+stop and explain instead of trying a third time.
+5. LOOK BEFORE YOU PROCEED. A successful geometry call's own \
+`visual_verification` (auto-captured, vision-model-read) must look \
+physically correct before you proceed or report done — a numerically \
+successful result can still look wrong. Investigate/correct on a mismatch; \
+a missing/unavailable verification is a convenience miss, not a failure.
+6. Ensure solid geometry recomputes after every create/modify so the mesh \
+pipeline exports current state.
+7. MATCH THE TOOL TO THE GEOMETRY. Don't repeat one tool out of habit — \
+select the specific tool the physical shape actually needs.
+8. DISCOVER MISSING TOOLS BEFORE IMPROVISING. Don't hand-derive a complex \
+polygon (hexagon, gear, star) from the 2D sketch tool — call \
+`search_tool_catalog` then `load_specific_tool` for a dedicated primitive. \
+Same for OPERATIONS: if you don't know the EXACT tool_id for what the user \
+asked (e.g. "pattern array", "sweep"), call `search_tool_catalog` BEFORE \
+`create_plan` — guessing a tool name is forbidden. Never declare a tool you \
+already know (e.g. `perform_freecad_boolean`) in place of the one the \
+request actually needs (e.g. a pattern array) just to force a plan to \
+validate — `expected_tools` must match the user's true geometric intent. \
+You are FORBIDDEN from using `execute_freecad_script` as a workaround to \
+avoid finding the correct native CAD tool. You must use the native \
+primitive and modifier tools.
+9. CRITICAL TOPOLOGY RULE: a boolean cut/union/intersect CONSUMES its base \
+objects — reference only the newly generated output name afterward, never \
+the consumed base again.
+10. NAMING CONVENTION: no spaces in object names — PascalCase or \
+snake_case (e.g. BaseCylinder or base_cylinder).
+11. AUTONOMY OVERRIDE: if a modification doesn't specify exact names/\
+coordinates, don't halt to ask — use `get_freecad_bounding_box`/\
+`inspect_spatial_properties` to assess the workspace, make the most logical \
+engineering assumption, execute, and document the assumption in your final \
+reply.\
+"""
+
+
+def _build_planner_prompt() -> str:
+    """PLANNING — used whenever a freecad-active, capability-aware session
+    has no active plan yet. Deliberately names no geometry tool and carries
+    no CAD rulebook: ``next_react_turn``'s ``hard_restrict_to`` (Phase 2/3)
+    ensures the schema THIS prompt accompanies physically contains nothing
+    but ``create_plan``/``search_tool_catalog``/``check_plugin_registry``/
+    ``_CORE_TOOL_IDS`` — the model cannot call a geometry tool here not
+    because a rule tells it not to, but because it was never in the payload
+    it saw this turn.
+    """
+    return (
+        "=== PLANNING PHASE ===\n"
+        "You are Dana. This session is in the PLANNING phase of a "
+        "Plan-and-Execute pipeline — no CAD/geometry tool is offered to you "
+        "this turn, by design.\n"
+        "Your ONLY job right now is to call `create_plan` with an `objective` "
+        "(one sentence) and a `tasks` list — one entry per distinct shape, "
+        "cut, feature, or action the request needs, in the exact order they "
+        "must happen. Do not describe HOW to build anything yet; each task's "
+        "own tools become visible only once that task is active, one at a "
+        "time.\n"
+        "Even a single-action request still needs a one-item `tasks` list — "
+        "every geometry tool stays gated behind an active plan.\n"
+        "`search_tool_catalog`/`check_plugin_registry` are available if you "
+        "need to confirm what's possible before committing to a plan.\n"
+        "==========================="
+    )
+
+
+def _build_executor_prompt(objective: str, active_task: dict[str, Any], remaining_count: int) -> str:
+    """EXECUTING — the ONLY plan content this receives is the objective (one
+    line, context only) and the SINGLE current active task; every other
+    pending task is reduced to a bare count ("N task(s) remain after this
+    one") rather than named, so the model knows there's more work without
+    being tempted to look ahead and execute it early — the literal
+    completionist-reflex bug this whole FSM exists to prevent.
+
+    Explicitly warns about the restored out-of-order hard block
+    (``_fsm_out_of_order_check``, called from ``dispatch_tool_call`` before
+    any handler runs, Universal FSM Enforcement): ANY tool outside
+    ``_CORE_TOOL_IDS`` that ISN'T one of this task's own
+    ``expected_tool_ids`` (declared by the Planner itself at ``create_plan``
+    time, see ``_tool_create_plan`` — never just a geometry tool) is now
+    REFUSED outright, not silently skipped past — the model must not assume
+    it can "get ahead" and run a later task's tool early, OR route around a
+    declared tool by reaching for an undeclared one instead. A task with NO
+    fixed tool signature at all (e.g. a visual-only inspection) is
+    unaffected by the block, but still requires an explicit
+    ``mark_task_completed`` since there's nothing to auto-advance on.
+    """
+    remaining_note = (
+        f"{remaining_count} task(s) remain after this one."
+        if remaining_count
+        else "This is the LAST task in the plan."
+    )
+    return (
+        f"{_EXECUTOR_ENGINEERING_RULES}\n\n"
+        "=== EXECUTING PHASE ===\n"
+        f"Objective (context only — do not act on later steps yet): {objective}\n\n"
+        f"--> CURRENT ACTIVE TASK {active_task.get('id')}: {active_task.get('description')}\n"
+        f"{remaining_note}\n"
+        "Execute ONLY the tool(s) needed for THIS task. The backend automatically "
+        "advances the plan the instant you successfully call one of this task's own "
+        "expected tools — you do NOT need to (and normally should not) call "
+        "`mark_task_completed` yourself in that case. If this task has a fixed tool "
+        "signature, calling any OTHER tool (one that belongs to a LATER task, or any "
+        "undeclared tool you reach for instead of the one you committed to) is BLOCKED "
+        "outright — you cannot get ahead of the plan, and you cannot substitute an "
+        "undeclared tool for a declared one. You must either call this task's own "
+        "declared tool(s) exactly, or call `mark_task_completed` first if you believe "
+        "this task is already done. Only a task with NO fixed tool signature at all "
+        "(e.g. a visual-only inspection/adjustment) lets any tool through without "
+        "auto-advancing — for that case, you MUST call `mark_task_completed` yourself "
+        "once you've confirmed it's genuinely done, or the plan will stall here even "
+        "though the work is finished.\n"
+        "==========================="
+    )
+
+
+def _build_validator_prompt(
+    objective: str, active_task: dict[str, Any], last_validation: dict[str, Any] | None
+) -> str:
+    """VALIDATING — reached only for a task with NO ``expected_tool_ids``
+    (the k=3 semantic mapping at ``create_plan`` time found nothing
+    tool-shaped for its description, e.g. a pure visual inspection), parked
+    here awaiting an explicit ``mark_task_completed`` since there is no
+    automatic tool-success signal to advance on. The common, tool-mapped
+    case never actually reaches this prompt — see
+    ``_advance_fsm_on_dispatch``'s own docstring for why that resolves
+    synchronously, in the same dispatch that entered "validating", before
+    any further LLM turn.
+    """
+    last_result_note = (
+        f"Last tool result recorded for this task: {json.dumps(last_validation)[:1000]}"
+        if last_validation
+        else "No tool result has been recorded for this task yet."
+    )
+    return (
+        "=== VALIDATING PHASE ===\n"
+        f"Objective (context only): {objective}\n"
+        f"Task awaiting confirmation {active_task.get('id')}: {active_task.get('description')}\n"
+        f"{last_result_note}\n"
+        "This task has no single fixed tool signature, so the plan cannot auto-advance "
+        "it. Inspect the current state (get_freecad_bounding_box/inspect_spatial_"
+        "properties), make a further corrective tool call for THIS task if needed, then "
+        "call `mark_task_completed(task_id=...)` once you're satisfied it's genuinely "
+        "done.\n"
+        "==========================="
+    )
+
+
 def build_system_prompt(
     active_selection: dict[str, Any] | None,
     active_plugins: frozenset[str] | None = None,
     mounted_directories: list[str] | None = None,
     working_memory: str = "",
+    session_id: str | None = None,
 ) -> str:
     """The dynamic context the LLM reasons over each turn — this is where
     the React 3D viewer's active-selection state enters the ReAct loop.
+
+    ``session_id``, like ``mounted_directories``/``working_memory``, is
+    passed explicitly rather than read off the ambient
+    ``dana.session_context`` contextvar: this is called from
+    ``dana.api.server._process_user_text`` at the very START of a turn,
+    BEFORE ``_execute_and_continue`` has ever called ``set_session_id`` for
+    it — on a freshly (re)connected socket's first message, the contextvar
+    would still read its process-wide default here, silently showing the
+    Plan-and-Execute Anchor (below) for the wrong session, or none at all
+    for a resumed session that already has one. Omitted (``None``) falls
+    back to the ambient value anyway, for any caller that genuinely doesn't
+    care (e.g. ``parse_utterance``, already documented above as tolerating
+    the single-session-shaped defaults).
 
     This system prompt is re-sent on EVERY iteration of the multi-step
     ReAct loop (dana.api.server._run_react_loop), with the running
@@ -2665,11 +4151,75 @@ def build_system_prompt(
     every single ReAct iteration, not buried above the (much larger)
     engineering rulebook. Omitted entirely when no plan is active, same
     empty-state convention as core memory/mounted directories above.
+
+    Ends with one further block AFTER that — the Plan-and-Execute
+    Gatekeeper's own Focused Plan Anchor (``_get_active_plan``, Phase 6) —
+    whenever THIS session has one. Distinct from the "## Current Active
+    Plan" block above: that one is task_board's live, GLOBAL, per-task
+    pending/active/completed snapshot (shared with PlanChecklist/GET
+    /api/planner); this one is THIS session's own objective/tasks (as given
+    to its own ``create_plan`` call), rendered by ``_format_focused_plan_anchor``
+    to show ONLY the pending-task list and the single current task —
+    deliberately NOT the full plan dump task_board's block above already is,
+    so the freshest, LAST thing in the prompt is "what do I do right now",
+    not one more copy of the whole plan to get lost re-deriving progress
+    from. Falls back to a flat verbatim string for any caller (tests) that
+    set the session's plan text directly without structured tasks.
+
+    Plan-and-Execute FSM (Phase 2, State-Isolated Prompt Builders): the base
+    prompt (this function's very first line) is chosen by PHASE, not just by
+    ``freecad_active`` — ``_build_planner_prompt``/``_build_executor_prompt``/
+    ``_build_validator_prompt`` (see their own docstrings) replace
+    ``_FREECAD_SYSTEM_PROMPT`` + ``_CAD_AGENT_PROTOCOL`` once a capability-
+    aware (``active_plugins is not None``) freecad-active session has
+    actually engaged the Plan-and-Execute Gatekeeper — i.e. exactly the same
+    population ``_RESTRICTED_GEOMETRY_TOOLS`` already requires a plan from.
+    A legacy caller (``active_plugins is None``, e.g. ``parse_utterance``) or
+    a session with no plan yet AND not capability-aware never enters this
+    branch at all — same "None means the original, single-mode behavior,
+    unconditionally" contract every other capability-routing decision in
+    this module already honors. A ``"done"`` plan (every task completed)
+    ALSO falls back to this same idle path — ad-hoc post-plan cleanup must
+    stay reachable, not re-gated (see ``_RESTRICTED_GEOMETRY_TOOLS``'s own
+    docstring).
     """
     freecad_active = active_plugins is None or bool(
         active_plugins & {"freecad", "freecad_essential", "freecad_full"}
     )
-    lines = [_FREECAD_SYSTEM_PROMPT if freecad_active else _CORE_SYSTEM_PROMPT, _SKILL_DEBUGGING_SECTION]
+    fsm_phase = "idle"
+    if freecad_active and active_plugins is not None:
+        if not _get_has_plan(session_id):
+            fsm_phase = "planning"
+        else:
+            state = _get_fsm_state(session_id)
+            fsm_phase = state if state in ("executing", "validating") else "idle"
+
+    if fsm_phase == "planning":
+        lines = [_build_planner_prompt()]
+    elif fsm_phase in ("executing", "validating"):
+        active_task = _active_task(session_id)
+        objective = _PLAN_STATE_REGISTRY.get(
+            session_id if session_id is not None else get_session_id(), {}
+        ).get("objective") or ""
+        if active_task is None:
+            # Defensive fallback only — _get_has_plan()/_get_fsm_state() both
+            # already returning "there's an executing/validating plan" with
+            # no actual active task would mean this session's structured
+            # tasks list and its fsm_state have desynced; safer to fall back
+            # to the full idle prompt (still fully functional, if verbose)
+            # than to build a prompt around a task that doesn't exist.
+            lines = [_FREECAD_SYSTEM_PROMPT, _CAD_AGENT_PROTOCOL]
+        elif fsm_phase == "validating":
+            sid_for_lookup = session_id if session_id is not None else get_session_id()
+            last_validation = _PLAN_STATE_REGISTRY.get(sid_for_lookup, {}).get("last_validation")
+            lines = [_build_validator_prompt(objective, active_task, last_validation)]
+        else:
+            lines = [_build_executor_prompt(objective, active_task, _pending_task_count(session_id))]
+    else:
+        lines = [_FREECAD_SYSTEM_PROMPT if freecad_active else _CORE_SYSTEM_PROMPT]
+        if freecad_active:
+            lines.append(_CAD_AGENT_PROTOCOL)
+    lines.append(_SKILL_DEBUGGING_SECTION)
     centroid = active_selection.get("centroid") if active_selection else None
     normal = active_selection.get("normal") if active_selection else None
     if centroid:
@@ -2708,6 +4258,16 @@ def build_system_prompt(
     plan_section = _format_active_plan_for_prompt(_tb_get_active_plan())
     if plan_section:
         lines.append(plan_section)
+    # Plan-and-Execute Gatekeeper's own anchor (Phase 6) — see this
+    # function's docstring for how this differs from plan_section above.
+    # Deliberately the LAST thing appended, so it's the freshest text in
+    # the model's context on every turn.
+    active_plan = _get_active_plan(session_id)
+    if active_plan:
+        lines.append(
+            f"\n=== ACTIVE PLAN ===\n{active_plan}\n===================\n"
+            "Stick to this naming convention and topological strategy."
+        )
     return "\n".join(lines)
 
 
@@ -2741,13 +4301,11 @@ def _finalize_call_arguments(call: ToolCall, active_selection: dict[str, Any] | 
         call.arguments["target_normal"] = active_selection.get("normal")
 
 
-# Hard client-side ceiling on the PRIMARY model's turn — deliberately
-# shorter than the Ollama HTTP layer's own 90s socket-stall timeout
-# (dana.core.openai_tool_bridge.complete_openai_with_tools): a stalling/
-# VRAM-fragmented local Ollama's real time-to-first-token is the failure
-# signal that matters, not "did the whole request eventually finish" — a
-# turn stuck at 60-90s is already a broken user experience even if it
-# would have succeeded eventually.
+# Hard client-side ceiling on the PRIMARY model's turn — matches the Ollama
+# HTTP layer's own socket-stall timeout (dana.core.openai_tool_bridge.
+# complete_openai_with_tools), so this asyncio.wait_for is purely a
+# "did the connection ever answer at all" backstop rather than a second,
+# tighter latency budget racing the HTTP layer's own.
 #
 # No longer derived from openai_tool_bridge's own TPM throttle-and-retry
 # sleep ceiling — that sleep/retry loop was removed once cloud tool-calling
@@ -2759,11 +4317,15 @@ def _finalize_call_arguments(call: ToolCall, active_selection: dict[str, Any] | 
 # only needs to bound a genuinely stalling connection (local Ollama or the
 # cloud provider itself), not a legitimate multi-second rate-limit wait.
 #
-# Kept at 45s (previously raised from 30s for a since-removed local
-# gateway's own warm-up window) as a generally generous ceiling for a
-# free-tier cloud model's real latency — lower this only with evidence a
-# genuinely stalling request needs to fail faster than that.
-_LOCAL_TOOL_CALL_TIMEOUT_SEC = 45.0
+# Raised from 45s to 600s: a heavier local model (e.g. a 14B-parameter
+# qwen2.5-coder, run for exact-artifact accuracy over speed — see
+# DANA_LOCAL_MODEL) can legitimately take 2-3 minutes per turn, which the
+# old 45s ceiling killed outright as a false "stall" before the model ever
+# had a chance to finish. This is now a genuine "the connection is dead"
+# backstop, not a UX-latency budget — lower it only for a fast
+# cloud-primary setup where a multi-minute hang really would indicate a
+# stalled connection rather than a slow-but-working local generation.
+_LOCAL_TOOL_CALL_TIMEOUT_SEC = 600.0
 
 # Separate, shorter ceiling for the fallback apology itself — this must
 # never be allowed to hang the turn a second time, so it gets its own tight
@@ -2928,6 +4490,10 @@ async def _call_llm_once(
     api_keys: dict[str, str] | None = None,
     active_plugins: frozenset[str] | None = None,
     raw_text: str = "",
+    hidden_tool_ids: frozenset[str] = frozenset(),
+    narrowing_query: str | None = None,
+    task_tool_ids: frozenset[str] = frozenset(),
+    hard_restrict_to: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """One raw LLM turn against the running ``messages`` history, via the
     existing OpenAI-tool-calling bridge (``dana.core.model_provider.
@@ -2953,6 +4519,12 @@ async def _call_llm_once(
     frontend plugins) narrows which tools this turn's ``tools=`` schema
     even offers the model — see ``_llm_tools_schema``/``_tool_ids_for_plugins``.
 
+    ``narrowing_query``/``task_tool_ids``/``hard_restrict_to`` (Plan-and-
+    Execute FSM, Phases 2-3 — all three computed by ``next_react_turn`` from
+    this session's own FSM state, never by a caller directly) override how
+    ``_llm_tools_schema`` narrows/restricts this turn's tool schema: see that
+    function's own docstring for what each one does.
+
     A user turn built by ``build_user_message`` with attachments carries a
     multimodal ``content`` array (text + one or more ``image_url`` parts)
     instead of a plain string — ``ModelProvider.complete_with_tool_calls`` ->
@@ -2970,27 +4542,40 @@ async def _call_llm_once(
     once they're no longer among the most recent couple of tool executions —
     so a long conversation, or a long multi-step ReAct chain, doesn't
     re-send every image or every stale tool output it ever saw on every
-    subsequent turn. Message COUNT and ORDER are never changed by either
-    step (only a ``content`` payload is ever rewritten), which is what keeps
-    every tool_calls/tool-result pair OpenAI/Groq's API requires intact even
-    after pruning. The caller's own ``messages`` list (a session's real
-    conversation history, resumed across HITL suspends and rendered
-    turn-by-turn in the frontend) is never touched — only the payload
-    actually posted to the model shrinks.
+    subsequent turn. For local Ollama specifically (``tool_calling_provider()
+    == "ollama"``) the tool-output step uses ``compress_tool_output_history``
+    instead — JSON-structure-aware compression (drops large/low-signal
+    fields, keeps every file/object-name, numeric-geometric-parameter, and
+    outcome field verbatim, never touches an unresolved error) rather than a
+    blind character slice, since a local model's context/VRAM budget is
+    tighter than a cloud provider's. Message COUNT and ORDER are never
+    changed by any of these steps (only a ``content`` payload is ever
+    rewritten), which is what keeps every tool_calls/tool-result pair
+    OpenAI/Groq's API requires intact even after pruning. The caller's own
+    ``messages`` list (a session's real conversation history, resumed across
+    HITL suspends and rendered turn-by-turn in the frontend) is never
+    touched — only the payload actually posted to the model shrinks.
 
     Hard timeout + fallback (P2 of the local-agent rescue plan): the
-    primary call is capped at ``_LOCAL_TOOL_CALL_TIMEOUT_SEC`` — well short
-    of the HTTP layer's own 90s socket-stall timeout — since a stalling
-    local model OR a cloud connection that drops mid-request (Groq/any
-    OpenAI-compatible provider can stall or disconnect too) is a UX failure
-    well before that. A timeout here never propagates as an "error" turn;
+    primary call is capped at ``_LOCAL_TOOL_CALL_TIMEOUT_SEC`` (matching the
+    HTTP layer's own socket-stall timeout — see openai_tool_bridge's
+    ``timeout`` default) — a genuinely dead connection (Groq/any
+    OpenAI-compatible provider can stall or disconnect too, not just local
+    Ollama) still needs a hard ceiling, it's just no longer tighter than a
+    heavy local model's real generation time. A timeout here never
+    propagates as an "error" turn;
     it reroutes to ``_call_llm_timeout_fallback`` for a short apology
     instead, so the loop always ends in a clean "final" turn rather than
     the generic "I ran into a problem" message ``next_react_turn`` gives a
     genuine model/connection error.
     """
     provider = ModelProvider(api_keys=api_keys)
-    pruned_messages = prune_tool_output_history(prune_message_history(messages))
+    deduped_messages = prune_message_history(messages)
+    pruned_messages = (
+        compress_tool_output_history(deduped_messages)
+        if tool_calling_provider() == "ollama"
+        else prune_tool_output_history(deduped_messages)
+    )
     # _keyword_suggested_tool_ids folded in alongside the existing "already
     # invoked"/"load_capability-unlocked" sticky sources — a domain the
     # user's own words just named (see _keyword_suggested_domains, called
@@ -3003,20 +4588,37 @@ async def _call_llm_once(
     # bypass the capability-domain gate itself, not just narrowing — see
     # _llm_tools_schema's force_include param. Folded into sticky_ids too so
     # the same ids also survive the token-budget cap once they're in.
-    force_include_ids = _sticky_tool_ids_from_messages(messages, raw_text)
-    sticky_ids = force_include_ids | _keyword_suggested_tool_ids(raw_text)
-    tools = _llm_tools_schema(active_plugins, query=raw_text, sticky_ids=sticky_ids, force_include=force_include_ids)
+    #
+    # Skipped entirely when `hard_restrict_to` is set (Plan-and-Execute FSM's
+    # PLANNING phase, see next_react_turn) — these are exactly the leak
+    # vector a hard allow-list exists to close: a stale/keyword-matched
+    # geometry tool_id from earlier conversation history (e.g. the user's
+    # own raw text mentions "box") would otherwise get unioned straight into
+    # `tool_ids` via `force_include`, defeating the whole point of
+    # "the Planner cannot see a geometry tool at all."
+    if hard_restrict_to is not None:
+        tools = _llm_tools_schema(active_plugins, hidden_tool_ids=hidden_tool_ids, hard_restrict_to=hard_restrict_to)
+    else:
+        force_include_ids = _sticky_tool_ids_from_messages(messages, raw_text) | _anchor_suggested_tool_ids(raw_text)
+        sticky_ids = force_include_ids | _keyword_suggested_tool_ids(raw_text)
+        tools = _llm_tools_schema(
+            active_plugins,
+            query=narrowing_query if narrowing_query is not None else raw_text,
+            sticky_ids=sticky_ids,
+            force_include=force_include_ids,
+            hidden_tool_ids=hidden_tool_ids,
+            task_tool_ids=task_tool_ids,
+        )
     # Temporary diagnostic for the Semantic RAG "context drop" bug — proves
     # a tool load_capability just unlocked (sticky via _sticky_tool_ids_from_
     # messages) actually survives Pillar 1's narrowing into THIS turn's
     # payload, not just into the internal tool_ids set. Safe to remove once
-    # that's re-confirmed live; deliberately a plain print (this module logs
-    # everywhere else via print/stderr, not a logging.Logger) rather than a
-    # new logging dependency for a debug line meant to be temporary.
-    print(
-        f"[Turn Context] Available tools for LLM: {sorted(t['function']['name'] for t in tools)}",
-        file=sys.stderr,
-        flush=True,
+    # that's re-confirmed live. DEBUG tier only (Three-Tiered Telemetry,
+    # Fix #1) — an available-tools list is exactly the per-turn noise INFO
+    # must never carry; a developer chasing this bug opts in via
+    # DANA_LOG_LEVEL=DEBUG instead of it flooding every normal run.
+    telemetry.debug(
+        "[Turn Context] Available tools for LLM: %s", sorted(t["function"]["name"] for t in tools)
     )
     # Resolved ONCE and reused below — both the dispatch call and the
     # timeout handler must agree on which provider actually ran, so the
@@ -3039,10 +4641,10 @@ async def _call_llm_once(
             timeout=_LOCAL_TOOL_CALL_TIMEOUT_SEC,
         )
     except (TimeoutError, asyncio.TimeoutError):
-        print(
-            f"[ReAct] primary model ({target_provider}) timed out after "
-            f"{_LOCAL_TOOL_CALL_TIMEOUT_SEC:.0f}s — falling back to a short apology",
-            flush=True,
+        telemetry.log_error(
+            stage="model_call_timeout",
+            provider=target_provider,
+            timeout_sec=_LOCAL_TOOL_CALL_TIMEOUT_SEC,
         )
         return await _call_llm_timeout_fallback(api_keys, target_provider)
 
@@ -3071,14 +4673,30 @@ async def parse_utterance(text: str, active_selection: dict[str, Any] | None = N
 class ReactTurn:
     """Outcome of one ``next_react_turn`` iteration: either a final text
     answer (the loop should stop) or a resolved ``ToolCall`` ready for the
-    caller to HITL-gate/dispatch and loop back with the result."""
+    caller to HITL-gate/dispatch and loop back with the result.
 
-    __slots__ = ("kind", "content", "call")
+    ``usage_info`` (Cost Tracking) is ``None`` for an "error" turn (no
+    result came back to read it from) and otherwise
+    ``{"model": str, "provider": str, "prompt_tokens": int,
+    "completion_tokens": int, "cost_usd": float | None}`` straight off this
+    iteration's ``ModelProvider.complete_with_tool_calls`` result — see
+    ``dana.api.server``'s ``_run_react_loop``, the one place this gets
+    broadcast to the frontend as a ``usage_update`` event.
+    """
 
-    def __init__(self, kind: str, content: str = "", call: ToolCall | None = None) -> None:
+    __slots__ = ("kind", "content", "call", "usage_info")
+
+    def __init__(
+        self,
+        kind: str,
+        content: str = "",
+        call: ToolCall | None = None,
+        usage_info: dict[str, Any] | None = None,
+    ) -> None:
         self.kind = kind  # "final" | "tool_call" | "error"
         self.content = content
         self.call = call
+        self.usage_info = usage_info
 
 
 # Keyword / intent auto-routing (P1 integration): a plain-chat session with
@@ -3108,6 +4726,26 @@ _CAD_INTENT_KEYWORDS = frozenset(
         "prism",
         "bounding box",
         "boolean",
+        # Polygon-shape names for create_freecad_polygon — a live stress
+        # test (2026-08-30) showed a request naming a specific polygon
+        # (e.g. "hexagonal collar") never actually surfaced this tool: it
+        # exists in the ~26-tool "freecad" domain, but Pillar 1's semantic
+        # narrowing didn't rank it into the turn's top-K on its own, and the
+        # model fell back to relabeling a plain cylinder instead of
+        # discovering the real tool via search_tool_catalog. These keywords
+        # make it STICKY (see _keyword_suggested_tool_ids) the moment the
+        # user's own words name a specific polygon, the same fix already
+        # applied to "pyramid"/"prism" above.
+        "polygon",
+        "hexagon",
+        "hexagonal",
+        "pentagon",
+        "pentagonal",
+        "octagon",
+        "octagonal",
+        "heptagon",
+        "nonagon",
+        "decagon",
         # "box" is deliberately absent — too common in ordinary English
         # ("check the box", "in a box") to use as a CAD signal on its own;
         # every other keyword here is specific enough not to false-positive
@@ -3311,6 +4949,62 @@ def _keyword_suggested_tool_ids(raw_text: str) -> frozenset[str]:
     return frozenset(ids)
 
 
+# Direct phrase -> tool_id anchors, for a primitive whose plain-English name
+# is too generic to trust as a DOMAIN-level trigger (_CAD_INTENT_KEYWORDS
+# above deliberately keeps "box" out for exactly that reason) but still
+# needs a way to GUARANTEE its own tool reaches this turn's model even once
+# the "freecad" domain is otherwise already active.
+#
+# _keyword_suggested_tool_ids's own domain-wide _rank_by_relevance top-K cut
+# is not reliable enough on its own for this: a live stress test (2026-08-30)
+# showed a multi-clause prompt whose OTHER clauses used strong/distinctive
+# words ("cylinder", "hexagonal") out-ranked create_freecad_box's much more
+# generic description for a bare "base plate" clause — create_freecad_box
+# was ELIGIBLE (the freecad domain was already active) but never made the
+# domain's top-6 embedding-similarity cut, so the model never saw it at all.
+#
+# Each entry is a BOUNDED, multi-word phrase (never a bare generic word like
+# "box" or "plate" alone) mapped directly to the one tool_id it should force
+# — bypassing _rank_by_relevance's ranking entirely for these specific,
+# high-confidence anchors, rather than hoping a wider net of loose keywords
+# happens to rank well enough against whatever else is in the same prompt.
+_PRIMITIVE_SHAPE_TOOL_ANCHORS: dict[str, str] = {
+    "base plate": "create_freecad_box",
+    "baseplate": "create_freecad_box",
+    "mounting plate": "create_freecad_box",
+    "flat plate": "create_freecad_box",
+    "build a box": "create_freecad_box",
+    "create a box": "create_freecad_box",
+    "make a box": "create_freecad_box",
+    "rectangular box": "create_freecad_box",
+    "cuboid": "create_freecad_box",
+    # create_freecad_polygon hasn't been proven in a live multi-step chain
+    # yet either (the last run never got past step 1) — anchoring it here
+    # too means THIS same ranking bottleneck can't silently reproduce for
+    # the hexagon step the moment box's own fix lets the turn get further.
+    "hexagon": "create_freecad_polygon",
+    "hexagonal": "create_freecad_polygon",
+    "pentagon": "create_freecad_polygon",
+    "pentagonal": "create_freecad_polygon",
+    "octagon": "create_freecad_polygon",
+    "octagonal": "create_freecad_polygon",
+}
+
+
+def _anchor_suggested_tool_ids(raw_text: str) -> frozenset[str]:
+    """Direct phrase -> tool_id anchors (see _PRIMITIVE_SHAPE_TOOL_ANCHORS)
+    — folded into _call_llm_once's force_include_ids/sticky_ids alongside
+    _keyword_suggested_tool_ids, so a matched phrase guarantees its exact
+    tool id specifically, rather than only widening the DOMAIN it belongs
+    to and hoping relevance-ranking keeps it."""
+    lowered = (raw_text or "").lower()
+    if not lowered:
+        return frozenset()
+    return frozenset(
+        tool_id for phrase, tool_id in _PRIMITIVE_SHAPE_TOOL_ANCHORS.items() if phrase in lowered
+    )
+
+
 async def next_react_turn(
     messages: list[dict[str, Any]],
     active_selection: dict[str, Any] | None = None,
@@ -3318,6 +5012,8 @@ async def next_react_turn(
     raw_text: str = "",
     api_keys: dict[str, str] | None = None,
     active_plugins: frozenset[str] | None = None,
+    hidden_tool_ids: frozenset[str] = frozenset(),
+    session_id: str | None = None,
 ) -> ReactTurn:
     """One step of the multi-step ReAct loop: given the full running
     ``messages`` history (system + user + any prior assistant/tool turns
@@ -3343,14 +5039,74 @@ async def next_react_turn(
     conversation history that this turn's schema no longer offers (e.g. the
     user just deactivated a plugin mid-conversation) — treated exactly like
     an unknown tool_id, falling back to "final".
+
+    ``hidden_tool_ids`` (Dynamic Domain Locking, ``session["hidden_tool_ids"]``
+    — see ``_tool_unload_capability``) is subtracted from BOTH this turn's
+    offered schema (via ``_call_llm_once``) AND the ``allowed_tool_ids``
+    check below — a hidden tool must never be dispatchable even if the
+    model names it anyway from earlier conversation history, the same
+    "re-checked, not just un-offered" treatment a deactivated plugin's
+    tools already get.
+
+    ``session_id`` (Plan-and-Execute FSM) is what THIS function reads its
+    own FSM state from (``_get_fsm_state``/``_active_task``) to decide how
+    to narrow/restrict this turn's tool schema — passed explicitly rather
+    than relying on the ambient ``dana.session_context`` contextvar for the
+    EXACT SAME reason ``build_system_prompt`` already takes it explicitly:
+    this runs from ``dana.api.server._run_react_loop``, which calls it
+    BEFORE that turn's own ``_execute_and_continue`` has set the contextvar
+    for a freshly (re)connected session. ``None`` falls back to the ambient
+    value for callers that don't care (``parse_utterance``, tests) —
+    identical fallback contract to every other ``session_id`` parameter in
+    this module.
     """
     effective_plugins = active_plugins
     if active_plugins is not None:  # None means "not capability-aware" — leave as the full legacy set
         effective_plugins = active_plugins | _keyword_suggested_domains(raw_text)
 
+    # Plan-and-Execute FSM (Phases 2-3): decide THIS turn's tool-schema
+    # restriction from the session's own FSM state, once, so both the
+    # primary call below and its one retry (_retry_after_unknown_tool_id)
+    # honor the identical restriction — a retry that quietly offered the
+    # FULL domain again would undo the whole point of a hard planning-phase
+    # allow-list. Only engages for a genuinely capability-aware, freecad-
+    # active caller with a plan already in play; every other caller
+    # (active_plugins=None, a non-CAD domain, or freecad active but no plan
+    # yet — that last case is exactly next_react_turn's own hard_restrict_to
+    # for the PLANNING phase, handled the same way) computes these as the
+    # neutral "no FSM override" defaults, so this is purely additive.
+    hard_restrict_to: frozenset[str] | None = None
+    narrowing_query: str | None = None
+    task_tool_ids: frozenset[str] = frozenset()
+    freecad_domain_active = effective_plugins is not None and bool(
+        effective_plugins & {"freecad", "freecad_essential", "freecad_full"}
+    )
+    if freecad_domain_active:
+        if not _get_has_plan(session_id):
+            # PLANNING: no geometry tool is even offered -- see _llm_tools_
+            # schema's hard_restrict_to docstring for why this is a hard
+            # allow-list, not a narrowing bias.
+            hard_restrict_to = _CORE_TOOL_IDS | {"search_tool_catalog", "check_plugin_registry"}
+        elif _get_fsm_state(session_id) == "executing":
+            active_task = _active_task(session_id)
+            if active_task is not None:
+                narrowing_query = active_task.get("description") or raw_text
+                task_tool_ids = active_task.get("expected_tool_ids") or frozenset()
+        # "validating" (a task with no expected_tool_ids, parked awaiting a
+        # manual mark_task_completed) and "done" (plan finished, ad-hoc
+        # cleanup) both fall through to the neutral defaults above --
+        # exactly today's full-domain, whole-objective-narrowed behavior.
+
     try:
         result = await _call_llm_once(
-            messages, api_keys=api_keys, active_plugins=effective_plugins, raw_text=raw_text
+            messages,
+            api_keys=api_keys,
+            active_plugins=effective_plugins,
+            raw_text=raw_text,
+            hidden_tool_ids=hidden_tool_ids,
+            narrowing_query=narrowing_query,
+            task_tool_ids=task_tool_ids,
+            hard_restrict_to=hard_restrict_to,
         )
     except Exception as exc:  # noqa: BLE001 — Ollama unreachable/model missing surfaces as an error turn
         # str(exc) is all the UI-facing "error" turn carries onward (server.py
@@ -3361,15 +5117,37 @@ async def next_react_turn(
         # HTTPErrors; this print is the backstop for every OTHER exception
         # shape (local Ollama unreachable, a timeout that slipped through, etc.)
         # so this call site alone is never a silent sink.
-        print(f"[ReAct] next_react_turn: LLM call failed -- {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        telemetry.log_error(stage="next_react_turn", exc_type=type(exc).__name__, detail=str(exc))
         return ReactTurn("error", content=str(exc))
+
+    # Cost Tracking: read off whichever provider actually answered this
+    # iteration (result["model"]/["usage"]/["cost_usd"] — see
+    # ModelProvider.complete_with_tool_calls) regardless of which of the
+    # three ReactTurn outcomes below this call ends up producing.
+    usage_info = {
+        "model": result.get("model"),
+        "provider": result.get("provider"),
+        "prompt_tokens": (result.get("usage") or {}).get("prompt_tokens", 0),
+        "completion_tokens": (result.get("usage") or {}).get("completion_tokens", 0),
+        "cost_usd": result.get("cost_usd"),
+    }
 
     tool_calls = result.get("tool_calls") or []
     if not tool_calls:
-        print("[ReAct] LLM finished with final response (no tool call)", file=sys.stderr, flush=True)
-        return ReactTurn("final", content=result.get("content") or "")
+        telemetry.debug("[ReAct] LLM finished with final response (no tool call)")
+        return ReactTurn("final", content=result.get("content") or "", usage_info=usage_info)
     call = tool_calls[0]  # one tool per LLM turn — the loop itself is what allows chaining several
-    allowed_tool_ids = _tool_ids_for_plugins(effective_plugins)
+    # PLANNING's hard_restrict_to is the actual offered/allowed set in that
+    # phase -- _tool_ids_for_plugins(effective_plugins) would report the
+    # FULL domain (create_plan is gated on has_plan, not on schema
+    # visibility, elsewhere), which would wrongly let a hallucinated
+    # geometry tool_id through this check even though it was never in the
+    # schema the model actually saw this turn.
+    allowed_tool_ids = (
+        (hard_restrict_to - hidden_tool_ids)
+        if hard_restrict_to is not None
+        else (_tool_ids_for_plugins(effective_plugins) - hidden_tool_ids)
+    )
     if call.tool_id not in TOOL_HANDLERS or call.tool_id not in allowed_tool_ids:
         # Real, observed quirk (live against qwen2.5-coder:7b): the model
         # can invent a plausible-but-nonexistent tool name (e.g.
@@ -3387,18 +5165,18 @@ async def next_react_turn(
             api_keys=api_keys,
             effective_plugins=effective_plugins,
             raw_text=raw_text,
+            hidden_tool_ids=hidden_tool_ids,
+            narrowing_query=narrowing_query,
+            task_tool_ids=task_tool_ids,
+            hard_restrict_to=hard_restrict_to,
         )
         if retry_call is None:
-            return ReactTurn("final", content=result.get("content") or "")
+            return ReactTurn("final", content=result.get("content") or "", usage_info=usage_info)
         call = retry_call
     call.raw_text = raw_text
     _finalize_call_arguments(call, active_selection)
-    print(
-        f"[ReAct] Tool call selected: {call.tool_id} with args: {call.arguments}",
-        file=sys.stderr,
-        flush=True,
-    )
-    return ReactTurn("tool_call", call=call)
+    telemetry.log_tool_call(call.tool_id, arguments=call.arguments)
+    return ReactTurn("tool_call", call=call, usage_info=usage_info)
 
 
 async def _retry_after_unknown_tool_id(
@@ -3409,6 +5187,10 @@ async def _retry_after_unknown_tool_id(
     api_keys: dict[str, str] | None,
     effective_plugins: frozenset[str] | None,
     raw_text: str = "",
+    hidden_tool_ids: frozenset[str] = frozenset(),
+    narrowing_query: str | None = None,
+    task_tool_ids: frozenset[str] = frozenset(),
+    hard_restrict_to: frozenset[str] | None = None,
 ) -> "ToolCall | None":
     """Exactly one corrective retry for ``next_react_turn`` when the model
     names a tool_id that isn't dispatchable (hallucinated, or a genuinely
@@ -3429,7 +5211,14 @@ async def _retry_after_unknown_tool_id(
     }
     try:
         result = await _call_llm_once(
-            messages + [nudge], api_keys=api_keys, active_plugins=effective_plugins, raw_text=raw_text
+            messages + [nudge],
+            api_keys=api_keys,
+            active_plugins=effective_plugins,
+            raw_text=raw_text,
+            hidden_tool_ids=hidden_tool_ids,
+            narrowing_query=narrowing_query,
+            task_tool_ids=task_tool_ids,
+            hard_restrict_to=hard_restrict_to,
         )
     except Exception:  # noqa: BLE001 — the retry itself is best-effort, never worth failing the turn over
         return None
@@ -3528,6 +5317,7 @@ _GEOMETRY_RESULT_TOOL_IDS = frozenset(
         "create_freecad_extrusion",
         "create_freecad_pyramid",
         "create_freecad_star_prism",
+        "create_freecad_polygon",
         "perform_freecad_boolean",
         "perform_freecad_edge_operation",
         "modify_freecad_parameter",
@@ -3535,6 +5325,7 @@ _GEOMETRY_RESULT_TOOL_IDS = frozenset(
         "align_freecad_objects",
         "create_assembly_mate",
         "create_freecad_sketch_extrude",
+        "create_freecad_feature_on_face",
         "batch_pattern_array",
         "insert_standard_part",
         "import_and_solidify_mesh",
@@ -3635,6 +5426,14 @@ _TOOLS_NEEDING_MOUNTS = frozenset(
     }
 )
 
+# The Composite Skill Compiler's own tool needs the session's ordered
+# CadCallLog to compile FROM — the one piece of session state no other
+# handler needs directly (every other tool reads only its own `args` plus
+# the shared `engine`/`control_plane`). Same narrow-allowlist pattern as
+# _TOOLS_NEEDING_API_KEYS/_TOOLS_NEEDING_MOUNTS above, and disjoint from
+# both — no handler needs more than one of these three extras.
+_TOOLS_NEEDING_CALL_LOG = frozenset({"compile_plan_as_skill"})
+
 
 def dispatch_tool_call(
     call: ToolCall,
@@ -3668,19 +5467,98 @@ def dispatch_tool_call(
     exception never gets this treatment — that would leak internal server
     implementation details the model has no business seeing and can't act
     on anyway.
+
+    Plan-and-Execute Gatekeeper (Phase 6): the VERY FIRST check, before even
+    the handler lookup or any topology redirect — a geometry-mutating
+    tool_id (``_RESTRICTED_GEOMETRY_TOOLS``) is refused outright unless this
+    session has already called ``create_plan`` (``_get_has_plan``), forcing
+    the LLM to outline its topological sequence, boolean strategy, and
+    object naming convention up front instead of improvising (and
+    hallucinating names for) a boolean chain turn by turn.
+
+    Plan-and-Execute FSM, Phase 4 (RESTORED out-of-order hard block,
+    Universal FSM Enforcement): a tool outside ``_CORE_TOOL_IDS`` that
+    doesn't belong to the CURRENT active task's own ``expected_tool_ids`` is
+    refused BEFORE the handler lookup even happens — see
+    ``_fsm_out_of_order_check`` and the module-level comment right above it
+    for why this hard block was removed, then restored once
+    ``expected_tool_ids`` became existence-validated at ``create_plan`` time
+    (Fix #1) rather than an embedding guess, and why its scope then had to
+    widen past ``_RESTRICTED_GEOMETRY_TOOLS`` alone (a Planner-declared
+    non-geometry tool, e.g. ``execute_freecad_script``, was a second
+    hallucination-shaped hole otherwise). A task with no fixed tool
+    signature at all (``expected_tool_ids`` empty) is unaffected — any
+    non-core tool is still let through for it, exactly as before.
+
+    Deterministic Task Advancement, Phase 4: on the SUCCESS path below,
+    ``_advance_fsm_on_dispatch`` auto-advances the plan the instant the
+    dispatched tool matches the active task's own ``expected_tool_ids`` —
+    the code-enforced replacement for trusting a separate
+    ``mark_task_completed`` call; see that function's own docstring.
     """
+    if call.tool_id in _RESTRICTED_GEOMETRY_TOOLS and not _get_has_plan():
+        reason = (
+            "Execution blocked. You MUST call 'create_plan' to explicitly outline your "
+            "step-by-step topological sequence, boolean strategy, and object naming "
+            "conventions before generating any geometry."
+        )
+        return ToolResult(call.tool_id, False, {"ok": False, **digest_error(call.tool_id, reason)}, reason, 0)
+
+    # Universal FSM Enforcement: governs every tool EXCEPT the always-
+    # available plan-management/discovery/self-teaching primitives in
+    # _CORE_TOOL_IDS (create_plan, mark_task_completed, load_capability,
+    # ...) — not just _RESTRICTED_GEOMETRY_TOOLS. A Planner-declared
+    # non-geometry tool (execute_freecad_script, search_web, ...) must be
+    # enforced exactly like a geometry one; see _fsm_out_of_order_check's
+    # own module-level comment for the exploit this closes.
+    if call.tool_id not in _CORE_TOOL_IDS:
+        out_of_order_reason = _fsm_out_of_order_check(call.tool_id)
+        if out_of_order_reason is not None:
+            return ToolResult(
+                call.tool_id,
+                False,
+                {"ok": False, **digest_error(call.tool_id, out_of_order_reason)},
+                out_of_order_reason,
+                0,
+            )
+
     handler = TOOL_HANDLERS.get(call.tool_id)
     if handler is None:
         return ToolResult(call.tool_id, False, {"ok": False, **digest_error(call.tool_id, "unknown tool_id")}, f"unknown tool_id '{call.tool_id}'", 0)
     start = time.perf_counter()
     skill_traceback: str | None = None
+    # Silent Override, centralized (Phase 5 — Topological Lineage Graph):
+    # rewrite any stale-but-known input-object argument to its
+    # resolve_living_leaf BEFORE the handler ever sees it — see
+    # _apply_topology_redirects's docstring. `resolved_arguments` (not
+    # call.arguments) is what actually gets dispatched from here on;
+    # `input_object_names` is threaded through to _record_topology_node once
+    # the call succeeds, and `topology_warning` gets merged into the
+    # LLM-visible payload below.
+    # Defaults for the (rare) case _apply_topology_redirects itself raises
+    # below (Fix #3 — Kill Silent Auto-Redirection) — call_log.record at the
+    # bottom of this function always needs SOME value for these three, even
+    # when the redirect step is what failed, never the handler.
+    resolved_arguments, input_object_names, topology_warning = call.arguments, [], None
     try:
+        # Fix #3 — Kill Silent Auto-Redirection: this call now RAISES
+        # (RuntimeError) instead of silently substituting a guessed object
+        # for perform_freecad_edge_operation/create_freecad_feature_on_face
+        # (see _apply_topology_redirects's own docstring) — folded into this
+        # SAME try/except so that failure is surfaced as an ordinary
+        # digested tool failure below, exactly like a handler exception,
+        # rather than crashing this function's caller.
+        resolved_arguments, input_object_names, topology_warning = _apply_topology_redirects(
+            call.tool_id, call.arguments
+        )
         if call.tool_id in _TOOLS_NEEDING_API_KEYS:
-            payload = handler(call.arguments, engine, control_plane, api_keys=api_keys)
+            payload = handler(resolved_arguments, engine, control_plane, api_keys=api_keys)
         elif call.tool_id in _TOOLS_NEEDING_MOUNTS:
-            payload = handler(call.arguments, engine, control_plane, allowed_mounts=allowed_mounts)
+            payload = handler(resolved_arguments, engine, control_plane, allowed_mounts=allowed_mounts)
+        elif call.tool_id in _TOOLS_NEEDING_CALL_LOG:
+            payload = handler(resolved_arguments, engine, control_plane, call_log=call_log)
         else:
-            payload = handler(call.arguments, engine, control_plane)
+            payload = handler(resolved_arguments, engine, control_plane)
         ok = bool(payload.get("ok", True))
         raw_error = None if ok else str(payload.get("error") or "tool reported failure")
     except Exception as exc:  # noqa: BLE001 — surface as a digested failure, never a crashed caller
@@ -3694,16 +5572,29 @@ def dispatch_tool_call(
         if skill_traceback:
             payload["traceback"] = skill_traceback
         message = digested["reason"]
+        if call.tool_id not in _CORE_TOOL_IDS:  # Universal FSM Enforcement — see the gate above
+            _advance_fsm_on_dispatch(call.tool_id, ok=False)
     else:
         message = "ok"
         if isinstance(payload, dict) and payload.get("name") and payload.get("path"):
             _object_registry()[str(payload["name"])] = str(payload["path"])
-    if ok:
-        print(f"[ReAct] Tool {call.tool_id} executed successfully -> {payload}", file=sys.stderr, flush=True)
-    else:
-        print(f"[ReAct] Tool {call.tool_id} failed -> {message}", file=sys.stderr, flush=True)
+            _record_topology_node(str(payload["name"]), input_object_names)
+        if topology_warning and isinstance(payload, dict) and payload.get("ok", True):
+            existing = payload.get("message")
+            payload["message"] = f"{existing} {topology_warning}".strip() if existing else topology_warning
+        if call.tool_id not in _CORE_TOOL_IDS and isinstance(payload, dict):  # Universal FSM Enforcement
+            fsm_note = _advance_fsm_on_dispatch(call.tool_id, ok=True)
+            if fsm_note:
+                existing = payload.get("message")
+                payload["message"] = f"{existing} {fsm_note}".strip() if existing else fsm_note
+    telemetry.log_tool_result(call.tool_id, ok, payload=payload, message=message, duration_ms=duration_ms)
     if call_log is not None:
-        call_log.record(call.tool_id, call.arguments, ok=ok, result=payload if ok else {}, error=None if ok else message)
+        # resolved_arguments, not call.arguments: the "Show Your Work" export
+        # should record what actually ran (post Silent-Override redirect),
+        # not a stale pre-redirect name that never touched the CAD engine.
+        call_log.record(
+            call.tool_id, resolved_arguments, ok=ok, result=payload if ok else {}, error=None if ok else message
+        )
     return ToolResult(call.tool_id, ok, payload, message, duration_ms)
 
 
@@ -3717,10 +5608,12 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         "create_freecad_extrusion",
         "create_freecad_pyramid",
         "create_freecad_star_prism",
+        "create_freecad_polygon",
         "perform_freecad_boolean",
         "perform_freecad_edge_operation",
         "create_freecad_pipe",
         "create_freecad_sketch_extrude",
+        "create_freecad_feature_on_face",
         "batch_pattern_array",
         "insert_standard_part",
         "import_and_solidify_mesh",
@@ -3851,6 +5744,7 @@ __all__ = (
     "dispatch_tool_call",
     "driver_state",
     "extract_user_text",
+    "get_topology_dag",
     "is_mutating_tool",
     "is_visual_inspection_tool",
     "list_user_skills",
@@ -3859,5 +5753,6 @@ __all__ = (
     "plugin_registry_view",
     "refresh_plugin_tools",
     "refresh_user_skills",
+    "resolve_living_leaf",
     "summarize_result",
 )

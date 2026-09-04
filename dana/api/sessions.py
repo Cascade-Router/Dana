@@ -16,6 +16,12 @@ tool-activity feed, or HITL card state, and NOT the OpenAI-wire multimodal/
 tool-call messages the ReAct loop itself works with turn-to-turn). This is
 enough to "retain, browse, and resume past conversations" per the feature's
 goal while keeping session files small and the storage format simple.
+
+Also carries ``working_memory`` — dana.core.context_distiller's rolling,
+per-session distilled summary (``{"summary": str, "turn": int}``) — so a
+session resumed on a fresh ``/ws/chat`` connection (or a fresh server
+process) picks its distilled context back up instead of starting cold, the
+same way its message history already does.
 """
 
 from __future__ import annotations
@@ -37,6 +43,42 @@ SESSIONS_DIR: Path = AGENT_WORKSPACE_DIR / "data" / "sessions"
 # hard-truncated so one very long opening message can't blow up the
 # sidebar's row width.
 _TITLE_MAX_CHARS = 60
+
+# dana.core.context_distiller's empty-state shape — same default a brand-new
+# /ws/chat session's in-memory dict starts with, so a session saved before
+# working_memory existed (or with a corrupt value) loads exactly as if it
+# had never been distilled yet, rather than crashing or losing its history.
+_EMPTY_WORKING_MEMORY: dict[str, Any] = {"summary": "", "turn": 0}
+
+# Session-Specific Terminal History: mirrors dana/api/server.py's
+# _log_terminal_event calls (user_message/assistant_message/tool_dispatch_
+# start/tool_dispatch_end — the same "type"-tagged shape already streamed
+# over /ws/chat as ServerEvent) so a session resumed on a fresh connection,
+# or after a server restart, can re-populate the frontend's Terminal History
+# panel instead of showing it empty until new activity happens. Capped the
+# same way the frontend's own log buffer already is (useChatSocket.ts's
+# MAX_LOG_LINES) so a long-lived session's on-disk file can't grow
+# unbounded.
+_TERMINAL_LOG_MAX_ENTRIES = 500
+
+
+def _sanitize_working_memory(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict) or not isinstance(raw.get("summary"), str):
+        return dict(_EMPTY_WORKING_MEMORY)
+    turn = raw.get("turn", 0)
+    return {"summary": raw["summary"], "turn": turn if isinstance(turn, int) and not isinstance(turn, bool) else 0}
+
+
+def _sanitize_terminal_log(raw: Any) -> list[dict[str, Any]]:
+    """Degrades to an empty log rather than raising — a session saved before
+    this field existed, or a corrupt entry, must never break hydration the
+    way a bad ``messages``/``working_memory`` value already can't (see
+    ``load_session``'s own defensive parsing)."""
+    if not isinstance(raw, list):
+        return []
+    return [entry for entry in raw if isinstance(entry, dict) and isinstance(entry.get("type"), str)][
+        -_TERMINAL_LOG_MAX_ENTRIES:
+    ]
 
 # session_id is used to build a filename directly (see _session_path) — this
 # allowlist makes a path-traversal payload (e.g. "../../etc/passwd") a
@@ -108,20 +150,31 @@ def load_session(session_id: str) -> dict[str, Any] | None:
         "created_at": str(data.get("created_at") or _now_iso()),
         "updated_at": str(data.get("updated_at") or _now_iso()),
         "messages": messages,
+        "working_memory": _sanitize_working_memory(data.get("working_memory")),
+        "terminal_log": _sanitize_terminal_log(data.get("terminal_log")),
     }
 
 
 def save_session(
-    session_id: str, *, title: str, created_at: str | None, messages: list[dict[str, str]]
+    session_id: str,
+    *,
+    title: str,
+    created_at: str | None,
+    messages: list[dict[str, str]],
+    working_memory: dict[str, Any] | None = None,
+    terminal_log: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Overwrites ``session_id``'s on-disk file with the given
-    title/messages — the ONE write path, used by both
-    ``dana.api.server``'s auto-save hook and (indirectly, via
+    title/messages/working_memory/terminal_log — the ONE write path, used by
+    both ``dana.api.server``'s auto-save hook and (indirectly, via
     ``load_session``+re-save) anything else that ever needs to persist a
     session, so there is exactly one place that knows this file's on-disk
     shape. ``created_at`` is stamped fresh (now) on a session's very first
     save; pass the PREVIOUS record's ``created_at`` on every save after
-    that so it never drifts.
+    that so it never drifts. ``working_memory``/``terminal_log`` default to
+    the same empty-state shape a brand-new session starts with, for callers
+    (e.g. the reset endpoint below) that intentionally save with no
+    distilled context/terminal history of their own.
     """
     record = {
         "id": session_id,
@@ -129,6 +182,8 @@ def save_session(
         "created_at": created_at or _now_iso(),
         "updated_at": _now_iso(),
         "messages": messages,
+        "working_memory": working_memory if working_memory is not None else dict(_EMPTY_WORKING_MEMORY),
+        "terminal_log": terminal_log if terminal_log is not None else [],
     }
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     _session_path(session_id).write_text(json.dumps(record, indent=2), encoding="utf-8")
@@ -193,6 +248,27 @@ def delete_session_endpoint(session_id: str) -> dict[str, Any]:
     if not is_valid_session_id(session_id):
         raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
     return {"ok": True, "deleted": delete_session(session_id)}
+
+
+@router.delete("")
+def clear_all_sessions_endpoint() -> dict[str, Any]:
+    """The Settings modal's "Clear All Sessions" button — deletes every
+    persisted session file in one call instead of the sidebar's one-at-a-
+    time delete button. Registered on the router's bare prefix (``DELETE
+    /api/sessions``), one level up from the single-session route above, so
+    it never collides with a specific ``{session_id}``. Best-effort per
+    file, same as ``delete_session``: a file that vanishes mid-sweep (e.g. a
+    concurrent single-session delete) is simply not counted, not an error.
+    """
+    deleted = 0
+    if SESSIONS_DIR.is_dir():
+        for path in SESSIONS_DIR.glob("*.json"):
+            try:
+                path.unlink()
+                deleted += 1
+            except FileNotFoundError:
+                pass
+    return {"ok": True, "deleted": deleted}
 
 
 @router.post("/{session_id}/reset")

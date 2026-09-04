@@ -107,6 +107,27 @@ def _reset_task_board_plan():
     plan["current_task_id"] = None
 
 
+@pytest.fixture(autouse=True)
+def _reset_plan_gate_state():
+    """Global safety net, same rationale as ``_reset_task_board_plan``
+    above — and for a near-identical reason: the Plan-and-Execute
+    Gatekeeper's ``_PLAN_STATE_REGISTRY`` (dana.core.react_dispatch) is
+    process-wide, mutable, module-level state, session-scoped but keyed by
+    whatever session_id happens to be ambient at the time. A plan opened by
+    ANY test (a fixture that pre-opens the gate for its own module's
+    dispatch tests, or a real /ws/chat turn that calls ``create_plan``)
+    would otherwise leak into every later test in the WHOLE suite that
+    reuses the same (often just the ambient default) session_id —
+    including one that specifically asserts ``build_system_prompt()``
+    renders NO active-plan anchor, or one that expects a geometry tool to
+    still be gated. Teardown-only: the registry is empty at process start
+    and after any earlier test's own cleanup here, so there's nothing to
+    reset going in.
+    """
+    yield
+    _react_dispatch_module._PLAN_STATE_REGISTRY.clear()
+
+
 def _cancel_pending_after_events(root: tkinter.Misc) -> None:
     """Cancel every ``after()`` callback still queued on ``root``.
 
