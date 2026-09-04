@@ -119,9 +119,10 @@ function parseMeshPayload(raw: unknown, client: Client): string | null {
   return null;
 }
 
-// data[5] (graph_out, a gr.JSON output — see app.py's _respond docstring
-// for the full output ordering) is a plain JSON array round-tripped
-// through _GradioSocket.dag_events, so its entries already carry the exact
+// graph_out (a gr.JSON output — see app.py's _respond docstring for the
+// full output ordering; always the LAST element of dataArr below, never a
+// fixed index) is a plain JSON array round-tripped through
+// _GradioSocket.dag_events, so its entries already carry the exact
 // `{type: "dag_node_start"|"dag_node_complete", ...}` shape ServerEvent
 // expects in EVERY case actually observed so far. Still handles a
 // stringified JSON array defensively (JSON.parse, guarded) — gr.JSON's
@@ -135,7 +136,7 @@ function parseDagEvents(raw: unknown): ServerEvent[] {
     try {
       value = JSON.parse(value);
     } catch (err) {
-      console.warn("[GradioClient] data[5] was a string but not valid JSON — dropping:", err);
+      console.warn("[GradioClient] graph_out was a string but not valid JSON — dropping:", err);
       return [];
     }
   }
@@ -159,15 +160,17 @@ export async function sendGradioChatMessage(spaceUrl: string, message: string): 
     dataArr.map((d: unknown) => typeof d)
   );
   // app.py's Python-side _outputs list is
-  // [text_out, file_out, chatbot, mesh_preview, session_state, graph_out]
-  // — 6 entries — but session_state (a gr.State) never reaches the client
-  // at all: gr.State.skip_api is hardcoded True in Gradio's own source
-  // (gradio/components/state.py), so the client-visible `data` array is
-  // only 5 elements, with graph_out shifted down to index 4, not 5.
-  // Verified directly against a live capture (dataArr.length === 5). Read
-  // graph_out as the LAST element rather than a hardcoded index so this
-  // can't silently break again the same way if any other State component
-  // is ever added/removed from _outputs.
+  // [text_out, file_out, chatbot, mesh_preview, session_state, logs_out,
+  // graph_out] — 7 entries, graph_out deliberately LAST — but session_state
+  // (a gr.State) never reaches the client at all: gr.State.skip_api is
+  // hardcoded True in Gradio's own source (gradio/components/state.py), so
+  // the client-visible `data` array is only 6 elements. Read graph_out as
+  // the LAST element rather than a hardcoded index so this can't silently
+  // break again the same way if any other State component — or any other
+  // new output — is ever added/removed from _outputs (this exact class of
+  // bug has bitten this file twice already: once from session_state's
+  // invisibility, once from logs_out being appended after graph_out on the
+  // Python side — see app.py's _respond docstring).
   const text = dataArr[0] as string;
   const file = dataArr[1];
   const graph = dataArr[dataArr.length - 1];

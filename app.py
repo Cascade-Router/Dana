@@ -365,15 +365,21 @@ def _tail_logs(n: int = 40) -> str:
 
 async def _respond(message: str, chatbot_history: list, session: dict[str, Any] | None):
     """Bound to `api_name="chat"` below. Outputs are ordered
-    `(text_out, file_out, chatbot, mesh_preview, session_state, graph_out,
-    logs_out)` — text_out/file_out FIRST specifically so a REST/JS caller's
+    `(text_out, file_out, chatbot, mesh_preview, session_state, logs_out,
+    graph_out)` — text_out/file_out FIRST specifically so a REST/JS caller's
     `result.data[0]`/`[1]` are the plain reply string and mesh path,
     never this function's internal chatbot-message-list bookkeeping
     (frontend/src/lib/gradioChatClient.ts already reads `data[0]` as a
     plain string; reordering these would silently break it). `graph_out`
-    and `logs_out` are appended LAST, in the order they were added, rather
-    than inserted earlier for the same reason — every existing positional
-    read stays valid.
+    is LAST, specifically — not just "appended after everything so far" —
+    because gradioChatClient.ts reads it as `dataArr[dataArr.length - 1]`,
+    never a fixed index, since `session_state` (a gr.State) never reaches
+    the client at all (gr.State.skip_api is hardcoded True in Gradio) and
+    the client-visible array shrinks accordingly. `logs_out` was added
+    later than graph_out but goes BEFORE it here for that exact reason:
+    appending it after graph_out (as originally done) silently broke the
+    DAG view, since the client then read the raw log text where it
+    expected graph JSON and dropped every dag_events payload.
 
     This yields twice, not once — but that's an honest "show a pending
     state, then the real one" UI improvement, not a token-level LLM
@@ -384,7 +390,7 @@ async def _respond(message: str, chatbot_history: list, session: dict[str, Any] 
     """
     trimmed = (message or "").strip()
     if not trimmed:
-        yield "", None, chatbot_history, None, session, [], _tail_logs()
+        yield "", None, chatbot_history, None, session, _tail_logs(), []
         return
     # Session-persistence trace (item 3): `session` is whatever gr.State
     # handed back for THIS browser tab's session_hash — a fresh dict only on
@@ -408,7 +414,7 @@ async def _respond(message: str, chatbot_history: list, session: dict[str, Any] 
         {"role": "user", "content": trimmed},
         {"role": "assistant", "content": "…"},
     ]
-    yield "…", None, pending_history, None, session, [], _tail_logs()
+    yield "…", None, pending_history, None, session, _tail_logs(), []
 
     socket = _GradioSocket(session)
     await _process_user_text(socket, session, trimmed)
@@ -446,7 +452,7 @@ async def _respond(message: str, chatbot_history: list, session: dict[str, Any] 
         file=sys.stderr,
         flush=True,
     )
-    yield reply, mesh_path, final_history, mesh_path, session, socket.dag_events, _tail_logs()
+    yield reply, mesh_path, final_history, mesh_path, session, _tail_logs(), socket.dag_events
 
 
 def _list_artifact_files() -> list[str]:
@@ -530,15 +536,18 @@ with gr.Blocks(css=_CUSTOM_CSS, title="Dānā") as demo:
     file_out = gr.Model3D(visible=False)
     # This turn's dag_node_start/dag_node_complete events (see
     # _GradioSocket), as plain JSON — gradioChatClient.ts reads this as
-    # `data[5]` and feeds it straight into DAGMonitor.tsx's buildGraph(),
-    # the same shape the WS path already produces. Appended last in
-    # _outputs so it doesn't renumber any existing positional read.
+    # `dataArr[dataArr.length - 1]` (the actual LAST element, not a fixed
+    # index — see that file's own comment) and feeds it straight into
+    # DAGMonitor.tsx's buildGraph(), the same shape the WS path already
+    # produces. MUST stay the last entry in `_outputs` below no matter what
+    # else gets added later — see logs_out's comment just below.
     graph_out = gr.JSON(visible=False)
 
-    # logs_out appended LAST, after graph_out — same "never renumber an
-    # existing positional read" rule graph_out's own comment above states;
-    # gradioChatClient.ts's data[0]/data[1]/data[5] reads all stay valid.
-    _outputs = [text_out, file_out, chatbot, mesh_preview, session_state, graph_out, logs_out]
+    # Declared here, after graph_out, but placed BEFORE it in `_outputs`
+    # below: graph_out has to stay the actual last element (see its own
+    # comment above), so anything added after graph_out already existed
+    # goes earlier in the list, never appended past it.
+    _outputs = [text_out, file_out, chatbot, mesh_preview, session_state, logs_out, graph_out]
 
     msg.submit(_respond, inputs=[msg, chatbot, session_state], outputs=_outputs, api_name="chat").then(
         lambda: "", None, msg
