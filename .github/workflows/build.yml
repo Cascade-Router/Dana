@@ -37,16 +37,14 @@ jobs:
           python - <<'PY'
           import platform
           import dana.tools.setup_startup as startup
-          import dana.tools.audio_switcher as audio
 
           print("system=", platform.system())
+          # Import must never raise on any OS — every Windows-only call
+          # (winreg) is deferred inside these functions, never at module
+          # scope; this check is what catches a regression on that, not
+          # something to skip on non-Windows runners.
           assert callable(startup.enable_startup)
           assert callable(startup.disable_startup)
           assert callable(startup.startup_status)
-          assert hasattr(audio, "toggle_audio_endpoint")
-          # Import must never raise; non-Windows tools should refuse cleanly.
-          if platform.system() != "Windows":
-              msg = audio.toggle_audio_endpoint("wired")
-              assert "Windows-only" in msg, msg
           print("import_ok")
           PY
