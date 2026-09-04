@@ -144,6 +144,20 @@ class _TeeStream:
     def flush(self) -> None:
         self._original.flush()
 
+    def isatty(self) -> bool:
+        # Uvicorn's colored logging setup (via click) checks this on
+        # sys.stdout/sys.stderr before configuring itself — a plain
+        # AttributeError here (this class had no isatty at all) crashed
+        # demo.launch() before the Gradio interface ever came up.
+        # getattr(..., lambda: False) rather than a bare self._original.
+        # isatty() call: self._original is always a real sys.stdout/stderr
+        # here in practice (see _install_log_tee), which always has this
+        # method, but delegating defensively costs nothing and means a
+        # genuine local TTY still reports its real color-capable state
+        # while any stream lacking the method safely reports False instead
+        # of raising.
+        return getattr(self._original, "isatty", lambda: False)()
+
 
 _LOG_BUFFER: collections.deque[str] = collections.deque(maxlen=400)
 
