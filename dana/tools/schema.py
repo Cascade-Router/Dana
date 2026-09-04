@@ -9,6 +9,25 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class ToolItemPropertySpec:
+    """One field of a ``type == "array"``, ``items_type == "object"``
+    parameter's item schema — e.g. ``create_plan``'s own
+    ``tasks[i].expected_tools``. A deliberately flatter sibling of
+    ``ToolParameterSpec`` (no ``items_type``/nested ``item_properties`` of
+    its own beyond one scalar-array level) — one level of object nesting
+    covers every structured-array need this codebase has so far; a second
+    level would round-trip through this same shape recursively with no
+    real use yet to justify the extra complexity.
+    """
+
+    name: str
+    type: str
+    required: bool = True
+    items_type: str = ""
+    description_en: str = ""
+
+
+@dataclass(frozen=True)
 class ToolParameterSpec:
     name: str
     type: str
@@ -18,6 +37,13 @@ class ToolParameterSpec:
     # for a [x, y, z] vector) — kept as a plain string rather than a nested
     # dict so this dataclass stays trivially hashable.
     items_type: str = ""
+    # Nested item schema, populated ONLY when items_type == "object" (e.g.
+    # create_plan's own `tasks`: each element is a {"description": str,
+    # "expected_tools": [str]} object, not a bare scalar) — empty tuple for
+    # every scalar-item array, which is every array param before this field
+    # existed, so their to_openai_function_schema output is byte-for-byte
+    # unchanged.
+    item_properties: tuple[ToolItemPropertySpec, ...] = ()
     description_en: str = ""
     description_fa: str = ""
 
@@ -80,6 +106,16 @@ def load_tool_registry(path: str | None = None) -> dict[str, ToolSpec]:
                 required=bool(p.get("required", True)),
                 enum=tuple(str(x) for x in (p.get("enum") or [])),
                 items_type=str(p.get("items_type") or ""),
+                item_properties=tuple(
+                    ToolItemPropertySpec(
+                        name=str(ip["name"]),
+                        type=str(ip.get("type", "string")),
+                        required=bool(ip.get("required", True)),
+                        items_type=str(ip.get("items_type") or ""),
+                        description_en=str(ip.get("description_en") or ""),
+                    )
+                    for ip in (p.get("items_properties") or [])
+                ),
                 description_en=str(p.get("description_en") or ""),
                 description_fa=str(p.get("description_fa") or ""),
             )
@@ -134,7 +170,18 @@ def to_openai_function_schema(spec: ToolSpec) -> dict[str, Any]:
         }
         if param.enum:
             prop["enum"] = list(param.enum)
-        if param.type == "array" and param.items_type:
+        if param.type == "array" and param.items_type == "object" and param.item_properties:
+            item_props: dict[str, Any] = {}
+            item_required: list[str] = []
+            for ip in param.item_properties:
+                item_prop: dict[str, Any] = {"type": ip.type or "string", "description": ip.description_en or ip.name}
+                if ip.type == "array" and ip.items_type:
+                    item_prop["items"] = {"type": ip.items_type}
+                item_props[ip.name] = item_prop
+                if ip.required:
+                    item_required.append(ip.name)
+            prop["items"] = {"type": "object", "properties": item_props, "required": item_required}
+        elif param.type == "array" and param.items_type:
             prop["items"] = {"type": param.items_type}
         properties[param.name] = prop
         if param.required:

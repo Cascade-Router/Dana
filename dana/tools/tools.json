@@ -1791,8 +1791,56 @@
       ]
     },
     {
+      "id": "create_freecad_polygon",
+      "description_en": "Creates an extruded regular polygon like a triangle, pentagon, hexagon, or octagon.",
+      "parameters": [
+        {
+          "name": "sides",
+          "type": "integer",
+          "required": true,
+          "description_en": "Number of sides (3=triangle, 5=pentagon, 6=hexagon, 8=octagon)."
+        },
+        {
+          "name": "radius",
+          "type": "number",
+          "required": true,
+          "description_en": "Radius in mm from center to each vertex."
+        },
+        {
+          "name": "height",
+          "type": "number",
+          "required": false,
+          "description_en": "Thickness of the prism in mm (extrusion distance along Z)."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Name for the created object."
+        },
+        {
+          "name": "placement_x",
+          "type": "number",
+          "required": false,
+          "description_en": "Global X-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_y",
+          "type": "number",
+          "required": false,
+          "description_en": "Global Y-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_z",
+          "type": "number",
+          "required": false,
+          "description_en": "Global Z-axis offset in mm. Defaults to 0."
+        }
+      ]
+    },
+    {
       "id": "perform_freecad_boolean",
-      "description_en": "Combine two previously-created FreeCAD solids with a Boolean operation. 'cut' subtracts tool_object from base_object (e.g. drilling a hole); 'union' fuses both into one solid; 'intersect' keeps only the volume where they overlap. Both base_object and tool_object must be the exact object name (default 'Box'/'Cylinder' unless overridden) of solids already created via create_freecad_box, create_freecad_cylinder, insert_standard_part, or a prior perform_freecad_boolean result — all of which share one active FreeCAD session document. create_freecad_pyramid/create_freecad_star_prism/create_freecad_extrusion/create_freecad_pipe/create_freecad_sketch_extrude and batch_pattern_array/align_freecad_objects/create_assembly_mate objects are NOT in that shared document yet and cannot currently be used here.",
+      "description_en": "Combine two solids from create_freecad_box/cylinder/polygon/insert_standard_part (same session doc) via cut/union/intersect, by object name.",
       "parameters": [
         {
           "name": "operation",
@@ -2036,7 +2084,7 @@
     },
     {
       "id": "create_freecad_sketch_extrude",
-      "description_en": "Draws a closed 2D profile from an ordered list of line/arc segments on a chosen work plane, then extrudes it into a solid. Use this instead of create_freecad_extrusion for profiles with rounded/arc edges (slots, D-profiles, filleted outlines) that a straight-edged polyline can't express — a higher-leverage foundational primitive for building custom 2D-then-3D geometry beyond basic CSG booleans.",
+      "description_en": "CRITICAL: each segment is {\"type\":\"line\",\"to\":[x,y]} (never 'start'/'end'). For a 3-point arc use {\"type\":\"arc\",\"to\":[x,y],\"via\":[x,y]}. Draws a closed 2D profile from an ordered list of line/arc segments on a chosen work plane, then extrudes it into a solid. Use this instead of create_freecad_extrusion for profiles with rounded/arc edges (slots, D-profiles, filleted outlines) that a straight-edged polyline can't express — a higher-leverage foundational primitive for building custom 2D-then-3D geometry beyond basic CSG booleans.",
       "parameters": [
         {
           "name": "segments",
@@ -2073,6 +2121,94 @@
           "type": "string",
           "required": false,
           "description_en": "Object/document name. Defaults to 'Sketch'."
+        }
+      ]
+    },
+    {
+      "id": "create_freecad_feature_on_face",
+      "description_en": "Adds or cuts a circle/rectangle feature directly on a named face (top/bottom/front/back/left/right) of an existing object, at local 2D (u, v) coordinates on that face — FreeCAD resolves the face's actual 3D position/orientation from the object's real geometry, so you never need to compute a Placement/Rotation yourself for a feature on a vertical or angled face. PREFER THIS over manually placing a cylinder/box at a hand-computed rotation to make a hole, boss, pocket, or tab on a non-top face. Only works on a genuinely flat face of a box-like (prismatic) object — fails with a clear error on a curved surface (e.g. the side of a cylinder). CONSUMES object_name exactly like perform_freecad_boolean does: only the returned result name is valid for any later call.",
+      "parameters": [
+        {
+          "name": "object_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing object (already in the session document) to add or cut the feature on."
+        },
+        {
+          "name": "face",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "top",
+            "bottom",
+            "front",
+            "back",
+            "left",
+            "right"
+          ],
+          "description_en": "Which bounding-box face to place the feature on (FreeCAD standard-view convention: top=+Z, front=-Y, right=+X)."
+        },
+        {
+          "name": "shape",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "circle",
+            "rectangle"
+          ],
+          "description_en": "2D profile shape of the feature."
+        },
+        {
+          "name": "u",
+          "type": "number",
+          "required": true,
+          "description_en": "Local coordinate of the feature's center along the face's horizontal in-plane axis, in mm, measured from the face's own center (0, 0 = face center)."
+        },
+        {
+          "name": "v",
+          "type": "number",
+          "required": true,
+          "description_en": "Local coordinate of the feature's center along the face's vertical in-plane axis, in mm, measured from the face's own center (0, 0 = face center)."
+        },
+        {
+          "name": "extent",
+          "type": "number",
+          "required": true,
+          "description_en": "How far the feature extends, in mm: cut depth into the object (operation='cut') or boss height above the face (operation='add')."
+        },
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "cut",
+            "add"
+          ],
+          "description_en": "'cut' subtracts the shape into the object (a hole/pocket/slot). 'add' unions the shape onto the object (a boss/tab). Always specify this explicitly — never assume."
+        },
+        {
+          "name": "radius",
+          "type": "number",
+          "required": false,
+          "description_en": "Circle radius in mm. Required when shape='circle'."
+        },
+        {
+          "name": "width",
+          "type": "number",
+          "required": false,
+          "description_en": "Rectangle width (along the face's u axis) in mm. Required when shape='rectangle'."
+        },
+        {
+          "name": "length",
+          "type": "number",
+          "required": false,
+          "description_en": "Rectangle length (along the face's v axis) in mm. Required when shape='rectangle'."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Name for the resulting object after the cut/add. Defaults to 'Cut' or 'Fusion'."
         }
       ]
     },
@@ -2269,12 +2405,12 @@
     {
       "id": "load_capability",
       "read_only": true,
-      "description_en": "Dynamically unlocks a capability domain's tools for the rest of this conversation, when the user's request needs something outside your current tool set. NEVER tell the user to manually enable a plugin/domain themselves — call this FIRST instead, then call the newly-unlocked tool in a later turn; a domain's tools never appear until this has been called for it. Available domains: 'freecad' (the 7 essential CAD primitives — create a box/cylinder, one boolean op, one edge op, a parameter tweak, a bounding-box check, export — covers most basic modeling requests at low token cost), 'freecad_full' (all 24 FreeCAD tools, including patterns, assembly mates, 2D blueprints, standard-parts lookup, and camera control — only load this if 'freecad' genuinely isn't enough, since it costs far more tokens per turn), 'os_tools' (sandboxed filesystem operations and Python script execution), 'web_tools' (web search and webpage reading, for unfamiliar APIs, current facts, or documentation not in your local knowledge), 'vision_tools' (VLM analysis of an image file in the sandboxed workspace, e.g. verifying a chart you just generated), 'user_skills' (every permanent skill you've previously taught yourself via save_new_skill).",
+      "description_en": "Dynamically unlocks a capability domain's tools for the rest of this conversation, when the user's request needs something outside your current tool set. NEVER tell the user to manually enable a plugin/domain themselves — call this FIRST instead, then call the newly-unlocked tool in a later turn; a domain's tools never appear until this has been called for it. Available domains: 'freecad' (the 7 essential CAD primitives — create a box/cylinder, one boolean op, one edge op, a parameter tweak, a bounding-box check, export — covers most basic modeling requests at low token cost), 'freecad_full' (all 24 FreeCAD tools, including patterns, assembly mates, 2D blueprints, standard-parts lookup, and camera control — only load this if 'freecad' genuinely isn't enough, since it costs far more tokens per turn), 'os_tools' (sandboxed filesystem operations and Python script execution), 'web_tools' (web search and webpage reading, for unfamiliar APIs, current facts, or documentation not in your local knowledge), 'vision_tools' (VLM analysis of an image file in the sandboxed workspace, e.g. verifying a chart you just generated), 'user_skills' (every permanent skill you've previously taught yourself via save_new_skill). Pass 'tool_id' INSTEAD of 'domain' to unhide one specific tool a prior unload_capability(tool_id=...) call hid.",
       "parameters": [
         {
           "name": "domain",
           "type": "string",
-          "required": true,
+          "required": false,
           "enum": [
             "software_engineering",
             "freecad",
@@ -2284,19 +2420,25 @@
             "vision_tools",
             "user_skills"
           ],
-          "description_en": "The capability domain to load: 'software_engineering' (read/edit/refactor/debug code — search_codebase, analyze_codebase, execute_code_task, run_verification_command to verify), 'freecad' (CAD modeling — essential tools; only use 'freecad_full' if a heavier tool is genuinely needed), 'os_tools' (filesystem/shell access), 'web_tools' (web search/page fetch), 'vision_tools' (image analysis), 'user_skills' (previously self-taught skills)."
+          "description_en": "The capability domain to load: 'software_engineering' (read/edit/refactor/debug code — search_codebase, analyze_codebase, execute_code_task, run_verification_command to verify), 'freecad' (CAD modeling — essential tools; only use 'freecad_full' if a heavier tool is genuinely needed), 'os_tools' (filesystem/shell access), 'web_tools' (web search/page fetch), 'vision_tools' (image analysis), 'user_skills' (previously self-taught skills). Omit if passing 'tool_id' instead."
+        },
+        {
+          "name": "tool_id",
+          "type": "string",
+          "required": false,
+          "description_en": "Instead of 'domain': the exact tool_id to unhide again after an unload_capability(tool_id=...) call hid it (e.g. 'create_freecad_cylinder'). Omit if passing 'domain' instead."
         }
       ]
     },
     {
       "id": "unload_capability",
       "read_only": true,
-      "description_en": "Explicitly drops a capability domain you unlocked via load_capability once you're done with it THIS turn or task, instead of leaving it active for several more turns waiting for it to decay out on its own. Use this right after finishing a task that needed a domain you don't expect to need again soon (e.g. you just used 'os_tools' for a one-off file read and the rest of the conversation is unrelated) — it keeps the next turn's tool list smaller and avoids blowing a free-tier model's token budget. Never call this on a domain the FRONTEND itself activated (an open CAD/Coder tab) — it has no effect there; that stays under the user's own tab control. If you unload something you turn out to still need, just call load_capability again.",
+      "description_en": "Explicitly drops a capability domain you unlocked via load_capability once you're done with it THIS turn or task, instead of leaving it active for several more turns waiting for it to decay out on its own. Use this right after finishing a task that needed a domain you don't expect to need again soon (e.g. you just used 'os_tools' for a one-off file read and the rest of the conversation is unrelated) — it keeps the next turn's tool list smaller and avoids blowing a free-tier model's token budget. Never call this on a domain the FRONTEND itself activated (an open CAD/Coder tab) — it has no effect there; that stays under the user's own tab control. If you unload something you turn out to still need, just call load_capability again. Pass 'tool_id' INSTEAD of 'domain' to hide one SPECIFIC tool while its domain stays fully active — e.g. hide 'create_freecad_cylinder' to force yourself to use batch_pattern_array for a repeated-feature request instead of dispatching the same create call several times in a row.",
       "parameters": [
         {
           "name": "domain",
           "type": "string",
-          "required": true,
+          "required": false,
           "enum": [
             "software_engineering",
             "freecad",
@@ -2306,7 +2448,13 @@
             "vision_tools",
             "user_skills"
           ],
-          "description_en": "The capability domain to unload — same domain names load_capability accepts."
+          "description_en": "The capability domain to unload — same domain names load_capability accepts. Omit if passing 'tool_id' instead."
+        },
+        {
+          "name": "tool_id",
+          "type": "string",
+          "required": false,
+          "description_en": "Instead of 'domain': the exact tool_id to hide from your own tool list starting next turn, even though its domain stays active (e.g. 'create_freecad_cylinder'). Omit if passing 'domain' instead."
         }
       ]
     },
@@ -2418,16 +2566,56 @@
         {
           "name": "tasks",
           "type": "array",
-          "items_type": "string",
+          "items_type": "object",
+          "items_properties": [
+            {
+              "name": "description",
+              "type": "string",
+              "required": true,
+              "description_en": "A short plain-text description of this one step, e.g. 'Create the base cylinder' or 'Cut the mounting holes'."
+            },
+            {
+              "name": "expected_tools",
+              "type": "array",
+              "items_type": "string",
+              "required": false,
+              "description_en": "The EXACT tool_id(s) you intend to call to complete THIS task (e.g. ['create_freecad_cylinder'], or ['perform_freecad_boolean'] for a cut step). You have the real semantic context for what each task needs — declare it explicitly rather than leaving it for a guess. Omit only for a task with no single fixed tool (a pure visual inspection/adjustment step)."
+            }
+          ],
           "required": true,
-          "description_en": "The ordered checklist of steps, each a short plain-text description, e.g. ['Scaffold the project structure', 'Install dependencies', 'Implement the backend API', 'Build the frontend', 'Write tests']. IDs are assigned automatically by position — do not include numbers yourself."
+          "description_en": "The ordered checklist of steps. One object per step, in the exact order they must happen, e.g. [{'description': 'Create the base box', 'expected_tools': ['create_freecad_box']}, {'description': 'Create the mounting cylinder', 'expected_tools': ['create_freecad_cylinder']}, {'description': 'Cut the cylinder from the box', 'expected_tools': ['perform_freecad_boolean']}, {'description': 'Export the final model as STEP', 'expected_tools': ['export_freecad_model']}]. IDs are assigned automatically by position — do not include numbers yourself."
+        }
+      ]
+    },
+    {
+      "id": "compile_plan_as_skill",
+      "description_en": "Compiles every successful FreeCAD tool call since your last create_plan into ONE new, permanently reusable tool, so a future request for the same kind of part is a single call instead of repeating every step again. Call this ONLY after the plan's geometry is actually finished and looks correct — compiling a broken or incomplete build just as permanently saves the broken result. Requires a human's one-time approval, same as save_new_skill, since it creates new executable code.",
+      "parameters": [
+        {
+          "name": "skill_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Lowercase snake_case tool_id for the new tool, e.g. 'create_nema17_bracket'. Must not collide with an existing tool name."
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "required": true,
+          "description_en": "One sentence describing what the compiled tool builds — this becomes its own tool description shown to you (or a future turn) when deciding whether to call it."
+        },
+        {
+          "name": "expose_parameters",
+          "type": "array",
+          "items_type": "string",
+          "required": false,
+          "description_en": "Which recorded values should become the new tool's own parameters. Two forms, mix freely in the same list: (1) 'step_number.field_name' (e.g. '3.radius') — one independent parameter, auto-named. (2) 'parameter_name=step_number.field,step_number.field,...' (e.g. 'bracket_thickness=1.length,2.height') — an ALIAS: give ONE parameter name your own semantic meaning (e.g. 'bracket_thickness') and list every step.field location that same real-world dimension actually appears at across the plan; a single value you supply for that parameter is applied to every listed location. step_number is the 1-based step you saw in each tool's own result; field_name is one of that step's own dimension-like arguments (e.g. 'radius', 'value', 'length', 'height'). Object names, operation/face/shape choices, and other structural fields can never be exposed — only sizes/positions the caller would plausibly want to vary. Omit this to let the compiler choose a reasonable default set of dimensional parameters automatically."
         }
       ]
     },
     {
       "id": "mark_task_completed",
       "read_only": true,
-      "description_en": "Marks a task in your active plan as completed, and — if you already know what comes next — promotes another task to active in the same call. Call this as soon as a task is genuinely done, so your plan (shown to you every turn) stays accurate instead of stale. If you don't yet know the next task, omit next_task_id; you can promote one later once you decide. Always available, in any session.",
+      "description_en": "Marks a task complete — ONLY once its create_/modify_ tool already returned ok:true; never mark done before actually building it.",
       "parameters": [
         {
           "name": "task_id",
