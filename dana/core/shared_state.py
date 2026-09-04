@@ -39,17 +39,9 @@ from typing import Any, Callable, Optional, Union
 import numpy as np
 from spatial_context import SPATIAL_AGGREGATOR
 
-from dana.audio.audio_pipeline import AudioRouter
 from dana.logging import log_debug
-from dana.audio.noise_floor import (  # noqa: F401  (re-exported for callers)
-    ABSOLUTE_MIN_SPEECH_FLOOR,
-    NOISE_FLOOR_MULTIPLIER,
-    compute_ambient_baseline,
-    compute_dynamic_speech_floor,
-)
 from dana.audio.tts_manager import get_tts_manager as _get_tts_manager
 from dana.audio.tts_worker import get_tts_worker as _get_tts_worker
-from dana.audio.wake_poller import WakePoller
 from dana.paths import SETTINGS_PATH as _SETTINGS_PATH, TRIGGER_ASK_PATH
 from dana.secure_memory import SecureMemory, default_vault_path
 from dana.vault_service import VaultClient
@@ -196,10 +188,6 @@ wakeword_armed = threading.Event()
 engine_engaged = threading.Event()
 _boot_ready_audio_lock = threading.Lock()
 _boot_ready_audio_played = False  # reassigned
-# Shared OpenWakeWord model for stream-barge during TTS (set by wakeword_worker).
-_shared_wakeword_model: Any = None  # reassigned
-_dual_wake_router: Optional[AudioRouter] = None  # reassigned
-_dual_wake_poller: Optional[WakePoller] = None  # reassigned
 # Set when the TTS spooler is drained and nothing is playing.
 speech_idle = threading.Event()
 speech_idle.set()
