@@ -21,13 +21,13 @@ route handler's return statement, let alone serialization.
 from __future__ import annotations
 
 import os
-import re
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
+from dotenv import set_key
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -44,6 +44,10 @@ _SENSITIVE_VARS = frozenset(
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",  # read by dana.core.model_provider's "anthropic" branch —
         # missing from this allowlist before was a real gap, not intentional.
+        "OPENROUTER_API_KEY",  # read by dana.core.model_provider._resolve_openai_endpoint's
+        # "openrouter" branch — the Settings modal's Cloud Provider Manager
+        # needs this alongside OpenAI/Gemini to cover all three of its
+        # provider choices.
         "HF_TOKEN_ALTEREGO",
         "HF_TOKEN_DEEPRESEARCH",
         "PUSHOVER_TOKEN",
@@ -54,11 +58,18 @@ _SENSITIVE_VARS = frozenset(
 )
 
 # Routing/model config only — no credential material, safe to show verbatim.
+# Also the Settings modal's Model Priority Manager's writable non-credential
+# fields (DANA_CLOUD_PROVIDER, DANA_LOCAL_MODEL, DANA_OPENROUTER_MODEL,
+# DANA_GEMINI_MODEL) — see save_system_env below, which now accepts anything
+# in _ALLOWLIST, not just _SENSITIVE_VARS.
 _NON_SENSITIVE_VARS = frozenset(
     {
         "DANA_CLOUD_PRIMARY",
+        "DANA_CLOUD_PROVIDER",
         "DANA_GROQ_MODEL",
         "DANA_LOCAL_MODEL",
+        "DANA_OPENROUTER_MODEL",
+        "DANA_GEMINI_MODEL",
         "DANA_VISION_MODEL",
         "DANA_REASONER_MODEL",
         "DANA_CASCADE_EXTERNAL",
@@ -109,22 +120,18 @@ class SaveEnvKeyRequest(BaseModel):
 
 
 def _update_dotenv_line(path: Path, key: str, value: str) -> None:
-    """Idempotent ``KEY=value`` upsert into a ``.env`` file: replaces an
-    existing line for ``key`` in place (every other line, its own order,
-    comments, all untouched) or appends a new line if ``key`` isn't present
-    yet. Deliberately line-based rather than a full .env parser/writer
-    library — this only ever touches one already-allowlisted key at a time.
+    """Idempotent ``KEY=value`` upsert into a ``.env`` file via python-dotenv's
+    own ``set_key`` — replaces an existing line for ``key`` in place (every
+    other line, its own order, comments, all untouched) or appends a new
+    line if ``key`` isn't present yet. ``quote_mode="never"`` keeps the
+    written value bare (matching every existing unquoted line in this
+    project's ``.env``) rather than ``set_key``'s own default of always
+    wrapping values in double quotes. ``touch`` first — ``set_key`` raises
+    if the file doesn't exist yet, unlike the hand-rolled line editor this
+    replaced.
     """
-    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
-    pattern = re.compile(rf"^{re.escape(key)}\s*=")
-    new_line = f"{key}={value}"
-    for i, line in enumerate(lines):
-        if pattern.match(line):
-            lines[i] = new_line
-            break
-    else:
-        lines.append(new_line)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.touch(exist_ok=True)
+    set_key(str(path), key, value, quote_mode="never")
 
 
 # One-shot "does the provider accept this key" probe, per recognized
@@ -154,6 +161,10 @@ def _validate_key(name: str, value: str) -> tuple[bool, str]:
             req = urllib.request.Request(
                 f"https://generativelanguage.googleapis.com/v1beta/models?key={urllib.parse.quote(value)}"
             )
+        elif name == "OPENROUTER_API_KEY":
+            req = urllib.request.Request(
+                "https://openrouter.ai/api/v1/auth/key", headers={"Authorization": f"Bearer {value}"}
+            )
         else:
             return True, "saved (no live validation defined for this key)"
         with urllib.request.urlopen(req, timeout=_VALIDATION_TIMEOUT_S) as resp:
@@ -170,16 +181,23 @@ def _validate_key(name: str, value: str) -> tuple[bool, str]:
 
 @router.post("/api/system/env")
 def save_system_env(body: SaveEnvKeyRequest) -> dict[str, Any]:
-    """Saves one recognized credential to ``.env`` (upsert) and to THIS
-    process's live ``os.environ`` (so a call made right after saving — no
-    backend restart needed — already sees it), then runs a best-effort live
-    probe against the actual provider. Only ever writes a key already on
-    ``_SENSITIVE_VARS`` — this is the credential allowlist, not an arbitrary
-    env-var setter.
+    """Saves one recognized env var to ``.env`` (upsert, via python-dotenv's
+    ``set_key`` — see ``_update_dotenv_line``) and to THIS process's live
+    ``os.environ`` — so a call made right after saving already sees it, with
+    no backend restart needed, since every reader in this codebase
+    (``dana.core.model_provider``'s ``local_model_name``/``cloud_provider_name``/
+    etc.) re-reads ``os.environ`` fresh on every call rather than caching it.
+    Only ever writes a key already on ``_ALLOWLIST`` — this is a fixed
+    allowlist, not an arbitrary env-var setter. A live probe against the
+    actual provider only runs for a recognized CREDENTIAL (``_SENSITIVE_VARS``)
+    — the Settings modal's Cloud Provider Manager also uses this same
+    endpoint to write plain routing config (``DANA_CLOUD_PROVIDER``,
+    ``DANA_LOCAL_MODEL``, ...), which ``_validate_key`` has no provider
+    endpoint to probe.
     """
     key = body.key.strip()
-    if key not in _SENSITIVE_VARS:
-        raise HTTPException(status_code=400, detail=f"{key!r} is not a recognized/writable credential key")
+    if key not in _ALLOWLIST:
+        raise HTTPException(status_code=400, detail=f"{key!r} is not a recognized/writable setting")
     value = body.value.strip()
     if not value:
         raise HTTPException(status_code=400, detail="value must not be empty")
@@ -187,7 +205,10 @@ def save_system_env(body: SaveEnvKeyRequest) -> dict[str, Any]:
     _update_dotenv_line(ENV_PATH, key, value)
     os.environ[key] = value
 
-    valid, detail = _validate_key(key, value)
+    if key in _SENSITIVE_VARS:
+        valid, detail = _validate_key(key, value)
+    else:
+        valid, detail = True, "saved"
     return {"ok": True, "key": key, "valid": valid, "detail": detail, "env": _env_snapshot()}
 
 
