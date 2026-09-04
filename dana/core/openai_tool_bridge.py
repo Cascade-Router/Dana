@@ -156,18 +156,21 @@ def _complete_openai_with_tools_once(
     tool_choice: str | dict[str, Any] | None = None,
     num_predict: int = 512,
     temperature: float = 0.1,
-    timeout: float = 90.0,
+    timeout: float = 600.0,
     extra_headers: dict[str, str] | None = None,
     fallback_models: list[str] | None = None,
 ) -> dict[str, Any]:
     """Stream one ``/chat/completions`` turn; return the assembled ``message``.
 
-    Returns ``{"content": str | None, "tool_calls": list[dict], "ttft_ms": float | None}``
-    — the exact shape ``dana.tools.schema.openai_tool_calls_to_ir`` and
-    plain-text callers both need, so there is a single HTTP call site for
+    Returns ``{"content": str | None, "tool_calls": list[dict], "ttft_ms": float | None,
+    "usage": dict | None}`` — the exact shape ``dana.tools.schema.openai_tool_calls_to_ir``
+    and plain-text callers both need, so there is a single HTTP call site for
     text, tool-calling, and vision requests alike. ``ttft_ms`` is ``None``
     only if the stream ended with no content/tool-call delta at all (an
-    empty completion).
+    empty completion). ``usage`` is ``None`` unless the endpoint actually
+    honors ``stream_options.include_usage`` (OpenRouter and OpenAI both do;
+    an endpoint that ignores the field simply never sends that final chunk,
+    so this degrades to "cost unknown" rather than raising).
 
     Streamed (``"stream": True``) rather than one blocking request so
     ``ttft_ms`` reflects the model's REAL time-to-first-token — the signal
@@ -186,6 +189,12 @@ def _complete_openai_with_tools_once(
         "temperature": float(temperature),
         "max_tokens": int(num_predict),
         "stream": True,
+        # Cost Tracking: asks for one extra SSE chunk at the end of the
+        # stream carrying a "usage" object (prompt/completion token counts)
+        # with an EMPTY "choices" array — OpenRouter and OpenAI both honor
+        # this; see the "usage" capture below for why it must be read
+        # BEFORE the `if not choices: continue` skip.
+        "stream_options": {"include_usage": True},
     }
     if tools:
         payload["tools"] = tools
@@ -228,6 +237,7 @@ def _complete_openai_with_tools_once(
     # across many chunks, so each index accumulates independently until the
     # stream ends.
     tool_call_parts: dict[int, dict[str, Any]] = {}
+    usage: dict[str, Any] | None = None
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -242,6 +252,13 @@ def _complete_openai_with_tools_once(
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                # The usage-only final chunk (stream_options.include_usage)
+                # carries "usage" alongside an EMPTY "choices" array — must
+                # be captured here, before the empty-choices skip below
+                # would otherwise silently discard it every time.
+                chunk_usage = chunk.get("usage")
+                if isinstance(chunk_usage, dict):
+                    usage = chunk_usage
                 choices = chunk.get("choices") or []
                 if not choices:
                     continue
@@ -303,7 +320,7 @@ def _complete_openai_with_tools_once(
         tool_calls = _fallback_tool_calls_from_content(content)
         if tool_calls:
             content = ""  # it was a function call, not a reply meant for the user
-    return {"content": content, "tool_calls": tool_calls, "ttft_ms": ttft_ms}
+    return {"content": content, "tool_calls": tool_calls, "ttft_ms": ttft_ms, "usage": usage}
 
 
 def complete_openai_with_tools(
@@ -316,7 +333,7 @@ def complete_openai_with_tools(
     tool_choice: str | dict[str, Any] | None = None,
     num_predict: int = 512,
     temperature: float = 0.1,
-    timeout: float = 90.0,
+    timeout: float = 600.0,
     extra_headers: dict[str, str] | None = None,
     fallback_models: list[str] | None = None,
 ) -> dict[str, Any]:

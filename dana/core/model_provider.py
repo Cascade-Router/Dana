@@ -12,6 +12,7 @@ from typing import Any, Literal
 import requests
 
 from dana.core.openai_tool_bridge import _USER_AGENT, build_multimodal_messages, complete_openai_with_tools
+from dana.core.pricing import estimate_cost_usd
 from dana.system_health import llm_lock
 from dana.tools.schema import openai_tool_calls_to_ir
 
@@ -661,13 +662,22 @@ class ModelProvider:
     ) -> dict[str, Any]:
         """OpenAI-schema tool-calling turn against a cloud or local-Ollama endpoint.
 
-        Returns ``{"content": str, "tool_calls": list[ToolCall], "provider": str}``
-        — ``tool_calls`` is already Dana's native IR (see
-        ``dana.tools.schema.openai_tool_calls_to_ir``), so callers can hand
+        Returns ``{"content": str, "tool_calls": list[ToolCall], "provider": str,
+        "model": str, "usage": {"prompt_tokens": int, "completion_tokens": int},
+        "cost_usd": float | None}`` — ``tool_calls`` is already Dana's native IR
+        (see ``dana.tools.schema.openai_tool_calls_to_ir``), so callers can hand
         results straight to the existing broker/dispatch path
         (``dana.core.agent_loop.execute_tool_call``) with no OpenAI-shape
         parsing of their own. Raises ``NotImplementedError`` for providers
         that don't speak the OpenAI tools schema (Gemini, Anthropic).
+
+        Cost Tracking: ``usage`` is read off whichever endpoint actually
+        answered (primary or the Ollama fallback) — ``{0, 0}`` if the
+        endpoint never sent a usage chunk (see ``openai_tool_bridge``'s
+        ``stream_options.include_usage``). ``cost_usd`` is ``None`` whenever
+        ``model`` isn't in ``dana.core.pricing``'s table (every local Ollama
+        model, by construction — OpenRouter never priced them), so a caller
+        must treat ``None`` as "unknown", never as free.
 
         Automatic Ollama Fallback: if the primary CLOUD call raises (a 402
         "Payment Required" from a rate-limited free OpenRouter tier is the
@@ -759,12 +769,23 @@ class ModelProvider:
             if effective_provider == resolved_provider
             else f"ollama-fallback (was {resolved_provider})"
         )
+        usage = raw.get("usage") or {}
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+        cost_usd = (
+            estimate_cost_usd(model, prompt_tokens, completion_tokens)
+            if (prompt_tokens or completion_tokens)
+            else None
+        )
         return {
             "content": str(raw.get("content") or "").strip(),
             "tool_calls": openai_tool_calls_to_ir(
                 raw.get("tool_calls"), raw_text=str(raw.get("content") or "")
             ),
             "provider": self.last_provider,
+            "model": model,
+            "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
+            "cost_usd": cost_usd,
         }
 
     def complete_vision(
