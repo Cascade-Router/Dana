@@ -14,6 +14,21 @@ the engine's own result payload (resolved default names, coerced dimensions,
 absolute placements) — the ``_build_*`` functions below only normalize that
 data into template-ready fields; the actual FreeCAD API call *shape* per
 operation lives in ``templates/macro_export.py.jinja2``.
+
+Universal CAD IR migration: ``build_replay_steps`` now checks
+``dana.plugins.freecad.ir``'s registry FIRST for each record's tool_id,
+falling back to this module's own ``_STEP_BUILDERS``/``_build_*`` only for
+a tool_id ``ir.py`` hasn't been taught yet — the SAME adapter/fallback
+pattern ``engine.py``'s real-time execution uses (see that module's own
+migration notes). A kind migrated to ``ir.py`` is thereby replayed through
+the SAME step-dict shape/renderer engine.py and the Composite Skill
+Compiler use for it — one point of truth, not three. The ``_build_*``
+functions below stay exactly as they were for every kind NOT yet migrated;
+this module still renders ``render_macro_script``'s OWN output through
+``templates/macro_export.py.jinja2`` (not yet retired) either way — only
+WHICH function builds each individual step dict changed, not the "one
+shared document, human-readable macro" rendering ``render_macro_script``
+itself still owns.
 """
 
 from __future__ import annotations
@@ -26,6 +41,7 @@ from typing import Any
 import jinja2
 
 from dana.paths import DANA_WORKSPACE
+from dana.plugins.freecad import ir
 from dana.plugins.freecad.call_log import CadCallLog, CadCallRecord
 
 # Reused so the exported script's pipe-elbow bend radius always matches
@@ -51,18 +67,15 @@ _EXPORT_DIR = DANA_WORKSPACE / "exports"
 # shouldn't depend back on the ReAct dispatch module for one constant.
 _EXTRUSION_DEFAULT_HALF_WIDTH = 10.0
 
-_IDENT_INVALID_RE = re.compile(r"\W")
 _SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9_-]")
 
-
-def _safe_var_name(name: str, index: int) -> str:
-    """A guaranteed-valid, unique local Python identifier for a step's
-    newly-created object — the FreeCAD object Name itself may contain
-    characters (spaces, punctuation) that aren't valid as a bare variable."""
-    candidate = _IDENT_INVALID_RE.sub("_", name or "obj").strip("_") or "obj"
-    if candidate[0].isdigit():
-        candidate = f"_{candidate}"
-    return f"{candidate.lower()}_{index}"
+# Re-exported from dana.plugins.freecad.ir (this function ORIGINATED here,
+# moved once ir.py's own from_record kind-builders needed it too — see
+# ir.safe_var_name's own docstring for why that direction, not the
+# reverse, avoids a circular import). Kept as a module-level name so every
+# _build_* function below (and any external caller matching this file's
+# pre-migration import) is unaffected.
+_safe_var_name = ir.safe_var_name
 
 
 def _placement(result: dict[str, Any]) -> tuple[float, float, float]:
@@ -122,6 +135,20 @@ def _build_star_prism(rec: CadCallRecord, index: int) -> dict[str, Any]:
         "points": int(dims.get("points", 5)),
         "outer_radius": float(dims.get("outer_radius", 0.0)),
         "inner_radius": float(dims.get("inner_radius", 0.0)),
+        "height": float(dims.get("height", 0.0)),
+        "placement": _placement(rec.result),
+    }
+
+
+def _build_polygon(rec: CadCallRecord, index: int) -> dict[str, Any]:
+    dims = rec.result.get("dimensions") or {}
+    name = str(rec.result.get("name", "Polygon"))
+    return {
+        "kind": "polygon",
+        "var": _safe_var_name(name, index),
+        "name": name,
+        "sides": int(dims.get("sides", 6)),
+        "radius": float(dims.get("radius", 0.0)),
         "height": float(dims.get("height", 0.0)),
         "placement": _placement(rec.result),
     }
@@ -302,6 +329,7 @@ _STEP_BUILDERS: dict[str, Callable[[CadCallRecord, int], dict[str, Any]]] = {
     "create_freecad_cylinder": _build_cylinder,
     "create_freecad_pyramid": _build_pyramid,
     "create_freecad_star_prism": _build_star_prism,
+    "create_freecad_polygon": _build_polygon,
     "create_freecad_extrusion": _build_extrusion,
     "create_freecad_pipe": _build_pipe,
     "perform_freecad_boolean": _build_boolean,
@@ -322,23 +350,58 @@ _ENV = jinja2.Environment(
 _ENV.filters["pyrepr"] = repr
 
 
-def render_macro_script(log: CadCallLog, *, document_name: str = "DanaModel") -> str:
-    """Render ``log`` into a standalone FreeCAD macro's full source text."""
+def build_replay_steps(
+    records: list[CadCallRecord], *, start_index: int = 1
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Turns an ordered list of ``CadCallRecord`` into the template-ready
+    ``steps``/``skipped`` shape ``render_macro_script`` renders — pulled out
+    as its own public function so a second consumer (``dana.plugins.freecad
+    .skill_compiler``, which compiles a completed plan's own call-log slice
+    into a reusable parameterized tool) can reuse the EXACT SAME
+    record-to-step normalization ``_STEP_BUILDERS`` already implements,
+    rather than re-deriving it against ``dana.core.react_dispatch
+    .TOOL_HANDLERS``'s raw arguments/result payloads a second time.
+
+    ``start_index`` lets a caller number steps starting from where its own
+    slice began in the FULL session log (e.g. the call right after
+    ``create_plan`` succeeded), rather than always restarting at 1 — purely
+    cosmetic (feeds ``step["index"]``/the rendered "# Step N" comment and
+    ``_safe_var_name``'s uniqueness suffix), never semantic.
+
+    Universal CAD IR adapter: for each record, ``dana.plugins.freecad.ir``'s
+    registry is checked FIRST (``ir.get_ir_kind(rec.tool_id)``) — a
+    migrated tool_id's step dict comes from its ``IRKindSpec.from_record``
+    (the SAME builder ``engine.py``'s real-time execution and
+    ``skill_compiler.py``'s compiler use for that tool_id), never this
+    module's own ``_STEP_BUILDERS``. Falls back to ``_STEP_BUILDERS`` only
+    for a tool_id ``ir.py`` hasn't been taught yet — the fallback routing
+    is per-TOOL_ID, decided fresh for every record, so a session mixing
+    migrated and not-yet-migrated tool calls replays correctly either way.
+    """
     steps: list[dict[str, Any]] = []
     skipped: list[str] = []
-    for i, rec in enumerate(log.records, start=1):
+    for offset, rec in enumerate(records, start=start_index):
         if not rec.ok:
-            skipped.append(f"Step {i}: {rec.tool_id} failed — {rec.error}")
+            skipped.append(f"Step {offset}: {rec.tool_id} failed — {rec.error}")
             continue
-        builder = _STEP_BUILDERS.get(rec.tool_id)
-        if builder is None:
-            skipped.append(f"Step {i}: {rec.tool_id} (not a FreeCAD geometry operation)")
-            continue
-        step = builder(rec, i)
-        step["index"] = i
+        ir_kind = ir.get_ir_kind(rec.tool_id)
+        if ir_kind is not None:
+            step = ir_kind.from_record(rec, offset)
+        else:
+            builder = _STEP_BUILDERS.get(rec.tool_id)
+            if builder is None:
+                skipped.append(f"Step {offset}: {rec.tool_id} (not a FreeCAD geometry operation)")
+                continue
+            step = builder(rec, offset)
+        step["index"] = offset
         step["tool_id"] = rec.tool_id
         steps.append(step)
+    return steps, skipped
 
+
+def render_macro_script(log: CadCallLog, *, document_name: str = "DanaModel") -> str:
+    """Render ``log`` into a standalone FreeCAD macro's full source text."""
+    steps, skipped = build_replay_steps(log.records)
     template = _ENV.get_template(_TEMPLATE_NAME)
     return template.render(document_name=document_name, steps=steps, skipped=skipped)
 
@@ -354,4 +417,4 @@ def write_macro_script(
     return str(out_path)
 
 
-__all__ = ("render_macro_script", "write_macro_script")
+__all__ = ("build_replay_steps", "render_macro_script", "write_macro_script")

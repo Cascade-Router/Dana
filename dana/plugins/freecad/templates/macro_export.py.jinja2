@@ -81,6 +81,23 @@ wire_{{ step.index }} = Part.makePolygon(verts_{{ step.index }} + [verts_{{ step
 {% endif %}
 doc.recompute()
 
+{% elif step.kind == "polygon" %}
+verts_{{ step.index }} = [
+    App.Vector(
+        {{ step.radius|pyrepr }} * math.cos((2 * math.pi / {{ step.sides|pyrepr }}) * i - math.pi / 2),
+        {{ step.radius|pyrepr }} * math.sin((2 * math.pi / {{ step.sides|pyrepr }}) * i - math.pi / 2),
+        0.0,
+    )
+    for i in range({{ step.sides|pyrepr }})
+]
+wire_{{ step.index }} = Part.makePolygon(verts_{{ step.index }} + [verts_{{ step.index }}[0]])
+{{ step.var }} = doc.addObject("Part::Feature", {{ step.name|pyrepr }})
+{{ step.var }}.Shape = Part.Face(wire_{{ step.index }}).extrude(App.Vector(0.0, 0.0, {{ step.height|pyrepr }}))
+{% if step.placement != (0.0, 0.0, 0.0) %}
+{{ step.var }}.Placement = App.Placement(App.Vector{{ step.placement|pyrepr }}, App.Rotation())
+{% endif %}
+doc.recompute()
+
 {% elif step.kind == "extrusion" %}
 pts_{{ step.index }} = [App.Vector(float(x), float(y), 0.0) for x, y in {{ step.points|pyrepr }}]
 if pts_{{ step.index }}[0] != pts_{{ step.index }}[-1]:
@@ -134,18 +151,24 @@ doc.recompute()
 
 {% elif step.kind == "edge_operation" %}
 target_{{ step.index }} = doc.getObject({{ step.target_object|pyrepr }})
+shape_{{ step.index }} = target_{{ step.index }}.Shape
+if shape_{{ step.index }}.ShapeType == "Compound" and shape_{{ step.index }}.Solids:
+    shape_{{ step.index }} = shape_{{ step.index }}.Solids[0]
+shape_{{ step.index }} = shape_{{ step.index }}.removeSplitter()
+healed_{{ step.index }} = doc.addObject("Part::Feature", {{ step.name|pyrepr }} + "_Healed")
+healed_{{ step.index }}.Shape = shape_{{ step.index }}
 {% if step.centroid %}
 point_{{ step.index }} = App.Vector{{ step.centroid|pyrepr }}
-nearest_face_{{ step.index }} = min(target_{{ step.index }}.Shape.Faces, key=lambda f: f.CenterOfMass.distanceToPoint(point_{{ step.index }}))
+nearest_face_{{ step.index }} = min(healed_{{ step.index }}.Shape.Faces, key=lambda f: f.CenterOfMass.distanceToPoint(point_{{ step.index }}))
 edge_indices_{{ step.index }} = [
-    i for i, edge in enumerate(target_{{ step.index }}.Shape.Edges, start=1)
+    i for i, edge in enumerate(healed_{{ step.index }}.Shape.Edges, start=1)
     if any(edge.isSame(face_edge) for face_edge in nearest_face_{{ step.index }}.Edges)
 ]
 {% else %}
-edge_indices_{{ step.index }} = list(range(1, len(target_{{ step.index }}.Shape.Edges) + 1))
+edge_indices_{{ step.index }} = list(range(1, len(healed_{{ step.index }}.Shape.Edges) + 1))
 {% endif %}
 {{ step.var }} = doc.addObject({{ step.feature_type|pyrepr }}, {{ step.name|pyrepr }})
-{{ step.var }}.Base = target_{{ step.index }}
+{{ step.var }}.Base = healed_{{ step.index }}
 {{ step.var }}.Edges = [(i, {{ step.value|pyrepr }}, {{ step.value|pyrepr }}) for i in edge_indices_{{ step.index }}]
 doc.recompute()
 

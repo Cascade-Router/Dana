@@ -8,13 +8,12 @@ not a raw triangle mesh, which is all a mesh-reconstruction model ever hands
 back.
 
 Reuses ``dana.plugins.freecad.engine``'s stateless FreeCADCmd script-runner
-directly (``_run_freecad_script``/``_session_document_path``/
-``_SESSION_OPEN_SNIPPET``/``_SESSION_SAVE_SNIPPET``/``_SESSION_RESULT_PRINT``)
-rather than going through the ``BaseCADEngine`` platform abstraction — same
-architectural role and same reasoning as
-``dana.plugins.freecad.standard_parts`` (see that module's own docstring):
-this is a FreeCAD-plugin-specific operation, not a primitive that needs a
-headless/non-Windows mock stand-in.
+via the shared ``_execute_ir_tool`` pipeline (the "mesh_solidify" IRKindSpec
+registered in ``dana.plugins.freecad.ir``) rather than going through the
+``BaseCADEngine`` platform abstraction — same architectural role and same
+reasoning as ``dana.plugins.freecad.standard_parts`` (see that module's own
+docstring): this is a FreeCAD-plugin-specific operation, not a primitive
+that needs a headless/non-Windows mock stand-in.
 """
 
 from __future__ import annotations
@@ -22,69 +21,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from dana.plugins.freecad.engine import (
-    _OK_MARKER,
-    _SESSION_DOCUMENT_NAME,
-    _SESSION_OPEN_SNIPPET,
-    _SESSION_RESULT_PRINT,
-    _SESSION_SAVE_SNIPPET,
     _auto_show,
     _dry_run_result,
     _error,
+    _execute_ir_tool,
     _ok,
-    _run_freecad_script,
     _session_dir,
-    _session_document_path,
 )
 from dana.platform.factory import IS_HF_SPACE
 from dana.security.dry_run import is_dry_run_enabled
-
-# Sew tolerance (mm) for Part.Shape.makeShapeFromMesh — the standard default
-# used by FreeCAD's own "Mesh to Part" conversion recipe; loose enough to
-# tolerate the small triangle-soup imprecision typical of an AI-reconstructed
-# mesh without merging genuinely distinct nearby features.
-_MESH_SEW_TOLERANCE = 0.1
-
-# The standard FreeCAD mesh-to-solid pipeline: import via the Mesh module,
-# build a Part.Shape from its triangle topology, sew/solidify it, then hand
-# the resulting solid to a normal Part::Feature — exactly what File -> Import
-# followed by Part -> "Convert to solid" does in the GUI, just scripted.
-# `_mesh_obj` (a Mesh::Feature) is only a transient stepping stone to reach
-# `_mesh_obj.Mesh.Topology` and is removed again once the solid exists;
-# `Part.Shape()`/the sewn shape are bare geometry-kernel values from the
-# `Part` module, never handed to `doc.addObject`, so there is no separate
-# "shape document object" alongside it to clean up — only the Mesh::Feature
-# is ever actually added to `doc.Objects`.
-#
-# `makeShapeFromMesh` hands back a bare Compound of independent Faces (0
-# Shells) — confirmed live against FreeCAD 1.1.3 (`shape.ShapeType ==
-# "Compound"`, `len(shape.Shells) == 0`) — so `Part.makeSolid()` must be
-# called on an explicit `Part.Shell(shape.Faces)`, not on that Compound
-# directly, or it raises "No shells or compsolids found in shape" outright.
-_IMPORT_SOLIDIFY_SCRIPT = ("""\
-import FreeCAD as App
-import Mesh
-import Part
-
-""" + _SESSION_OPEN_SNIPPET + """\
-_mesh_obj = doc.addObject("Mesh::Feature", "DanaTempMesh")
-_mesh_obj.Mesh = Mesh.Mesh({mesh_path!r})
-
-_shape = Part.Shape()
-_shape.makeShapeFromMesh(_mesh_obj.Mesh.Topology, {tolerance}, False)
-_shell = Part.Shell(_shape.Faces)
-_solid = Part.makeSolid(_shell)
-_solid = _solid.removeSplitter()
-if _solid.isNull():
-    raise RuntimeError(
-        "mesh-to-solid conversion produced an empty/invalid solid — the "
-        "source mesh may not be watertight"
-    )
-
-obj = doc.addObject("Part::Feature", {name!r})
-obj.Shape = _solid
-doc.removeObject(_mesh_obj.Name)
-doc.recompute()
-""" + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT)
 
 
 def _resolve_mesh_path(mesh_path: str) -> Path | None:
@@ -121,6 +66,15 @@ def import_and_solidify_mesh(mesh_path: str, object_name: str) -> str:
     ``mesh_path`` is resolved via the same 3-stage poll (as given, under
     ``freecad_output/``, under the current directory) other Dana tools use
     to catch a caller referencing a file that was never actually produced.
+
+    Migrated to the Universal CAD IR's "mesh_solidify" atomic kind — the
+    Mesh -> Shape -> Shell -> Solid -> Part::Feature pipeline is several
+    FreeCAD state changes, but every intermediate is a bare in-memory value
+    (or a transient document object removed again within this SAME step)
+    that no LATER, separately-dispatched step ever needs to reference by
+    name — so it's one atomic kind, not a composite (see ir.py's own
+    comment on this kind for the general principle that distinguishes the
+    two).
     """
     if IS_HF_SPACE:
         # Unlike every create_* op in engine.py's own get_cad_engine() path,
@@ -146,16 +100,9 @@ def import_and_solidify_mesh(mesh_path: str, object_name: str) -> str:
             "import_and_solidify_mesh", name=name, type="Part::Feature", source_mesh=str(resolved_path)
         )
 
-    session_path = _session_document_path()
-    script = _IMPORT_SOLIDIFY_SCRIPT.format(
-        mesh_path=str(resolved_path),
-        name=name,
-        tolerance=_MESH_SEW_TOLERANCE,
-        session_path=str(session_path),
-        session_doc_name=_SESSION_DOCUMENT_NAME,
-        marker=_OK_MARKER,
+    result, steps, session_path = _execute_ir_tool(
+        "import_and_solidify_mesh", name=name, mesh_path=str(resolved_path),
     )
-    result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"import_and_solidify_mesh failed: {result['error']}")
     return _ok(

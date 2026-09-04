@@ -26,7 +26,15 @@ import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+# Universal CAD IR (dana.plugins.freecad.ir) — the shared step-dict schema
+# and Jinja2 renderer this module is being migrated onto, tool_id by
+# tool_id (see _run_ir_session_step and is_ir_migrated below). ir.py is a
+# leaf module (no dependency back on this one or on py_export/
+# skill_compiler), so this import introduces no cycle — see ir.py's own
+# module docstring for the full dependency-direction rationale.
+from dana.plugins.freecad import ir
 
 import psutil
 
@@ -82,6 +90,16 @@ _BBOX_MARKER = f"{_OK_MARKER}_BBOX"
 _BBOX_RE = re.compile(re.escape(_BBOX_MARKER) + r" (\[.*?\])")
 _PLACEMENT_MARKER = f"{_OK_MARKER}_PLACEMENT"
 _PLACEMENT_RE = re.compile(re.escape(_PLACEMENT_MARKER) + r" (\[.*?\])")
+# Deterministic Post-Conditions (Fix #4) — the resulting object's own
+# Shape.Volume, printed by the Universal CAD IR template right alongside its
+# BoundBox (see templates/universal_ir.py.jinja2's closing marker block).
+# The LLM cannot see the geometry it just built; this — together with the
+# bounding box's derived length/width/height in _execute_ir_tool's own
+# "geometry" field — is what lets it verify a horizontal cylinder wasn't
+# built vertical, or a fillet didn't collapse a shape to near-zero volume,
+# from the tool result alone, no screenshot needed.
+_VOLUME_MARKER = f"{_OK_MARKER}_VOLUME"
+_VOLUME_RE = re.compile(re.escape(_VOLUME_MARKER) + r" ([0-9eE+\-.]+)")
 _SPATIAL_MARKER = f"{_OK_MARKER}_SPATIAL"
 _SPATIAL_RE = re.compile(re.escape(_SPATIAL_MARKER) + r" (\[.*?\])")
 # The FreeCAD-assigned Name a session-document script actually ends up with
@@ -94,16 +112,17 @@ _NAME_RE = re.compile(re.escape(_NAME_MARKER) + r" (.+)")
 _OUTPUT_DIR = DANA_WORKSPACE / "freecad_output"
 _EXPORT_DIR = DANA_WORKSPACE / "exports"
 
-# The single .FCStd document create_box/create_cylinder/insert_standard_part/
-# modify_parameter/apply_boolean all share for the life of this process —
-# replacing the old one-object-per-file design so a multi-part chain (e.g.
-# box + bolt + boolean cut) ends up as siblings in ONE document tree instead
-# of scattered across separate .FCStd files. create_freecad_extrusion/
-# _pyramid/_star_prism/_pipe/_sketch_extrude, batch_pattern_array,
-# align_freecad_objects, create_assembly_mate, apply_edge_operation, and the
-# read-only inspectors (get_bounding_box, inspect_spatial_properties) are
-# UNCHANGED — they still produce/expect one-object-per-file — so an object
-# built by one of those cannot currently be referenced by a session-based
+# The single .FCStd document create_box/create_cylinder/create_polygon/
+# create_freecad_extrusion/_pyramid/_star_prism/_sketch_extrude/
+# insert_standard_part/modify_parameter/apply_boolean/apply_edge_operation/
+# batch_pattern_array all share for the life of this process — replacing the
+# old one-object-per-file design so a multi-part chain (e.g. box + bolt +
+# boolean cut + a pattern of the result) ends up as siblings in ONE document
+# tree instead of scattered across separate .FCStd files. create_freecad_pipe,
+# align_freecad_objects, create_assembly_mate, and the read-only inspectors
+# (get_bounding_box, inspect_spatial_properties) are still UNCHANGED — they
+# still produce/expect one-object-per-file — so an object built by one of
+# those cannot currently be referenced by a session-based
 # perform_freecad_boolean/modify_freecad_parameter call, and vice versa.
 _SESSION_DOCUMENT_NAME = "Session_Active"
 
@@ -536,6 +555,20 @@ def _extract_placement(stdout: str) -> list[float] | None:
     return None
 
 
+def _extract_volume(stdout: str) -> float | None:
+    """Parse the ``Shape.Volume`` float the Universal CAD IR template prints
+    right after its BoundBox line (Fix #4 — Deterministic Post-Conditions).
+    ``float()`` directly (not ``ast.literal_eval``) since this is a bare
+    number, not a Python list literal like the bbox/placement lines."""
+    m = _VOLUME_RE.search(stdout or "")
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
 def _extract_spatial(stdout: str) -> list[Any] | None:
     """Parse ``inspect_spatial_properties``'s 9-element stdout line
     (``[volume, area, com_x, com_y, com_z, is_valid, face_count, edge_count,
@@ -635,6 +668,12 @@ def _run_freecad_script(
         "bounding_box": _extract_bbox(proc.stdout) if ok else None,
         "placement": _extract_placement(proc.stdout) if ok else None,
         "resolved_name": _extract_object_name(proc.stdout) if ok else None,
+        # Fix #4 — Deterministic Post-Conditions. None for any script that
+        # doesn't go through the Universal CAD IR's marker block (every
+        # still-legacy per-tool f-string script here never prints a VOLUME
+        # line) — callers already treat a None bounding_box/placement the
+        # same lenient way.
+        "volume": _extract_volume(proc.stdout) if ok else None,
     }
 
 
@@ -643,6 +682,15 @@ _BBOX_PRINT = (
     'print("{marker}_BBOX " + str([bbox.XMin, bbox.YMin, bbox.ZMin, '
     "bbox.XMax, bbox.YMax, bbox.ZMax]))\n"
 )
+
+# Topology-collapse validation (FreeCAD's OCC kernel silently handing back
+# an inverted/DBL_MAX BoundBox or a zero-Volume Shape instead of raising on
+# a mathematically impossible fillet/chamfer/boolean) is now inlined
+# directly in the Universal CAD IR's own "boolean"/"edge_operation" template
+# blocks (templates/universal_ir.py.jinja2) — the shared bespoke
+# _TOPOLOGY_VALIDATION_SNIPPET this comment used to describe, and every
+# script that embedded it (_BOOLEAN_CUT_SCRIPT/_BOOLEAN_FUSE_COMMON_SCRIPT/
+# _EDGE_OP_WHOLE_SCRIPT/_EDGE_OP_FACE_SCRIPT), are retired.
 
 # Global XYZ translation applied on top of an object's normal local
 # geometry — a no-op line when placement is the origin, so every existing
@@ -696,9 +744,13 @@ def _object_lookup_snippet(
 
     Falls back to the legacy "first object nothing references" heuristic
     only when no ``target_object`` is given at all — still correct for the
-    one-object-per-file case some internal callers use (e.g.
-    ``batch_pattern_array``'s own bounding-box read, which has no name to
-    give).
+    genuinely one-object-per-file callers that remain (e.g. a
+    ``get_bounding_box`` query against ``align_freecad_objects``'/
+    ``create_freecad_pipe``'s own dedicated output files, which have no
+    other object to disambiguate against). ``batch_pattern_array`` always
+    supplies a name now (Document Lifecycle Unification moved it onto the
+    shared, multi-object session document, where a name is required to get
+    the RIGHT object) and never reaches this fallback.
     """
     if target_object:
         return (
@@ -755,33 +807,15 @@ print("{marker}_NAME " + obj.Name)
 print("{marker} path=" + _session_path)
 """
 
-_BOX_SCRIPT = ("""\
-import FreeCAD as App
+# _BOX_SCRIPT retired — create_box is migrated to the Universal CAD IR
+# (dana.plugins.freecad.ir); see create_box's own docstring and
+# _run_ir_session_step above.
 
-""" + _SESSION_OPEN_SNIPPET + """\
-obj = doc.addObject("Part::Box", {name!r})
-obj.Length = {length}
-obj.Width = {width}
-obj.Height = {height}
-""" + _PLACEMENT_SNIPPET + """\
-doc.recompute()
-""" + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT)
-
-_CYLINDER_SCRIPT = ("""\
-import FreeCAD as App
-
-""" + _SESSION_OPEN_SNIPPET + """\
-obj = doc.addObject("Part::Cylinder", {name!r})
-obj.Radius = {radius}
-obj.Height = {height}
-""" + _PLACEMENT_SNIPPET + """\
-doc.recompute()
-""" + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT)
-
-_EXTRUDE_SCRIPT = """\
+_POLYGON_SCRIPT = ("""\
 import FreeCAD as App
 import Part
 
+""" + _SESSION_OPEN_SNIPPET + """\
 pts = [App.Vector(float(x), float(y), 0.0) for x, y in {points!r}]
 if pts[0] != pts[-1]:
     pts.append(pts[0])
@@ -789,20 +823,35 @@ wire = Part.makePolygon(pts)
 face = Part.Face(wire)
 solid = face.extrude(App.Vector(0.0, 0.0, {height}))
 
-doc = App.newDocument("DanaModel")
 obj = doc.addObject("Part::Feature", {name!r})
 obj.Shape = solid
 """ + _PLACEMENT_SNIPPET + """\
 doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
+""" + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT)
 
-_PYRAMID_SCRIPT = """\
+_EXTRUDE_SCRIPT = ("""\
 import FreeCAD as App
 import Part
 
+""" + _SESSION_OPEN_SNIPPET + """\
+pts = [App.Vector(float(x), float(y), 0.0) for x, y in {points!r}]
+if pts[0] != pts[-1]:
+    pts.append(pts[0])
+wire = Part.makePolygon(pts)
+face = Part.Face(wire)
+solid = face.extrude(App.Vector(0.0, 0.0, {height}))
+
+obj = doc.addObject("Part::Feature", {name!r})
+obj.Shape = solid
+""" + _PLACEMENT_SNIPPET + """\
+doc.recompute()
+""" + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT)
+
+_PYRAMID_SCRIPT = ("""\
+import FreeCAD as App
+import Part
+
+""" + _SESSION_OPEN_SNIPPET + """\
 L, W, H = {length}, {width}, {height}
 base_pts = [
     App.Vector(-L / 2, -W / 2, 0.0),
@@ -819,15 +868,11 @@ side_faces = [
 ]
 solid = Part.Solid(Part.Shell([base_face] + side_faces))
 
-doc = App.newDocument("DanaModel")
 obj = doc.addObject("Part::Feature", {name!r})
 obj.Shape = solid
 """ + _PLACEMENT_SNIPPET + """\
 doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
+""" + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT)
 
 
 def _auto_show(out_path: Path) -> bool:
@@ -855,6 +900,101 @@ def _auto_show(out_path: Path) -> bool:
         return False
 
 
+def _execute_ir_tool(
+    tool_id: str, *, doc_mode: Literal["session", "standalone"] = "session", **args: Any
+) -> tuple[dict[str, Any], list[dict[str, Any]], Path | None]:
+    """THE execution pipeline — the ONE place any IR-migrated tool_id's
+    real-time engine.py wrapper hands off to FreeCAD. Replaces
+    ``_run_ir_session_step`` (which only handled a single pre-built atomic
+    step dict): this takes the tool's OWN native keyword arguments directly,
+    looks ``tool_id`` up in the ONE shared registry
+    (``ir.get_ir_kind``/``ir.get_composite_ir`` — at most one of the two
+    ever returns non-None for a given tool_id, since both read the same
+    ``ir._IR_REGISTRY``), unrolls via ``ir.unroll_composite`` if and only if
+    it's composite, and renders + executes the result through EXACTLY ONE
+    ``ir.render_ir_script``/``_run_freecad_script`` call regardless of step
+    count — one atomic kind, a whole composite, doesn't matter, the calling
+    wrapper never branches on which.
+
+    There is no legacy-script fallback branch here (nor an
+    ``is_ir_migrated`` check) — every caller in this module is ONLY ever
+    reachable for a tool_id that IS registered; an unregistered tool_id is a
+    programming error (a wrapper calling this before its kind/composite is
+    registered), not a user-reachable condition, so it raises ``KeyError``
+    rather than silently degrading to a script this function doesn't know
+    how to build.
+
+    Deliberately does NOT build the caller's ``_ok(...)``/``_error(...)``
+    payload itself — each tool's own result shape differs (dimensions vs.
+    operation vs. parameter_name, ...) and genericizing that away isn't
+    this helper's job; every wrapper still owns its own
+    ``if not result["ok"]: return _error(...)`` / ``return _ok(...)`` tail.
+    Returns ``(the raw _run_freecad_script result, the resolved+indexed
+    steps list, the session path — None when doc_mode="standalone", since
+    there is no single shared path in that mode)`` so a wrapper can still
+    read fields off its own last step (e.g. ``steps[-1]["feature_type"]``)
+    when building that payload.
+
+    ``doc_mode="standalone"`` is for a kind that owns its own document
+    lifecycle entirely (see ``ir.render_ir_script``'s docstring) — the
+    caller must pass ``out_path`` among ``args`` so the step itself knows
+    where to ``saveAs`` its result; this function derives
+    ``final_path_expr`` from the step's own index by the fixed
+    ``f"_out_path_{index}"`` convention every "standalone" kind's template
+    block commits to. No currently-registered kind uses this mode — the
+    "pattern" kind that originally motivated it was migrated onto the
+    ordinary ``doc_mode="session"`` path (Document Lifecycle Unification;
+    see ``batch_pattern_array``'s own docstring) once "one object, one
+    file" turned out to make its own result unreachable, by name, to any
+    later session tool call. Kept as real, working infrastructure for a
+    future tool that genuinely needs its own isolated document, not dead
+    code — nothing about it is unique to "pattern".
+
+    Fix #4 — Deterministic Post-Conditions: on success, the returned dict
+    also carries a ``"geometry"`` field — ``{"length", "width", "height",
+    "volume"}`` derived from the resulting object's own real ``BoundBox``
+    and ``Shape.Volume`` (read by FreeCAD itself, never estimated ahead of
+    time) — alongside the existing ``"bounding_box"``/``"resolved_name"``
+    fields every wrapper below already reads off this same dict. This is
+    what lets a wrapper's own ``_ok(...)`` payload tell the LLM "you asked
+    for a horizontal cylinder, but the object it just built is 10mm long
+    and 60mm tall" without a screenshot: the model can compare its own
+    intended dimensions against ``geometry`` in the SAME turn's tool result.
+    """
+    atomic = ir.get_ir_kind(tool_id)
+    composite = ir.get_composite_ir(tool_id)
+    if atomic is not None:
+        steps = [atomic.from_args(**args, index=1)]
+    elif composite is not None:
+        steps = ir.unroll_composite(composite, args)
+    else:
+        raise KeyError(f"{tool_id!r} is not registered in the Universal CAD IR")
+
+    if doc_mode == "session":
+        session_path = _session_document_path()
+        script = ir.render_ir_script(
+            steps, doc_mode="session", session_path=str(session_path),
+            final_var=steps[-1]["var"], marker=_OK_MARKER,
+        )
+    else:
+        session_path = None
+        script = ir.render_ir_script(
+            steps, doc_mode="standalone", final_var=steps[-1]["var"], marker=_OK_MARKER,
+            final_path_expr=f"_out_path_{steps[-1]['index']}",
+        )
+    result = _run_freecad_script(script)
+    bbox = result.get("bounding_box")
+    if result["ok"] and bbox:
+        x_min, y_min, z_min, x_max, y_max, z_max = bbox
+        result["geometry"] = {
+            "length": x_max - x_min,
+            "width": y_max - y_min,
+            "height": z_max - z_min,
+            "volume": result.get("volume"),
+        }
+    return result, steps, session_path
+
+
 def create_box(
     length: float,
     width: float,
@@ -872,6 +1012,12 @@ def create_box(
     ReAct turns that chain many CAD primitives in a row. ``name`` in the
     result may differ from the requested ``name`` argument if it collided
     with an object already in the session document (FreeCAD auto-suffixes).
+
+    Migrated to the Universal CAD IR (``dana.plugins.freecad.ir``) via the
+    shared ``_execute_ir_tool`` pipeline — no per-tool branching on whether
+    this tool_id is "migrated"; every wrapper in this module goes through
+    the same call. ``_BOX_SCRIPT`` (the old bespoke f-string template) is
+    correspondingly retired, not kept as a parallel dead path.
     """
     dims = {"length": float(length), "width": float(width), "height": float(height)}
     placement = (float(placement[0]), float(placement[1]), float(placement[2]))
@@ -879,24 +1025,17 @@ def create_box(
         return _dry_run_result(
             "create_box", name=name, type="Part::Box", dimensions=dims, placement=list(placement)
         )
-    session_path = _session_document_path()
-    script = _BOX_SCRIPT.format(
-        name=name,
-        length=dims["length"],
-        width=dims["width"],
-        height=dims["height"],
+    result, steps, session_path = _execute_ir_tool(
+        "create_freecad_box", name=name, length=dims["length"], width=dims["width"], height=dims["height"],
         placement=placement,
-        session_path=str(session_path),
-        session_doc_name=_SESSION_DOCUMENT_NAME,
-        marker=_OK_MARKER,
     )
-    result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"create_box failed: {result['error']}")
     return _ok(
         name=result.get("resolved_name") or name,
         type="Part::Box",
         bounding_box=result.get("bounding_box"),
+        geometry=result.get("geometry"),
         dimensions=dims,
         placement=list(placement),
         path=str(session_path),
@@ -920,23 +1059,16 @@ def create_cylinder(
         return _dry_run_result(
             "create_cylinder", name=name, type="Part::Cylinder", dimensions=dims, placement=list(placement)
         )
-    session_path = _session_document_path()
-    script = _CYLINDER_SCRIPT.format(
-        name=name,
-        radius=dims["radius"],
-        height=dims["height"],
-        placement=placement,
-        session_path=str(session_path),
-        session_doc_name=_SESSION_DOCUMENT_NAME,
-        marker=_OK_MARKER,
+    result, steps, session_path = _execute_ir_tool(
+        "create_freecad_cylinder", name=name, radius=dims["radius"], height=dims["height"], placement=placement,
     )
-    result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"create_cylinder failed: {result['error']}")
     return _ok(
         name=result.get("resolved_name") or name,
         type="Part::Cylinder",
         bounding_box=result.get("bounding_box"),
+        geometry=result.get("geometry"),
         dimensions=dims,
         placement=list(placement),
         path=str(session_path),
@@ -973,26 +1105,27 @@ def create_extruded_polyline(
             dimensions=dims,
             placement=list(placement),
         )
-    out_path = _output_path(name, ext="FCStd")
+    session_path = _session_document_path()
     script = _EXTRUDE_SCRIPT.format(
         points=points,
         height=dims["height"],
         name=name,
         placement=placement,
-        out_path=str(out_path),
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
         marker=_OK_MARKER,
     )
     result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"create_extruded_polyline failed: {result['error']}")
     return _ok(
-        name=name,
+        name=result.get("resolved_name") or name,
         type="Part::Feature",
         bounding_box=result.get("bounding_box"),
         dimensions=dims,
         placement=list(placement),
-        path=str(out_path),
-        gui_shown=_auto_show(out_path),
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
     )
 
 
@@ -1019,27 +1152,28 @@ def create_pyramid(
         return _dry_run_result(
             "create_pyramid", name=name, type="Part::Feature", dimensions=dims, placement=list(placement)
         )
-    out_path = _output_path(name, ext="FCStd")
+    session_path = _session_document_path()
     script = _PYRAMID_SCRIPT.format(
         length=dims["length"],
         width=dims["width"],
         height=dims["height"],
         name=name,
         placement=placement,
-        out_path=str(out_path),
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
         marker=_OK_MARKER,
     )
     result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"create_pyramid failed: {result['error']}")
     return _ok(
-        name=name,
+        name=result.get("resolved_name") or name,
         type="Part::Feature",
         bounding_box=result.get("bounding_box"),
         dimensions=dims,
         placement=list(placement),
-        path=str(out_path),
-        gui_shown=_auto_show(out_path),
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
     )
 
 
@@ -1088,6 +1222,80 @@ def create_star_prism(
     return json.dumps(result)
 
 
+def _regular_polygon_vertices(sides: int, radius: float) -> list[list[float]]:
+    """Evenly-spaced vertices of a regular N-gon inscribed in ``radius``,
+    first vertex straight up — same convention as ``_star_polygon_vertices``
+    (a regular polygon IS that star's ``inner_radius == outer_radius`` case,
+    geometrically, but computed directly here rather than routed through
+    the star helper with a duplicated radius argument)."""
+    return [
+        [
+            radius * math.cos((2 * math.pi / sides) * i - math.pi / 2),
+            radius * math.sin((2 * math.pi / sides) * i - math.pi / 2),
+        ]
+        for i in range(sides)
+    ]
+
+
+def create_polygon(
+    sides: int,
+    radius: float,
+    height: float,
+    name: str = "Polygon",
+    placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> str:
+    """Create an extruded regular N-gon (``Part::Feature``) inside the
+    shared ``Session_Active.FCStd`` document, translated by ``placement``
+    (global X/Y/Z offset in mm). See ``create_box`` for the session-
+    document/name-collision notes — identical here.
+
+    Exists so a regular polygon (hexagon, pentagon, octagon, ...) no longer
+    needs ``create_star_prism``'s ``inner_radius == outer_radius``
+    degenerate-star trick to get built. ``create_star_prism`` (via
+    ``create_extruded_polyline``'s ``_EXTRUDE_SCRIPT``) used to route through
+    its own standalone-file document instead of the shared session one — see
+    ``apply_boolean``'s own docstring, which listed ``create_box``/
+    ``create_cylinder``/``insert_standard_part`` as the only session-scoped
+    creators — but ``_EXTRUDE_SCRIPT`` was converted to the same
+    ``_SESSION_OPEN_SNIPPET``/``_SESSION_SAVE_SNIPPET`` shape this tool
+    already used, so both now compose correctly with a later boolean/modify
+    call by name. This reuses ``create_box``/``create_cylinder``'s
+    session-scoped script shape (``_POLYGON_SCRIPT``) too, just for its own
+    simpler N-gon geometry rather than the star's alternating-radius trick.
+    """
+    if int(sides) < 3:
+        return _error("create_polygon requires at least 3 sides")
+    dims = {"sides": int(sides), "radius": float(radius), "height": float(height)}
+    placement = (float(placement[0]), float(placement[1]), float(placement[2]))
+    if is_dry_run_enabled():
+        return _dry_run_result(
+            "create_polygon", name=name, type="Part::Feature", dimensions=dims, placement=list(placement)
+        )
+    vertices = _regular_polygon_vertices(dims["sides"], dims["radius"])
+    session_path = _session_document_path()
+    script = _POLYGON_SCRIPT.format(
+        points=vertices,
+        height=dims["height"],
+        name=name,
+        placement=placement,
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"create_polygon failed: {result['error']}")
+    return _ok(
+        name=result.get("resolved_name") or name,
+        type="Part::Feature",
+        bounding_box=result.get("bounding_box"),
+        dimensions=dims,
+        placement=list(placement),
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
+    )
+
+
 # 2D-point-per-work-plane embedding: XY keeps (x, y, 0) and extrudes along
 # +Z; XZ/YZ embed the same 2 sketch coordinates into the other two axes and
 # extrude along whichever axis is left over — a plain lookup, no rotation
@@ -1131,10 +1339,11 @@ def _sketch_edge_specs(
     return specs
 
 
-_SKETCH_EXTRUDE_SCRIPT = """\
+_SKETCH_EXTRUDE_SCRIPT = ("""\
 import FreeCAD as App
 import Part
 
+""" + _SESSION_OPEN_SNIPPET + """\
 edges = []
 for kind, pts in {edge_specs!r}:
     if kind == "arc":
@@ -1147,15 +1356,11 @@ wire = Part.Wire(edges)
 nx, ny, nz = {normal!r}
 solid = Part.Face(wire).extrude(App.Vector(nx * {height}, ny * {height}, nz * {height}))
 
-doc = App.newDocument("DanaModel")
 obj = doc.addObject("Part::Feature", {name!r})
 obj.Shape = solid
 """ + _PLACEMENT_SNIPPET + """\
 doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
+""" + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT)
 
 
 def create_sketch_extrude(
@@ -1196,104 +1401,46 @@ def create_sketch_extrude(
         return _dry_run_result(
             "create_sketch_extrude", name=name, type="Part::Feature", dimensions=dims, placement=list(placement)
         )
-    out_path = _output_path(name, ext="FCStd")
+    session_path = _session_document_path()
     script = _SKETCH_EXTRUDE_SCRIPT.format(
         edge_specs=edge_specs,
         normal=_PLANE_NORMAL[plane_u],
         height=dims["height"],
         name=name,
         placement=placement,
-        out_path=str(out_path),
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
         marker=_OK_MARKER,
     )
     result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"create_sketch_extrude failed: {result['error']}")
     return _ok(
-        name=name,
+        name=result.get("resolved_name") or name,
         type="Part::Feature",
         bounding_box=result.get("bounding_box"),
         dimensions=dims,
         placement=list(placement),
-        path=str(out_path),
-        gui_shown=_auto_show(out_path),
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
     )
 
 
-_PATTERN_TYPES = frozenset({"linear", "grid", "circular"})
-
-
-def _pattern_offsets(
-    pattern_type: str,
-    *,
-    count_x: int = 1,
-    count_y: int = 1,
-    spacing_x: float = 0.0,
-    spacing_y: float = 0.0,
-    count: int = 1,
-    radius: float = 0.0,
-) -> list[tuple[float, float, float, float]]:
-    """Pure arithmetic: ``(dx, dy, dz, z_rotation_deg)`` offsets for every
-    copy in a linear/grid/circular pattern — no FreeCAD needed, same style
-    as ``_alignment_delta``/``_star_polygon_vertices``.
-
-    For ``"linear"``/``"grid"``, index 0 is always ``(0, 0, 0, 0)`` — the
-    source object's own existing position — so ``count_x=8, count_y=8``
-    produces 64 TOTAL placements in one call (the "64 tiles in one tool
-    call" case ``batch_pattern_array`` exists to cover), not 64 additional
-    ones. ``"circular"`` instead places all ``count`` copies on the circle
-    (none necessarily coinciding with the source's original position).
-    """
-    pt = (pattern_type or "").strip().lower()
-    if pt == "linear":
-        n = max(1, int(count_x))
-        return [(i * spacing_x, 0.0, 0.0, 0.0) for i in range(n)]
-    if pt == "grid":
-        nx, ny = max(1, int(count_x)), max(1, int(count_y))
-        return [(i * spacing_x, j * spacing_y, 0.0, 0.0) for j in range(ny) for i in range(nx)]
-    if pt == "circular":
-        n = max(1, int(count))
-        return [
-            (
-                radius * math.cos(2 * math.pi * i / n),
-                radius * math.sin(2 * math.pi * i / n),
-                0.0,
-                360.0 * i / n,
-            )
-            for i in range(n)
-        ]
-    raise ValueError(f"unknown pattern_type: {pattern_type}")
-
-
-_PATTERN_ARRAY_SCRIPT = """\
-import FreeCAD as App
-
-src_doc = App.openDocument({source_path!r})
-base_obj = next((o for o in src_doc.Objects if not o.InList), src_doc.Objects[-1])
-
-doc = App.newDocument("DanaModel")
-copies = []
-for dx, dy, dz, rot in {offsets!r}:
-    c = doc.copyObject(base_obj, False)
-    c.Placement = App.Placement(
-        base_obj.Placement.Base + App.Vector(dx, dy, dz),
-        App.Rotation(App.Vector(0, 0, 1), rot).multiply(base_obj.Placement.Rotation),
-    )
-    copies.append(c)
-
-obj = doc.addObject("Part::Compound", {name!r})
-obj.Links = copies
-doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
+# _PATTERN_TYPES/_pattern_offsets now live in dana.plugins.freecad.ir (the
+# "pattern" IRKindSpec's own home) — re-bound here so
+# engine._pattern_offsets(...)/engine._PATTERN_TYPES keep working unchanged
+# for existing callers (dana.platform.mock's headless driver imports both
+# directly from this module) and tests, the same re-export precedent
+# _face_axes already set.
+_PATTERN_TYPES = ir._PATTERN_TYPES
+_pattern_offsets = ir._pattern_offsets
 
 
 def batch_pattern_array(
     source_path: str,
     pattern_type: str,
     *,
+    source_object: str | None = None,
     count_x: int = 1,
     count_y: int = 1,
     spacing_x: float | None = None,
@@ -1302,35 +1449,78 @@ def batch_pattern_array(
     radius: float = 0.0,
     name: str = "Pattern",
 ) -> str:
-    """Copy a previously-created object into a linear, grid, or circular
-    arrangement, combined into a single ``Part::Compound`` — ONE tool call
+    """Copy an object already in the shared ``Session_Active.FCStd``
+    document into a linear, grid, or circular arrangement, combined into a
+    single ``Part::Compound`` left in that SAME document — ONE tool call
     instead of one create_freecad_* call per copy, so a repetitive layout
     (e.g. "64 tiles" as an 8x8 grid) doesn't burn through the ReAct loop's
     per-turn iteration cap one placement at a time.
 
+    ``source_path`` is accepted ONLY for call-site/ABC compatibility with
+    ``dana.platform.base.BaseCADEngine.batch_pattern_array`` and its
+    headless ``dana.platform.mock`` sibling — that mock driver genuinely
+    still needs a real mesh FILE path (its own one-object-per-file
+    simulation has no session-document concept at all). THIS real FreeCAD
+    engine no longer opens it, or needs it to be a real path at all: since
+    Document Lifecycle Unification (below), every by-name lookup here goes
+    straight to the shared session document instead.
+
     ``spacing_x``/``spacing_y`` default to the source object's own
-    bounding-box width/depth (read via ``get_bounding_box``) so adjacent
-    copies sit edge-to-edge with no overlap unless a caller wants a
-    deliberate gap or overlap.
+    bounding-box width/depth (read via ``get_bounding_box`` against the
+    session document) so adjacent copies sit edge-to-edge with no overlap
+    unless a caller wants a deliberate gap or overlap.
+
+    ``source_object`` resolves by NAME (Multi-Stage Object Resolution —
+    Name/Label/case-insensitive, same as every other by-name lookup in this
+    module) against the shared session document — same session-document/
+    name-collision story as ``apply_boolean``/``apply_edge_operation``. Must
+    already exist there, built by a session-scoped creation tool or a prior
+    session-scoped call's own result name.
+
+    Document Lifecycle Unification: migrated OFF ``doc_mode="standalone"``
+    (which built the array in a brand-new, SEPARATE ``.FCStd`` file — the
+    array object was then unreachable, by name, to any LATER session tool
+    call, e.g. ``perform_freecad_boolean``/``export_freecad_model``, both of
+    which resolve their own object arguments against ``Session_Active.FCStd``
+    only, producing an "object not located" failure every time a pattern's
+    result fed into anything downstream) onto the shared ``_execute_ir_tool``
+    pipeline's ordinary ``doc_mode="session"`` path — the SAME document
+    every other creation tool in this module already builds into, exactly
+    like ``create_box``/``apply_boolean``/``apply_edge_operation``.
     """
-    src = Path(source_path)
-    if not src.is_file():
-        return _error(f"batch_pattern_array: source_path not found: {source_path}")
+    del source_path  # see docstring — kept for call-site/ABC compatibility only
+    source_name = (source_object or "").strip()
+    if not source_name:
+        return _error("batch_pattern_array requires source_object")
     pt = (pattern_type or "").strip().lower()
     if pt not in _PATTERN_TYPES:
         return _error(f"batch_pattern_array: unknown pattern_type '{pattern_type}' — must be linear, grid, or circular")
+    session_path = _session_document_path()
+    if not session_path.is_file():
+        return _error(
+            "batch_pattern_array: no session document yet — create objects with create_box/"
+            "create_cylinder/insert_standard_part first"
+        )
 
     sx, sy = spacing_x, spacing_y
     if pt in ("linear", "grid") and (sx is None or sy is None):
-        bbox = json.loads(get_bounding_box(str(src)))
+        bbox = json.loads(get_bounding_box(str(session_path), target_object=source_name))
         if not bbox.get("ok"):
             return _error(f"batch_pattern_array: failed to read source bounding box: {bbox.get('error')}")
         sx = sx if sx is not None else (bbox["x_max"] - bbox["x_min"])
         sy = sy if sy is not None else (bbox["y_max"] - bbox["y_min"])
 
+    dims = {"pattern_type": pt}
+    if is_dry_run_enabled():
+        return _dry_run_result("batch_pattern_array", name=name, type="Part::Compound", dimensions=dims)
+
     try:
-        offsets = _pattern_offsets(
-            pt,
+        result, steps, session_path = _execute_ir_tool(
+            "batch_pattern_array",
+            doc_mode="session",
+            name=name,
+            source_object=source_name,
+            pattern_type=pt,
             count_x=count_x,
             count_y=count_y,
             spacing_x=float(sx or 0.0),
@@ -1340,25 +1530,17 @@ def batch_pattern_array(
         )
     except ValueError as exc:
         return _error(f"batch_pattern_array: {exc}")
-
-    dims = {"pattern_type": pt, "copy_count": len(offsets)}
-    if is_dry_run_enabled():
-        return _dry_run_result("batch_pattern_array", name=name, type="Part::Compound", dimensions=dims)
-
-    out_path = _output_path(name, ext="FCStd")
-    script = _PATTERN_ARRAY_SCRIPT.format(
-        source_path=str(src), offsets=offsets, name=name, out_path=str(out_path), marker=_OK_MARKER
-    )
-    result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"batch_pattern_array failed: {result['error']}")
+    dims["copy_count"] = len(steps[-1]["offsets"])
     return _ok(
-        name=name,
+        name=result.get("resolved_name") or name,
         type="Part::Compound",
         bounding_box=result.get("bounding_box"),
+        geometry=result.get("geometry"),
         dimensions=dims,
-        path=str(out_path),
-        gui_shown=_auto_show(out_path),
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
     )
 
 
@@ -1371,52 +1553,6 @@ _BOOLEAN_FEATURE_TYPE: dict[str, str] = {
     "intersect": "Part::MultiCommon",
 }
 _DEFAULT_BOOLEAN_NAME: dict[str, str] = {"cut": "Cut", "union": "Fusion", "intersect": "Common"}
-
-# Both objects already live in the SAME shared session document (unlike the
-# old design, which opened base_doc/tool_doc as two SEPARATE files and had
-# to doc.copyObject(...) each into a third, brand-new document just to get
-# them into one place for the Boolean feature) — so Base/Tool/Shapes can
-# reference them DIRECTLY, looked up by Name via doc.getObject.
-_BOOLEAN_CUT_SCRIPT = """\
-import FreeCAD as App
-
-_session_path = {session_path!r}
-doc = App.openDocument(_session_path)
-base_obj = doc.getObject({base_object!r})
-tool_obj = doc.getObject({tool_object!r})
-if base_obj is None:
-    raise RuntimeError("no object named " + {base_object!r} + " in the session document")
-if tool_obj is None:
-    raise RuntimeError("no object named " + {tool_object!r} + " in the session document")
-
-obj = doc.addObject("Part::Cut", {name!r})
-obj.Base = base_obj
-obj.Tool = tool_obj
-obj.Base.Visibility = False
-obj.Tool.Visibility = False
-doc.recompute()
-doc.save()
-""" + _SESSION_RESULT_PRINT
-
-_BOOLEAN_FUSE_COMMON_SCRIPT = """\
-import FreeCAD as App
-
-_session_path = {session_path!r}
-doc = App.openDocument(_session_path)
-base_obj = doc.getObject({base_object!r})
-tool_obj = doc.getObject({tool_object!r})
-if base_obj is None:
-    raise RuntimeError("no object named " + {base_object!r} + " in the session document")
-if tool_obj is None:
-    raise RuntimeError("no object named " + {tool_object!r} + " in the session document")
-
-obj = doc.addObject({feature_type!r}, {name!r})
-obj.Shapes = [base_obj, tool_obj]
-for _shape_obj in obj.Shapes:
-    _shape_obj.Visibility = False
-doc.recompute()
-doc.save()
-""" + _SESSION_RESULT_PRINT
 
 _EXPORT_STL_SCRIPT = """\
 import FreeCAD as App
@@ -1457,24 +1593,10 @@ def apply_boolean(operation: str, base_object: str, tool_object: str, name: str 
             "apply_boolean: no session document yet — create objects with create_box/"
             "create_cylinder/insert_standard_part first"
         )
-    if op == "cut":
-        script = _BOOLEAN_CUT_SCRIPT.format(
-            session_path=str(session_path),
-            base_object=base_object,
-            tool_object=tool_object,
-            name=resolved_name,
-            marker=_OK_MARKER,
-        )
-    else:
-        script = _BOOLEAN_FUSE_COMMON_SCRIPT.format(
-            session_path=str(session_path),
-            base_object=base_object,
-            tool_object=tool_object,
-            feature_type=feature_type,
-            name=resolved_name,
-            marker=_OK_MARKER,
-        )
-    result = _run_freecad_script(script)
+    result, steps, session_path = _execute_ir_tool(
+        "perform_freecad_boolean", name=resolved_name, operation=op, feature_type=feature_type,
+        base_object=base_object, tool_object=tool_object,
+    )
     if not result["ok"]:
         return _error(f"apply_boolean failed: {result['error']}")
     return _ok(
@@ -1482,6 +1604,102 @@ def apply_boolean(operation: str, base_object: str, tool_object: str, name: str 
         type=feature_type,
         operation=op,
         bounding_box=result.get("bounding_box"),
+        geometry=result.get("geometry"),
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
+    )
+
+
+# Local Coordinate System (LCS) resolution + the composite IR resolver for
+# create_feature_on_face now live in ``dana.plugins.freecad.ir``
+# (``_face_axes`` and friends, ``_feature_on_face_composite``, registered
+# there as a ``CompositeIRSpec``) — re-bound here only so
+# ``engine._face_axes(...)`` keeps working unchanged for existing callers/
+# tests, the same re-export precedent ``safe_var_name`` already set the
+# other direction. This module no longer owns a second copy.
+_face_axes = ir._face_axes
+
+
+def create_feature_on_face(
+    object_name: str,
+    face: str,
+    shape: str,
+    u: float,
+    v: float,
+    extent: float,
+    operation: str,
+    radius: float | None = None,
+    width: float | None = None,
+    length: float | None = None,
+    name: str | None = None,
+) -> str:
+    """Adds or cuts a circle/rectangle feature directly on a named face
+    (top/bottom/front/back/left/right) of an existing object in the shared
+    session document, using local 2D (``u``, ``v``) coordinates on that
+    face instead of a 3D ``App.Placement``/``App.Rotation`` the caller would
+    otherwise have to compute by hand — this is the whole point: FreeCAD
+    resolves the face's actual world-space position/orientation from the
+    object's REAL geometry (``_face_axes`` + the target's own
+    ``Shape.BoundBox``), not a value guessed ahead of time.
+
+    ``operation="cut"`` subtracts the shape into ``object_name`` (a hole/
+    pocket/slot); ``operation="add"`` unions it onto the surface (a boss/
+    tab). Per the topology rule this composition implies: ``object_name``
+    is CONSUMED by the boolean step exactly like any other
+    ``perform_freecad_boolean`` call — only the returned result name is
+    valid for a later call, never ``object_name`` again.
+
+    Restricted to the 6 axis-aligned bounding-box faces of a genuinely
+    box-like (prismatic) object — the generated script itself verifies the
+    resolved face point actually lies on a flat face of the real geometry
+    (not just the bbox) and fails clearly rather than silently cutting/
+    adding nothing on a curved surface (e.g. the side of a cylinder).
+
+    Migrated to the Universal CAD IR's Hierarchical/Composite node via the
+    same shared ``_execute_ir_tool`` pipeline every other tool_id in this
+    module goes through — the profile-build and boolean steps render and
+    execute as ONE FreeCAD script (one document open/save, two
+    ``doc.recompute()``s) instead of the previous two separate
+    ``_run_freecad_script`` round trips bridged by a string object-name
+    handoff (``result.get("resolved_name")``).
+    """
+    dims = {
+        "face": face,
+        "shape": (shape or "").strip().lower(),
+        "u": float(u) if isinstance(u, (int, float)) else u,
+        "v": float(v) if isinstance(v, (int, float)) else v,
+        "extent": extent,
+        "operation": (operation or "").strip().lower(),
+    }
+    if is_dry_run_enabled():
+        return _dry_run_result(
+            "create_feature_on_face",
+            name=name or "Feature",
+            type="Part::Cut" if dims["operation"] == "cut" else "Part::MultiFuse",
+            dimensions=dims,
+        )
+
+    try:
+        result, steps, session_path = _execute_ir_tool(
+            "create_freecad_feature_on_face",
+            object_name=object_name, face=face, shape=shape, u=u, v=v, extent=extent, operation=operation,
+            radius=radius, width=width, length=length, name=name,
+        )
+    except ValueError as exc:
+        return _error(f"create_feature_on_face: {exc}")
+
+    dims["extent"] = steps[0]["extent"]
+    dims["u"] = steps[0]["u"]
+    dims["v"] = steps[0]["v"]
+    if not result["ok"]:
+        return _error(f"create_feature_on_face failed: {result['error']}")
+    return _ok(
+        name=result.get("resolved_name") or steps[-1]["name"],
+        type=steps[-1]["feature_type"],
+        operation=steps[-1]["operation"],
+        bounding_box=result.get("bounding_box"),
+        geometry=result.get("geometry"),
+        dimensions=dims,
         path=str(session_path),
         gui_shown=_auto_show(session_path),
     )
@@ -1490,73 +1708,18 @@ def apply_boolean(operation: str, base_object: str, tool_object: str, name: str 
 _EDGE_FEATURE_TYPE: dict[str, str] = {"fillet": "Part::Fillet", "chamfer": "Part::Chamfer"}
 _DEFAULT_EDGE_NAME: dict[str, str] = {"fillet": "Fillet", "chamfer": "Chamfer"}
 
-# Targets every edge of the copied object — a global fillet/chamfer.
-_EDGE_OP_WHOLE_SCRIPT = """\
-import FreeCAD as App
-
-""" + _RESOLVE_OBJECT_SNIPPET + """\
-base_doc = App.openDocument({target_path!r})
-{lookup}
-doc = App.newDocument("DanaModel")
-copied = doc.copyObject(base_obj, False)
-target_indices = list(range(1, len(copied.Shape.Edges) + 1))
-if not target_indices:
-    raise RuntimeError("target object has no edges")
-
-obj = doc.addObject({feature_type!r}, {name!r})
-obj.Base = copied
-obj.Edges = [(i, {value}, {value}) for i in target_indices]
-doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
-
-# No raycasting against the tessellated STL used for display — the nearest
-# BRep face (by CenterOfMass) to the clicked-point centroid is found directly
-# against FreeCAD's own exact geometry, then only that face's bounding edges
-# are targeted.
-_EDGE_OP_FACE_SCRIPT = """\
-import FreeCAD as App
-
-""" + _RESOLVE_OBJECT_SNIPPET + """\
-base_doc = App.openDocument({target_path!r})
-{lookup}
-doc = App.newDocument("DanaModel")
-copied = doc.copyObject(base_obj, False)
-
-target_point = App.Vector({cx}, {cy}, {cz})
-faces = copied.Shape.Faces
-if not faces:
-    raise RuntimeError("target object has no faces")
-nearest_face = min(faces, key=lambda f: f.CenterOfMass.distanceToPoint(target_point))
-target_indices = [
-    i for i, edge in enumerate(copied.Shape.Edges, start=1)
-    if any(edge.isSame(face_edge) for face_edge in nearest_face.Edges)
-]
-if not target_indices:
-    raise RuntimeError("no edges found on the nearest face")
-
-obj = doc.addObject({feature_type!r}, {name!r})
-obj.Base = copied
-obj.Edges = [(i, {value}, {value}) for i in target_indices]
-doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
-
 
 def apply_edge_operation(
     operation: str,
-    target_path: str,
+    target_object: str,
     value: float,
     face_centroid: tuple[float, float, float] | None = None,
     name: str | None = None,
-    target_object: str | None = None,
 ) -> str:
-    """Round (``"fillet"``) or bevel (``"chamfer"``) the edges of a
-    previously-created solid.
+    """Round (``"fillet"``) or bevel (``"chamfer"``) the edges of an object
+    already in the shared ``Session_Active.FCStd`` document, looked up by
+    NAME — same session-document/name-collision story as ``apply_boolean``/
+    ``modify_parameter``.
 
     Without ``face_centroid``, every edge of the object gets the operation
     (a global fillet/chamfer, ``value`` mm). With ``face_centroid`` —
@@ -1565,15 +1728,19 @@ def apply_edge_operation(
     against FreeCAD's exact BRep geometry (no raycasting against the
     tessellated display mesh).
 
-    ``target_object``, when given, is resolved via Multi-Stage Object
-    Resolution — see ``get_bounding_box``'s matching note.
+    Migrated to the Universal CAD IR's "edge_operation" kind via the shared
+    ``_execute_ir_tool`` pipeline (``doc_mode="session"``, the default) —
+    ``target_object`` may be a ``Part::Compound`` left behind by an earlier
+    boolean chain; the generated script unwraps to the first real solid and
+    heals stray coplanar seams (``removeSplitter``) before any face/edge
+    matching, so filleting the result of a multi-cut part works the same as
+    filleting a single primitive. ``_EDGE_OP_WHOLE_SCRIPT``/
+    ``_EDGE_OP_FACE_SCRIPT`` (the old one-object-one-file f-string templates)
+    are retired, not kept as a parallel dead path.
     """
     op = (operation or "").strip().lower()
     if op not in _EDGE_FEATURE_TYPE:
         return _error(f"apply_edge_operation: unknown operation '{operation}' — must be fillet or chamfer")
-    target = Path(target_path)
-    if not target.is_file():
-        return _error(f"apply_edge_operation: target_path not found: {target_path}")
     try:
         value_f = float(value)
     except (TypeError, ValueError):
@@ -1592,59 +1759,32 @@ def apply_edge_operation(
             type=feature_type,
             face_targeted=face_targeted,
         )
-    out_path = _output_path(resolved_name, ext="FCStd")
-    lookup = _object_lookup_snippet(obj_var="base_obj", doc_var="base_doc", target_object=target_object)
-    if face_targeted:
-        cx, cy, cz = (float(face_centroid[0]), float(face_centroid[1]), float(face_centroid[2]))
-        script = _EDGE_OP_FACE_SCRIPT.format(
-            target_path=str(target),
-            feature_type=feature_type,
-            name=resolved_name,
-            value=value_f,
-            cx=cx,
-            cy=cy,
-            cz=cz,
-            out_path=str(out_path),
-            marker=_OK_MARKER,
-            lookup=lookup,
+    session_path = _session_document_path()
+    if not session_path.is_file():
+        return _error(
+            "apply_edge_operation: no session document yet — create objects with create_box/"
+            "create_cylinder/insert_standard_part first"
         )
-    else:
-        script = _EDGE_OP_WHOLE_SCRIPT.format(
-            target_path=str(target),
-            feature_type=feature_type,
-            name=resolved_name,
-            value=value_f,
-            out_path=str(out_path),
-            marker=_OK_MARKER,
-            lookup=lookup,
-        )
-    result = _run_freecad_script(script)
+    centroid = (
+        (float(face_centroid[0]), float(face_centroid[1]), float(face_centroid[2])) if face_targeted else None
+    )
+    result, steps, session_path = _execute_ir_tool(
+        "perform_freecad_edge_operation", name=resolved_name, feature_type=feature_type,
+        target_object=target_object, value=value_f, centroid=centroid,
+    )
     if not result["ok"]:
         return _error(f"apply_edge_operation failed: {result['error']}")
     return _ok(
-        name=resolved_name,
+        name=result.get("resolved_name") or resolved_name,
         type=feature_type,
         operation=op,
         face_targeted=face_targeted,
         bounding_box=result.get("bounding_box"),
-        path=str(out_path),
-        gui_shown=_auto_show(out_path),
+        geometry=result.get("geometry"),
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
     )
 
-
-_MODIFY_PARAMETER_SCRIPT = """\
-import FreeCAD as App
-
-doc = App.openDocument({session_path!r})
-obj = doc.getObject({target_object!r})
-if obj is None:
-    raise RuntimeError("no object named " + {target_object!r} + " in the session document")
-setattr(obj, {parameter_name!r}, {new_value})
-doc.recompute()
-doc.save()
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {session_path!r})
-"""
 
 # "Placement"/"Placement.Base" is a 3D translation, not a bare settable
 # number — setattr(obj, "Placement", 5.0) would fail outright. Replace the
@@ -1653,27 +1793,10 @@ print("{marker} path=" + {session_path!r})
 # 6-element [x, y, z, yaw, pitch, roll]) — see modify_parameter's own
 # docstring for why a move never silently discards prior orientation in
 # the 3-element case, and the Yaw/Pitch/Roll degrees confirmation for the
-# 6-element case.
+# 6-element case. Realized via the Universal CAD IR's "modify_placement"
+# kind (dana.plugins.freecad.ir) — _MODIFY_PARAMETER_VECTOR_SCRIPT (the old
+# bespoke f-string template) is retired, not kept as a parallel dead path.
 _VECTOR_PARAMETER_NAMES = frozenset({"placement", "placement.base"})
-
-# {rotation_expr} is raw Python, not a %r-quoted literal — always either
-# the fixed string "obj.Placement.Rotation" or "App.Rotation(<float>,
-# <float>, <float>)" built from already-float()-validated numbers in
-# modify_parameter below, so this is exactly as injection-safe as every
-# other numeric !r/format substitution in this module's script templates.
-_MODIFY_PARAMETER_VECTOR_SCRIPT = """\
-import FreeCAD as App
-
-doc = App.openDocument({session_path!r})
-obj = doc.getObject({target_object!r})
-if obj is None:
-    raise RuntimeError("no object named " + {target_object!r} + " in the session document")
-obj.Placement = App.Placement(App.Vector({x}, {y}, {z}), {rotation_expr})
-doc.recompute()
-doc.save()
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {session_path!r})
-"""
 
 
 def modify_parameter(
@@ -1721,11 +1844,11 @@ def modify_parameter(
             )
         if len(components) == 3:
             x, y, z = components
-            rotation_expr = "obj.Placement.Rotation"
+            rotation: tuple[float, float, float] | None = None
             result_value: float | list[float] = [x, y, z]
         elif len(components) == 6:
             x, y, z, yaw, pitch, roll = components
-            rotation_expr = f"App.Rotation({yaw}, {pitch}, {roll})"
+            rotation = (yaw, pitch, roll)
             result_value = [x, y, z, yaw, pitch, roll]
         else:
             return _error(
@@ -1736,42 +1859,42 @@ def modify_parameter(
             return _dry_run_result(
                 "modify_parameter", path=str(session_path), parameter_name=param, new_value=result_value
             )
-        script = _MODIFY_PARAMETER_VECTOR_SCRIPT.format(
-            session_path=str(session_path),
-            target_object=target_object,
-            x=x,
-            y=y,
-            z=z,
-            rotation_expr=rotation_expr,
-            marker=_OK_MARKER,
+        result, steps, session_path = _execute_ir_tool(
+            "modify_placement", target_object=target_object, x=x, y=y, z=z, rotation=rotation,
         )
-    else:
-        try:
-            value_f = float(new_value)
-        except (TypeError, ValueError):
-            return _error(f"modify_parameter: new_value must be a number, got {new_value!r}")
-        if is_dry_run_enabled():
-            return _dry_run_result(
-                "modify_parameter", path=str(session_path), parameter_name=param, new_value=value_f
-            )
-        script = _MODIFY_PARAMETER_SCRIPT.format(
-            session_path=str(session_path),
-            target_object=target_object,
+        if not result["ok"]:
+            return _error(f"modify_parameter failed: {result['error']}")
+        return _ok(
+            name=target_object,
+            path=str(session_path),
             parameter_name=param,
-            new_value=value_f,
-            marker=_OK_MARKER,
+            new_value=result_value,
+            bounding_box=result.get("bounding_box"),
+            geometry=result.get("geometry"),
+            gui_shown=_auto_show(session_path),
         )
-        result_value = value_f
 
-    result = _run_freecad_script(script)
+    # Scalar case — migrated to the Universal CAD IR's "modify_parameter" kind.
+    try:
+        value_f = float(new_value)
+    except (TypeError, ValueError):
+        return _error(f"modify_parameter: new_value must be a number, got {new_value!r}")
+    if is_dry_run_enabled():
+        return _dry_run_result(
+            "modify_parameter", path=str(session_path), parameter_name=param, new_value=value_f
+        )
+    result, steps, session_path = _execute_ir_tool(
+        "modify_freecad_parameter", target_object=target_object, parameter_name=param, new_value=value_f,
+    )
     if not result["ok"]:
         return _error(f"modify_parameter failed: {result['error']}")
     return _ok(
         name=target_object,
         path=str(session_path),
         parameter_name=param,
-        new_value=result_value,
+        new_value=value_f,
         bounding_box=result.get("bounding_box"),
+        geometry=result.get("geometry"),
         gui_shown=_auto_show(session_path),
     )
 
@@ -1832,6 +1955,11 @@ import FreeCAD as App
 """ + _RESOLVE_OBJECT_SNIPPET + """\
 doc = App.openDocument({target_path!r})
 {lookup}shape = obj.Shape
+# A boolean-chain result can be a Part.Compound wrapping the real solid —
+# CenterOfMass (and the other mass properties below) aren't defined on a
+# bare Compound, so unwrap to the real solid first.
+if shape.ShapeType == 'Compound' and shape.Solids:
+    shape = shape.Solids[0]
 com = shape.CenterOfMass
 print("{marker}_SPATIAL " + str([
     shape.Volume, shape.Area, com.x, com.y, com.z,
