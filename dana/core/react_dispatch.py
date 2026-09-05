@@ -429,7 +429,7 @@ def _tool_search_tool_catalog(args: dict[str, Any], _engine: Any, _cp: Any) -> d
         "matches": matches,
         "message": (
             f"Found {len(matches)} tool(s) matching {query!r}. Call load_specific_tool with a "
-            "tool_id above to make it callable next turn."
+            "tool_id above to make it callable immediately in your next tool call."
             if matches
             else f"No tools matched {query!r}."
         ),
