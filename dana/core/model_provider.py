@@ -165,10 +165,24 @@ def ollama_fallback_enabled() -> bool:
     dead-ends the user's turn with a raw error, so the safer default is on,
     overridable for anyone (tests, CI, a deliberately cloud-only setup)
     who wants it off.
+
+    Defaults to OFF specifically on ``dana.platform.factory.IS_HF_SPACE``
+    (unless ``DANA_OLLAMA_FALLBACK`` is explicitly set): a live HF Space run
+    hit an OpenRouter free-tier daily 429, then this fallback attempted
+    local Ollama anyway and got ``[Errno 111] Connection refused`` — no HF
+    Space container actually runs an Ollama daemon, so the attempt is pure
+    wasted latency that only replaces one honest cloud error with a
+    confusing "AND local Ollama fallback failed too" compound one. Still
+    overridable (``DANA_OLLAMA_FALLBACK=1``) for a custom Space image that
+    genuinely bundles Ollama.
     """
     ensure_dotenv_loaded()
     raw = (os.environ.get("DANA_OLLAMA_FALLBACK") or "").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
+    if raw:
+        return raw not in {"0", "false", "no", "off"}
+    from dana.platform.factory import IS_HF_SPACE
+
+    return not IS_HF_SPACE
 
 
 def force_local() -> bool:

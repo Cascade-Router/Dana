@@ -1496,7 +1496,29 @@ async def _run_react_loop(
         # this function returns).
         error_detail = turn.content or "no further detail available"
         telemetry.log_error(stage="react_loop_model_call", detail=error_detail)
-        reply = "I ran into a problem talking to the model — please try again."
+        # "please try again" is actively misleading for a daily free-tier
+        # quota exhaustion (a live HF Space run hit exactly this: OpenRouter
+        # 429 "free-models-per-day" -- immediately retrying just burns
+        # another turn on the same 429, since the quota doesn't reset until
+        # OpenRouter's own daily window rolls over). Detected off the raw
+        # provider text ModelProvider.complete_with_tool_calls already
+        # raises (see openai_tool_bridge's HTTPError formatting) -- narrow
+        # substring checks, not a status-code parse, since that text is the
+        # only thing this function has to go on.
+        lowered = error_detail.lower()
+        if "429" in error_detail or "rate limit" in lowered:
+            reply = (
+                "The model provider's free daily quota is exhausted for now — this won't "
+                "resolve by retrying immediately. Please try again later (the quota resets on "
+                "a daily cycle), or add credits/configure a different provider."
+            )
+        elif "402" in error_detail or "payment required" in lowered:
+            reply = (
+                "The model provider is reporting a billing/payment issue, not a transient "
+                "error — please check the account before retrying."
+            )
+        else:
+            reply = "I ran into a problem talking to the model — please try again."
         await _finish_turn(websocket, session, messages, reply)
         return
 
