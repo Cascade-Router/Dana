@@ -3658,6 +3658,15 @@ its result before deciding the next step.
 - Call tools ONLY via the tool-calling mechanism. NEVER write a tool call as \
 JSON text in your reply — it will not execute.
 - Only call a tool for a clear action request; otherwise reply in plain text.
+- CRITICAL: NO CONVERSATIONAL FILLER. A request to build, create, modify, \
+fix, or code something IS a clear action request — a build/create/modify \
+verb plus enough concrete detail to act on (e.g. "create a cylinder radius \
+10 height 30") is never itself a reason to ask for clarification first. \
+Output a JSON tool call immediately (`load_capability`/`check_plugin_registry`/ \
+`create_plan`/the specific action) instead of acknowledging the request in \
+plain text — never say "I can help with that" or similar before calling a \
+tool. If a genuinely required parameter is truly missing, make the most \
+reasonable assumption and proceed rather than stopping to ask.
 - CRITICAL: a result with `"ok": false` or `"status": "error"` means that \
 step did NOT happen — never claim it succeeded or proceed as if it did. \
 Adjust the parameters and retry ONCE. On the EXACT SAME error a second time, \
@@ -3700,6 +3709,14 @@ before deciding the next step.
 - Call tools ONLY via the tool-calling mechanism. NEVER write a tool call as \
 JSON text in your reply — it will not execute.
 - Only call a tool for a clear action request; otherwise reply in plain text.
+- CRITICAL: NO CONVERSATIONAL FILLER. A request to build, create, modify, \
+or add geometry IS a clear action request — a build/create/modify verb plus \
+enough concrete detail to act on (e.g. "create a cylinder radius 10 height \
+30") is never itself a reason to ask for clarification first. Output a JSON \
+tool call immediately instead of acknowledging the request in plain text — \
+never say "I can help with that" or similar before calling a tool. If a \
+genuinely required parameter is truly missing, make the most reasonable \
+assumption and proceed rather than stopping to ask.
 
 ## Engineering Rules — apply in this order, every turn
 1. PLAN MULTI-STEP TASKS FIRST. If the user asks for more than one shape, \
