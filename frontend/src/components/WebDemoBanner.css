@@ -1,0 +1,47 @@
+/* Muted-blue accent, matching the app's existing "informational" palette
+   (e.g. InspectorDock's active-tab border, #3b82f6) — deliberately NOT the
+   amber App.css already uses for app__local-inference-banner, so the two
+   never read as the same category of message if a viewer ever saw both. */
+.web-demo-banner {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: #bfdbfe;
+  background: color-mix(in srgb, #3b82f6 14%, #141414);
+  border-bottom: 1px solid color-mix(in srgb, #3b82f6 40%, transparent);
+}
+
+.web-demo-banner__text {
+  flex: 1;
+  text-align: center;
+}
+
+.web-demo-banner__link {
+  color: #93c5fd;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.web-demo-banner__link:hover {
+  text-decoration: underline;
+}
+
+.web-demo-banner__dismiss {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: #bfdbfe;
+  opacity: 0.7;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+.web-demo-banner__dismiss:hover {
+  opacity: 1;
+}

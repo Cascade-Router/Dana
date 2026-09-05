@@ -7,6 +7,7 @@ import { ChatSidebar } from "./components/ChatSidebar";
 import { EnvViewerWidget } from "./components/EnvViewerWidget";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { MemoryViewer } from "./components/MemoryViewer";
+import { WebDemoBanner } from "./components/WebDemoBanner";
 import { PluginProvider, usePlugins } from "./plugins/PluginContext";
 import { SecretsProvider, useSecrets } from "./secrets/SecretsContext";
 import { SecretsMenu } from "./secrets/SecretsMenu";
@@ -220,6 +221,7 @@ function AppShell() {
 
   return (
     <div className={`app ${activePlugin ? "app--with-plugin" : ""} ${isPluginFullScreen ? "app--plugin-fullscreen" : ""}`}>
+      {IS_GRADIO_MODE && <WebDemoBanner />}
       {showSlowGenerationWarning && (
         <div className="app__local-inference-banner" role="status">
           🐢 Local Inference Active — generating with {localModel ?? "the local model"}. This can take a
