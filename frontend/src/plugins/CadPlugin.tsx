@@ -1,10 +1,12 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CadToolbar } from "../components/CadToolbar";
 import { TopologyTab } from "../components/DAGMonitor";
 import { InspectorDock, type InspectorTab } from "../components/InspectorDock";
+import { MeshHistoryPicker } from "../components/MeshHistoryPicker";
 import { PlanTab } from "../components/PlanTab";
 import { TerminalTab } from "../components/TerminalTab";
 import { Viewer3D } from "../components/Viewer3D";
+import { useCadArtifacts } from "../lib/useCadArtifacts";
 import type { PluginComponentProps } from "./types";
 import "./CadPlugin.css";
 
@@ -54,9 +56,34 @@ export default function CadPlugin({
     [plan, topologyGraph, log]
   );
 
+  // Lifted here (not fetched separately inside CadToolbar/MeshHistoryPicker)
+  // so both consumers share one session-scoped list/poll instead of two
+  // redundant fetches of the same data.
+  const { artifacts, refresh: refreshArtifacts } = useCadArtifacts(sessionId);
+
+  // Mesh History: the live chat feed only ever carries the SINGLE
+  // most-recently-touched object's mesh (dana.api.server scopes
+  // export_mesh_stl to target_object=result_name, by design), so several
+  // independently-generated objects in one session would otherwise only
+  // ever show the newest one. `pinnedMeshUrl` overrides that when set;
+  // reset to null (follow live again) the instant a NEW live mesh arrives,
+  // so picking an old artifact never silently hides a freshly requested
+  // change — the user has to explicitly go back to browsing history after
+  // that, rather than a stale pin silently surviving new work.
+  const [pinnedMeshUrl, setPinnedMeshUrl] = useState<string | null>(null);
+  useEffect(() => {
+    setPinnedMeshUrl(null);
+  }, [meshUrl]);
+  const displayedMeshUrl = pinnedMeshUrl ?? meshUrl;
+
   return (
     <div className="cad-plugin">
-      <CadToolbar meshUrl={meshUrl} sessionId={sessionId} />
+      <CadToolbar
+        meshUrl={meshUrl}
+        sessionId={sessionId}
+        artifacts={artifacts}
+        onRefreshArtifacts={refreshArtifacts}
+      />
       <div className="cad-plugin__viewport">
         {/* Viewer3D — and the <Canvas>/WebGLRenderer inside it — is always
             rendered here, never gated behind meshUrl or an artifact list's
@@ -64,7 +91,15 @@ export default function CadPlugin({
             renderer on every intermediate ReAct step where the mesh
             payload is transiently null/[], exhausting the browser's WebGL
             context budget (see Viewer3D's own lifecycle notes). */}
-        <Viewer3D meshUrl={meshUrl} cameraTarget={cameraTarget} onSelect={onSelect} />
+        <Viewer3D meshUrl={displayedMeshUrl} cameraTarget={cameraTarget} onSelect={onSelect} />
+        <MeshHistoryPicker
+          artifacts={artifacts}
+          sessionId={sessionId}
+          liveUrl={meshUrl}
+          activeUrl={displayedMeshUrl}
+          onSelectArtifact={setPinnedMeshUrl}
+          onFollowLive={() => setPinnedMeshUrl(null)}
+        />
         <InspectorDock tabs={tabs} defaultTabId="topology" />
       </div>
     </div>

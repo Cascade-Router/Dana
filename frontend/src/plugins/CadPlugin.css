@@ -11,6 +11,13 @@
   min-height: 0;
   display: flex;
   flex-direction: row;
+  /* Positioning context for MeshHistoryPicker's absolute overlay — it's a
+     sibling of .viewer3d here (not a child, to avoid touching Viewer3D's
+     own WebGL-lifecycle-sensitive render tree), and since InspectorDock
+     docks on the right while Viewer3D takes the left/main area, anchoring
+     to this container's bottom-left still lands the picker over the 3D
+     canvas in practice. */
+  position: relative;
 }
 
 .cad-plugin__viewport > .viewer3d {
