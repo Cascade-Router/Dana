@@ -88,10 +88,10 @@ def _harden_tool_registry() -> None:
       execute_terminal_command doesn't need this second step: it's a
       native, tools.json-sourced schema gated behind the "os_tools"
       capability domain, which a fresh Gradio session never activates by
-      default (see _new_session's empty active_plugins/capability_unlocked_
-      at_turn below) — and its handler ALREADY hard-refuses via
-      IS_HF_SPACE regardless (react_dispatch._tool_execute_terminal_
-      command). Popping it from TOOL_HANDLERS here is redundant
+      default (see _new_session below — only "freecad_essential" is
+      pre-seeded there, "os_tools" stays out) — and its handler ALREADY
+      hard-refuses via IS_HF_SPACE regardless (react_dispatch._tool_
+      execute_terminal_command). Popping it from TOOL_HANDLERS here is redundant
       defense-in-depth for that one specifically, not a gap-fix — kept
       anyway since "the tool doesn't exist" is a strictly stronger
       guarantee than "the tool exists but refuses when called".
@@ -269,7 +269,20 @@ def _new_session() -> dict[str, Any]:
         "session_created_at": None,
         "api_keys": {},
         "active_plugins": frozenset(),
-        "capability_unlocked_at_turn": {},
+        # Pre-warmed, not permanently forced on: seeding this (rather than
+        # active_plugins, which never decays) makes turn 0 look exactly like
+        # the agent had already called load_capability(domain=
+        # "freecad_essential") itself — dana.api.server._effective_capabilities
+        # unions it in immediately (no cold-start turn burned rediscovering
+        # create_freecad_cylinder/create_freecad_box/etc.), and it still
+        # decays out after _CAPABILITY_DECAY_TURNS turns of disuse like any
+        # other autonomously-unlocked domain, so a session that never touches
+        # CAD doesn't carry the extra schema weight forever. This Space is a
+        # CAD-only backend demo (see the Markdown banner below) — dana.api.
+        # server's own WS session init deliberately stays untouched, since
+        # that one also serves plain chat/software-engineering sessions
+        # where forcing this on would just burn tokens for no benefit.
+        "capability_unlocked_at_turn": {"freecad_essential": 0},
         "working_memory": {"summary": "", "turn": 0},
         "turn_counter": 0,
         "abort_requested": False,
