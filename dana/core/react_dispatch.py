@@ -218,7 +218,7 @@ def _tool_load_capability(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[
         return {
             "ok": True,
             "unhidden_tool_id": tool_id,
-            "message": f"Unhid '{tool_id}' — available again starting next turn.",
+            "message": f"Unhid '{tool_id}' — it's available now. Call it in your next tool call to continue.",
         }
     domain = str(args.get("domain") or "").strip()
     # "freecad" defaults to the trimmed essential set (see
@@ -460,7 +460,7 @@ def _tool_load_specific_tool(args: dict[str, Any], _engine: Any, _cp: Any) -> di
         "ok": True,
         "tool_id": tool_id,
         "unlocked_tools": [tool_id],
-        "message": f"Loaded '{tool_id}' — it will be available starting next turn.",
+        "message": f"Loaded '{tool_id}' — it's available now. Call it in your next tool call to continue.",
     }
 
 
