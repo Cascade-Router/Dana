@@ -87,6 +87,20 @@
   overflow: hidden;
 }
 
+/* Same specificity as the base rule above (one class + one attribute vs.
+   one class), so source order alone would decide the winner -- placed
+   after it deliberately so this always wins. Needed because the browser's
+   own [hidden] { display: none } (equal specificity, but a UA-stylesheet
+   rule, which the cascade always ranks below any author rule) never gets
+   the chance to override the `display: flex` above on its own: every tab's
+   content div stays mounted (see InspectorDock.tsx's own comment on why),
+   so without this ALL of them render at once, absolutely positioned on top
+   of each other -- whichever is last in `tabs` (Terminal) visually wins
+   the stack regardless of which tab is actually active. */
+.inspector-dock__tab-content[hidden] {
+  display: none;
+}
+
 .inspector-dock__rail-btn {
   position: relative;
   display: flex;
