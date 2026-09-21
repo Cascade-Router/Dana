@@ -14,48 +14,52 @@ drop straight into the tool broker's string-observation contract — see
 from __future__ import annotations
 
 import ast
+
+import atexit
+
 import glob
+
 import json
+
 import math
+
 import os
+
 import re
+
 import shutil
+
 import subprocess
+
+import sys
+
 import tempfile
+
 import threading
+
 import time
+
+import uuid
+
 from collections.abc import Sequence
+
 from pathlib import Path
+
 from typing import Any, Literal
 
-# Universal CAD IR (dana.plugins.freecad.ir) — the shared step-dict schema
-# and Jinja2 renderer this module is being migrated onto, tool_id by
-# tool_id (see _run_ir_session_step and is_ir_migrated below). ir.py is a
-# leaf module (no dependency back on this one or on py_export/
-# skill_compiler), so this import introduces no cycle — see ir.py's own
-# module docstring for the full dependency-direction rationale.
 from dana.plugins.freecad import ir
 
 import psutil
 
 from dana.paths import DANA_WORKSPACE
+
 from dana.security.dry_run import is_dry_run_enabled
+
 from dana.session_context import session_scoped_dir
 
-# Re-exported (not implemented here — neither needs a FreeCADCmd subprocess
-# at all, just pure-Python mesh/XML work) purely so
-# dana/plugins/freecad/manifest.json's own entries for these two tool ids
-# can resolve a callable via getattr(this module, <function name>) — see
-# dana.plugins.plugin_manager._load_plugin_full. The manifest declarations
-# only feed introspection (plugin_registry_view/check_plugin_registry and
-# the semantic tool registry); actual dispatch is still the native
-# dana.core.react_dispatch.TOOL_HANDLERS entry, which refresh_plugin_tools()
-# leaves authoritative by design whenever a plugin tool id collides with an
-# existing native one — the exact same shadowing every create_freecad_*
-# tool below already relies on.
 from dana.tools.geometry_analyzer import query_geometry_properties  # noqa: F401
-from dana.tools.urdf_builder import generate_urdf_assembly  # noqa: F401
 
+from dana.tools.urdf_builder import ROOT_LINK_NAME, generate_urdf_assembly  # noqa: F401
 
 def insert_standard_part(*args: Any, **kwargs: Any) -> str:
     """Re-exported for dana/plugins/freecad/manifest.json's entry-point
@@ -72,83 +76,117 @@ def insert_standard_part(*args: Any, **kwargs: Any) -> str:
 
     return _impl(*args, **kwargs)
 
-# One FreeCADCmd process at a time — mirrors the single foreground-owner
-# discipline used for physical desktop actuators (dana.middleware.actuator_executor).
 _lock = threading.Lock()
+
 _cached_cmd_path: str | None = None  # reassigned
 
 _ENV_OVERRIDE = "DANA_FREECADCMD_PATH"
-_COMMON_INSTALL_GLOBS: tuple[str, ...] = (
-    r"C:\Program Files\FreeCAD*\bin\FreeCADCmd.exe",
-    r"C:\Program Files (x86)\FreeCAD*\bin\FreeCADCmd.exe",
-)
+
+if sys.platform == "win32":
+    _COMMON_INSTALL_GLOBS: tuple[str, ...] = (
+        r"C:\Program Files\FreeCAD*\bin\FreeCADCmd.exe",
+        r"C:\Program Files (x86)\FreeCAD*\bin\FreeCADCmd.exe",
+    )
+elif sys.platform == "darwin":
+    # The official freecad.org macOS build is a plain .app bundle dragged
+    # into /Applications — never on PATH by default, unlike a Homebrew
+    # install (which lands on PATH on its own and is already caught by the
+    # shutil.which() check in detect_freecadcmd, so it never needs this
+    # fallback at all).
+    _COMMON_INSTALL_GLOBS = (
+        "/Applications/FreeCAD*.app/Contents/Resources/bin/FreeCADCmd",
+        "/Applications/FreeCAD*.app/Contents/MacOS/FreeCADCmd",
+        os.path.expanduser("~/Applications/FreeCAD*.app/Contents/Resources/bin/FreeCADCmd"),
+    )
+else:
+    # Linux desktop installs outside a package manager (the official
+    # freecad.org AppImage extracted to a fixed prefix, or a manual /opt
+    # install). An apt/dnf-managed install (incl. this project's own
+    # HF Space packages.txt `freecad` package — see dana.platform.factory's
+    # IS_HF_SPACE branch) already lands freecadcmd on PATH and is caught by
+    # shutil.which() above, so it never reaches this fallback either.
+    _COMMON_INSTALL_GLOBS = (
+        "/opt/freecad*/bin/freecadcmd",
+        "/opt/FreeCAD*/bin/freecadcmd",
+        "/usr/lib/freecad*/bin/freecadcmd",
+        os.path.expanduser("~/.local/opt/freecad*/bin/freecadcmd"),
+    )
+
 _DEFAULT_TIMEOUT_S = 60.0
+
 _WINDOW_POLL_TIMEOUT_S = 10.0
+
 _WINDOW_POLL_INTERVAL_S = 0.75
+
 _OK_MARKER = "DANA_FREECAD_OK"
+
 _BBOX_MARKER = f"{_OK_MARKER}_BBOX"
+
 _BBOX_RE = re.compile(re.escape(_BBOX_MARKER) + r" (\[.*?\])")
+
 _PLACEMENT_MARKER = f"{_OK_MARKER}_PLACEMENT"
+
 _PLACEMENT_RE = re.compile(re.escape(_PLACEMENT_MARKER) + r" (\[.*?\])")
-# Deterministic Post-Conditions (Fix #4) — the resulting object's own
-# Shape.Volume, printed by the Universal CAD IR template right alongside its
-# BoundBox (see templates/universal_ir.py.jinja2's closing marker block).
-# The LLM cannot see the geometry it just built; this — together with the
-# bounding box's derived length/width/height in _execute_ir_tool's own
-# "geometry" field — is what lets it verify a horizontal cylinder wasn't
-# built vertical, or a fillet didn't collapse a shape to near-zero volume,
-# from the tool result alone, no screenshot needed.
+
 _VOLUME_MARKER = f"{_OK_MARKER}_VOLUME"
+
 _VOLUME_RE = re.compile(re.escape(_VOLUME_MARKER) + r" ([0-9eE+\-.]+)")
+
 _SPATIAL_MARKER = f"{_OK_MARKER}_SPATIAL"
+
 _SPATIAL_RE = re.compile(re.escape(_SPATIAL_MARKER) + r" (\[.*?\])")
-# The FreeCAD-assigned Name a session-document script actually ends up with
-# — NOT necessarily the requested `name` argument verbatim, since FreeCAD
-# auto-suffixes ("Box" -> "Box001") on a collision with an object already in
-# the shared Session_Active.FCStd document. A plain identifier line (not a
-# Python literal), unlike the bbox/placement/spatial markers above.
+
+_COLLISIONS_MARKER = f"{_OK_MARKER}_COLLISIONS"
+
+_COLLISIONS_RE = re.compile(re.escape(_COLLISIONS_MARKER) + r" (\[.*\])")
+
+_TOPOLOGY_MARKER = f"{_OK_MARKER}_TOPOLOGY"
+
+_TOPOLOGY_RE = re.compile(re.escape(_TOPOLOGY_MARKER) + r" (\[.*\])")
+
+_RESOLVED_UV_MARKER = f"{_OK_MARKER}_RESOLVED_UV"
+
+_RESOLVED_UV_RE = re.compile(re.escape(_RESOLVED_UV_MARKER) + r" (\{.*\})")
+
+_CHECKED_MARKER = f"{_OK_MARKER}_CHECKED"
+
+_CHECKED_RE = re.compile(re.escape(_CHECKED_MARKER) + r" ([0-9]+)")
+
 _NAME_MARKER = f"{_OK_MARKER}_NAME"
+
 _NAME_RE = re.compile(re.escape(_NAME_MARKER) + r" (.+)")
+
+_SCRIPT_EXCEPTION_MARKER = f"{_OK_MARKER}_SCRIPT_EXCEPTION"
+
+_FREECAD_INTERNAL_EXCEPTION_BANNER = "Exception while processing file"
+
 _OUTPUT_DIR = DANA_WORKSPACE / "freecad_output"
+
 _EXPORT_DIR = DANA_WORKSPACE / "exports"
 
-# The single .FCStd document create_box/create_cylinder/create_polygon/
-# create_freecad_extrusion/_pyramid/_star_prism/_sketch_extrude/
-# insert_standard_part/modify_parameter/apply_boolean/apply_edge_operation/
-# batch_pattern_array all share for the life of this process — replacing the
-# old one-object-per-file design so a multi-part chain (e.g. box + bolt +
-# boolean cut + a pattern of the result) ends up as siblings in ONE document
-# tree instead of scattered across separate .FCStd files. create_freecad_pipe,
-# align_freecad_objects, create_assembly_mate, and the read-only inspectors
-# (get_bounding_box, inspect_spatial_properties) are still UNCHANGED — they
-# still produce/expect one-object-per-file — so an object built by one of
-# those cannot currently be referenced by a session-based
-# perform_freecad_boolean/modify_freecad_parameter call, and vice versa.
 _SESSION_DOCUMENT_NAME = "Session_Active"
 
+_KINEMATIC_JOINTS_PROP = "DanaKinematicJoints"
+
+_KINEMATIC_JOINT_TYPES = frozenset({"fixed", "revolute", "continuous", "prismatic"})
 
 class FreeCADNotFoundError(RuntimeError):
     """Raised when no FreeCADCmd binary can be located."""
 
-
 def _ok(**payload: Any) -> str:
     return json.dumps({"ok": True, **payload})
-
 
 def _error(message: str) -> str:
     return json.dumps({"ok": False, "error": str(message)})
 
-
 def _dry_run_result(op: str, **payload: Any) -> str:
     return _ok(op=op, dry_run=True, **payload)
-
 
 def _version_key(folder_name: str) -> tuple[int, ...]:
     m = re.search(r"(\d+(?:\.\d+)*)", folder_name)
     if not m:
         return (0,)
     return tuple(int(p) for p in m.group(1).split("."))
-
 
 def detect_freecadcmd(*, force_refresh: bool = False) -> str | None:
     """Locate FreeCADCmd: env override > PATH > common install globs (newest wins)."""
@@ -174,7 +212,6 @@ def detect_freecadcmd(*, force_refresh: bool = False) -> str | None:
     _cached_cmd_path = str(candidates[0])
     return _cached_cmd_path
 
-
 def get_freecadcmd_path(*, force_refresh: bool = False) -> str:
     path = detect_freecadcmd(force_refresh=force_refresh)
     if not path:
@@ -183,7 +220,6 @@ def get_freecadcmd_path(*, force_refresh: bool = False) -> str:
             "C:\\Program Files\\FreeCAD*\\bin\\FreeCADCmd.exe)"
         )
     return path
-
 
 def _is_freecad_gui_running() -> bool:
     """True if a FreeCAD.exe GUI process is currently running."""
@@ -194,7 +230,6 @@ def _is_freecad_gui_running() -> bool:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return False
-
 
 def _terminate_freecad_gui(*, timeout: float = 5.0) -> None:
     """Terminates every running ``FreeCAD.exe`` GUI process and waits
@@ -239,7 +274,6 @@ def _terminate_freecad_gui(*, timeout: float = 5.0) -> None:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
 
-
 def get_freecad_gui_path(*, force_refresh: bool = False) -> str:
     """Resolve the FreeCAD GUI binary — lives next to FreeCADCmd in the same ``bin/``."""
     cmd_path = get_freecadcmd_path(force_refresh=force_refresh)
@@ -253,7 +287,6 @@ def get_freecad_gui_path(*, force_refresh: bool = False) -> str:
         f"FreeCAD.exe (GUI) not found next to FreeCADCmd at {gui_path}, nor on PATH"
     )
 
-
 def _find_freecad_window() -> dict[str, Any] | None:
     try:
         from dana.tools.os_control import get_active_windows
@@ -264,7 +297,6 @@ def _find_freecad_window() -> dict[str, Any] | None:
     except Exception:  # noqa: BLE001
         pass
     return None
-
 
 def _send_to_secondary_monitor(hwnd: int) -> bool:
     """Move ``hwnd`` onto a second physical monitor, without ever activating it.
@@ -287,7 +319,6 @@ def _send_to_secondary_monitor(hwnd: int) -> bool:
     except Exception:  # noqa: BLE001
         return False
 
-
 def _notify_cad_update_ready(path: Path, *, generated_only: bool) -> None:
     """Non-intrusive fallback when we can't (or shouldn't) focus the FreeCAD window.
 
@@ -306,7 +337,6 @@ def _notify_cad_update_ready(path: Path, *, generated_only: bool) -> None:
         show_silent_toast_async("Dana CAD Update", message)
     except Exception:  # noqa: BLE001
         pass
-
 
 _FIT_VIEW_MACRO = """\
 import FreeCAD as App
@@ -385,7 +415,6 @@ if doc is not None:
         pass
 """
 
-
 def _write_fit_view_macro() -> str:
     """Write the one-shot "make objects visible + fit view" macro to a temp file.
 
@@ -402,7 +431,6 @@ def _write_fit_view_macro() -> str:
     ) as tmp:
         tmp.write(_FIT_VIEW_MACRO)
         return tmp.name
-
 
 def show_in_freecad_gui(filepath: str) -> str:
     """Open ``filepath`` in a FRESH FreeCAD GUI process on the secondary
@@ -494,10 +522,8 @@ def show_in_freecad_gui(filepath: str) -> str:
         moved_to_secondary=moved,
     )
 
-
 def _safe_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", name or "").strip("_") or "model"
-
 
 def _session_dir() -> Path:
     """``freecad_output/sessions/<current session_id>/`` — every one-off
@@ -511,16 +537,13 @@ def _session_dir() -> Path:
     """
     return session_scoped_dir(_OUTPUT_DIR)
 
-
 def _export_dir() -> Path:
     """``exports/sessions/<current session_id>/`` — same reasoning as
     ``_session_dir`` above, for ``export_model``'s named STL/STEP output."""
     return session_scoped_dir(_EXPORT_DIR)
 
-
 def _output_path(name: str, *, ext: str) -> Path:
     return _session_dir() / f"{_safe_name(name)}.{ext}"
-
 
 def _extract_bbox(stdout: str) -> list[float] | None:
     """Parse the ``[XMin, YMin, ZMin, XMax, YMax, ZMax]`` line the parametric
@@ -538,7 +561,6 @@ def _extract_bbox(stdout: str) -> list[float] | None:
         return [float(v) for v in values]
     return None
 
-
 def _extract_placement(stdout: str) -> list[float] | None:
     """Parse the ``[x, y, z]`` line ``align_objects``'s script prints after
     updating ``Placement.Base`` — same ``ast.literal_eval`` safety as
@@ -554,7 +576,6 @@ def _extract_placement(stdout: str) -> list[float] | None:
         return [float(v) for v in values]
     return None
 
-
 def _extract_volume(stdout: str) -> float | None:
     """Parse the ``Shape.Volume`` float the Universal CAD IR template prints
     right after its BoundBox line (Fix #4 — Deterministic Post-Conditions).
@@ -567,7 +588,6 @@ def _extract_volume(stdout: str) -> float | None:
         return float(m.group(1))
     except ValueError:
         return None
-
 
 def _extract_spatial(stdout: str) -> list[Any] | None:
     """Parse ``inspect_spatial_properties``'s 9-element stdout line
@@ -586,6 +606,42 @@ def _extract_spatial(stdout: str) -> list[Any] | None:
         return values
     return None
 
+def _extract_collisions(stdout: str) -> list[dict[str, Any]] | None:
+    """Parse ``validate_assembly_collisions``'s list-of-dicts result line —
+    same ``ast.literal_eval`` safety as ``_extract_bbox``/``_extract_spatial``
+    (the printed dicts only ever contain plain strings/floats, so this is
+    valid Python literal syntax, not just valid JSON)."""
+    m = _COLLISIONS_RE.search(stdout or "")
+    if not m:
+        return None
+    try:
+        values = ast.literal_eval(m.group(1))
+    except (ValueError, SyntaxError):
+        return None
+    return values if isinstance(values, list) else None
+
+def _extract_topology(stdout: str) -> list[dict[str, Any]] | None:
+    """Parse ``query_topology``'s per-face JSON array — ``json.loads`` (not
+    ``ast.literal_eval`` like ``_extract_collisions``) since the script
+    itself prints via ``json.dumps``, and a curved face's ``normal`` is
+    JSON ``null`` rather than a Python literal ``None``."""
+    m = _TOPOLOGY_RE.search(stdout or "")
+    if not m:
+        return None
+    try:
+        values = json.loads(m.group(1))
+    except (ValueError, TypeError):
+        return None
+    return values if isinstance(values, list) else None
+
+def _extract_checked_count(stdout: str) -> int | None:
+    m = _CHECKED_RE.search(stdout or "")
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
 
 def _extract_object_name(stdout: str) -> str | None:
     """Parse the actual FreeCAD-assigned ``Name`` a session-document script
@@ -594,6 +650,33 @@ def _extract_object_name(stdout: str) -> str | None:
     m = _NAME_RE.search(stdout or "")
     return m.group(1).strip() if m else None
 
+_FREECAD_SUBPROCESS_HOME: str | None = None
+
+def _freecad_subprocess_home() -> str:
+    """A scratch ``HOME``/``XDG_*_HOME`` for the FreeCADCmd subprocess on
+    non-Windows hosts — created once per process (cached, like
+    ``_cached_cmd_path`` above), not once per call, so this never churns a
+    fresh directory (and FreeCAD's own first-run preference-parsing
+    overhead) on every tool invocation.
+
+    FreeCADCmd writes its first-run config (``~/.FreeCAD``,
+    ``~/.local/share/FreeCAD``, ``~/.config/FreeCAD``) the instant it
+    starts. A container's real ``$HOME`` is frequently unset, root-owned,
+    or mounted read-only (Hugging Face Spaces, CI) — under
+    ``dana.platform.factory``'s ``IS_HF_SPACE`` branch this engine is now
+    reachable from exactly that kind of container — and FreeCADCmd crashes
+    on startup in that case, before it ever reaches the script this module
+    generated. Registered for cleanup at interpreter exit since it's pure
+    scratch state, never anything a caller needs to read back.
+    """
+    global _FREECAD_SUBPROCESS_HOME
+    if _FREECAD_SUBPROCESS_HOME is None:
+        home = tempfile.mkdtemp(prefix="dana_freecad_home_")
+        for sub in ("config", "data", "cache"):
+            os.makedirs(os.path.join(home, sub), exist_ok=True)
+        atexit.register(shutil.rmtree, home, ignore_errors=True)
+        _FREECAD_SUBPROCESS_HOME = home
+    return _FREECAD_SUBPROCESS_HOME
 
 def _run_freecad_script(
     script_text: str,
@@ -620,7 +703,11 @@ def _run_freecad_script(
     an env var of its own choosing, rather than relying on this env dict
     alone). ``None`` (the default) means "inherit this process's
     environment unchanged", identical to every other caller
-    here that never passed an ``env`` at all before this parameter existed.
+    here that never passed an ``env`` at all before this parameter existed
+    — but only on Windows; every non-Windows caller always gets an explicit
+    ``HOME``/``XDG_*_HOME`` override (see ``_freecad_subprocess_home``),
+    since that platform is the one where a container's real ``$HOME`` can't
+    be trusted to be writable.
     """
     try:
         cmd_path = get_freecadcmd_path()
@@ -633,7 +720,18 @@ def _run_freecad_script(
         tmp.write(script_text)
         script_path = tmp.name
 
-    env = {**os.environ, **extra_env} if extra_env else None
+    if sys.platform == "win32":
+        env = {**os.environ, **extra_env} if extra_env else None
+    else:
+        freecad_home = _freecad_subprocess_home()
+        env = {
+            **os.environ,
+            **(extra_env or {}),
+            "HOME": freecad_home,
+            "XDG_CONFIG_HOME": os.path.join(freecad_home, "config"),
+            "XDG_DATA_HOME": os.path.join(freecad_home, "data"),
+            "XDG_CACHE_HOME": os.path.join(freecad_home, "cache"),
+        }
 
     try:
         with _lock:
@@ -658,7 +756,12 @@ def _run_freecad_script(
         except OSError:
             pass
 
-    ok = proc.returncode == 0 and (not require_marker or _OK_MARKER in (proc.stdout or ""))
+    ok = (
+        proc.returncode == 0
+        and (not require_marker or _OK_MARKER in (proc.stdout or ""))
+        and _SCRIPT_EXCEPTION_MARKER not in (proc.stdout or "")
+        and _FREECAD_INTERNAL_EXCEPTION_BANNER not in (proc.stderr or "")
+    )
     fail_msg = proc.stderr.strip() or proc.stdout.strip() or "FreeCADCmd reported failure"
     return {
         "ok": ok,
@@ -676,45 +779,18 @@ def _run_freecad_script(
         "volume": _extract_volume(proc.stdout) if ok else None,
     }
 
-
 _BBOX_PRINT = (
     "bbox = obj.Shape.BoundBox\n"
     'print("{marker}_BBOX " + str([bbox.XMin, bbox.YMin, bbox.ZMin, '
     "bbox.XMax, bbox.YMax, bbox.ZMax]))\n"
 )
 
-# Topology-collapse validation (FreeCAD's OCC kernel silently handing back
-# an inverted/DBL_MAX BoundBox or a zero-Volume Shape instead of raising on
-# a mathematically impossible fillet/chamfer/boolean) is now inlined
-# directly in the Universal CAD IR's own "boolean"/"edge_operation" template
-# blocks (templates/universal_ir.py.jinja2) — the shared bespoke
-# _TOPOLOGY_VALIDATION_SNIPPET this comment used to describe, and every
-# script that embedded it (_BOOLEAN_CUT_SCRIPT/_BOOLEAN_FUSE_COMMON_SCRIPT/
-# _EDGE_OP_WHOLE_SCRIPT/_EDGE_OP_FACE_SCRIPT), are retired.
-
-# Global XYZ translation applied on top of an object's normal local
-# geometry — a no-op line when placement is the origin, so every existing
-# script's output is byte-for-byte unchanged for callers that never pass one.
 _PLACEMENT_SNIPPET = (
     "if {placement!r} != (0.0, 0.0, 0.0):\n"
     "    _px, _py, _pz = {placement!r}\n"
     "    obj.Placement = App.Placement(App.Vector(_px, _py, _pz), App.Rotation())\n"
 )
 
-
-# Multi-Stage Object Resolution — polls 3 increasingly-loose match
-# strategies against ``target_name`` (exact Name, exact Label, then a
-# case-insensitive Name match) so a caller can reliably reference ONE
-# specific object by name, instead of the old "grab whichever object
-# nothing else references" heuristic (``next(o for o in doc.Objects if
-# not o.InList)``) — a heuristic that silently returned an ARBITRARY
-# sibling object once create_box/create_cylinder/apply_boolean/
-# modify_parameter started sharing one Session_Active.FCStd document with
-# many top-level objects (get_bounding_box("Cylinder") could silently
-# return the Box's bounding box instead, since the old heuristic never
-# looked at the requested name at all). Lives as embedded script TEXT
-# (not a plain engine.py function) because ``doc`` only exists inside the
-# FreeCADCmd subprocess this module launches — see the module docstring.
 _RESOLVE_OBJECT_SNIPPET = """\
 def resolve_object(doc, target_name):
     obj = doc.getObject(target_name)
@@ -728,7 +804,6 @@ def resolve_object(doc, target_name):
         return matches[0]
     return None
 """
-
 
 def _object_lookup_snippet(
     *, obj_var: str = "obj", doc_var: str = "doc", target_object: str | None = None
@@ -760,7 +835,6 @@ def _object_lookup_snippet(
         )
     return f"{obj_var} = next((o for o in {doc_var}.Objects if not o.InList), {doc_var}.Objects[-1])\n"
 
-
 def _session_document_path() -> Path:
     """THIS chat session's own ``Session_Active.FCStd`` path — see
     ``_SESSION_DOCUMENT_NAME``'s module-level comment. Under ``_session_dir()``
@@ -769,14 +843,6 @@ def _session_document_path() -> Path:
     ``_session_dir``'s own docstring for why."""
     return _session_dir() / f"{_SESSION_DOCUMENT_NAME}.FCStd"
 
-
-# Opens the session document if it already exists (a prior create_box/
-# create_cylinder/insert_standard_part/apply_boolean/modify_parameter call
-# started it), else starts a fresh in-memory one — `doc`/`_session_existed`
-# are then in scope for the rest of the script. `{session_path!r}` is always
-# a plain literal path string (never user-controlled beyond what
-# ``_session_document_path`` itself returns), so this is injection-safe the
-# same way every other ``!r``-formatted script value here already is.
 _SESSION_OPEN_SNIPPET = """\
 import os
 
@@ -788,10 +854,6 @@ else:
     doc = App.newDocument({session_doc_name!r})
 """
 
-# Saves back to the SAME path either way: `saveAs` the very first time (the
-# in-memory document created above has no path yet), a plain `save` on every
-# call after — mirrors modify_parameter's existing reopen-and-overwrite
-# pattern, just against a document that now holds many objects instead of one.
 _SESSION_SAVE_SNIPPET = """\
 if _session_existed:
     doc.save()
@@ -799,17 +861,10 @@ else:
     doc.saveAs(_session_path)
 """
 
-# Every session-scoped creation script ends the same way: the new object's
-# bounding box, its ACTUAL FreeCAD-assigned Name (see _NAME_MARKER — may
-# differ from the requested `name` on a collision), and the shared path.
 _SESSION_RESULT_PRINT = _BBOX_PRINT + """\
 print("{marker}_NAME " + obj.Name)
 print("{marker} path=" + _session_path)
 """
-
-# _BOX_SCRIPT retired — create_box is migrated to the Universal CAD IR
-# (dana.plugins.freecad.ir); see create_box's own docstring and
-# _run_ir_session_step above.
 
 _POLYGON_SCRIPT = ("""\
 import FreeCAD as App
@@ -874,7 +929,6 @@ obj.Shape = solid
 doc.recompute()
 """ + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT)
 
-
 def _auto_show(out_path: Path) -> bool:
     """Best-effort Live Viewport Sync: open ``out_path`` in the FreeCAD GUI.
 
@@ -898,7 +952,6 @@ def _auto_show(out_path: Path) -> bool:
         return bool(json.loads(show_in_freecad_gui(str(out_path))).get("ok"))
     except Exception:  # noqa: BLE001
         return False
-
 
 def _execute_ir_tool(
     tool_id: str, *, doc_mode: Literal["session", "standalone"] = "session", **args: Any
@@ -994,7 +1047,6 @@ def _execute_ir_tool(
         }
     return result, steps, session_path
 
-
 def create_box(
     length: float,
     width: float,
@@ -1042,7 +1094,6 @@ def create_box(
         gui_shown=_auto_show(session_path),
     )
 
-
 def create_cylinder(
     radius: float,
     height: float,
@@ -1074,7 +1125,6 @@ def create_cylinder(
         path=str(session_path),
         gui_shown=_auto_show(session_path),
     )
-
 
 def create_extruded_polyline(
     points_list: Sequence[Sequence[float]],
@@ -1128,7 +1178,6 @@ def create_extruded_polyline(
         gui_shown=_auto_show(session_path),
     )
 
-
 def create_pyramid(
     length: float,
     width: float,
@@ -1176,7 +1225,6 @@ def create_pyramid(
         gui_shown=_auto_show(session_path),
     )
 
-
 def _star_polygon_vertices(points: int, outer_radius: float, inner_radius: float) -> list[list[float]]:
     """Alternating outer/inner vertices of a symmetric N-point star, first
     point straight up — pure trig, no FreeCAD dependency, so it's testable
@@ -1189,7 +1237,6 @@ def _star_polygon_vertices(points: int, outer_radius: float, inner_radius: float
         ]
         for i in range(n)
     ]
-
 
 def create_star_prism(
     points: int,
@@ -1221,7 +1268,6 @@ def create_star_prism(
         }
     return json.dumps(result)
 
-
 def _regular_polygon_vertices(sides: int, radius: float) -> list[list[float]]:
     """Evenly-spaced vertices of a regular N-gon inscribed in ``radius``,
     first vertex straight up — same convention as ``_star_polygon_vertices``
@@ -1235,7 +1281,6 @@ def _regular_polygon_vertices(sides: int, radius: float) -> list[list[float]]:
         ]
         for i in range(sides)
     ]
-
 
 def create_polygon(
     sides: int,
@@ -1295,17 +1340,11 @@ def create_polygon(
         gui_shown=_auto_show(session_path),
     )
 
-
-# 2D-point-per-work-plane embedding: XY keeps (x, y, 0) and extrudes along
-# +Z; XZ/YZ embed the same 2 sketch coordinates into the other two axes and
-# extrude along whichever axis is left over — a plain lookup, no rotation
-# matrices needed since these are the 3 principal planes.
 _PLANE_NORMAL: dict[str, tuple[float, float, float]] = {
     "XY": (0.0, 0.0, 1.0),
     "XZ": (0.0, 1.0, 0.0),
     "YZ": (1.0, 0.0, 0.0),
 }
-
 
 def _embed_2d(plane: str, x: float, y: float) -> tuple[float, float, float]:
     if plane == "XY":
@@ -1313,7 +1352,6 @@ def _embed_2d(plane: str, x: float, y: float) -> tuple[float, float, float]:
     if plane == "XZ":
         return (x, 0.0, y)
     return (0.0, x, y)  # YZ
-
 
 def _sketch_edge_specs(
     segments: Sequence[dict[str, Any]], start: Sequence[float], plane: str
@@ -1338,7 +1376,6 @@ def _sketch_edge_specs(
         cur = to
     return specs
 
-
 _SKETCH_EXTRUDE_SCRIPT = ("""\
 import FreeCAD as App
 import Part
@@ -1361,7 +1398,6 @@ obj.Shape = solid
 """ + _PLACEMENT_SNIPPET + """\
 doc.recompute()
 """ + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT)
-
 
 def create_sketch_extrude(
     segments: Sequence[dict[str, Any]],
@@ -1425,16 +1461,1565 @@ def create_sketch_extrude(
         gui_shown=_auto_show(session_path),
     )
 
+_ASSEMBLY_RESULT_PRINT = """\
+print("{marker}_NAME " + obj.Name)
+print("{marker} path=" + _session_path)
+"""
 
-# _PATTERN_TYPES/_pattern_offsets now live in dana.plugins.freecad.ir (the
-# "pattern" IRKindSpec's own home) — re-bound here so
-# engine._pattern_offsets(...)/engine._PATTERN_TYPES keep working unchanged
-# for existing callers (dana.platform.mock's headless driver imports both
-# directly from this module) and tests, the same re-export precedent
-# _face_axes already set.
+_CREATE_ASSEMBLY_SCRIPT = ("""\
+import FreeCAD as App
+
+""" + _SESSION_OPEN_SNIPPET + """\
+obj = doc.addObject("App::Part", {name!r})
+doc.recompute()
+""" + _SESSION_SAVE_SNIPPET + _ASSEMBLY_RESULT_PRINT)
+
+def create_assembly(name: str) -> str:
+    """Create a real ``App::Part`` assembly container in the shared
+    ``Session_Active.FCStd`` document — a plain organizational grouping
+    object with no geometry of its own, used to gather independent
+    ``PartDesign::Body`` instances (or other top-level objects) into one
+    positioned sub-assembly via ``add_parts_to_assembly``/
+    ``position_assembly_part``.
+    """
+    resolved_name = (name or "").strip()
+    if not resolved_name:
+        return _error("create_assembly requires a non-empty name")
+    if is_dry_run_enabled():
+        return _dry_run_result("create_assembly", name=resolved_name, type="App::Part")
+    session_path = _session_document_path()
+    script = _CREATE_ASSEMBLY_SCRIPT.format(
+        name=resolved_name,
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"create_assembly failed: {result['error']}")
+    return _ok(
+        name=result.get("resolved_name") or resolved_name,
+        type="App::Part",
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
+    )
+
+_ADD_PARTS_TO_ASSEMBLY_SCRIPT = ("""\
+import FreeCAD as App
+
+""" + _RESOLVE_OBJECT_SNIPPET + _SESSION_OPEN_SNIPPET + """\
+assembly = resolve_object(doc, {assembly_name!r})
+if assembly is None:
+    raise RuntimeError("Object not found: " + {assembly_name!r})
+_part_names = {part_names!r}
+for _p_name in _part_names:
+    _p = resolve_object(doc, _p_name)
+    if _p is None:
+        raise RuntimeError("Object not found: " + _p_name)
+    if _p not in assembly.Group:
+        assembly.addObject(_p)
+doc.recompute()
+
+obj = assembly
+""" + _SESSION_SAVE_SNIPPET + _ASSEMBLY_RESULT_PRINT)
+
+def add_parts_to_assembly(assembly_name: str, part_names: Sequence[str]) -> str:
+    """Move the named parts (typically ``PartDesign::Body`` instances left
+    behind by ``create_pad``/``create_pocket``/``create_sweep``/
+    ``create_loft``) into a previously-created ``create_assembly``
+    container, resolved by NAME — same by-name story as ``apply_boolean``/
+    ``modify_parameter``. Uses the real ``App::Part.addObject`` API (the
+    same grouping mechanism ``PartDesign::Body.addObject`` already uses for
+    sketches — see ``_PARTDESIGN_BODY_SNIPPET``), so a part already in the
+    assembly is silently left alone rather than re-added.
+    """
+    assembly = (assembly_name or "").strip()
+    if not assembly:
+        return _error("add_parts_to_assembly requires assembly_name")
+    names = [str(p).strip() for p in part_names if str(p).strip()]
+    if not names:
+        return _error("add_parts_to_assembly requires a non-empty part_names list")
+
+    dims = {"part_names": names}
+    if is_dry_run_enabled():
+        return _dry_run_result("add_parts_to_assembly", name=assembly, type="App::Part", dimensions=dims)
+    session_path = _session_document_path()
+    if not session_path.is_file():
+        return _error(
+            "add_parts_to_assembly: no session document yet — create an assembly with "
+            "create_freecad_assembly first"
+        )
+    script = _ADD_PARTS_TO_ASSEMBLY_SCRIPT.format(
+        assembly_name=assembly,
+        part_names=names,
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"add_parts_to_assembly failed: {result['error']}")
+    return _ok(
+        name=result.get("resolved_name") or assembly,
+        type="App::Part",
+        dimensions=dims,
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
+    )
+
+_POSITION_ASSEMBLY_PART_SCRIPT = ("""\
+import FreeCAD as App
+
+""" + _RESOLVE_OBJECT_SNIPPET + _SESSION_OPEN_SNIPPET + """\
+{lookup}if getattr(obj, "DanaAnchored", False):
+    raise RuntimeError(
+        "'" + obj.Name + "' is anchored (anchor_assembly_root) and cannot be moved/rotated by "
+        "position_assembly_part -- it is this assembly's fixed reference frame."
+    )
+obj.Placement = App.Placement(App.Vector({x}, {y}, {z}), App.Rotation({yaw}, {pitch}, {roll}))
+doc.recompute()
+""" + _SESSION_SAVE_SNIPPET + _ASSEMBLY_RESULT_PRINT)
+
+def position_assembly_part(
+    part_name: str,
+    placement_x: float = 0.0,
+    placement_y: float = 0.0,
+    placement_z: float = 0.0,
+    yaw: float = 0.0,
+    pitch: float = 0.0,
+    roll: float = 0.0,
+) -> str:
+    """Move and/or orient a previously-created part (typically a
+    ``PartDesign::Body`` inside a ``create_assembly`` container, but works
+    on any named object) by replacing its whole ``Placement`` — resolved by
+    NAME, same by-name story as ``apply_boolean``/``modify_parameter``.
+    ``(placement_x, placement_y, placement_z)`` is the new position in mm;
+    ``(yaw, pitch, roll)`` is a fresh Euler rotation in DEGREES (FreeCAD's
+    own ``App.Rotation(yaw, pitch, roll)`` convention — see
+    ``modify_parameter``'s matching 6-element-vector docstring for the same
+    confirmed-live convention), REPLACING any prior rotation rather than
+    composing with it.
+    """
+    target = (part_name or "").strip()
+    if not target:
+        return _error("position_assembly_part requires part_name")
+    try:
+        x, y, z = float(placement_x), float(placement_y), float(placement_z)
+        yaw_f, pitch_f, roll_f = float(yaw), float(pitch), float(roll)
+    except (TypeError, ValueError):
+        return _error("position_assembly_part: placement_x/y/z and yaw/pitch/roll must all be numbers")
+
+    dims = {"placement": [x, y, z], "yaw": yaw_f, "pitch": pitch_f, "roll": roll_f}
+    if is_dry_run_enabled():
+        return _dry_run_result("position_assembly_part", name=target, dimensions=dims)
+    session_path = _session_document_path()
+    if not session_path.is_file():
+        return _error("position_assembly_part: no session document yet — create a part first")
+    script = _POSITION_ASSEMBLY_PART_SCRIPT.format(
+        lookup=_object_lookup_snippet(target_object=target),
+        x=x,
+        y=y,
+        z=z,
+        yaw=yaw_f,
+        pitch=pitch_f,
+        roll=roll_f,
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"position_assembly_part failed: {result['error']}")
+    return _ok(
+        name=result.get("resolved_name") or target,
+        dimensions=dims,
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
+    )
+
+_ASSEMBLY_CONSTRAINT_ELEMENT_HELPER = """\
+def _resolve_constraint_element(obj, element_name, obj_label):
+    if element_name.startswith("Face"):
+        kind, plural, prefix_len = "Faces", "faces", 4
+    elif element_name.startswith("Edge"):
+        kind, plural, prefix_len = "Edges", "edges", 4
+    else:
+        raise RuntimeError(
+            "'" + element_name + "' is not a recognized element reference on '" + obj_label
+            + "' -- must be e.g. 'Face1' or 'Edge3'."
+        )
+    try:
+        index = int(element_name[prefix_len:])
+    except ValueError:
+        raise RuntimeError(
+            "'" + element_name + "' is not a valid reference on '" + obj_label
+            + "' -- expected a number after 'Face'/'Edge', e.g. 'Face1'."
+        )
+    shape = getattr(obj, "Shape", None)
+    if shape is None or shape.isNull():
+        raise RuntimeError("'" + obj_label + "' has no usable geometry (empty Shape).")
+    items = getattr(shape, kind)
+    if index < 1 or index > len(items):
+        available = ", ".join(kind[:-1] + str(i + 1) for i in range(len(items)))
+        raise RuntimeError(
+            "'" + element_name + "' does not exist on '" + obj_label + "'. Available " + plural
+            + " are: " + (available if available else "none") + "."
+        )
+    return items[index - 1]
+
+
+def _element_reference(element):
+    # Returns (point, direction, has_axis, axis_point, axis_dir). direction
+    # is the face normal (any surface type, via Surface.parameter) or edge
+    # direction (straight Line) / axis (Circle); has_axis is True ONLY for
+    # a cylindrical face or circular edge -- the only elements Concentric
+    # can legally use. Confirmed live (freecadcmd probe) that
+    # Surface.parameter + normalAt, Surface.Axis/Center (cylinder), and
+    # Curve.Axis/Center (circle) are all real, headlessly-usable APIs on
+    # this exact FreeCAD build -- not assumed from general knowledge.
+    if element.ShapeType == "Face":
+        point = element.CenterOfMass
+        u, v = element.Surface.parameter(point)
+        direction = element.normalAt(u, v)
+        if element.Surface.TypeId == "Part::GeomCylinder":
+            return point, direction, True, element.Surface.Center, element.Surface.Axis
+        return point, direction, False, None, None
+    if element.ShapeType == "Edge":
+        point = element.CenterOfMass
+        curve_type = element.Curve.TypeId
+        if curve_type == "Part::GeomLine":
+            v0, v1 = element.Vertexes[0].Point, element.Vertexes[-1].Point
+            direction = v1 - v0
+            if direction.Length < 1e-9:
+                raise RuntimeError("edge has zero length -- cannot determine a direction")
+            direction.normalize()
+            return point, direction, False, None, None
+        if curve_type == "Part::GeomCircle":
+            return point, element.Curve.Axis, True, element.Curve.Center, element.Curve.Axis
+        raise RuntimeError(
+            "edge curve type '" + curve_type + "' is not supported -- only straight edges and "
+            "circles/arcs are"
+        )
+    raise RuntimeError("unsupported element shape type: " + element.ShapeType)
+
+
+def _require_planar_face(obj, element_name, obj_label, el):
+    if el.ShapeType != "Face" or el.Surface.TypeId == "Part::GeomPlane":
+        return
+    planar = [
+        "Face" + str(i + 1)
+        for i, f in enumerate(obj.Shape.Faces)
+        if f.Surface.TypeId == "Part::GeomPlane"
+    ]
+    raise RuntimeError(
+        "'" + element_name + "' on '" + obj_label + "' is a curved face (" + el.Surface.TypeId
+        + ") -- its normal is only well-defined at one arbitrary point on the surface, not a "
+        "single orientation for the whole face, so it cannot be used here. Use 'Concentric' "
+        "instead for a cylindrical face, or pick one of this part's FLAT faces: "
+        + (", ".join(planar) if planar else "none available") + "."
+    )
+
+
+def _face_alignment_delta(face, element_name, obj_label, uv_tensor, moving_part, moving_part_label):
+    # Continuous Parametric UV Placement (replaces the old discrete
+    # semantic_alignment quadrant system): shifts a Coincident/Distance
+    # target from a planar face's CENTER to any point on it, expressed as a
+    # normalized (u, v) tensor in [0, 1] x [0, 1] -- never a raw coordinate
+    # -- or, worse, a world-space -- value) so the caller can't hallucinate
+    # a point that falls outside the face's own bounds. Resolved against
+    # that face's OWN trimmed (u, v) parameter range -- verified live
+    # (freecadcmd probe against this exact FreeCAD build) that
+    # Face.ParameterRange returns the FACE's actual bounded rectangle, not
+    # the underlying infinite plane, and Face.valueAt(u, v) lands exactly
+    # on that face's real surface.
+    #
+    # An Edge reference has no 2D parametric footprint to place a point
+    # within (only a single reference point/direction, see
+    # _element_reference) -- uv_tensor is meaningless there, so this still
+    # short-circuits to a zero delta for the DEFAULT (0.5, 0.5) center
+    # value (the caller didn't ask for anything beyond the plain point
+    # match _element_reference already computed), but raises outright for
+    # any other explicit uv_tensor against an Edge -- same "reject clearly,
+    # never silently ignore" convention the old semantic_alignment used.
+    if face.ShapeType != "Face":
+        if tuple(uv_tensor) == (0.5, 0.5):
+            return App.Vector(0, 0, 0)
+        raise RuntimeError("uv_tensor requires part1_element to be a Face, not an Edge")
+    #
+    # Geometric Fit Guard: the inward padding margin is NOT an arbitrary
+    # percentage of the face's own extent (a fixed 10% overlapped moving
+    # parts whose footprint happened to be larger than that slice of a
+    # small face) -- it's moving_part's own real physical half-extent
+    # (max(BoundBox.XLength, YLength, ZLength) / 2), so the padding always
+    # matches the actual part being placed, on any size face. If the face
+    # is too small to keep that padding on BOTH axes (parametric space
+    # available < 2x the part's own half-extent, i.e. the part physically
+    # cannot fit inside this face at all, corner or center), this rejects
+    # the call outright rather than silently overlapping it with a
+    # sibling or hanging part off the face's edge. Runs UNCONDITIONALLY for
+    # any Face target now, including the default center point -- unlike
+    # the retired semantic_alignment="center" token, which bypassed this
+    # guard entirely.
+    u_min, u_max, v_min, v_max = face.ParameterRange
+    u_available = u_max - u_min
+    v_available = v_max - v_min
+    _moving_bbox = moving_part.Shape.BoundBox
+    padding = max(_moving_bbox.XLength, _moving_bbox.YLength, _moving_bbox.ZLength) / 2.0
+    if u_available < 2 * padding or v_available < 2 * padding:
+        raise RuntimeError(
+            "Face '" + element_name + "' on '" + obj_label + "' is physically too small to "
+            "accommodate '" + moving_part_label + "'s dimensions. You must resize the parts or "
+            "choose a larger face."
+        )
+    u_lo, u_hi = u_min + padding, u_max - padding
+    v_lo, v_hi = v_min + padding, v_max - padding
+    _u_frac, _v_frac = uv_tensor
+    u = u_lo + _u_frac * (u_hi - u_lo)
+    v = v_lo + _v_frac * (v_hi - v_lo)
+    target_point = face.valueAt(u, v)
+    return target_point - face.CenterOfMass
+
+
+_CARDINAL_WORLD_AXES = (
+    ("+X", (1.0, 0.0, 0.0)), ("-X", (-1.0, 0.0, 0.0)),
+    ("+Y", (0.0, 1.0, 0.0)), ("-Y", (0.0, -1.0, 0.0)),
+    ("+Z", (0.0, 0.0, 1.0)), ("-Z", (0.0, 0.0, -1.0)),
+)
+
+
+def _face_axis_world_hints(face):
+    # Always-on version of world_fractions's own alignment check, surfaced
+    # in EVERY Coincident/Distance uv_tensor result (not just when
+    # world_fractions is explicitly requested) -- so a caller who guessed uv_tensor wrong
+    # (assuming u is world X when it's actually world Z on THIS face) sees
+    # the real mapping immediately in that same call's own result, in time
+    # to correct the next sibling call, instead of only finding out via a
+    # separate query_topology call it may never think to make. Returns
+    # (u_hint, v_hint), each a cardinal label like "+X" or None if that
+    # axis isn't planar/doesn't align closely (>= 0.9) with any single
+    # cardinal world direction.
+    if face.ShapeType != "Face" or face.Surface.TypeId != "Part::GeomPlane":
+        return (None, None)
+    u_min, u_max, v_min, v_max = face.ParameterRange
+    origin = face.valueAt(u_min, v_min)
+    u_delta = face.valueAt(u_max, v_min) - origin
+    v_delta = face.valueAt(u_min, v_max) - origin
+    u_delta.normalize()
+    v_delta.normalize()
+
+    def _best_cardinal(delta):
+        best_label, best_dot = None, 0.9
+        for label, axis in _CARDINAL_WORLD_AXES:
+            dot = delta.x * axis[0] + delta.y * axis[1] + delta.z * axis[2]
+            if dot > best_dot:
+                best_label, best_dot = label, dot
+        return best_label
+
+    return (_best_cardinal(u_delta), _best_cardinal(v_delta))
+
+
+_CARDINAL_AXIS_VECTORS = {{"X": (1.0, 0.0, 0.0), "Y": (0.0, 1.0, 0.0), "Z": (0.0, 0.0, 1.0)}}
+
+
+def _resolve_world_fractions_uv(face, world_fractions):
+    # world_fractions lets a caller say "place this at fraction F along
+    # world axis A [, and fraction G along world axis B]" instead of
+    # guessing whether a given world axis is this face's u or v --
+    # OpenCASCADE's (u, v) parameterization for a given planar face is
+    # implementation-defined (verified live: two faces with the same
+    # real-world orientation on the same box can map u/v to different
+    # world axes depending on the underlying Geom_Plane's own Position/
+    # rotation), so a fixed "u = length, v = height" assumption is unsound
+    # in general -- this resolves it per-call from the face's own real
+    # geometry instead, the same u_direction_vector/v_direction_vector
+    # computation query_topology exposes for a caller to do this by hand.
+    # A planar face has exactly 2 degrees of freedom (u, v), so up to two
+    # DIFFERENT world axes can be specified -- each is matched to whichever
+    # parametric axis it actually aligns with, so both u AND v can be
+    # driven by world-space intent (e.g. corner placement expressed via two
+    # entries, X and Y both set), not just one at a time.
+    if world_fractions is None:
+        return None
+    if face.ShapeType != "Face":
+        raise RuntimeError("world_fractions requires part1_element to be a Face, not an Edge")
+    if face.Surface.TypeId != "Part::GeomPlane":
+        raise RuntimeError(
+            "world_fractions is only supported for a planar face (got '" + face.Surface.TypeId
+            + "') -- a curved face's (u, v) axes have no single constant world-space direction. "
+            "Use 'Concentric' for a cylindrical face, or pick a flat face."
+        )
+    u_min, u_max, v_min, v_max = face.ParameterRange
+    origin = face.valueAt(u_min, v_min)
+    u_delta = face.valueAt(u_max, v_min) - origin
+    v_delta = face.valueAt(u_min, v_max) - origin
+    u_delta.normalize()
+    v_delta.normalize()
+
+    u_frac, v_frac = 0.5, 0.5
+    u_claimed_by, v_claimed_by = None, None
+    for axis_name, frac in world_fractions.items():
+        axis_vec = _CARDINAL_AXIS_VECTORS[axis_name]
+        dot_u = u_delta.x * axis_vec[0] + u_delta.y * axis_vec[1] + u_delta.z * axis_vec[2]
+        dot_v = v_delta.x * axis_vec[0] + v_delta.y * axis_vec[1] + v_delta.z * axis_vec[2]
+        if max(abs(dot_u), abs(dot_v)) < 0.9:
+            raise RuntimeError(
+                "world_fractions: world axis '" + axis_name + "' does not align with either "
+                "parametric axis of this face (best alignment: "
+                + str(round(max(abs(dot_u), abs(dot_v)), 3)) + ", need >= 0.9) -- this face is not "
+                "oriented so that world axis maps cleanly to u or v. Call query_topology on this "
+                "part first to inspect its real u_direction_vector/v_direction_vector."
+            )
+        if abs(dot_u) >= abs(dot_v):
+            if u_claimed_by is not None:
+                raise RuntimeError(
+                    "world_fractions: both '" + u_claimed_by + "' and '" + axis_name
+                    + "' resolve to this face's SAME parametric axis (u) -- they conflict. Pick "
+                    "world axes that map to this face's two DIFFERENT parametric axes (see "
+                    "query_topology's u_direction_vector/v_direction_vector)."
+                )
+            u_claimed_by = axis_name
+            u_frac = frac if dot_u >= 0 else (1.0 - frac)
+        else:
+            if v_claimed_by is not None:
+                raise RuntimeError(
+                    "world_fractions: both '" + v_claimed_by + "' and '" + axis_name
+                    + "' resolve to this face's SAME parametric axis (v) -- they conflict. Pick "
+                    "world axes that map to this face's two DIFFERENT parametric axes (see "
+                    "query_topology's u_direction_vector/v_direction_vector)."
+                )
+            v_claimed_by = axis_name
+            v_frac = frac if dot_v >= 0 else (1.0 - frac)
+    return (u_frac, v_frac)
+"""
+
+_APPLY_ASSEMBLY_CONSTRAINT_SCRIPT = ("""\
+import FreeCAD as App
+import json
+import math
+
+""" + _RESOLVE_OBJECT_SNIPPET + _SESSION_OPEN_SNIPPET + _ASSEMBLY_CONSTRAINT_ELEMENT_HELPER + """\
+_assembly = resolve_object(doc, {assembly_name!r})
+if _assembly is None:
+    raise RuntimeError("Object not found: " + {assembly_name!r})
+part1 = resolve_object(doc, {part1_name!r})
+if part1 is None:
+    raise RuntimeError("Object not found: " + {part1_name!r})
+part2 = resolve_object(doc, {part2_name!r})
+if part2 is None:
+    raise RuntimeError("Object not found: " + {part2_name!r})
+_assembly_members = getattr(_assembly, "Group", [])
+for _p, _p_name in ((part1, {part1_name!r}), (part2, {part2_name!r})):
+    if _p not in _assembly_members:
+        raise RuntimeError(
+            "'" + _p_name + "' is not in assembly '" + {assembly_name!r}
+            + "' -- call add_parts_to_assembly first."
+        )
+if getattr(part2, "DanaAnchored", False):
+    raise RuntimeError(
+        "'" + {part2_name!r} + "' is anchored (anchor_assembly_root) and cannot be moved/rotated "
+        "as part2 -- it is this assembly's fixed reference frame. Pass it as part1 instead (it "
+        "never moves), or anchor a different part."
+    )
+
+el1 = _resolve_constraint_element(part1, {part1_element!r}, {part1_name!r})
+el2 = _resolve_constraint_element(part2, {part2_element!r}, {part2_name!r})
+point1, dir1, has_axis1, axis_point1, axis_dir1 = _element_reference(el1)
+point2, dir2, has_axis2, axis_point2, axis_dir2 = _element_reference(el2)
+
+constraint_type = {constraint_type!r}
+offset = {offset!r}
+uv_tensor = {uv_tensor!r}
+_world_fractions = {world_fractions!r}
+
+
+def _rotate_part2_about(pivot, rotation):
+    xf = (
+        App.Placement(pivot, App.Rotation())
+        * App.Placement(App.Vector(0, 0, 0), rotation)
+        * App.Placement(pivot, App.Rotation()).inverse()
+    )
+    part2.Placement = xf * part2.Placement
+
+
+def _translate_part2(delta):
+    part2.Placement = App.Placement(delta, App.Rotation()) * part2.Placement
+
+
+if constraint_type == "Concentric":
+    if not has_axis1 or not has_axis2:
+        bad_element = {part1_element!r} if not has_axis1 else {part2_element!r}
+        bad_owner = {part1_name!r} if not has_axis1 else {part2_name!r}
+        raise RuntimeError(
+            "'Concentric' requires both elements to be circular/cylindrical -- '" + bad_element
+            + "' on '" + bad_owner + "' is not."
+        )
+    _rotate_part2_about(axis_point2, App.Rotation(axis_dir2, axis_dir1))
+    _translate_part2(axis_point1 - axis_point2)
+
+elif constraint_type == "Parallel":
+    _require_planar_face(part1, {part1_element!r}, {part1_name!r}, el1)
+    _require_planar_face(part2, {part2_element!r}, {part2_name!r}, el2)
+    _rotate_part2_about(point2, App.Rotation(dir2, dir1))
+
+elif constraint_type == "Perpendicular":
+    _require_planar_face(part1, {part1_element!r}, {part1_name!r}, el1)
+    _require_planar_face(part2, {part2_element!r}, {part2_name!r}, el2)
+    current_angle = dir1.getAngle(dir2)
+    axis = dir1.cross(dir2)
+    if axis.Length < 1e-9:
+        # dir1/dir2 already parallel/antiparallel -- any axis perpendicular
+        # to dir1 works; pick one deterministically rather than fail.
+        arbitrary = App.Vector(1, 0, 0) if abs(dir1.x) < 0.9 else App.Vector(0, 1, 0)
+        axis = dir1.cross(arbitrary)
+    axis.normalize()
+    delta_angle_deg = math.degrees((math.pi / 2.0) - current_angle)
+    _rotate_part2_about(point2, App.Rotation(axis, delta_angle_deg))
+
+elif constraint_type in ("Coincident", "Distance"):
+    if el1.ShapeType == "Face" and el2.ShapeType == "Face":
+        # Standard face-mating convention: normals point at each other, so
+        # part2's normal must end up ANTI-parallel to part1's.
+        _require_planar_face(part1, {part1_element!r}, {part1_name!r}, el1)
+        _require_planar_face(part2, {part2_element!r}, {part2_name!r}, el2)
+        _rotate_part2_about(point2, App.Rotation(dir2, dir1.negative()))
+    if constraint_type == "Distance":
+        _require_planar_face(part1, {part1_element!r}, {part1_name!r}, el1)
+    # Any other element-type combination (edge-edge, face-edge) skips the
+    # rotation step entirely -- there is no unambiguous "correct" relative
+    # orientation to infer, so only the reference points are aligned.
+
+    _axis_resolved_uv = _resolve_world_fractions_uv(el1, _world_fractions)
+    if _axis_resolved_uv is not None:
+        uv_tensor = _axis_resolved_uv
+    _u_hint, _v_hint = _face_axis_world_hints(el1)
+    print("{marker}_RESOLVED_UV " + json.dumps(
+        {{"uv_tensor": list(uv_tensor), "u_world_axis": _u_hint, "v_world_axis": _v_hint}}
+    ))
+
+    target_point = (point1 + dir1 * offset) if constraint_type == "Distance" else point1
+    target_point = target_point + _face_alignment_delta(
+        el1, {part1_element!r}, {part1_name!r}, uv_tensor, part2, {part2_name!r}
+    )
+
+    _translate_part2(target_point - point2)
+
+    # Collision Guard -- the ONLY double-booking check now (Continuous
+    # Parametric UV Placement retires the old Semantic Occupancy Registry:
+    # a discrete 5-token enum could be exact-matched as a dict key,
+    # ("top_left" == "top_left"), but a continuous uv_tensor float pair
+    # can't be, so there is no equivalent pre-mutation slot-claim check
+    # possible anymore -- this purely geometric, post-mutation check is the
+    # only defense against two parts landing on top of each other.
+    # Compared AFTER the translation so both sides are the same quantity
+    # (each part's own Placement.Base) -- comparing a sibling's
+    # Placement.Base against target_point (a raw point on part1's face, a
+    # different reference frame) let mismatched wheels slip through
+    # undetected.
+    for _sibling in _assembly_members:
+        if _sibling is part1 or _sibling is part2:
+            continue
+        _sib_pl = getattr(_sibling, "Placement", None)
+        if _sib_pl is not None and (_sib_pl.Base - part2.Placement.Base).Length < 1e-6:
+            raise RuntimeError(
+                "'" + {part2_name!r} + "' would land at the exact same point as '"
+                + _sibling.Name + "' -- both mated to '" + {part1_element!r} + "' on '"
+                + {part1_name!r} + "'. Pass a distinct uv_tensor (e.g. [0.0, 0.0] vs "
+                "[1.0, 1.0]) so they land at different points on that face."
+            )
+
+else:
+    raise RuntimeError("unknown constraint_type: " + constraint_type)
+
+doc.recompute()
+
+obj = part2
+""" + _SESSION_SAVE_SNIPPET + _ASSEMBLY_RESULT_PRINT)
+
+_ASSEMBLY_CONSTRAINT_TYPES = frozenset({"Coincident", "Concentric", "Parallel", "Distance", "Perpendicular"})
+
+def apply_assembly_constraint(
+    assembly_name: str,
+    part1_name: str,
+    part1_element: str,
+    part2_name: str,
+    part2_element: str,
+    constraint_type: str,
+    offset: float = 0.0,
+    uv_tensor: Sequence[float] | None = None,
+    world_fractions: dict[str, float] | None = None,
+) -> str:
+    """Move ``part2_name`` (by replacing its whole ``Placement``, same
+    "REPLACES rather than composes" convention as ``position_assembly_part``)
+    so that ``part2_element`` satisfies ``constraint_type`` against
+    ``part1_name``'s ``part1_element`` — both elements resolved and
+    VALIDATED against their object's real ``Shape.Faces``/``Shape.Edges``
+    (a reference to a face/edge that doesn't exist is rejected with the
+    exact available list, never silently ignored), both parts required to
+    already be members of ``assembly_name`` (``add_parts_to_assembly``
+    first).
+
+    This computes a ONE-SHOT geometric Placement from each element's real
+    BRep geometry — a genuine upgrade over ``position_assembly_part``'s
+    typed-in XYZ guessing — it is NOT a live FreeCAD constraint object (see
+    this function's own module-level comment for exactly why the native
+    Assembly workbench's real joints aren't reachable from this headless
+    FreeCADCmd execution model, confirmed live against this install, not
+    assumed). If the referenced geometry changes later, re-call this to
+    re-align; nothing here auto-re-solves.
+
+    ``constraint_type``:
+
+    - ``"Coincident"``: aligns the two elements' reference points. If BOTH
+      elements are faces, ALSO orients part2 so its face normal points
+      opposite part1's (the standard "faces pushed together" mating
+      convention) — any other element-type pairing (edge-edge, face-edge)
+      only aligns the points, since there is no single unambiguous relative
+      orientation to infer for those.
+    - ``"Concentric"``: requires BOTH elements to be circular (an Edge whose
+      Curve is a circle/arc) or cylindrical (a Face whose Surface is a
+      cylinder) — rejected otherwise. Aligns both axes' directions, then
+      their center points.
+    - ``"Parallel"``: rotates part2 so its element's reference direction
+      (face normal, or edge direction/axis) is parallel to part1's. No
+      translation.
+    - ``"Perpendicular"``: rotates part2 by the minimal angle that makes its
+      reference direction exactly 90 degrees from part1's. No translation.
+    - ``"Distance"``: same as ``"Coincident"`` (including its face-normal
+      orientation, when both elements are faces), except part2's reference
+      point ends up ``offset`` mm from part1's along part1's own reference
+      direction, instead of exactly coincident.
+
+    ``uv_tensor`` (Coincident/Distance only, ``part1_element`` must be a
+    Face — REJECTED outright, not silently ignored, if given for any other
+    ``constraint_type`` or for an Edge reference, same "reject clearly"
+    convention as an unknown enum value or a nonexistent Face index
+    elsewhere in this function): an optional ``[u, v]`` pair, each value in
+    ``[0.0, 1.0]`` inclusive — a normalized, CONTINUOUS parametric
+    coordinate, NEVER a raw world-space value, so the caller cannot
+    hallucinate a point that falls outside the face's real bounds. Defaults
+    to ``[0.5, 0.5]`` (dead center) when omitted. Linearly interpolated
+    across that face's own trimmed ``ParameterRange`` (verified live: this
+    returns the FACE's actual bounded rectangle, not the underlying
+    infinite plane), after first shrinking it inward by the Geometric Fit
+    Guard's padding below — ``uv_tensor=[0.0, 0.0]``/``[1.0, 0.0]``/
+    ``[0.0, 1.0]``/``[1.0, 1.0]`` land at the four corners of that padded
+    rectangle, ``[0.5, 0.5]`` at its center, and any value in between at a
+    continuous blend of the two axes. This replaces the old fixed 5-token
+    ``semantic_alignment`` enum (``"center"``/``"top_left"``/...) with a
+    strictly more general coordinate space — every former token is just one
+    particular ``uv_tensor`` value now (``"top_left"`` was ``[0.0, 1.0]``,
+    ``"bottom_right"`` was ``[1.0, 0.0]``, etc.). This is what makes a
+    symmetric N-part layout (e.g. four wheels at four corners of a chassis)
+    expressible with zero raw-coordinate math: mate each wheel to the SAME
+    face with a different ``uv_tensor``, e.g. ``[0.0, 0.0]``/``[1.0, 0.0]``/
+    ``[0.0, 1.0]``/``[1.0, 1.0]``.
+
+    Geometric Fit Guard: the inward padding pulling the requested ``uv``
+    point off ``part1_element``'s true edge is ``part2``'s OWN real
+    physical half-extent (``max(part2's BoundBox X/Y/Z Length) / 2``) —
+    dynamic per call, never a fixed percentage of the face — so a small
+    part gets pulled in only a little and a large part correctly gets
+    pulled in further, on any size face. Runs UNCONDITIONALLY now,
+    including for the default center point — unlike the retired
+    ``semantic_alignment="center"`` token, which bypassed this guard
+    entirely. If ``part1_element`` isn't physically large enough to hold
+    that padding on BOTH parametric axes (i.e. ``part2`` cannot fit on this
+    face at all, not even centered), this is REJECTED outright with an
+    explicit "too small to accommodate" error rather than silently
+    overlapping ``part2`` with a sibling or letting it hang off the face's
+    real edge.
+
+    Double-booking is now caught purely geometrically (the Collision Guard
+    further below), not by a separate token registry: a continuous
+    ``uv_tensor`` float pair can't be exact-matched as a dict key the way
+    the old 5-token enum could, so the ``DanaOccupiedAlignments`` slot
+    registry is retired outright — if the computed placement lands within
+    ``1e-6`` mm of another sibling already in this assembly, the call is
+    REJECTED with the same "pick a different point" guidance a double-
+    booked slot used to give, just detected after computing the real point
+    instead of before.
+
+    Verified live (freecadcmd, this exact FreeCAD build) against a real
+    box+cylinder: ``Coincident`` between two planar faces produces an EXACT
+    point match and exactly-antiparallel normals, with the moved part's
+    body correctly extending away from the shared face; ``Concentric``
+    between two cylindrical faces correctly aligns both axes and centers.
+
+    Known scope limit, confirmed by that same testing, not a hypothetical:
+    ``"Coincident"``/``"Parallel"``/``"Perpendicular"``/``"Distance"`` use a
+    face's ``CenterOfMass`` + ``normalAt`` as its reference point/direction —
+    well-defined for a flat (planar) face, but a FULL cylindrical/conical
+    face's centroid sits ON its own axis rather than on the surface itself,
+    making the "normal at that point" geometrically ambiguous. Use
+    ``"Concentric"`` for a cylindrical face or circular edge instead — it
+    uses ``Surface.Axis``/``Surface.Center`` (or ``Curve.Axis``/``Curve.Center``
+    for a circular edge), which stays well-defined for exactly this case.
+
+    ``world_fractions`` (Coincident/Distance only, same Face-only restriction
+    as ``uv_tensor``, and mutually exclusive with it — passing both is
+    REJECTED outright): the deterministic alternative to guessing whether
+    ``u`` or ``v`` corresponds to a particular world-space direction. A
+    planar face's ``(u, v)`` parameterization is set by OpenCASCADE's
+    underlying ``Geom_Plane``, which is NOT guaranteed to line up with any
+    particular world axis or with any other face's own ``(u, v)`` — verified
+    live: two side faces of the same box can map ``u``/``v`` to different
+    world axes from each other, so a caller-side assumption like "u is
+    always length, v is always height" is unsound in general, and choosing
+    the wrong one silently distributes parts along the WRONG world axis
+    (e.g. spreading wheels vertically instead of front-to-back) even though
+    every individual call succeeds and looks reasonable in isolation.
+    ``world_fractions`` is a ``{"X"/"Y"/"Z": fraction}`` dict with ONE or TWO
+    entries (a planar face has exactly two degrees of freedom, ``u`` and
+    ``v``, so at most two independent world axes can be pinned at once —
+    e.g. ``{"X": 0.1}`` for one axis, or ``{"X": 0.0, "Y": 0.0}`` for a
+    corner expressed in world terms), each fraction in ``[0.0, 1.0]``, same
+    convention as one axis of ``uv_tensor``. This call resolves, from the
+    face's OWN real geometry, whichever of ``u``/``v`` actually points along
+    (or against) each requested world axis, applies that axis's fraction to
+    it (flipped if the parametric axis runs opposite the world axis), and
+    centers any axis not covered by a parametric match at ``0.5`` — so
+    ``world_fractions={"X": 0.1, "Z": 0.9}`` reliably means "10% along world
+    X, 90% along world Z on this face", regardless of how that face's
+    ``u``/``v`` happen to be oriented. REJECTED outright if a requested axis
+    doesn't align with either parametric axis closely enough, or if two
+    requested axes resolve to the SAME parametric axis (they'd conflict) —
+    call ``query_topology`` first to inspect the real mapping in either
+    case. Prefer this over ``uv_tensor`` whenever the caller's actual intent
+    is phrased in terms of world axes (e.g. "distribute along the chassis
+    length" / "spread out longitudinally" / "place at this corner") rather
+    than a face-local ``(u, v)`` guess.
+    """
+    assembly = (assembly_name or "").strip()
+    p1_name = (part1_name or "").strip()
+    p1_elem = (part1_element or "").strip()
+    p2_name = (part2_name or "").strip()
+    p2_elem = (part2_element or "").strip()
+    ctype = (constraint_type or "").strip()
+    missing = [
+        n
+        for n, v in (
+            ("assembly_name", assembly),
+            ("part1_name", p1_name),
+            ("part1_element", p1_elem),
+            ("part2_name", p2_name),
+            ("part2_element", p2_elem),
+            ("constraint_type", ctype),
+        )
+        if not v
+    ]
+    if missing:
+        return _error(f"apply_assembly_constraint requires {', '.join(missing)}")
+    if ctype not in _ASSEMBLY_CONSTRAINT_TYPES:
+        return _error(
+            f"apply_assembly_constraint: constraint_type must be one of "
+            f"{sorted(_ASSEMBLY_CONSTRAINT_TYPES)}, got {constraint_type!r}"
+        )
+    if p1_name == p2_name:
+        return _error("apply_assembly_constraint: part1_name and part2_name must be two different parts")
+    try:
+        offset_f = float(offset)
+    except (TypeError, ValueError):
+        return _error("apply_assembly_constraint: offset must be a number")
+
+    uv_explicit = uv_tensor is not None
+    if not uv_explicit:
+        uv: tuple[float, float] = (0.5, 0.5)
+    else:
+        valid_shape = (
+            isinstance(uv_tensor, (list, tuple))
+            and len(uv_tensor) == 2
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in uv_tensor)
+        )
+        if not valid_shape:
+            return _error(
+                f"apply_assembly_constraint: uv_tensor must be a [u, v] array of two numbers, "
+                f"got {uv_tensor!r}"
+            )
+        u_val, v_val = float(uv_tensor[0]), float(uv_tensor[1])
+        if not (0.0 <= u_val <= 1.0 and 0.0 <= v_val <= 1.0):
+            return _error(
+                f"apply_assembly_constraint: uv_tensor values must each be between 0.0 and 1.0 "
+                f"inclusive, got {uv_tensor!r}"
+            )
+        uv = (u_val, v_val)
+    if uv_explicit and ctype not in ("Coincident", "Distance"):
+        return _error(
+            f"apply_assembly_constraint: uv_tensor is only meaningful for 'Coincident'/"
+            f"'Distance', not {ctype!r} — omit it for this constraint_type"
+        )
+
+    axis_explicit = world_fractions is not None
+    world_fractions_norm: dict[str, float] | None = None
+    if axis_explicit:
+        if uv_explicit:
+            return _error(
+                "apply_assembly_constraint: world_fractions and uv_tensor are mutually "
+                "exclusive — pass only one"
+            )
+        if not isinstance(world_fractions, dict) or not (1 <= len(world_fractions) <= 2):
+            return _error(
+                f"apply_assembly_constraint: world_fractions must be a dict with 1 or 2 entries "
+                f"from {{'X', 'Y', 'Z'}}, got {world_fractions!r}"
+            )
+        world_fractions_norm = {}
+        for axis_name, frac in world_fractions.items():
+            axis_key = str(axis_name).strip().upper()
+            if axis_key not in ("X", "Y", "Z"):
+                return _error(
+                    f"apply_assembly_constraint: world_fractions keys must be 'X'/'Y'/'Z', "
+                    f"got {axis_name!r}"
+                )
+            if axis_key in world_fractions_norm:
+                return _error(
+                    f"apply_assembly_constraint: world_fractions has duplicate axis {axis_key!r}"
+                )
+            try:
+                frac_f = float(frac)
+            except (TypeError, ValueError):
+                return _error(f"apply_assembly_constraint: world_fractions[{axis_name!r}] must be a number")
+            if not (0.0 <= frac_f <= 1.0):
+                return _error(
+                    f"apply_assembly_constraint: world_fractions[{axis_name!r}] must be between "
+                    f"0.0 and 1.0 inclusive, got {frac!r}"
+                )
+            world_fractions_norm[axis_key] = frac_f
+        if ctype not in ("Coincident", "Distance"):
+            return _error(
+                f"apply_assembly_constraint: world_fractions is only meaningful for "
+                f"'Coincident'/'Distance', not {ctype!r} — omit it for this constraint_type"
+            )
+
+    dims = {
+        "part1": f"{p1_name}.{p1_elem}",
+        "part2": f"{p2_name}.{p2_elem}",
+        "constraint_type": ctype,
+        "offset": offset_f,
+        "uv_tensor": list(uv),
+    }
+    if axis_explicit:
+        dims["world_fractions"] = world_fractions_norm
+    if is_dry_run_enabled():
+        return _dry_run_result("apply_assembly_constraint", name=p2_name, dimensions=dims)
+    session_path = _session_document_path()
+    if not session_path.is_file():
+        return _error(
+            "apply_assembly_constraint: no session document yet — create objects with create_box/"
+            "create_cylinder first"
+        )
+    script = _APPLY_ASSEMBLY_CONSTRAINT_SCRIPT.format(
+        assembly_name=assembly,
+        part1_name=p1_name,
+        part1_element=p1_elem,
+        part2_name=p2_name,
+        part2_element=p2_elem,
+        constraint_type=ctype,
+        offset=offset_f,
+        uv_tensor=uv,
+        world_fractions=world_fractions_norm,
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"apply_assembly_constraint failed: {result['error']}")
+    resolved_uv_match = _RESOLVED_UV_RE.search(result["stdout"] or "")
+    if resolved_uv_match:
+        resolved = json.loads(resolved_uv_match.group(1))
+        dims["uv_tensor"] = resolved["uv_tensor"]
+        if resolved.get("u_world_axis") or resolved.get("v_world_axis"):
+            dims["axis_alignment"] = (
+                f"NOTE: on this face, u points along world {resolved.get('u_world_axis') or '(no single axis)'}"
+                f" and v points along world {resolved.get('v_world_axis') or '(no single axis)'}"
+                " -- if uv_tensor was guessed assuming a different axis, the placement above may not "
+                "be where you intended; re-check against this, or use world_fractions instead."
+            )
+    return _ok(
+        name=result.get("resolved_name") or p2_name,
+        dimensions=dims,
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
+    )
+
+_ANCHOR_ASSEMBLY_ROOT_SCRIPT = ("""\
+import FreeCAD as App
+
+""" + _RESOLVE_OBJECT_SNIPPET + _SESSION_OPEN_SNIPPET + """\
+_assembly = resolve_object(doc, {assembly_name!r})
+if _assembly is None:
+    raise RuntimeError("Object not found: " + {assembly_name!r})
+part = resolve_object(doc, {part_name!r})
+if part is None:
+    raise RuntimeError("Object not found: " + {part_name!r})
+if part not in getattr(_assembly, "Group", []):
+    raise RuntimeError(
+        "'" + {part_name!r} + "' is not in assembly '" + {assembly_name!r}
+        + "' -- call add_parts_to_assembly first."
+    )
+
+part.Placement = App.Placement(App.Vector(0, 0, 0), App.Rotation(0, 0, 0))
+if not hasattr(part, "DanaAnchored"):
+    part.addProperty(
+        "App::PropertyBool", "DanaAnchored", "Dana",
+        "Set by anchor_assembly_root -- Placement is locked to the assembly's fixed "
+        "reference frame; every other placement-mutating tool (position_assembly_part, "
+        "modify_freecad_parameter's Placement branch, apply_assembly_constraint's part2) "
+        "refuses to move or rotate this object until a fresh anchor_assembly_root call."
+    )
+part.DanaAnchored = True
+doc.recompute()
+
+obj = part
+""" + _SESSION_SAVE_SNIPPET + _ASSEMBLY_RESULT_PRINT)
+
+def anchor_assembly_root(assembly_name: str, part_name: str) -> str:
+    """Deterministically pins ``part_name`` — typically the chassis/main
+    body, the rigid reference every other part in ``assembly_name`` gets
+    positioned against — to the assembly's origin: resets its
+    ``Placement`` to IDENTITY (position ``(0, 0, 0)``, rotation
+    ``(0, 0, 0)``) and marks it with a persistent ``DanaAnchored`` custom
+    property.
+
+    There is no live FreeCAD Assembly-workbench solver reachable from this
+    headless FreeCADCmd execution model to enforce a real "Fixed" joint
+    constraint (see ``apply_assembly_constraint``'s own docstring for
+    exactly why) — ``DanaAnchored`` is the deterministic Python-side
+    substitute: every other placement-mutating tool here
+    (``position_assembly_part``, ``modify_freecad_parameter``'s
+    ``Placement``/``Placement.Base`` branch, ``apply_assembly_constraint``
+    when this part is passed as ``part2``) checks it and REFUSES to move or
+    rotate the object outright, so once anchored, nothing can silently tilt
+    it again except another ``anchor_assembly_root`` call (which just
+    re-applies the same identity reset). It may still be used as
+    ``apply_assembly_constraint``'s ``part1`` (the fixed reference), since
+    that side never moves anyway.
+
+    ``part_name`` must already be a member of ``assembly_name`` (call
+    ``add_parts_to_assembly`` first) — same "must already belong" contract
+    as ``apply_assembly_constraint``'s part1_name/part2_name.
+    """
+    assembly = (assembly_name or "").strip()
+    part = (part_name or "").strip()
+    missing = [n for n, v in (("assembly_name", assembly), ("part_name", part)) if not v]
+    if missing:
+        return _error(f"anchor_assembly_root requires {', '.join(missing)}")
+    dims = {"placement": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0]}
+    if is_dry_run_enabled():
+        return _dry_run_result("anchor_assembly_root", name=part, dimensions=dims)
+    session_path = _session_document_path()
+    if not session_path.is_file():
+        return _error(
+            "anchor_assembly_root: no session document yet — create objects with create_box/"
+            "create_cylinder first"
+        )
+    script = _ANCHOR_ASSEMBLY_ROOT_SCRIPT.format(
+        assembly_name=assembly,
+        part_name=part,
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"anchor_assembly_root failed: {result['error']}")
+    return _ok(
+        name=result.get("resolved_name") or part,
+        dimensions=dims,
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
+    )
+
+_DEFINE_KINEMATIC_JOINT_SCRIPT = ("""\
+import FreeCAD as App
+import json
+
+""" + _RESOLVE_OBJECT_SNIPPET + _SESSION_OPEN_SNIPPET + """\
+assembly = resolve_object(doc, {assembly_name!r})
+if assembly is None:
+    raise RuntimeError("Object not found: " + {assembly_name!r})
+
+child = resolve_object(doc, {child_link!r})
+if child is None:
+    raise RuntimeError("Object not found: " + {child_link!r})
+if child not in assembly.Group:
+    raise RuntimeError(
+        {child_link!r} + " is not a member of assembly " + assembly.Name
+        + " -- add it first with add_parts_to_assembly"
+    )
+
+# Kinematic Axis Guard: for a joint type where `axis` is physically
+# meaningful (everything except "fixed"), reject it outright if `child`
+# is a simple rotationally-symmetric part (exactly one cylindrical face --
+# a plain cylinder/wheel, not a compound shape with multiple curved faces,
+# which is left unchecked rather than guessed at) whose REAL geometric
+# axis doesn't line up with the requested `axis`. This is a pure geometry
+# check independent of how `child` got positioned (which face it was
+# mated to, what uv_tensor was used, how the plan worded the task) --
+# closing the exact failure mode a text-only prompt rule couldn't: a wheel
+# mated flush to the chassis's TOP/BOTTOM face is a perfectly valid planar
+# Coincident mate (nothing about it is geometrically wrong), so it sails
+# through apply_assembly_constraint, but declaring "axis=[1,0,0]" for a
+# part whose real symmetry axis is Z would build a URDF joint that makes
+# the wheel tumble in place instead of roll -- caught HERE, at the one
+# point the model's actual intent (the joint axis) and the part's actual
+# geometry are both in hand at once.
+_jtype_for_axis_check = {joint_type!r}
+if _jtype_for_axis_check != "fixed":
+    _requested_axis = App.Vector(*{axis!r})
+    if _requested_axis.Length > 1e-9:
+        _requested_axis.normalize()
+        _cyl_faces = [f for f in child.Shape.Faces if f.Surface.TypeId == "Part::GeomCylinder"]
+        if len(_cyl_faces) == 1:
+            _physical_axis = _cyl_faces[0].Surface.Axis
+            if _physical_axis.Length > 1e-9:
+                _physical_axis = App.Vector(_physical_axis.x, _physical_axis.y, _physical_axis.z)
+                _physical_axis.normalize()
+                # abs() because a joint axis anti-parallel to the part's axis
+                # (e.g. requested [-1,0,0] against a physical +X symmetry
+                # axis) is still the same rotational axis -- only genuine
+                # off-axis mismatches (roughly orthogonal or skewed) should
+                # reject. 0.9 ~= 26 degrees of tolerance: comfortably below
+                # a real mismatch (this exact bug measured dot=0.0, axle on
+                # Z vs requested X) but past ordinary floating-point noise
+                # from composed rotations.
+                _alignment = abs(_requested_axis.dot(_physical_axis))
+                if _alignment < 0.9:
+                    raise RuntimeError(
+                        "define_kinematic_joint: '" + child.Name + "' is a cylindrical part whose real "
+                        "rotational axis is " + str(tuple(round(c, 3) for c in _physical_axis)) + ", but the "
+                        "requested joint axis " + str({axis!r}) + " is not aligned with it (alignment=" +
+                        str(round(_alignment, 3)) + ", need >= 0.9). A '" + _jtype_for_axis_check + "' joint "
+                        "about a mismatched axis builds a wheel that tumbles/wobbles instead of rolling. "
+                        "Re-mate '" + child.Name + "' with apply_assembly_constraint so its FLAT end-cap face "
+                        "is Coincident with a chassis face whose outward normal matches your intended rolling "
+                        "axis (see Rule 16), then retry this call with `axis` set to that same direction."
+                    )
+
+_parent_link = {parent_link!r}
+if _parent_link != {root_link!r}:
+    _parent_obj = resolve_object(doc, _parent_link)
+    if _parent_obj is None:
+        raise RuntimeError("Object not found: " + _parent_link)
+    if _parent_obj not in assembly.Group:
+        raise RuntimeError(_parent_link + " is not a member of assembly " + assembly.Name)
+    if _parent_obj.Name == child.Name:
+        raise RuntimeError("a link cannot be its own parent: " + child.Name)
+    _parent_link = _parent_obj.Name
+
+if not hasattr(assembly, {joints_prop!r}):
+    assembly.addProperty(
+        "App::PropertyString", {joints_prop!r}, "Dana",
+        "JSON-encoded URDF kinematic joint overrides, keyed by child link Name"
+    )
+    setattr(assembly, {joints_prop!r}, "{{}}")
+
+_joints = json.loads(getattr(assembly, {joints_prop!r}) or "{{}}")
+_joints[child.Name] = {{
+    "parent": _parent_link,
+    "type": {joint_type!r},
+    "axis": {axis!r},
+    "joint_name": {joint_name!r},
+    "limit_lower": {limit_lower!r},
+    "limit_upper": {limit_upper!r},
+    "limit_effort": {limit_effort!r},
+    "limit_velocity": {limit_velocity!r},
+}}
+setattr(assembly, {joints_prop!r}, json.dumps(_joints))
+doc.recompute()
+
+obj = assembly
+""" + _SESSION_SAVE_SNIPPET + _ASSEMBLY_RESULT_PRINT)
+
+def define_kinematic_joint(
+    assembly_name: str,
+    child_link: str,
+    parent_link: str = ROOT_LINK_NAME,
+    joint_type: str = "fixed",
+    axis: Sequence[float] = (0.0, 0.0, 1.0),
+    joint_name: str | None = None,
+    limit_lower: float | None = None,
+    limit_upper: float | None = None,
+    limit_effort: float | None = None,
+    limit_velocity: float | None = None,
+) -> str:
+    """Declares a real parent/child kinematic joint between two members of
+    an existing ``create_assembly`` container — what ``export_assembly_to_urdf``
+    was missing to emit anything besides a flat "every part fixed to one
+    synthetic base_link" star topology.
+
+    Persisted as a JSON-encoded custom property directly on the assembly's
+    own ``App::Part`` object (``DanaKinematicJoints``) inside the shared
+    session document — the ONLY place this can live, since every tool call
+    here is its own fresh FreeCADCmd subprocess with no Python state kept
+    in memory between calls (see this module's own docstring), so a LATER
+    ``export_assembly_to_urdf`` call — a completely separate process — can
+    still read back what this call wrote.
+
+    ``child_link``/``parent_link`` must both already be real members of
+    ``assembly_name`` (added via ``add_parts_to_assembly``, validated
+    against the assembly's actual ``Group`` — same story as
+    ``apply_assembly_constraint``'s part1_name/part2_name) — EXCEPT
+    ``parent_link`` may also be the literal string ``"base_link"`` (the
+    default), the synthetic root ``export_assembly_to_urdf`` always emits,
+    meaning "attach directly to the world" rather than to another real
+    part. Calling this again for the same ``child_link`` REPLACES its
+    joint definition (keyed by child — a link can only ever have one
+    parent in a valid kinematic tree), so redefining a joint (change its
+    type, move it under a different parent) is just calling this again,
+    no separate update/delete tool needed.
+
+    Kinematic Axis Guard: for any ``joint_type`` other than ``"fixed"``, if
+    ``child_link`` is a simple rotationally-symmetric part (exactly one
+    cylindrical face — a plain wheel-shaped cylinder), ``axis`` is
+    rejected unless it's actually aligned (or anti-aligned) with that
+    part's REAL geometric symmetry axis, regardless of which face it was
+    mated to or how the plan worded the positioning step — confirmed live
+    (rover chassis stress test) that a wheel mated flush to a chassis's
+    TOP/BOTTOM face is a perfectly valid planar Coincident mate, so
+    ``apply_assembly_constraint`` has no reason to reject it, yet
+    declaring a joint axis that doesn't match the part's actual symmetry
+    axis silently builds a URDF robot whose "wheel" tumbles in place
+    instead of rolling. A part with zero or more than one cylindrical face
+    (e.g. after a boolean cut, or a non-cylindrical link) is left
+    unchecked rather than guessed at.
+
+    ``joint_type``: ``"fixed"`` (no ``axis``/``limits`` — the same rigid
+    joint every part got before this tool existed), ``"revolute"``/
+    ``"prismatic"`` (rotate/slide along ``axis``; omitted ``limit_lower``/
+    ``limit_upper``/``limit_effort``/``limit_velocity`` fall back to
+    generic placeholders at export time — see
+    ``dana.tools.urdf_builder._add_joint_kinematics``'s own docstring), or
+    ``"continuous"`` (unlimited rotation about ``axis``, no limit).
+
+    Cycle/dangling-parent validation happens at ``export_assembly_to_urdf``
+    time, not here — joints are typically defined in an arbitrary order
+    while a whole tree is still being built, so any single definition call
+    can't yet know whether the OVERALL tree it will end up part of is
+    valid.
+
+    ``joint_name`` (optional) is resolved to a concrete name RIGHT HERE —
+    ``"<parent_link>_to_<child_link>"`` when omitted — and echoed back
+    as ``dimensions["joint_name"]``, rather than left ``None`` for
+    ``export_assembly_to_urdf``'s own export-time default to fill in
+    later: ``dana.core.react_dispatch``'s caller registers this exact name
+    into the session's object registry/topology graph the instant this
+    call succeeds, so a model that immediately claims credit for it (e.g.
+    via ``mark_task_completed``) is checking against a name that's already
+    real, not one that won't exist until a much later export call decides
+    it.
+    """
+    assembly = (assembly_name or "").strip()
+    if not assembly:
+        return _error("define_kinematic_joint requires assembly_name")
+    child = (child_link or "").strip()
+    if not child:
+        return _error("define_kinematic_joint requires child_link")
+    parent = (parent_link or ROOT_LINK_NAME).strip() or ROOT_LINK_NAME
+    if child == parent:
+        return _error("define_kinematic_joint: child_link and parent_link cannot be the same part")
+    jtype = (joint_type or "fixed").strip().lower()
+    if jtype not in _KINEMATIC_JOINT_TYPES:
+        return _error(
+            f"define_kinematic_joint: unknown joint_type {jtype!r} — must be one of "
+            f"{sorted(_KINEMATIC_JOINT_TYPES)}"
+        )
+    try:
+        axis_vec = [float(v) for v in axis]
+    except (TypeError, ValueError):
+        return _error("define_kinematic_joint: axis must be 3 numbers")
+    if len(axis_vec) != 3:
+        return _error("define_kinematic_joint: axis must have exactly 3 elements [x, y, z]")
+    try:
+        lower = None if limit_lower is None else float(limit_lower)
+        upper = None if limit_upper is None else float(limit_upper)
+        effort = None if limit_effort is None else float(limit_effort)
+        velocity = None if limit_velocity is None else float(limit_velocity)
+    except (TypeError, ValueError):
+        return _error("define_kinematic_joint: limit_lower/upper/effort/velocity must all be numbers if given")
+
+    # Resolved HERE, not left as None for urdf_builder's own export-time
+    # default to fill in later: mark_task_completed's Evidence-Based Gate
+    # (_object_registry()) needs ONE concrete, stable name to register the
+    # instant this call succeeds — a caller (or the LLM) checking
+    # "does the joint I just created exist" can't be told to wait until a
+    # LATER export_assembly_to_urdf call decides what it's actually named.
+    resolved_joint_name = (joint_name or "").strip() or f"{parent}_to_{child}"
+    dims = {
+        "parent_link": parent,
+        "child_link": child,
+        "joint_type": jtype,
+        "axis": axis_vec,
+        "joint_name": resolved_joint_name,
+    }
+    if is_dry_run_enabled():
+        return _dry_run_result("define_kinematic_joint", name=assembly, dimensions=dims)
+    session_path = _session_document_path()
+    if not session_path.is_file():
+        return _error(
+            "define_kinematic_joint: no session document yet — create an assembly with "
+            "create_freecad_assembly first"
+        )
+    script = _DEFINE_KINEMATIC_JOINT_SCRIPT.format(
+        assembly_name=assembly,
+        child_link=child,
+        parent_link=parent,
+        root_link=ROOT_LINK_NAME,
+        joint_type=jtype,
+        axis=axis_vec,
+        joint_name=resolved_joint_name,
+        limit_lower=lower,
+        limit_upper=upper,
+        limit_effort=effort,
+        limit_velocity=velocity,
+        joints_prop=_KINEMATIC_JOINTS_PROP,
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"define_kinematic_joint failed: {result['error']}")
+    return _ok(
+        name=result.get("resolved_name") or assembly,
+        dimensions=dims,
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
+    )
+
+_EXPORT_ASSEMBLY_URDF_SCRIPT = ("""\
+import FreeCAD as App
+import Part
+import MeshPart
+import json
+import math
+import os
+
+""" + _RESOLVE_OBJECT_SNIPPET + _SESSION_OPEN_SNIPPET + """\
+assembly = resolve_object(doc, {assembly_name!r})
+if assembly is None:
+    raise RuntimeError("Object not found: " + {assembly_name!r})
+_members = list(getattr(assembly, "Group", []) or [])
+if not _members:
+    raise RuntimeError("assembly '" + {assembly_name!r} + "' has no parts — add some with add_parts_to_assembly first")
+
+_meshes_dir = {meshes_dir!r}
+os.makedirs(_meshes_dir, exist_ok=True)
+
+_root_link = {root_link!r}
+_joint_defs = json.loads(getattr(assembly, {joints_prop!r}, "{{}}") or "{{}}")
+
+_parts = []
+for _m in _members:
+    _shape = getattr(_m, "Shape", None)
+    if _shape is None or _shape.isNull():
+        continue  # a pure organizational sub-group with no geometry of its own -- nothing to export
+    _local_shape = _shape.copy()
+    _local_shape.transformShape(_m.Placement.inverse().toMatrix())
+    _mesh = MeshPart.meshFromShape(Shape=_local_shape, LinearDeflection=0.1, AngularDeflection=0.1)
+    _mesh_path = os.path.join(_meshes_dir, _m.Name + ".stl")
+    _mesh.write(_mesh_path)
+
+    _jdef = _joint_defs.get(_m.Name, {{}})
+    _joint_parent = _jdef.get("parent") or _root_link
+    if _joint_parent != _root_link:
+        _parent_obj = resolve_object(doc, _joint_parent)
+        if _parent_obj is None:
+            raise RuntimeError(
+                "'" + _m.Name + "' has a kinematic joint referencing unknown parent '" + _joint_parent + "'"
+            )
+        _rel = _parent_obj.Placement.inverse().multiply(_m.Placement)
+    else:
+        _rel = assembly.Placement.inverse().multiply(_m.Placement)
+    _yaw, _pitch, _roll = _rel.Rotation.toEuler()
+    # Both read off `_local_shape` (Placement already un-baked above), NOT
+    # `_shape` — Part.Shape.CenterOfMass/.MatrixOfInertia are otherwise
+    # computed in the document's GLOBAL frame, and requirement was "relative
+    # to the part's own local origin" so URDF joint transforms compose
+    # correctly instead of double-counting the Placement a second time (the
+    # exact bug this whole script's module comment already documents for the
+    # mesh). Live-verified (freecadcmd, a translated+rotated box): OCC's
+    # MatrixOfInertia is ALWAYS computed about the shape's own center of mass
+    # (translation-invariant) and its A11.. entries map directly to the
+    # standard ixx/iyy/izz/ixy/ixz/iyz tensor with no extra sign flip needed.
+    _com = _local_shape.CenterOfMass
+    _moi = _local_shape.MatrixOfInertia
+    _parts.append(
+        {{
+            "name": _m.Name,
+            "mesh_file": "meshes/" + _m.Name + ".stl",
+            "origin_xyz": [_rel.Base.x, _rel.Base.y, _rel.Base.z],
+            "origin_rpy": [math.radians(_roll), math.radians(_pitch), math.radians(_yaw)],
+            "volume": _local_shape.Volume,
+            "center_of_mass": [_com.x, _com.y, _com.z],
+            "inertia": {{
+                "ixx": _moi.A11, "ixy": _moi.A12, "ixz": _moi.A13,
+                "iyy": _moi.A22, "iyz": _moi.A23, "izz": _moi.A33,
+            }},
+            "joint_parent": _joint_parent,
+            "joint_type": _jdef.get("type") or "fixed",
+            "joint_axis": _jdef.get("axis") or [0.0, 0.0, 1.0],
+            "joint_name": _jdef.get("joint_name"),
+            "limit_lower": _jdef.get("limit_lower"),
+            "limit_upper": _jdef.get("limit_upper"),
+            "limit_effort": _jdef.get("limit_effort"),
+            "limit_velocity": _jdef.get("limit_velocity"),
+        }}
+    )
+
+if not _parts:
+    raise RuntimeError("assembly '" + {assembly_name!r} + "' has no parts with real geometry to export")
+
+# Parts Manifest File (robustness fix): written to disk in ADDITION to the
+# stdout marker print below, and read back as the AUTHORITATIVE source by
+# export_assembly_to_urdf's own Python wrapper. Live-confirmed (rover
+# chassis stress test #3, dana_runtime.log): a run where this script's own
+# _run_freecad_script() call correctly reported ok=True (returncode 0, no
+# exception banner in stderr) still came back with the "{marker}_URDF_PARTS"
+# line missing from captured stdout -- FreeCADCmd's subprocess stdout can
+# apparently drop/truncate output right at process exit on this platform
+# (the exact "exit code is not proof stdout is complete" class of issue
+# this module's own _SCRIPT_EXCEPTION_MARKER comment already documents for
+# exceptions specifically; this is the same unreliability applying to a
+# plain, successful print instead). A file write is not subject to
+# subprocess stdout capture at all, so it can't be dropped the same way.
+_manifest_path = os.path.join(os.path.dirname(_meshes_dir), "_parts_manifest.json")
+with open(_manifest_path, "w", encoding="utf-8") as _f:
+    json.dump({{"parts": _parts, "name": assembly.Name}}, _f)
+
+print("{marker}_URDF_PARTS " + json.dumps(_parts))
+print("{marker}_NAME " + assembly.Name)
+""")
+
+_VALIDATE_ASSEMBLY_COLLISIONS_SCRIPT = ("""\
+import FreeCAD as App
+
+""" + _RESOLVE_OBJECT_SNIPPET + _SESSION_OPEN_SNIPPET + """\
+assembly = resolve_object(doc, {assembly_name!r})
+if assembly is None:
+    raise RuntimeError("Object not found: " + {assembly_name!r})
+_members = [
+    m for m in getattr(assembly, "Group", [])
+    if getattr(m, "Shape", None) is not None and not m.Shape.isNull()
+]
+
+_collisions = []
+_epsilon = {epsilon!r}
+for _i in range(len(_members)):
+    for _j in range(_i + 1, len(_members)):
+        _a, _b = _members[_i], _members[_j]
+        try:
+            _overlap_volume = _a.Shape.common(_b.Shape).Volume
+        except Exception:
+            # Non-solid/degenerate geometry can't be intersected -- skipped
+            # rather than failing the whole audit over one bad pair; a
+            # genuinely broken shape shows up via inspect_spatial_properties
+            # instead, which is what that tool exists for.
+            continue
+        if _overlap_volume > _epsilon:
+            _collisions.append(dict(part_a=_a.Name, part_b=_b.Name, overlap_volume=_overlap_volume))
+
+print("{marker}_COLLISIONS " + str(_collisions))
+print("{marker}_CHECKED " + str(len(_members)))
+print("{marker} ok")
+""")
+
+_COLLISION_VOLUME_EPSILON = 1e-6
+
+def validate_assembly_collisions(assembly_name: str) -> str:
+    """Volumetric Validation Gate (Phase 2 of the layout safeguard, the
+    downstream complement to ``apply_assembly_constraint``'s Collision
+    Guard): a whole-assembly, TRUE solid-intersection audit —
+    every member pair's real ``Shape.common(...).Volume`` via FreeCAD's
+    native OCCT boolean intersection, not a bounding-box overlap (see
+    ``analyze_bounding_box_collisions`` for that cheaper, pairwise,
+    box-only check) — so a wheel whose bounding box merely brushes the
+    chassis's but whose actual curved geometry doesn't touch it reports NO
+    collision, while a wheel whose axle genuinely clips through the
+    chassis body (mounted to the wrong face, or positioned before the
+    chassis's real dimensions were known) is caught even though nothing
+    about the MATING CONSTRAINT itself was invalid — uv_tensor and
+    the Geometric Fit Guard only ever reason about ONE face's 2D footprint,
+    never the full 3D solid, so a legal-looking Coincident mate can still
+    produce a real interpenetration this function is the one thing left to
+    catch.
+
+    Intentionally NOT real-time coordinate feedback wired into every
+    ``apply_assembly_constraint``/``position_assembly_part`` call — a
+    volumetric check is comparatively expensive (a real boolean op per
+    pair) and, more importantly, gives no actionable DIRECTION to correct
+    from (unlike the Fit Guard's "too small, resize or pick another face"),
+    so running it after every single placement call would just trade one
+    failure mode (silent bad geometry) for another (the LLM guessing
+    coordinates in a loop with no better signal than "still overlapping").
+    Call this ONCE, explicitly, as a final QA pass — after every part in
+    ``assembly_name`` has been positioned, before ``export_assembly_to_urdf``
+    — the same "measure before you trust it" discipline
+    ``inspect_spatial_properties``/``analyze_bounding_box_collisions``
+    already enforce elsewhere in this module, just scoped to the WHOLE
+    assembly at once instead of one pair.
+
+    Read-only (never saves, never needs HITL approval — see
+    ``analyze_bounding_box_collisions``'s matching note): returns
+    ``collisions`` (a list of ``{"part_a", "part_b", "overlap_volume"}``
+    dicts, empty if none found) and ``has_collisions``/``checked_members``
+    alongside it. A pair whose actual boolean intersection can't be
+    computed (degenerate/non-solid geometry) is silently skipped rather
+    than failing the whole audit — a broken shape shows up via
+    ``inspect_spatial_properties`` instead.
+    """
+    assembly = (assembly_name or "").strip()
+    if not assembly:
+        return _error("validate_assembly_collisions requires assembly_name")
+    if is_dry_run_enabled():
+        return _dry_run_result(
+            "validate_assembly_collisions", name=assembly, collisions=[], has_collisions=False
+        )
+    session_path = _session_document_path()
+    if not session_path.is_file():
+        return _error(
+            "validate_assembly_collisions: no session document yet — create objects with create_box/"
+            "create_cylinder first"
+        )
+    script = _VALIDATE_ASSEMBLY_COLLISIONS_SCRIPT.format(
+        assembly_name=assembly,
+        epsilon=_COLLISION_VOLUME_EPSILON,
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script, require_marker=True)
+    if not result["ok"]:
+        return _error(f"validate_assembly_collisions failed: {result['error']}")
+    collisions = _extract_collisions(result["stdout"]) or []
+    checked = _extract_checked_count(result["stdout"]) or 0
+    return _ok(
+        name=assembly,
+        collisions=collisions,
+        has_collisions=bool(collisions),
+        checked_members=checked,
+        path=str(session_path),
+    )
+
+def export_assembly_to_urdf(
+    assembly_name: str,
+    export_directory: str | None = None,
+    density_kg_m3: float | None = None,
+) -> str:
+    """Export ``assembly_name`` (a real ``create_freecad_assembly``
+    ``App::Part`` container) into a ``.urdf`` robot description — the
+    CAD-to-robotics bridge: every member becomes a URDF ``<link>`` (its
+    real geometry, exported as its own ``.stl`` under ``meshes/``) jointed
+    onto whatever parent ``define_kinematic_joint`` last declared for it
+    (or the synthetic ``base_link`` root by default, for a member no one
+    ever called ``define_kinematic_joint`` on), at that member's real
+    ``Placement`` RELATIVE TO THAT PARENT (not the document's absolute
+    coordinates) — see this function's own module-level comment for the
+    live-verified mesh/Placement double-transform bug this specifically
+    avoids.
+
+    Each link also gets a ``<collision>`` (the same mesh as ``<visual>``)
+    and an ``<inertial>`` block — mass/center-of-mass/inertia tensor
+    computed from the part's own real ``Shape`` (volume × ``density_kg_m3``,
+    default aluminum — see ``dana.tools.urdf_builder``'s own module
+    constant), not guessed, so the export is usable directly in a physics
+    simulator instead of only a viewer.
+
+    Without any ``define_kinematic_joint`` calls this is still the
+    original flat "star" topology (every part fixed directly to
+    ``base_link``) — assembly group membership alone carries no
+    information about which part should be whose parent in a real joint
+    hierarchy, so nothing here guesses one. Call ``define_kinematic_joint``
+    beforehand (once per part that needs a real parent/moving joint) to
+    build an actual kinematic tree instead — this function just reads back
+    whatever was declared, per part, at export time.
+
+    ``export_directory`` defaults to a ``<assembly_name>_urdf`` folder
+    under this session's own output directory. The ``.urdf`` file and its
+    ``meshes/`` subdirectory are both written there.
+    """
+    assembly = (assembly_name or "").strip()
+    if not assembly:
+        return _error("export_assembly_to_urdf requires assembly_name")
+
+    safe = _safe_name(assembly)
+    out_dir = Path(export_directory) if (export_directory or "").strip() else (_export_dir() / f"{safe}_urdf")
+    if is_dry_run_enabled():
+        return _dry_run_result("export_assembly_to_urdf", name=assembly, path=str(out_dir / f"{safe}.urdf"))
+    session_path = _session_document_path()
+    if not session_path.is_file():
+        return _error(
+            "export_assembly_to_urdf: no session document yet — create an assembly with "
+            "create_freecad_assembly first"
+        )
+
+    meshes_dir = out_dir / "meshes"
+    script = _EXPORT_ASSEMBLY_URDF_SCRIPT.format(
+        assembly_name=assembly,
+        meshes_dir=str(meshes_dir).replace("\\", "/"),
+        root_link=ROOT_LINK_NAME,
+        joints_prop=_KINEMATIC_JOINTS_PROP,
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"export_assembly_to_urdf failed: {result['error']}")
+
+    # Parts Manifest File is the AUTHORITATIVE source (see the script's own
+    # comment above the write) -- a file write can't be dropped by
+    # subprocess stdout capture the way a print can. The stdout marker line
+    # is kept only as a fallback for a manifest file that somehow didn't
+    # get written (e.g. a permissions error on out_dir) despite the script
+    # otherwise reporting success.
+    manifest_path = meshes_dir.parent / "_parts_manifest.json"
+    parts: list[dict[str, Any]] | None = None
+    if manifest_path.is_file():
+        try:
+            parts = json.loads(manifest_path.read_text(encoding="utf-8")).get("parts")
+        except (OSError, json.JSONDecodeError):
+            parts = None
+
+    if parts is None:
+        stdout = result.get("stdout") or ""
+        prefix = f"{_OK_MARKER}_URDF_PARTS "
+        parts_line = next((line for line in stdout.splitlines() if line.startswith(prefix)), None)
+        if parts_line is None:
+            # Diagnostic tail instead of a bare one-liner -- live-confirmed
+            # (stress test #3) the model burned 3 search_tool_catalog calls
+            # plus 2 blind retries guessing why this failed, with nothing in
+            # the error to go on. stdout/stderr tails let it (or a human)
+            # actually see what FreeCAD did instead of guessing again.
+            tail = (stdout or result.get("stderr") or "").strip()[-500:]
+            return _error(
+                "export_assembly_to_urdf: FreeCAD script succeeded but neither the parts manifest "
+                f"file ({manifest_path}) nor the stdout marker was found. This is a tool bug, not a "
+                f"usage error -- retrying with different arguments will not help. Last {len(tail)} "
+                f"chars of FreeCAD output: {tail!r}"
+            )
+        try:
+            parts = json.loads(parts_line[len(prefix):])
+        except json.JSONDecodeError as exc:
+            return _error(f"export_assembly_to_urdf: could not parse parts manifest: {exc}")
+
+    from dana.tools.urdf_builder import export_assembly_parts_to_urdf
+
+    density_kwargs = {"density_kg_m3": density_kg_m3} if density_kg_m3 is not None else {}
+    urdf_result = json.loads(export_assembly_parts_to_urdf(assembly, parts, str(out_dir), **density_kwargs))
+    if not urdf_result.get("ok"):
+        return _error(f"export_assembly_to_urdf: {urdf_result.get('error')}")
+    return _ok(
+        name=urdf_result.get("name") or safe,
+        type="urdf",
+        path=urdf_result.get("path"),
+        link_count=urdf_result.get("link_count"),
+        joint_count=urdf_result.get("joint_count"),
+        meshes_dir=str(meshes_dir),
+    )
+
 _PATTERN_TYPES = ir._PATTERN_TYPES
-_pattern_offsets = ir._pattern_offsets
 
+_pattern_offsets = ir._pattern_offsets
 
 def batch_pattern_array(
     source_path: str,
@@ -1543,27 +3128,13 @@ def batch_pattern_array(
         gui_shown=_auto_show(session_path),
     )
 
-
-# FreeCAD Part::Cut is a Base/Tool pair; Part::MultiFuse/MultiCommon instead
-# take a Shapes list — two script shapes, chosen in Python (not branched
-# inside the FreeCADCmd subprocess) by which the operation actually needs.
 _BOOLEAN_FEATURE_TYPE: dict[str, str] = {
     "cut": "Part::Cut",
     "union": "Part::MultiFuse",
     "intersect": "Part::MultiCommon",
 }
+
 _DEFAULT_BOOLEAN_NAME: dict[str, str] = {"cut": "Cut", "union": "Fusion", "intersect": "Common"}
-
-_EXPORT_STL_SCRIPT = """\
-import FreeCAD as App
-import Mesh
-
-""" + _RESOLVE_OBJECT_SNIPPET + """\
-doc = App.openDocument({source_path!r})
-{lookup}Mesh.export({export_targets}, {out_path!r})
-print("{marker} path=" + {out_path!r})
-"""
-
 
 def apply_boolean(operation: str, base_object: str, tool_object: str, name: str | None = None) -> str:
     """Combine two objects already in the shared ``Session_Active.FCStd``
@@ -1609,16 +3180,7 @@ def apply_boolean(operation: str, base_object: str, tool_object: str, name: str 
         gui_shown=_auto_show(session_path),
     )
 
-
-# Local Coordinate System (LCS) resolution + the composite IR resolver for
-# create_feature_on_face now live in ``dana.plugins.freecad.ir``
-# (``_face_axes`` and friends, ``_feature_on_face_composite``, registered
-# there as a ``CompositeIRSpec``) — re-bound here only so
-# ``engine._face_axes(...)`` keeps working unchanged for existing callers/
-# tests, the same re-export precedent ``safe_var_name`` already set the
-# other direction. This module no longer owns a second copy.
 _face_axes = ir._face_axes
-
 
 def create_feature_on_face(
     object_name: str,
@@ -1704,10 +3266,9 @@ def create_feature_on_face(
         gui_shown=_auto_show(session_path),
     )
 
-
 _EDGE_FEATURE_TYPE: dict[str, str] = {"fillet": "Part::Fillet", "chamfer": "Part::Chamfer"}
-_DEFAULT_EDGE_NAME: dict[str, str] = {"fillet": "Fillet", "chamfer": "Chamfer"}
 
+_DEFAULT_EDGE_NAME: dict[str, str] = {"fillet": "Fillet", "chamfer": "Chamfer"}
 
 def apply_edge_operation(
     operation: str,
@@ -1785,22 +3346,15 @@ def apply_edge_operation(
         gui_shown=_auto_show(session_path),
     )
 
-
-# "Placement"/"Placement.Base" is a 3D translation, not a bare settable
-# number — setattr(obj, "Placement", 5.0) would fail outright. Replace the
-# whole Placement with a new Vector base and either the object's EXISTING
-# Rotation (a 3-element [x, y, z]) or a NEW one built from Euler angles (a
-# 6-element [x, y, z, yaw, pitch, roll]) — see modify_parameter's own
-# docstring for why a move never silently discards prior orientation in
-# the 3-element case, and the Yaw/Pitch/Roll degrees confirmation for the
-# 6-element case. Realized via the Universal CAD IR's "modify_placement"
-# kind (dana.plugins.freecad.ir) — _MODIFY_PARAMETER_VECTOR_SCRIPT (the old
-# bespoke f-string template) is retired, not kept as a parallel dead path.
 _VECTOR_PARAMETER_NAMES = frozenset({"placement", "placement.base"})
 
-
 def modify_parameter(
-    target_object: str, parameter_name: str, new_value: float | Sequence[float]
+    target_object: str,
+    parameter_name: str,
+    new_value: float | Sequence[float],
+    yaw: float | None = None,
+    pitch: float | None = None,
+    roll: float | None = None,
 ) -> str:
     """Change a single dimensional property (e.g. ``"Height"``, ``"Radius"``)
     on an object already in the shared ``Session_Active.FCStd`` document, by
@@ -1809,20 +3363,27 @@ def modify_parameter(
 
     ``parameter_name`` of ``"Placement"`` or ``"Placement.Base"`` is special:
     it moves (and optionally rotates) the object, so ``new_value`` must be a
-    vector instead of a single float — either:
+    3-number ``[x, y, z]`` (mm) vector instead of a single float — moves
+    ``Placement.Base`` to that point. Rotation is expressed ONLY via the
+    separate ``yaw``/``pitch``/``roll`` parameters (Euler angles in
+    DEGREES) — never packed into ``new_value`` (no raw quaternion/matrix/
+    6-number array can reach this function):
 
-    - A 3-number ``[x, y, z]`` (mm) — moves ``Placement.Base`` to that
-      point, PRESERVING the object's current ``Placement.Rotation``
-      (a translate never silently discards prior orientation).
-    - A 6-number ``[x, y, z, yaw, pitch, roll]`` (mm + DEGREES) — moves
-      ``Placement.Base`` AND replaces ``Placement.Rotation`` with a fresh
-      ``FreeCAD.Rotation(yaw, pitch, roll)``, the exact Euler convention
-      FreeCAD's own Placement dialog uses (confirmed live:
-      ``Rotation(90, 0, 0).toEuler() == (90.0, 0.0, 0.0)`` — the
-      constructor takes degrees directly, no radian conversion needed or
-      wanted). Needed for kinematic assemblies (URDF joints, assembly
-      mates) where a linked part must be moved AND oriented in one call,
-      not just translated.
+    - All three omitted (``None``): PRESERVES the object's current
+      ``Placement.Rotation`` (a translate never silently discards prior
+      orientation).
+    - Any one given: REPLACES the whole rotation with a fresh
+      ``FreeCAD.Rotation(yaw, pitch, roll)`` (omitted axes default to
+      ``0.0``) — the exact Euler convention FreeCAD's own Placement dialog
+      uses (confirmed live: ``Rotation(90, 0, 0).toEuler() ==
+      (90.0, 0.0, 0.0)`` — the constructor takes degrees directly, no
+      radian conversion needed or wanted). Needed for kinematic assemblies
+      (URDF joints, assembly mates) where a linked part must be moved AND
+      oriented in one call, not just translated.
+
+    Refuses outright (never silently no-ops) if ``target_object`` was
+    anchored via ``anchor_assembly_root`` — see that function's own
+    docstring.
     """
     param = (parameter_name or "").strip()
     if not param:
@@ -1839,22 +3400,29 @@ def modify_parameter(
             components = [float(component) for component in new_value]
         except (TypeError, ValueError):
             return _error(
-                f"modify_parameter: {param} new_value must be a 3-number [x, y, z] or "
-                f"6-number [x, y, z, yaw, pitch, roll] vector, got {new_value!r}"
+                f"modify_parameter: {param} new_value must be a 3-number [x, y, z] vector, "
+                f"got {new_value!r}"
             )
-        if len(components) == 3:
-            x, y, z = components
+        if len(components) != 3:
+            return _error(
+                f"modify_parameter: {param} new_value must have exactly 3 elements [x, y, z] "
+                f"(mm) — pass rotation via the separate yaw/pitch/roll parameters instead of "
+                f"packing it into this vector, got {len(components)}"
+            )
+        x, y, z = components
+        if yaw is None and pitch is None and roll is None:
             rotation: tuple[float, float, float] | None = None
             result_value: float | list[float] = [x, y, z]
-        elif len(components) == 6:
-            x, y, z, yaw, pitch, roll = components
-            rotation = (yaw, pitch, roll)
-            result_value = [x, y, z, yaw, pitch, roll]
         else:
-            return _error(
-                f"modify_parameter: {param} new_value must have 3 elements [x, y, z] or "
-                f"6 elements [x, y, z, yaw, pitch, roll] (degrees), got {len(components)}"
-            )
+            try:
+                yaw_f = float(yaw) if yaw is not None else 0.0
+                pitch_f = float(pitch) if pitch is not None else 0.0
+                roll_f = float(roll) if roll is not None else 0.0
+            except (TypeError, ValueError):
+                return _error("modify_parameter: yaw/pitch/roll must all be numbers, got "
+                              f"yaw={yaw!r} pitch={pitch!r} roll={roll!r}")
+            rotation = (yaw_f, pitch_f, roll_f)
+            result_value = [x, y, z, yaw_f, pitch_f, roll_f]
         if is_dry_run_enabled():
             return _dry_run_result(
                 "modify_parameter", path=str(session_path), parameter_name=param, new_value=result_value
@@ -1898,7 +3466,6 @@ def modify_parameter(
         gui_shown=_auto_show(session_path),
     )
 
-
 _GET_BOUNDING_BOX_SCRIPT = """\
 import FreeCAD as App
 
@@ -1907,7 +3474,6 @@ doc = App.openDocument({target_path!r})
 {lookup}""" + _BBOX_PRINT + """\
 print("{marker} path=" + {target_path!r})
 """
-
 
 def get_bounding_box(target_path: str, target_object: str | None = None) -> str:
     """Read-only: the physical bounding box of a previously-created object,
@@ -1948,7 +3514,6 @@ def get_bounding_box(target_path: str, target_object: str | None = None) -> str:
         z_max=z_max,
     )
 
-
 _INSPECT_SPATIAL_SCRIPT = """\
 import FreeCAD as App
 
@@ -1968,7 +3533,6 @@ print("{marker}_SPATIAL " + str([
 """ + _BBOX_PRINT + """\
 print("{marker} path=" + {target_path!r})
 """
-
 
 def inspect_spatial_properties(target_path: str, target_object: str | None = None) -> str:
     """Read-only: richer topology introspection than ``get_bounding_box`` —
@@ -2021,6 +3585,208 @@ def inspect_spatial_properties(target_path: str, target_object: str | None = Non
         bounding_box=result.get("bounding_box"),
     )
 
+_QUERY_TOPOLOGY_SCRIPT = ("""\
+import FreeCAD as App
+import json
+
+""" + _RESOLVE_OBJECT_SNIPPET + _SESSION_OPEN_SNIPPET + """\
+obj = resolve_object(doc, {part_name!r})
+if obj is None:
+    raise RuntimeError("Object not found: " + {part_name!r})
+shape = getattr(obj, "Shape", None)
+if shape is None or shape.isNull():
+    raise RuntimeError("'" + {part_name!r} + "' has no usable geometry (empty Shape).")
+# A boolean-chain result can be a Part.Compound wrapping the real solid --
+# same unwrap inspect_spatial_properties already does before touching
+# mass-property-dependent fields.
+if shape.ShapeType == "Compound" and shape.Solids:
+    shape = shape.Solids[0]
+
+_faces = []
+for _i, _face in enumerate(shape.Faces):
+    # Curved-Face Normal Guard: a face's normal is only a single,
+    # well-defined vector when the face is PLANAR -- the exact same
+    # "Part::GeomPlane" check _require_planar_face uses elsewhere in this
+    # module (verified live against this FreeCAD build). For any curved
+    # face (cylindrical, conical, toroidal, B-Spline, ...), normalAt(u, v)
+    # only returns the normal AT one arbitrary sampled point, not "the"
+    # normal of the whole face -- reporting that back as if it were
+    # face-wide would let the caller silently reason about the wrong
+    # direction. `normal` is `None` (serializes to JSON `null`) with an
+    # explicit `normal_warning` instead.
+    _is_planar = _face.Surface.TypeId == "Part::GeomPlane"
+    if _is_planar:
+        _n = _face.normalAt(0, 0)
+        _normal = [_n.x, _n.y, _n.z]
+        _normal_warning = None
+        # UV Axis Grounding: exposes the SAME (u, v) parametric quantities
+        # apply_assembly_constraint's own Fit Guard already computes
+        # internally (_face_alignment_delta's u_available/v_available,
+        # engine.py) so a caller can pre-check "is this face big enough,
+        # and which of u/v is the long axis" BEFORE ever calling
+        # apply_assembly_constraint, instead of discovering it via a
+        # rejected call. u_min/u_max/v_min/v_max are the face's own
+        # TRIMMED parametric bounds (Face.ParameterRange -- verified live,
+        # same fact _face_alignment_delta's own comment already documents:
+        # this is the face's real bounded rectangle, not the underlying
+        # infinite plane), and physically scaled in mm for a planar face
+        # (Geom_Plane's (u, v) parametrization uses unit-length basis
+        # vectors, so a 1-unit change in u/v is a literal 1mm move along
+        # the plane's own XDirection/YDirection -- the same assumption
+        # _face_alignment_delta's own fit-guard comparison already relies
+        # on). u_direction_vector/v_direction_vector are those basis
+        # vectors in WORLD space -- normal-agnostic (correct for an
+        # X-normal, Y-normal, Z-normal, or arbitrarily rotated face alike)
+        # -- letting the caller compare against a chassis's own elongation
+        # axis (from get_bounding_box/inspect_spatial_properties) to
+        # deterministically pick u vs v for a longitudinal layout, rather
+        # than guessing.
+        #
+        # Derived via face.valueAt(u, v) finite-differencing across the
+        # face's own ParameterRange corners, NOT via any Part.Plane
+        # attribute -- two prior attempts at a direct accessor
+        # (Surface.Position.Rotation.multVec(...), then Surface.XAxis/
+        # Surface.YAxis) both either went untested or failed live
+        # ("'Part.Plane' object has no attribute 'XAxis'", confirmed via a
+        # real query_topology call against this exact FreeCAD build).
+        # face.valueAt is already proven live in this exact codebase
+        # (_face_alignment_delta uses it the same way), so this reuses
+        # ONLY already-verified API surface instead of guessing a third
+        # attribute name. Exact, not approximate, for a planar face:
+        # Geom_Plane's (u, v) parametrization is affine (valueAt is linear
+        # in u and v), so the vector between valueAt at the two ends of
+        # EITHER axis, holding the other fixed, is that axis's constant
+        # direction everywhere on the face -- no epsilon-step numerical
+        # error the way this same technique would have on a curved
+        # surface (never done here; gated to _is_planar).
+        u_min, u_max, v_min, v_max = _face.ParameterRange
+        u_span_physical_mm = u_max - u_min
+        v_span_physical_mm = v_max - v_min
+        _origin_pt = _face.valueAt(u_min, v_min)
+        _u_delta = _face.valueAt(u_max, v_min) - _origin_pt
+        _v_delta = _face.valueAt(u_min, v_max) - _origin_pt
+        _u_delta.normalize()
+        _v_delta.normalize()
+        u_direction_vector = [_u_delta.x, _u_delta.y, _u_delta.z]
+        v_direction_vector = [_v_delta.x, _v_delta.y, _v_delta.z]
+    else:
+        _normal = None
+        _normal_warning = (
+            "face is not planar (" + _face.Surface.TypeId + ") -- a single normal vector is not "
+            "well-defined across a curved surface; use a Concentric-style axis/center reference "
+            "(apply_assembly_constraint's 'Concentric') instead of this face's normal"
+        )
+        # Same non-planar exclusion as normal/normal_warning above: a
+        # curved face's own (u, v) parametrization is frequently angular
+        # (e.g. a cylinder's u is a radians sweep, not a linear mm span)
+        # and has no single constant in-plane direction -- reporting a
+        # fabricated "physical mm span"/"direction vector" here would be
+        # actively misleading, not just incomplete, so all four are None.
+        u_span_physical_mm = None
+        v_span_physical_mm = None
+        u_direction_vector = None
+        v_direction_vector = None
+    _com = _face.CenterOfMass
+    _faces.append({{
+        "face_index": "Face" + str(_i + 1),
+        "area": _face.Area,
+        "is_planar": _is_planar,
+        "surface_type": _face.Surface.TypeId,
+        "normal": _normal,
+        "normal_warning": _normal_warning,
+        "centroid": [_com.x, _com.y, _com.z],
+        "u_span_physical_mm": u_span_physical_mm,
+        "v_span_physical_mm": v_span_physical_mm,
+        "u_direction_vector": u_direction_vector,
+        "v_direction_vector": v_direction_vector,
+    }})
+
+print("{marker}_TOPOLOGY " + json.dumps(_faces))
+print("{marker}_NAME " + obj.Name)
+print("{marker} path=" + _session_path)
+""")
+
+def query_topology(part_name: str) -> str:
+    """Read-only: per-face topology of ``part_name`` (a previously-created
+    object in the shared session document) -- for every face on its
+    ``Shape``: ``face_index`` ("Face3", 1-based, matching FreeCAD's own
+    element numbering used elsewhere in this module e.g.
+    ``apply_assembly_constraint``'s ``part1_element``/``part2_element``),
+    ``area``, ``is_planar``, ``surface_type``, ``centroid``, ``normal``
+    (``None`` for a curved face -- see ``normal_warning`` on that face),
+    and — for a planar face only, ``None`` for a curved one, same reasoning
+    as ``normal`` -- ``u_span_physical_mm``/``v_span_physical_mm`` (that
+    face's own real, trimmed parametric extent along each axis, in mm —
+    the SAME quantity ``apply_assembly_constraint``'s Fit Guard already
+    enforces internally, exposed here so a caller can pre-check "is this
+    face big enough" before that call, rather than discovering it via a
+    rejection) and ``u_direction_vector``/``v_direction_vector`` (those two
+    axes' real WORLD-space directions, normal-agnostic — correct whether
+    the face's normal points along X, Y, Z, or anywhere else). Comparing
+    these two direction vectors against a chassis's own elongation axis
+    (from ``get_bounding_box``/``inspect_spatial_properties``) is what lets
+    a caller deterministically choose ``apply_assembly_constraint``'s
+    ``uv_tensor`` axis (``u`` vs ``v``) for a longitudinal layout instead
+    of guessing.
+    Never saves, so — like ``get_bounding_box``/``inspect_spatial_properties``
+    — it never needs the HITL approval gate the create_*/apply_* mutators do.
+
+    Intended as a "look before you leap" query ahead of
+    ``apply_assembly_constraint``: lets the caller mathematically deduce
+    opposite faces (matching areas, anti-parallel normals), the largest
+    flat face (a candidate mounting surface), or top/bottom (by centroid Z)
+    from real BRep data instead of guessing a Face index blind.
+
+    Curved-face limitation (confirmed live against this exact FreeCAD
+    build, the same finding ``_require_planar_face`` already encodes for
+    ``apply_assembly_constraint``): a face's normal is only a single,
+    well-defined vector when the face is PLANAR. For a cylindrical/
+    conical/toroidal/B-Spline face, ``normal`` is ``None`` with an
+    explicit ``normal_warning`` explaining why, rather than a normal
+    sampled at one arbitrary point pretending to represent the whole face.
+
+    Face indices reflect THIS call's snapshot of ``part_name``'s CURRENT
+    ``Shape`` only -- OCC's own face numbering is not guaranteed stable
+    across a later boolean/fillet/pattern operation on this part, so a
+    stale index from an earlier call should not be trusted without
+    re-querying.
+    """
+    part = (part_name or "").strip()
+    if not part:
+        return _error("query_topology requires part_name")
+    if is_dry_run_enabled():
+        return _dry_run_result("query_topology", part_name=part, faces=[])
+    session_path = _session_document_path()
+    if not session_path.is_file():
+        return _error(
+            "query_topology: no session document yet — create objects with create_box/"
+            "create_cylinder first"
+        )
+    script = _QUERY_TOPOLOGY_SCRIPT.format(
+        part_name=part,
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"query_topology failed: {result['error']}")
+    faces = _extract_topology(result["stdout"])
+    if faces is None:
+        return _error("query_topology: failed to parse topology output")
+    # Deliberately "part_name", never "name": react_dispatch.dispatch_tool_call's
+    # generic success path registers ANY payload with both "name" and "path"
+    # keys into the object registry/topology DAG as if this call had just
+    # PRODUCED a new object (see get_bounding_box/inspect_spatial_properties's
+    # own matching omission there) -- a pure read-only query must not trip that,
+    # or a plain query_topology call would spuriously re-touch this part's DAG
+    # node on every single call.
+    return _ok(
+        part_name=result.get("resolved_name") or part,
+        path=str(session_path),
+        face_count=len(faces),
+        faces=faces,
+    )
 
 _ALIGNMENT_TYPES = frozenset({"top_center", "bottom_center", "flush_left", "flush_right"})
 
@@ -2029,14 +3795,18 @@ import FreeCAD as App
 
 """ + _RESOLVE_OBJECT_SNIPPET + """\
 doc = App.openDocument({source_path!r})
-{lookup}obj.Placement.Base = obj.Placement.Base + App.Vector({dx}, {dy}, {dz})
+{lookup}if getattr(obj, "DanaAnchored", False):
+    raise RuntimeError(
+        "'" + obj.Name + "' is anchored (anchor_assembly_root) and cannot be moved by "
+        "align_freecad_objects/create_assembly_mate -- it is this assembly's fixed reference frame."
+    )
+obj.Placement.Base = obj.Placement.Base + App.Vector({dx}, {dy}, {dz})
 doc.recompute()
 doc.save()
 print("{marker}_PLACEMENT " + str([obj.Placement.Base.x, obj.Placement.Base.y, obj.Placement.Base.z]))
 """ + _BBOX_PRINT + """\
 print("{marker} path=" + {source_path!r})
 """
-
 
 def _alignment_delta(
     alignment_type: str, source_bbox: dict[str, Any], target_bbox: dict[str, Any]
@@ -2072,7 +3842,6 @@ def _alignment_delta(
         return (tbb["x_max"] - sbb["x_max"], tcy - scy, tcz - scz)
     raise ValueError(f"unknown alignment_type: {alignment_type}")
 
-
 def align_objects(
     source_path: str,
     target_path: str,
@@ -2094,6 +3863,13 @@ def align_objects(
     required once ``source_path``/``target_path`` can be the SAME shared
     session document (two distinct objects can no longer be told apart by
     path alone in that case).
+
+    Refuses outright (never silently no-ops) if the source object was
+    anchored via ``anchor_assembly_root`` — same ``DanaAnchored`` guard as
+    ``position_assembly_part``/``modify_parameter``/
+    ``apply_assembly_constraint``, enforced here via ``_ALIGN_APPLY_SCRIPT``
+    (shared with ``create_assembly_mate``, which gets the same guard for
+    free).
     """
     align = (alignment_type or "").strip().lower()
     if align not in _ALIGNMENT_TYPES:
@@ -2140,9 +3916,7 @@ def align_objects(
         gui_shown=_auto_show(source),
     )
 
-
 _MATE_TYPES = frozenset({"concentric", "coincident_planar", "offset_axial"})
-
 
 def _mate_delta(
     mate_type: str, params: dict[str, Any], fixed_bbox: dict[str, Any], moving_bbox: dict[str, Any]
@@ -2195,7 +3969,6 @@ def _mate_delta(
         return (dx, dy, dz)
     raise ValueError(f"unknown mate_type: {mate_type}")
 
-
 def create_assembly_mate(
     fixed_path: str,
     moving_path: str,
@@ -2218,6 +3991,10 @@ def create_assembly_mate(
 
     ``fixed_object``/``moving_object``, when given, are resolved via
     Multi-Stage Object Resolution — see ``align_objects``'s matching note.
+
+    Refuses outright if the moving object was anchored via
+    ``anchor_assembly_root`` — same ``DanaAnchored`` guard as
+    ``align_objects``, since both share ``_ALIGN_APPLY_SCRIPT`` verbatim.
     """
     mt = (mate_type or "").strip().lower()
     if mt not in _MATE_TYPES:
@@ -2268,15 +4045,10 @@ def create_assembly_mate(
         gui_shown=_auto_show(moving),
     )
 
-
-# Part::Sweep's own bend radius isn't exposed by create_freecad_pipe's schema
-# (only the pipe's cross-section radius and the sweep angle are) — this is a
-# conventional-enough elbow curvature default for that narrower schema.
 _PIPE_ARC_BEND_RADIUS_MULTIPLIER = 3.0
+
 _PIPE_ARC_MIN_BEND_RADIUS = 20.0
 
-# A circle profile in the XY plane already faces +Z, which is exactly right
-# for sweeping straight up along a Part::Line path — no reorientation needed.
 _PIPE_STRAIGHT_SCRIPT = """\
 import FreeCAD as App
 
@@ -2303,12 +4075,6 @@ doc.saveAs({out_path!r})
 print("{marker} path=" + {out_path!r})
 """
 
-# The arc path (a Part::Circle restricted to Angle1..Angle2) starts at angle
-# 0 -> point (arc_radius, 0, 0), tangent +Y there — rotating the profile
-# circle 90 deg about X turns its default +Z-facing normal to face +Y,
-# perpendicular to that tangent, so the sweep starts from a valid cross-
-# section regardless of how far Angle2 extends. Frenet=True lets Part::Sweep
-# transport/reorient that cross-section along the rest of the curving path.
 _PIPE_ARC_SCRIPT = """\
 import FreeCAD as App
 
@@ -2336,7 +4102,6 @@ doc.saveAs({out_path!r})
 """ + _BBOX_PRINT + """\
 print("{marker} path=" + {out_path!r})
 """
-
 
 def create_pipe(
     pipe_radius: float,
@@ -2408,7 +4173,6 @@ def create_pipe(
         gui_shown=_auto_show(out_path),
     )
 
-
 def export_mesh_stl(source_path: str, name: str | None = None, target_object: str | None = None) -> str:
     """Tessellate ``source_path`` (a ``.FCStd`` document) into a standalone
     ``.stl`` mesh file — the hand-off format for ``gr.Model3D`` viewers
@@ -2442,11 +4206,6 @@ def export_mesh_stl(source_path: str, name: str | None = None, target_object: st
         return _error(f"export_mesh_stl failed: {result['error']}")
     return _ok(op="export_mesh_stl", source_path=str(source), path=str(out_path))
 
-
-# Distinct from export_mesh_stl above (an internal single-document ->
-# temp-STL hop for the 3D viewer's preview mesh) — this is the user-facing,
-# possibly-multi-object manufacturing/handoff export, saved to a permanent
-# named file under _EXPORT_DIR rather than a throwaway viewer temp path.
 _EXPORT_FORMAT_EXT: dict[str, str] = {"stl": "stl", "step": "step"}
 
 _EXPORT_MODEL_STL_SCRIPT = """\
@@ -2488,7 +4247,6 @@ for p, n in {target_specs!r}:
 Part.export(objects, {out_path!r})
 print("{marker} path=" + {out_path!r})
 """
-
 
 def export_model(
     target_paths: list[str], format: str, filename: str, target_objects: list[str] | None = None
@@ -2535,14 +4293,13 @@ def export_model(
         return _error(f"export_model failed: {result['error']}")
     return _ok(format=fmt, path=str(out_path), target_count=len(paths))
 
-
 _MODIFY_PREAMBLE = 'import FreeCAD as App\n\ndoc = App.openDocument({in_path!r})\n'
+
 _MODIFY_POSTAMBLE = (
     '\n\ndoc.recompute()\n'
     "doc.save()\n"
     'print("{marker} path=" + {in_path!r} + " objects=" + str(len(doc.Objects)))\n'
 )
-
 
 def modify_existing_document(filepath: str, modification_script: str) -> str:
     """Open an existing ``.FCStd`` document, run ``modification_script``
@@ -2577,7 +4334,6 @@ def modify_existing_document(filepath: str, modification_script: str) -> str:
         return _error(f"modify_existing_document failed: {result['error']}")
     return _ok(op="modify_existing_document", path=str(path), gui_shown=_auto_show(path))
 
-
 def execute_freecad_script(python_script_str: str) -> str:
     """Run an arbitrary FreeCAD Python script via FreeCADCmd (escape hatch).
 
@@ -2595,7 +4351,6 @@ def execute_freecad_script(python_script_str: str) -> str:
     if not result["ok"]:
         return _error(f"execute_freecad_script failed: {result['error']}")
     return _ok(op="execute_freecad_script", stdout=result["stdout"], stderr=result["stderr"])
-
 
 __all__ = (
     "FreeCADNotFoundError",
@@ -2623,3 +4378,21 @@ __all__ = (
     "get_freecadcmd_path",
     "show_in_freecad_gui",
 )
+
+
+# --- restored from HEAD (excluded refactor did not touch these) ---
+
+_COMMON_INSTALL_GLOBS: tuple[str, ...] = (
+    r"C:\Program Files\FreeCAD*\bin\FreeCADCmd.exe",
+    r"C:\Program Files (x86)\FreeCAD*\bin\FreeCADCmd.exe",
+)
+
+_EXPORT_STL_SCRIPT = """\
+import FreeCAD as App
+import Mesh
+
+""" + _RESOLVE_OBJECT_SNIPPET + """\
+doc = App.openDocument({source_path!r})
+{lookup}Mesh.export({export_targets}, {out_path!r})
+print("{marker} path=" + {out_path!r})
+"""
