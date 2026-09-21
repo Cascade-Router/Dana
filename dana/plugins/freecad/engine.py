@@ -1650,7 +1650,62 @@ def position_assembly_part(
     )
 
 _ASSEMBLY_CONSTRAINT_ELEMENT_HELPER = """\
+def _resolve_face_by_world_normal(obj, normal, obj_label):
+    # Semantic Normal Targeting: an alternative to a literal 'FaceN' index
+    # reference for part1_element/part2_element -- a [nx, ny, nz] world-space
+    # direction, resolved here to whichever of obj's own PLANAR faces has a
+    # world-space normal aligned with it (dot >= 0.9, same threshold
+    # convention _resolve_world_fractions_uv/_face_axis_world_hints already
+    # use elsewhere in this module). Exists because an LLM asked to re-derive
+    # "the opposite lateral face" from a numbered Face index across several
+    # ReAct iterations was confirmed live to lose that mapping and mate
+    # wheels to two DIFFERENT, non-parallel faces instead of a matching
+    # opposite pair -- a world-space normal is a fixed target independent of
+    # any particular OpenCASCADE face ordering, so it can't drift between
+    # calls the way a remembered index can. Only ever matches PLANAR faces
+    # (a curved face's normal isn't a single constant direction, same
+    # reasoning as _require_planar_face's own restriction below) -- a
+    # cylindrical part's lateral surface is never a valid match, use an
+    # explicit 'FaceN' reference (or 'Concentric') for that instead.
+    if len(normal) != 3:
+        raise RuntimeError(
+            "world-space normal reference on '" + obj_label + "' must have exactly 3 numbers "
+            "[nx, ny, nz], got " + repr(list(normal))
+        )
+    vec = App.Vector(float(normal[0]), float(normal[1]), float(normal[2]))
+    if vec.Length < 1e-9:
+        raise RuntimeError(
+            "world-space normal reference on '" + obj_label + "' is a zero-length vector -- "
+            "must point in some direction, e.g. [0, -1, 0]."
+        )
+    vec.normalize()
+    shape = getattr(obj, "Shape", None)
+    if shape is None or shape.isNull():
+        raise RuntimeError("'" + obj_label + "' has no usable geometry (empty Shape).")
+    best_face, best_dot, checked = None, -2.0, 0
+    for f in shape.Faces:
+        if f.Surface.TypeId != "Part::GeomPlane":
+            continue
+        checked += 1
+        pt = f.CenterOfMass
+        u, v = f.Surface.parameter(pt)
+        n = f.normalAt(u, v)
+        dot = n.x * vec.x + n.y * vec.y + n.z * vec.z
+        if dot > best_dot:
+            best_face, best_dot = f, dot
+    if best_face is None or best_dot < 0.9:
+        raise RuntimeError(
+            "no planar face on '" + obj_label + "' has a world-space normal aligned with "
+            + repr(list(normal)) + " (best match dot=" + str(round(best_dot, 3)) + " across "
+            + str(checked) + " planar face(s), need >= 0.9) -- call query_topology to inspect "
+            "this part's real face normals, or pass an explicit 'FaceN' reference instead."
+        )
+    return best_face
+
+
 def _resolve_constraint_element(obj, element_name, obj_label):
+    if isinstance(element_name, (list, tuple)):
+        return _resolve_face_by_world_normal(obj, element_name, obj_label)
     if element_name.startswith("Face"):
         kind, plural, prefix_len = "Faces", "faces", 4
     elif element_name.startswith("Edge"):
@@ -1658,7 +1713,7 @@ def _resolve_constraint_element(obj, element_name, obj_label):
     else:
         raise RuntimeError(
             "'" + element_name + "' is not a recognized element reference on '" + obj_label
-            + "' -- must be e.g. 'Face1' or 'Edge3'."
+            + "' -- must be e.g. 'Face1' or 'Edge3', or a [nx, ny, nz] world-space normal vector."
         )
     try:
         index = int(element_name[prefix_len:])
@@ -1935,6 +1990,16 @@ if getattr(part2, "DanaAnchored", False):
 
 el1 = _resolve_constraint_element(part1, {part1_element!r}, {part1_name!r})
 el2 = _resolve_constraint_element(part2, {part2_element!r}, {part2_name!r})
+# Everything below this point uses these display-only LABEL strings (never
+# the raw part1_element/part2_element above, which may be a [nx, ny, nz]
+# list when Semantic Normal Targeting was used) for error-message text --
+# see apply_assembly_constraint's own _element_label helper for why: a raw
+# list concatenated with "+" against a str literal raises TypeError, and
+# these error paths ARE reachable for a normal-vector reference (e.g. the
+# Geometric Fit Guard/Collision Guard below), unlike _resolve_constraint_element
+# itself which needs the real (str or list) type to dispatch correctly.
+part1_element_label = {part1_element_label!r}
+part2_element_label = {part2_element_label!r}
 point1, dir1, has_axis1, axis_point1, axis_dir1 = _element_reference(el1)
 point2, dir2, has_axis2, axis_point2, axis_dir2 = _element_reference(el2)
 
@@ -1959,7 +2024,7 @@ def _translate_part2(delta):
 
 if constraint_type == "Concentric":
     if not has_axis1 or not has_axis2:
-        bad_element = {part1_element!r} if not has_axis1 else {part2_element!r}
+        bad_element = part1_element_label if not has_axis1 else part2_element_label
         bad_owner = {part1_name!r} if not has_axis1 else {part2_name!r}
         raise RuntimeError(
             "'Concentric' requires both elements to be circular/cylindrical -- '" + bad_element
@@ -1969,13 +2034,13 @@ if constraint_type == "Concentric":
     _translate_part2(axis_point1 - axis_point2)
 
 elif constraint_type == "Parallel":
-    _require_planar_face(part1, {part1_element!r}, {part1_name!r}, el1)
-    _require_planar_face(part2, {part2_element!r}, {part2_name!r}, el2)
+    _require_planar_face(part1, part1_element_label, {part1_name!r}, el1)
+    _require_planar_face(part2, part2_element_label, {part2_name!r}, el2)
     _rotate_part2_about(point2, App.Rotation(dir2, dir1))
 
 elif constraint_type == "Perpendicular":
-    _require_planar_face(part1, {part1_element!r}, {part1_name!r}, el1)
-    _require_planar_face(part2, {part2_element!r}, {part2_name!r}, el2)
+    _require_planar_face(part1, part1_element_label, {part1_name!r}, el1)
+    _require_planar_face(part2, part2_element_label, {part2_name!r}, el2)
     current_angle = dir1.getAngle(dir2)
     axis = dir1.cross(dir2)
     if axis.Length < 1e-9:
@@ -1991,11 +2056,11 @@ elif constraint_type in ("Coincident", "Distance"):
     if el1.ShapeType == "Face" and el2.ShapeType == "Face":
         # Standard face-mating convention: normals point at each other, so
         # part2's normal must end up ANTI-parallel to part1's.
-        _require_planar_face(part1, {part1_element!r}, {part1_name!r}, el1)
-        _require_planar_face(part2, {part2_element!r}, {part2_name!r}, el2)
+        _require_planar_face(part1, part1_element_label, {part1_name!r}, el1)
+        _require_planar_face(part2, part2_element_label, {part2_name!r}, el2)
         _rotate_part2_about(point2, App.Rotation(dir2, dir1.negative()))
     if constraint_type == "Distance":
-        _require_planar_face(part1, {part1_element!r}, {part1_name!r}, el1)
+        _require_planar_face(part1, part1_element_label, {part1_name!r}, el1)
     # Any other element-type combination (edge-edge, face-edge) skips the
     # rotation step entirely -- there is no unambiguous "correct" relative
     # orientation to infer, so only the reference points are aligned.
@@ -2010,7 +2075,7 @@ elif constraint_type in ("Coincident", "Distance"):
 
     target_point = (point1 + dir1 * offset) if constraint_type == "Distance" else point1
     target_point = target_point + _face_alignment_delta(
-        el1, {part1_element!r}, {part1_name!r}, uv_tensor, part2, {part2_name!r}
+        el1, part1_element_label, {part1_name!r}, uv_tensor, part2, {part2_name!r}
     )
 
     _translate_part2(target_point - point2)
@@ -2034,7 +2099,7 @@ elif constraint_type in ("Coincident", "Distance"):
         if _sib_pl is not None and (_sib_pl.Base - part2.Placement.Base).Length < 1e-6:
             raise RuntimeError(
                 "'" + {part2_name!r} + "' would land at the exact same point as '"
-                + _sibling.Name + "' -- both mated to '" + {part1_element!r} + "' on '"
+                + _sibling.Name + "' -- both mated to '" + part1_element_label + "' on '"
                 + {part1_name!r} + "'. Pass a distinct uv_tensor (e.g. [0.0, 0.0] vs "
                 "[1.0, 1.0]) so they land at different points on that face."
             )
@@ -2060,12 +2125,81 @@ obj = part2
 
 _ASSEMBLY_CONSTRAINT_TYPES = frozenset({"Coincident", "Concentric", "Parallel", "Distance", "Perpendicular"})
 
+
+def _validate_constraint_element(value: Any, param_name: str) -> str | list[float]:
+    """``part1_element``/``part2_element`` accepts either a literal
+    ``"Face1"``/``"Edge3"`` reference (returned as-is) or a Semantic Normal
+    Target — a ``[nx, ny, nz]`` world-space direction (returned as a plain
+    ``list[float]``) — resolved inside the generated FreeCAD script
+    (``_resolve_face_by_world_normal``) to whichever of that object's own
+    PLANAR faces has a world-space normal aligned with it, instead of
+    requiring the caller to already know that face's own OpenCASCADE index.
+
+    Added because a numbered ``FaceN`` reference was confirmed live (rover-
+    assembly stress test) to NOT survive multiple ReAct iterations reliably:
+    an LLM asked to mate a second pair of wheels to "the opposite lateral
+    face" from a first pair, several tool calls later, mated them to a
+    DIFFERENT, non-parallel face instead (``Face2`` vs ``Face4`` on the same
+    box) — a plain indexing mistake with no geometric error to catch it,
+    since each individual ``apply_assembly_constraint`` call was itself
+    perfectly valid. A world-space normal has no such drift: ``[0, -1, 0]``
+    means the same real-world direction on every call, independent of
+    which numbered face happens to be there.
+    """
+    def _is_numeric_triple(seq: Any) -> bool:
+        return (
+            isinstance(seq, (list, tuple))
+            and len(seq) == 3
+            and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in seq)
+        )
+
+    if isinstance(value, str):
+        text = value.strip()
+        # Every tool argument is declared "type": "string" in tools.json
+        # (dana.tools.schema has no union-type/anyOf support today, and
+        # adding one would touch the pydantic model builder, the OpenAI
+        # schema generator, AND schema_minify.py for every tool, not just
+        # this one) -- so a Semantic Normal Target arrives as a bracketed
+        # JSON array STRING, e.g. '[0, -1, 0]', same as every other caller
+        # sends a plain 'Face1' string. Only a leading '[' attempts the
+        # JSON parse -- a real "Face1"/"Edge3" reference never starts with
+        # one, so this can't misfire on the existing common case.
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                parsed = None
+            if _is_numeric_triple(parsed):
+                return [float(x) for x in parsed]
+            raise ValueError(
+                f"{param_name} looks like a world-space normal vector but isn't valid JSON for "
+                f"exactly 3 numbers, e.g. '[0, -1, 0]' — got {value!r}"
+            )
+        return text
+    if _is_numeric_triple(value):
+        return [float(x) for x in value]
+    raise ValueError(
+        f"{param_name} must be a 'FaceN'/'EdgeN' string reference or a '[nx, ny, nz]' JSON "
+        f"world-space normal vector string (3 numbers), got {value!r}"
+    )
+
+
+def _element_label(elem: str | list[float]) -> str:
+    """Always-a-string display form of a validated element reference, for
+    every place ``apply_assembly_constraint`` needs to embed it in an error
+    message or the ``dimensions`` result payload — the raw value itself may
+    be a ``list`` (see ``_validate_constraint_element``), and Python can't
+    ``+``-concatenate a ``list`` onto a ``str``.
+    """
+    return f"normal{elem!r}" if isinstance(elem, list) else elem
+
+
 def apply_assembly_constraint(
     assembly_name: str,
     part1_name: str,
-    part1_element: str,
+    part1_element: str | Sequence[float],
     part2_name: str,
-    part2_element: str,
+    part2_element: str | Sequence[float],
     constraint_type: str,
     offset: float = 0.0,
     uv_tensor: Sequence[float] | None = None,
@@ -2080,6 +2214,28 @@ def apply_assembly_constraint(
     exact available list, never silently ignored), both parts required to
     already be members of ``assembly_name`` (``add_parts_to_assembly``
     first).
+
+    ``part1_element``/``part2_element`` each accept EITHER a literal
+    ``"Face1"``/``"Edge3"`` OpenCASCADE index reference, OR a Semantic Normal
+    Target — a bracketed JSON ``"[nx, ny, nz]"`` world-space direction
+    STRING (e.g. ``"[0, -1, 0]"`` — still a plain ``str`` argument, same as
+    every ``"FaceN"`` reference; only a leading ``[`` is treated as JSON),
+    resolved to whichever of that object's own PLANAR faces has a
+    world-space normal aligned with it (dot product >= 0.9 against every
+    candidate face's real ``normalAt``, same threshold convention
+    ``world_fractions`` below already uses) — REJECTED outright, with the
+    best alignment score and how many planar faces were even checked, if no
+    face matches closely enough. Prefer this over a bare index whenever the
+    caller's actual intent is a world-space direction rather than "whichever
+    face happened to be numbered N" — confirmed live that an LLM re-deriving
+    "the opposite lateral face" from a remembered index across several
+    ReAct iterations can mate a second pair of parts to the WRONG (non-
+    parallel) face with no geometric error to catch it, since each
+    individual call is itself perfectly valid; a world-space normal targets
+    the same real direction on every call regardless of numbering. Only ever
+    matches a PLANAR face (same restriction as ``uv_tensor``/
+    ``world_fractions`` below) — use an explicit ``"FaceN"`` reference (or
+    ``"Concentric"``) for a cylindrical face.
 
     This computes a ONE-SHOT geometric Placement from each element's real
     BRep geometry — a genuine upgrade over ``position_assembly_part``'s
@@ -2225,10 +2381,13 @@ def apply_assembly_constraint(
     """
     assembly = (assembly_name or "").strip()
     p1_name = (part1_name or "").strip()
-    p1_elem = (part1_element or "").strip()
     p2_name = (part2_name or "").strip()
-    p2_elem = (part2_element or "").strip()
     ctype = (constraint_type or "").strip()
+    try:
+        p1_elem = _validate_constraint_element(part1_element, "part1_element")
+        p2_elem = _validate_constraint_element(part2_element, "part2_element")
+    except ValueError as exc:
+        return _error(f"apply_assembly_constraint: {exc}")
     missing = [
         n
         for n, v in (
@@ -2324,8 +2483,8 @@ def apply_assembly_constraint(
             )
 
     dims = {
-        "part1": f"{p1_name}.{p1_elem}",
-        "part2": f"{p2_name}.{p2_elem}",
+        "part1": f"{p1_name}.{_element_label(p1_elem)}",
+        "part2": f"{p2_name}.{_element_label(p2_elem)}",
         "constraint_type": ctype,
         "offset": offset_f,
         "uv_tensor": list(uv),
@@ -2344,8 +2503,10 @@ def apply_assembly_constraint(
         assembly_name=assembly,
         part1_name=p1_name,
         part1_element=p1_elem,
+        part1_element_label=_element_label(p1_elem),
         part2_name=p2_name,
         part2_element=p2_elem,
+        part2_element_label=_element_label(p2_elem),
         constraint_type=ctype,
         offset=offset_f,
         uv_tensor=uv,

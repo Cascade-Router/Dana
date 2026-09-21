@@ -458,8 +458,10 @@ def test_apply_assembly_constraint_script_renders_with_uv_tensor():
         assembly_name="asm",
         part1_name="chassis",
         part1_element="Face1",
+        part1_element_label="Face1",
         part2_name="wheel1",
         part2_element="Face2",
+        part2_element_label="Face2",
         constraint_type="Coincident",
         offset=0.0,
         uv_tensor=(0.0, 1.0),
@@ -476,8 +478,10 @@ def test_apply_assembly_constraint_script_renders_with_world_fractions():
         assembly_name="asm",
         part1_name="chassis",
         part1_element="Face3",
+        part1_element_label="Face3",
         part2_name="wheel1",
         part2_element="Face2",
+        part2_element_label="Face2",
         constraint_type="Coincident",
         offset=0.0,
         uv_tensor=(0.5, 0.5),
@@ -486,6 +490,35 @@ def test_apply_assembly_constraint_script_renders_with_world_fractions():
         session_doc_name="Session_Active",
         marker="OK",
     )
+    compile(script, "<generated>", "exec")
+
+
+def test_apply_assembly_constraint_script_renders_with_semantic_normal_target():
+    # Semantic Normal Targeting: part1_element may be a [nx, ny, nz]
+    # world-space normal (validated/parsed to a real list by
+    # apply_assembly_constraint's own _validate_constraint_element before
+    # this template is ever rendered) instead of a literal 'FaceN' index --
+    # this is the actual list embedded via {part1_element!r}, so it must
+    # render as a Python list LITERAL the generated script can compile, and
+    # part1_element_label (always a str) is what every error-message
+    # concatenation in the template below actually uses.
+    script = engine._APPLY_ASSEMBLY_CONSTRAINT_SCRIPT.format(
+        assembly_name="asm",
+        part1_name="chassis",
+        part1_element=[0.0, -1.0, 0.0],
+        part1_element_label="normal[0.0, -1.0, 0.0]",
+        part2_name="wheel1",
+        part2_element="Face2",
+        part2_element_label="Face2",
+        constraint_type="Distance",
+        offset=2.0,
+        uv_tensor=(0.5, 0.5),
+        world_fractions=None,
+        session_path="s.FCStd",
+        session_doc_name="Session_Active",
+        marker="OK",
+    )
+    assert "_resolve_constraint_element(part1, [0.0, -1.0, 0.0], 'chassis')" in script
     compile(script, "<generated>", "exec")
 
 
@@ -516,8 +549,10 @@ def test_apply_assembly_constraint_script_sets_dana_constrained_on_part2():
         assembly_name="asm",
         part1_name="chassis",
         part1_element="Face1",
+        part1_element_label="Face1",
         part2_name="wheel1",
         part2_element="Face2",
+        part2_element_label="Face2",
         constraint_type="Coincident",
         offset=0.0,
         uv_tensor=(0.0, 1.0),

@@ -2597,7 +2597,7 @@
           "name": "part1_element",
           "type": "string",
           "required": true,
-          "description_en": "Face or edge on part1, e.g. 'Face1' or 'Edge3' — 1-based, matching FreeCAD's own element numbering. Rejected with the exact list of what's actually available on that part if it doesn't exist."
+          "description_en": "Face or edge on part1, e.g. 'Face1' or 'Edge3' — 1-based, matching FreeCAD's own element numbering. Rejected with the exact list of what's actually available on that part if it doesn't exist. ALTERNATIVE (prefer this over guessing/re-deriving a FaceN index across multiple calls): a world-space normal direction as a bracketed JSON array string, e.g. '[0, -1, 0]' — resolved to whichever of part1's own flat faces actually points that way in the real world, dot-product >= 0.9. Use this whenever you mean 'the face pointing in this world direction' rather than a specific numbered face — it can't drift to the wrong face the way a remembered index can."
         },
         {
           "name": "part2_name",
@@ -2609,7 +2609,7 @@
           "name": "part2_element",
           "type": "string",
           "required": true,
-          "description_en": "Face or edge on part2, same format/validation as part1_element."
+          "description_en": "Face or edge on part2, same format/validation as part1_element (including the '[nx, ny, nz]' world-space normal alternative)."
         },
         {
           "name": "constraint_type",
