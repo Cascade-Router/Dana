@@ -18,6 +18,7 @@ import inspect
 import json
 import math
 import re
+import sys
 import time
 import traceback
 import uuid
@@ -25,13 +26,16 @@ from collections.abc import Callable, Iterable
 from functools import lru_cache
 from typing import Any, Literal
 
+from dana.config import LLM_MAX_OUTPUT_TOKENS
 from dana.core import telemetry
 from dana.core.context_manager import (
+    compact_trajectory_to_recent_pairs,
     compress_tool_output_history,
     prune_message_history,
     prune_tool_output_history,
 )
 from dana.core.model_provider import ModelProvider, tool_calling_provider
+from dana.core.routing_config import cloud_allowed
 from dana.core.skill_loader import delete_skill, load_user_skills, read_skill_source, save_skill
 from dana.core.tool_retrieval import narrow_tool_ids_by_query
 from dana.session_context import get_session_id
@@ -54,8 +58,11 @@ from dana.plugins.os.file_system import search_files as _fs_search_files
 from dana.plugins.os.file_system import write_file as _fs_write_file
 from dana.plugins.os.process_manager import execute_terminal_command as _fs_execute_terminal_command
 from dana.plugins.os.process_manager import run_python_script as _fs_run_python_script
+from dana.plugins.planning.task_board import cancel_active_task as _tb_cancel_active_task
+from dana.plugins.planning.task_board import cancel_pending_task as _tb_cancel_pending_task
 from dana.plugins.planning.task_board import create_plan as _tb_create_plan
 from dana.plugins.planning.task_board import get_active_plan as _tb_get_active_plan
+from dana.plugins.planning.task_board import insert_task as _tb_insert_task
 from dana.plugins.planning.task_board import mark_task_completed as _tb_mark_task_completed
 from dana.plugins.plugin_manager import discover_plugin_dirs, load_all_plugins
 from dana.plugins.vision.image_analysis import analyze_workspace_image as _vision_analyze_workspace_image
@@ -70,6 +77,7 @@ from dana.tools.schema import (
     load_tool_registry,
     openai_tools_schema,
     to_openai_function_schema,
+    validate_tool_arguments,
 )
 from dana.tools.schema_minify import minify_tool_schemas, should_strip_tool_schemas, strip_tool_schemas
 
@@ -233,6 +241,34 @@ def _tool_load_capability(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[
     # (patterns, assembly mates, blueprints, standard parts,
     # engineering-standard lookups, camera control).
     resolved_domain = "freecad_essential" if domain == "freecad" else domain
+    # freecad_full Gate (local-model reliability, not a token-budget concern):
+    # confirmed live, TWICE, with dana_runtime.log's own [dana.orchestration]
+    # ERROR stage='empty_final_turn' evidence — loading the full ~31-tool
+    # domain reliably breaks a local Ollama model's VERY NEXT generation
+    # (0-token/malformed completion) with only ~7-8% of num_ctx actually
+    # used, regardless of what's already unlocked in freecad_essential (a
+    # helix tool being present there didn't stop the model from escalating
+    # here anyway, then failing identically). Never observed for a cloud
+    # provider, and never observed when a local session stayed on Lazy
+    # Loading (search_tool_catalog/load_specific_tool) instead of this
+    # blanket escalation — so this is gated on PROVIDER, not on domain size
+    # alone (should_strip_tool_schemas already handles the token-budget side
+    # of "ollama is different" elsewhere; this is a second, distinct
+    # ollama-specific policy for a distinct failure mode).
+    if resolved_domain == "freecad_full" and tool_calling_provider() == "ollama":
+        return {
+            "ok": False,
+            "error": (
+                "domain='freecad_full' is not available for local Ollama sessions — its "
+                "~31-tool schema has reliably broken this model's next generation (0-token/"
+                "malformed completions, confirmed live, independent of context-window budget). "
+                "Call search_tool_catalog to find the SPECIFIC tool you actually need (e.g. "
+                "'helical coil', 'pattern array', 'assembly mate', 'blueprint'), then "
+                "load_specific_tool to unlock just that one — freecad_essential plus one or "
+                "two targeted tools covers almost every real request without the full-domain "
+                "schema."
+            ),
+        }
     unlocked = _CAPABILITY_TOOL_IDS.get(resolved_domain)
     if unlocked is None:
         return {
@@ -252,8 +288,16 @@ def _tool_load_capability(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[
     message = f"Loaded '{resolved_domain}' — {len(tools)} tool(s) now available."
     if resolved_domain == "freecad_essential":
         message += (
-            " Essential FreeCAD set. Call load_capability again with domain='freecad_full' "
-            "if a heavier tool is needed."
+            " Essential FreeCAD set."
+            + (
+                " Call search_tool_catalog to find a specific heavier tool by name, then "
+                "load_specific_tool to unlock just that one (domain='freecad_full' is not "
+                "available for local Ollama sessions — see that error's own message if you "
+                "try it anyway)."
+                if tool_calling_provider() == "ollama"
+                else " Call load_capability again with domain='freecad_full' if a heavier "
+                "tool is needed."
+            )
         )
     return {
         "ok": True,
@@ -452,9 +496,22 @@ def _tool_load_specific_tool(args: dict[str, Any], _engine: Any, _cp: Any) -> di
     if not tool_id:
         return {"ok": False, "error": "tool_id is required"}
     if get_tool_registry().get(tool_id) is None:
+        # Loop-Breaker: the prior wording here ("call search_tool_catalog
+        # first to find a valid one") was itself an invitation to retry —
+        # a live run on a complex multi-boolean CAD request hit exactly
+        # that failure mode, burning its entire _MAX_REACT_ITERATIONS
+        # budget cycling load_capability/search_tool_catalog/
+        # load_specific_tool for a name that never existed (once even a
+        # just-attempted save_new_skill's own tool_id), never once falling
+        # back to the granular primitives it already had. This is now a
+        # hard, unambiguous dead end instead of a soft nudge back into the
+        # same search loop.
         return {
             "ok": False,
-            "error": f"Unknown tool_id {tool_id!r} — call search_tool_catalog first to find a valid one.",
+            "error": (
+                "FATAL: Tool does not exist. DO NOT search for it again. You must use the "
+                "granular tools currently available in your schema to complete the task manually."
+            ),
         }
     return {
         "ok": True,
@@ -476,6 +533,210 @@ def _tool_update_core_memory(args: dict[str, Any], _engine: Any, _cp: Any) -> di
     return write_core_memory(str(args.get("section") or ""), str(args.get("content") or ""))
 
 
+# Geometry-Grouping Enforcement keyword set — see _tool_create_plan's own
+# comment for why this is a HARD rejection (reinstated after a softer,
+# warning-only version proved to have no actual teeth). "each of"/"every"
+# catch phrasing like "...between the main body and each of the 4 wheels"
+# that a bare number-word list misses; digit counts (e.g. "4 wheels") are
+# deliberately NOT matched here (unlike "four") because task descriptions
+# routinely contain digits for dimensions ("radius 5mm, height 4mm") that
+# have nothing to do with grouping multiple objects into one task, and
+# matching bare digits would reject those outright as false positives.
+_GEOMETRY_GROUPING_KEYWORDS = re.compile(
+    r"\b(two|three|four|five|six|seven|eight|nine|ten|multiple|several|each of|every|coils|cylinders|parts)\b",
+    re.IGNORECASE,
+)
+
+# Tools where the SAME grouping bug applies even though the tool_id itself
+# doesn't start with "create_freecad_": each is a per-object mutator (one
+# call positions/joins exactly ONE part), not a batch call like
+# add_parts_to_assembly (which already takes a list in one call, so
+# grouping several parts into one task is correct there, not a bug). A
+# task like "define joints between the main body and each of the 4
+# wheels" declaring expected_tools=['define_kinematic_joint'] hits the
+# exact same "_advance_fsm_on_dispatch auto-advances after the FIRST
+# successful call" failure _GEOMETRY_GROUPING_KEYWORDS was built to catch
+# for create_freecad_* — confirmed live: a real run silently defined only
+# 1 of 4 needed joints, exported before the caller noticed.
+_PER_OBJECT_GROUPING_SENSITIVE_TOOLS = frozenset({"define_kinematic_joint", "apply_assembly_constraint"})
+
+# Planner Tool Name Sanitization: a local model's create_plan call is made
+# BEFORE any geometry tool schema is ever offered to it (PLANNING's own
+# hard_restrict_to is create_plan/mark_task_completed only — see
+# next_react_turn's is_planning_phase handling), so its expected_tools
+# guesses are made blind, from the tool's own general coding knowledge
+# rather than this catalog's real vocabulary. Confirmed live
+# (dana_runtime.log, sessions a67d12b7/5c4d82bc): a 14B/7B local model
+# guessed wrong 100% of the time (16/16 across both runs) — "pad" instead
+# of "create_freecad_pad", "polar_pattern" instead of
+# "create_freecad_polar_pattern", etc. — every one dropped by the existing
+# Tolerant Plan Validation below, leaving affected tasks with an EMPTY
+# expected_tool_ids and no signal for _advance_fsm_on_dispatch's auto-
+# advance to key off.
+#
+# Deliberately a small, hand-curated table, not fuzzy/substring matching:
+# only synonyms with exactly ONE unambiguous real-tool candidate are
+# listed. A wrong auto-correction (mapping a guess to the WRONG real tool)
+# is worse than today's drop-and-warn behavior — it would silently point
+# expected_tool_ids at a tool the task never actually needed, so auto-
+# advance could fire on totally unrelated work. Guesses with no confident
+# 1:1 mapping (e.g. "create_body" — bodies are implicitly created by
+# create_freecad_sketch/pad's own _PARTDESIGN_BODY_SNIPPET, not a
+# standalone tool; "draw_circle" — a geometry array ENTRY inside
+# create_freecad_sketch, not a tool of its own) are deliberately left
+# unmapped and still fall through to the existing drop-and-warn path.
+_TOOL_NAME_ALIASES: dict[str, str] = {
+    "pad": "create_freecad_pad",
+    "pocket": "create_freecad_pocket",
+    "sketch": "create_freecad_sketch",
+    "create_sketch": "create_freecad_sketch",
+    "sweep": "create_freecad_sweep",
+    "create_sweep": "create_freecad_sweep",
+    "loft": "create_freecad_loft",
+    "create_loft": "create_freecad_loft",
+    "polar_pattern": "create_freecad_polar_pattern",
+    "linear_pattern": "create_freecad_linear_pattern",
+    "box": "create_freecad_box",
+    "create_box": "create_freecad_box",
+    "cylinder": "create_freecad_cylinder",
+    "create_cylinder": "create_freecad_cylinder",
+    "assembly": "create_freecad_assembly",
+    "create_assembly": "create_freecad_assembly",
+    "boolean": "perform_freecad_boolean",
+    "perform_boolean": "perform_freecad_boolean",
+    "union": "perform_freecad_boolean",
+    "cut": "perform_freecad_boolean",
+    "fillet": "perform_freecad_edge_operation",
+    "chamfer": "perform_freecad_edge_operation",
+    "edge_operation": "perform_freecad_edge_operation",
+    "export": "export_freecad_model",
+    "export_model": "export_freecad_model",
+    "bounding_box": "get_freecad_bounding_box",
+    "get_bounding_box": "get_freecad_bounding_box",
+    "modify_parameter": "modify_freecad_parameter",
+    # Assembly/placement synonyms — added after a live run (dana_runtime.log,
+    # session 627a2874) showed a task worded "group X and Y into an assembly,
+    # positioning Y on X" declare only a container-creation guess
+    # (create_assembly, already aliased above) and never one for the
+    # add/position half, leaving add_parts_to_assembly/position_assembly_part
+    # entirely undeclared for that task. "translate"/"rotate"/"align" are
+    # mapped to position_assembly_part specifically (not the more generic
+    # modify_freecad_parameter, which can also edit a Placement) because
+    # this table only maps to ONE real tool per guess, and the assembly
+    # context these synonyms appear in is exactly position_assembly_part's
+    # own purpose (moving/orienting a part already inside a
+    # create_freecad_assembly container) — see that tool's own tools.json
+    # description.
+    "add_part": "add_parts_to_assembly",
+    "add_to_assembly": "add_parts_to_assembly",
+    "group": "create_freecad_assembly",  # confirmed live guess: "group_features"
+    "position_part": "position_assembly_part",
+    "place_part": "position_assembly_part",
+    "position": "position_assembly_part",  # confirmed live guess: "position_features"
+    "translate": "position_assembly_part",
+    "rotate": "position_assembly_part",
+    "align": "position_assembly_part",
+    # Robotics-bridge synonyms — added after a live run (dana_runtime.log,
+    # session 110e6db1) showed a task worded "export this assembly to a
+    # URDF file" declare expected_tools=['export_to_urdf'], which the
+    # TOKEN pass below then WRONGLY resolved: {"export", "to", "urdf"} only
+    # had "export" as a known alias (-> export_freecad_model, the generic
+    # STEP/STL exporter), so the task's fixed tool signature silently
+    # pointed at the wrong tool and auto-completed the instant
+    # export_freecad_model ran — well before any .urdf file existed. Adding
+    # "urdf" here as its own alias makes that same guess's token set
+    # {"export", "urdf"} resolve to TWO distinct targets (export_freecad_
+    # model AND export_assembly_to_urdf) instead of one, so the now-
+    # genuinely-ambiguous guess is correctly left dropped (same "no fixed
+    # tool signature, verify manually" fallback every other ambiguous/
+    # hallucinated guess already gets) rather than confidently wrong.
+    # "wrapper" fixes the same run's other CORRECTLY-mappable dropped guess
+    # ('generate_isaac_sim_wrapper' for the final task) — its token set has
+    # exactly one real match once this exists, so that task gets a real
+    # fixed signature (auto-advancing the instant generate_simulation_
+    # wrapper succeeds) instead of a slower manual mark_task_completed
+    # round-trip, which is exactly the extra turn this session couldn't
+    # afford one task short of its 30-step budget. generate_simulation_
+    # wrapper needs no OTHER tool to run first within that same task (the
+    # .urdf it loads already exists from the export task before it), so
+    # this fixed signature can never hard-block a needed prerequisite.
+    #
+    # Deliberately did NOT add a "joint" -> define_kinematic_joint alias
+    # for the same run's 'create_continuous_joint'/'create_revolute_joint'
+    # guesses, despite the same-shaped opportunity: define_kinematic_joint
+    # genuinely NEEDS add_parts_to_assembly to have already run in that
+    # same task first (this exact run needed it), but add_parts_to_assembly
+    # is NOT in _FREECAD_ESSENTIAL_TOOL_IDS — so giving that task a FIXED
+    # define_kinematic_joint-only signature would hard-block
+    # add_parts_to_assembly via _fsm_out_of_order_check with NO recovery:
+    # even the Wrong-Tool Escape Hatch (_register_task_escape_hatch_failure)
+    # only unlocks _FREECAD_ESSENTIAL_TOOL_IDS, which add_parts_to_assembly
+    # isn't in either. Confirmed live (headless replay): this alone turns
+    # "no fixed signature, needs one extra manual mark_task_completed" (the
+    # current, working behavior) into a genuine unrecoverable deadlock. Add
+    # add_parts_to_assembly/position_assembly_part/apply_assembly_constraint
+    # to _FREECAD_ESSENTIAL_TOOL_IDS FIRST if this alias is ever added.
+    "urdf": "export_assembly_to_urdf",
+    "wrapper": "generate_simulation_wrapper",
+    # Full-string literal, NOT a new token — confirmed live twice now
+    # (dana_runtime.log, two independent rover-assembly runs) that the
+    # model's guess for "export this assembly to a URDF file" is this
+    # EXACT string. This is resolved by the first (exact-match) pass in
+    # _sanitize_expected_tool_id, before the token pass ever runs, so it
+    # does NOT reopen the "urdf" token's own deliberate ambiguity above —
+    # a guess that DOESN'T match this exact key still falls through to the
+    # token pass and stays correctly ambiguous/dropped exactly as before.
+    "export_to_urdf": "export_assembly_to_urdf",
+}
+
+
+_TOOL_ALIAS_TOKEN_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _sanitize_expected_tool_id(tool_id: str) -> str:
+    """Map a Planner's own hallucinated shorthand for a real FreeCAD tool
+    id onto that real id. Two passes, both requiring an UNAMBIGUOUS result:
+
+    1. Exact match against ``_TOOL_NAME_ALIASES`` (as before).
+    2. Fuzzy fallback: split the guess on non-alphanumeric runs (``"_"``,
+       camelCase boundaries are NOT split — a guess is expected snake_case,
+       same convention every real tool_id already uses) and check whether
+       EXACTLY ONE distinct real tool is named by those tokens — e.g.
+       ``"pad_feature"`` -> tokens ``{"pad", "feature"}`` -> only ``"pad"``
+       is a known alias -> ``create_freecad_pad``. Confirmed live
+       (dana_runtime.log, session 41d1967d): a 14B model decorates its
+       guesses this way often enough ("pad_feature", "draw_circle_sketch",
+       "sweep_feature", "group_features", "position_features") that the
+       exact-match table alone was missing them.
+
+    Deliberately TOKEN-boundary matching, not raw substring: a bare
+    ``tool_id in alias_key`` or ``alias_key in tool_id`` check would also
+    match "cut" inside "execute", "box" inside "toolbox", "export" inside
+    "reexport", etc. — silently mapping a guess to a tool it never meant,
+    which is worse than leaving it dropped (see this table's own docstring
+    on why a wrong auto-correction is worse than today's drop-and-warn
+    behavior). Token matching only fires on a whole ``"_"``-delimited
+    segment, closing the real gap above without opening that one.
+
+    A guess whose tokens name MORE than one distinct real tool (e.g. a
+    hypothetical "sketch_and_pad") is genuinely ambiguous and is left
+    unchanged, same as before — this only ever resolves a guess to a
+    single, confident answer.
+    """
+    if tool_id in TOOL_HANDLERS:
+        return tool_id
+    alias = _TOOL_NAME_ALIASES.get(tool_id)
+    if alias is not None and alias in TOOL_HANDLERS:
+        return alias
+    tokens = _TOOL_ALIAS_TOKEN_RE.split(tool_id.lower())
+    matched_targets = {_TOOL_NAME_ALIASES[t] for t in tokens if t in _TOOL_NAME_ALIASES}
+    if len(matched_targets) == 1:
+        candidate = next(iter(matched_targets))
+        if candidate in TOOL_HANDLERS:
+            return candidate
+    return tool_id
+
+
 # Task Planner / Executive Function — create_plan/mark_task_completed
 # (dana.plugins.planning.task_board). Always core (see _CORE_TOOL_IDS
 # below): a long-horizon goal can span any plugin/capability combination,
@@ -485,6 +746,46 @@ def _tool_update_core_memory(args: dict[str, Any], _engine: Any, _cp: Any) -> di
 # in-memory scratchpad, never a file, a process, or anything the user
 # would need to review/approve before it happens.
 def _tool_create_plan(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    # Plan Immutability (Zero-Trust DAG enforcement): task_board.create_plan's
+    # own docstring documents an unconditional overwrite — exactly what a
+    # live run exploited, calling this a SECOND time mid-turn purely to
+    # rewrite expected_tools and legitimize execute_freecad_script through
+    # dispatch_tool_call's Universal FSM Enforcement check (see that
+    # function's own Zero-Trust Monolith Ban docstring for the other half
+    # of closing this route — a rewritten plan can no longer authorize that
+    # tool at all regardless). A plan may only be (re)created while empty
+    # or fully completed; an in-progress plan must be finished via
+    # mark_task_completed (or its tasks otherwise driven to "completed")
+    # before a new one can replace it.
+    active_plan_snapshot = _tb_get_active_plan()
+    current_tasks = active_plan_snapshot.get("tasks") or []
+    # Auto-Seed Handoff: a plan dana.api.server's _looks_multi_step
+    # heuristic planted before this turn ever reached the model (see
+    # _process_user_text) is a placeholder anchor, not a plan the model
+    # itself committed to -- its own auto_seeded=True flag (see
+    # task_board._ACTIVE_PLAN's own comment) makes that promise checkable
+    # instead of assumed. The model's FIRST real create_plan call is
+    # exactly the handoff that flag exists to allow, not the "overwrite
+    # my own in-progress plan mid-turn" exploit this guard exists to
+    # block (see the Zero-Trust Monolith Ban comment elsewhere in this
+    # function) -- so an auto-seeded plan, however far mark_task_completed
+    # has walked it, never blocks the model's own real plan from taking
+    # over. A plan the MODEL created (auto_seeded=False, the only other
+    # value this flag ever takes) is unaffected -- still hard-protected
+    # exactly as before.
+    if (
+        current_tasks
+        and not active_plan_snapshot.get("auto_seeded")
+        and any(t.get("status") != "completed" for t in current_tasks)
+    ):
+        raise RuntimeError(
+            "Execution blocked: Cannot overwrite an active plan. You must use geometry tools "
+            "(e.g., create_freecad_sketch, create_freecad_pad) to complete the current active "
+            "task, use cancel_active_task to drop it (cancel_pending_task cannot touch it — it "
+            "only cancels a not-yet-started task), or insert_task(insert_before_task_id=...) if "
+            "it's only missing a prerequisite."
+        )
+
     raw_tasks = args.get("tasks")
     # Deterministic LLM-Driven Mapping (Plan-and-Execute FSM, Phase 1
     # revision): each entry is normally a {"description": str,
@@ -498,48 +799,125 @@ def _tool_create_plan(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str,
     # pure visual inspection) already produces, handled identically below.
     descriptions: list[str] = []
     expected_tools_by_task: list[frozenset[str]] = []
-    # Fix #1 — Strict Plan Validation (Kill Tool Hallucinations): collected
-    # across EVERY task before anything is created, so one retry can name
-    # every bad tool_id at once instead of a fix-one-fail-on-the-next loop.
-    # A prior version of this function silently intersected each task's
-    # declared expected_tools with `_RESTRICTED_GEOMETRY_TOOLS` below and
-    # nothing else — a genuinely non-existent tool_id (e.g. the Planner
-    # hallucinating "perform_freecad_pattern_array" for the real
-    # "batch_pattern_array") landed in that intersection's "doesn't match
-    # anything" bucket EXACTLY like a real-but-irrelevant tool_id would,
-    # silently producing an EMPTY `expected_tool_ids` — which
-    # `_tool_mark_task_completed`'s own False-Success-Blocker treats as "no
-    # fixed tool signature", never gating that task's completion at all.
-    # That silent drop is what let a hallucinated name bypass the blocker
-    # entirely. Existence is now checked HERE, against TOOL_HANDLERS — the
-    # actual live dispatch registry, not just this turn's capability-
-    # narrowed schema — before the geometry-only intersection below ever
-    # runs, so a hallucinated tool_id is a hard, plan-wide rejection instead
-    # of a silently-accepted no-op task.
+    # Fix #1 — Tolerant Plan Validation (Recoverable Tool Hallucinations,
+    # revised): collected across EVERY task before anything is created, same
+    # as before — but a bad name no longer aborts the ENTIRE multi-step plan.
+    # It used to (a hard, plan-wide `raise RuntimeError`) specifically to
+    # stop a hallucinated tool_id (e.g. "perform_freecad_pattern_array" for
+    # the real "batch_pattern_array") from silently surviving into
+    # `expected_tool_ids` and defeating `_tool_mark_task_completed`'s
+    # False-Success-Blocker. That hard rejection turned out to be its own
+    # failure mode in practice ("Plan Recovery Collapse"): rejecting the
+    # WHOLE plan over one bad name in one task put the model back in
+    # PLANNING with no plan and only the rejection text to go on — a local
+    # 14B model observed live didn't reliably retry `create_plan` with a
+    # corrected name; it blind-guessed geometry tool names directly instead
+    # (which PLANNING's own `hard_restrict_to` doesn't even offer), burning
+    # its one Honest-Error-Handler retry and ending the turn with NOTHING
+    # created.
+    #
+    # Existence is still checked HERE, against TOOL_HANDLERS — the actual
+    # live dispatch registry, not just this turn's capability-narrowed
+    # schema — but a bad id is now DROPPED from that one task's own
+    # `expected_tool_ids` instead of aborting the call. It is NOT left in
+    # place for the Wrong-Tool Escape Hatch (`_advance_fsm_on_dispatch`) to
+    # recover later: that hatch only counts FAILED dispatches of a REAL
+    # declared tool, and a genuinely nonexistent id can never be dispatched
+    # at all (`next_react_turn`'s `TOOL_HANDLERS` check rejects it before
+    # `dispatch_tool_call` is ever reached) — leaving it in `expected_tool_
+    # ids` would instead be a WORSE, permanent dead end than today's
+    # rejection: `hard_restrict_to` can only build a schema for ids the
+    # registry actually has, so the task would offer zero geometry tools,
+    # while the False-Success-Blocker still demanded a dispatch of the one
+    # id that can never happen. Dropping it instead leaves that task with
+    # whatever OTHER validly-declared tools it had, or — if none were valid
+    # — the SAME "no fixed tool signature" path a genuinely tool-less task
+    # already uses (soft-narrowed full domain during EXECUTING, closed out
+    # via an explicit `mark_task_completed`), a real, already-working
+    # recovery route instead of an imagined one.
     hallucinated: list[tuple[int, str]] = []
+    sanitized: list[tuple[int, str, str]] = []
+    # Geometry-Grouping Enforcement (hard rejection, reinstated): a
+    # heuristic, NOT a deterministic validity check like the tool-existence
+    # one above — a description containing one of these words is a weak
+    # signal the task bundles several distinct objects (e.g. "wind three
+    # coils around the hub"), which matters because a task's own
+    # expected_tool_ids auto-advances the FSM the FIRST time its declared
+    # tool succeeds (_advance_fsm_on_dispatch) — a grouped task silently
+    # leaves every object after the first uncreated.
+    #
+    # This was a non-blocking warning first (folded into result["message"]
+    # below, same pattern as the hallucinated-tool-id case), specifically
+    # to avoid reintroducing "Plan Recovery Collapse" (see the comment
+    # above on Fix #1's own prior hard rejection) over a noisier, more
+    # false-positive-prone signal than a tool_id's existence. Live behavior
+    # showed the warning had no actual teeth, unlike the hallucinated-tool
+    # case: dropping a bad tool_id there is enforced structurally regardless
+    # of whether the model reads the warning text, but nothing backed this
+    # one — the FSM advanced to "executing" with the grouped task intact
+    # either way, and the model marched forward on a broken plan straight
+    # into a loop collapse. Promoted back to a hard `raise` for that reason:
+    # unlike the ORIGINAL collapse (a rejected create_plan sent the model
+    # reaching for a geometry tool PLANNING never offers at all, burning its
+    # one Honest-Error-Handler retry), `create_plan` itself stays in
+    # `_CORE_TOOL_IDS` — always in this turn's schema — so a rejection here
+    # asks the model to retry the SAME tool it already has, not one it can't
+    # see; that doesn't guarantee a clean retry, but it removes the specific
+    # mechanism the original collapse needed.
+    grouped_geometry_tasks: list[tuple[int, str]] = []
     for i, entry in enumerate(raw_tasks if isinstance(raw_tasks, list) else [], start=1):
         if isinstance(entry, dict):
-            descriptions.append(str(entry.get("description") or ""))
+            description = str(entry.get("description") or "")
+            descriptions.append(description)
             raw_expected = entry.get("expected_tools")
-            declared = frozenset(str(x) for x in raw_expected) if isinstance(raw_expected, list) else frozenset()
-            hallucinated.extend((i, tool_id) for tool_id in sorted(declared) if tool_id not in TOOL_HANDLERS)
-            expected_tools_by_task.append(declared)
+            declared_raw = frozenset(str(x) for x in raw_expected) if isinstance(raw_expected, list) else frozenset()
+            sanitized_pairs = [(guess, _sanitize_expected_tool_id(guess)) for guess in declared_raw]
+            sanitized.extend((i, guess, real) for guess, real in sanitized_pairs if guess != real)
+            declared = frozenset(real for _guess, real in sanitized_pairs)
+            bad_ids = frozenset(tool_id for tool_id in declared if tool_id not in TOOL_HANDLERS)
+            hallucinated.extend((i, tool_id) for tool_id in sorted(bad_ids))
+            valid_tools = declared - bad_ids
+            expected_tools_by_task.append(valid_tools)
+            is_geometry_task = any(
+                tool_id.startswith("create_freecad_") or tool_id in _PER_OBJECT_GROUPING_SENSITIVE_TOOLS
+                for tool_id in valid_tools
+            )
+            if is_geometry_task and _GEOMETRY_GROUPING_KEYWORDS.search(description):
+                grouped_geometry_tasks.append((i, description))
         else:
             descriptions.append(str(entry))
             expected_tools_by_task.append(frozenset())
 
-    if hallucinated:
-        bad_ids = sorted({tool_id for _task_num, tool_id in hallucinated})
-        detail = "; ".join(f"task {task_num}: '{tool_id}'" for task_num, tool_id in hallucinated)
-        telemetry.log_error(stage="create_plan_rejected", hallucinated_tool_ids=bad_ids, detail=detail)
+    if grouped_geometry_tasks:
+        task_num, description = grouped_geometry_tasks[0]
+        telemetry.log_error(
+            stage="create_plan_grouped_geometry_rejected", task_num=task_num, description=description
+        )
         raise RuntimeError(
-            f"create_plan rejected — expected_tools names {bad_ids} which do not exist in the tool "
-            f"catalog ({detail}). Nothing was created. Check the tools you have actually been "
-            "offered (or call check_plugin_registry) for the EXACT tool_id and retry create_plan "
-            "with corrected names."
+            f"create_plan rejected: Task '{description}' appears to group multiple objects/operations "
+            "into one task. You MUST break this down. Create a completely separate task for EACH "
+            "individual object or operation (e.g. one task per wheel for a repeated "
+            "apply_assembly_constraint/define_kinematic_joint call, not one task covering all of "
+            "them) — a single task's expected tool only ever needs to succeed ONCE to advance. "
+            "Please call create_plan again with an atomized task list."
         )
 
     result = _tb_create_plan(str(args.get("objective") or ""), descriptions)
+    if sanitized and result.get("ok"):
+        telemetry.log_error(
+            stage="create_plan_tool_id_sanitized",
+            detail="; ".join(f"task {task_num}: '{guess}' -> '{real}'" for task_num, guess, real in sanitized),
+        )
+    if hallucinated and result.get("ok"):
+        bad_ids = sorted({tool_id for _task_num, tool_id in hallucinated})
+        detail = "; ".join(f"task {task_num}: '{tool_id}'" for task_num, tool_id in hallucinated)
+        telemetry.log_error(stage="create_plan_tool_dropped", hallucinated_tool_ids=bad_ids, detail=detail)
+        result["message"] = (
+            f"Plan successfully created and Task 1 is active. WARNING: Some expected_tools (e.g., "
+            f"'{bad_ids[0]}') do not exist in the catalog and were dropped ({detail}). You will need "
+            "to find the correct tools (search_tool_catalog/check_plugin_registry) when you reach "
+            "those tasks, then call mark_task_completed once each is genuinely done."
+        )
     if result.get("ok"):
         # Plan-and-Execute Gatekeeper (Phase 6): a successful create_plan
         # unlocks this SESSION's geometry-mutating tools (see
@@ -571,9 +949,11 @@ def _tool_create_plan(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str,
         # steps apart). The Planner holds the real semantic context for its
         # own plan; declaring intent explicitly is strictly more reliable
         # than inferring it from a few words after the fact — and, since
-        # Fix #1 above, every declared tool_id is ALREADY known to exist in
-        # TOOL_HANDLERS by the time execution reaches here (a hallucinated
-        # one aborted the whole create_plan call before this point).
+        # Fix #1 above, every declared tool_id surviving into
+        # `expected_tools_by_task` is ALREADY known to exist in
+        # TOOL_HANDLERS by the time execution reaches here — a hallucinated
+        # one was dropped from its own task's set (not aborted whole-plan;
+        # see Fix #1's own comment on why leaving it in would be worse).
         #
         # Universal FSM Enforcement (Geometry Filter REMOVED): a prior
         # revision intersected `declared` with `_RESTRICTED_GEOMETRY_TOOLS`
@@ -613,6 +993,11 @@ def _tool_create_plan(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str,
         _set_session_plan_tasks(objective, task_objs)
         entry = _PLAN_STATE_REGISTRY.setdefault(get_session_id(), {})
         entry["fsm_state"] = _fsm_transition(entry.get("fsm_state", "planning"), "create_plan_succeeded")
+        # Mutation Budget: reset for THIS plan — a brand-new objective gets
+        # its own fresh allowance of insert_task/cancel_pending_task/
+        # cancel_active_task calls, same as any other per-plan (not
+        # per-session-lifetime) counter here.
+        entry["plan_mutation_count"] = 0
         telemetry.log_plan_created(objective=objective, task_count=len(task_objs))
     return result
 
@@ -623,20 +1008,67 @@ def _tool_mark_task_completed(args: dict[str, Any], _engine: Any, _cp: Any) -> d
     module-level docstring for why BOTH exist (a task with no fixed
     ``expected_tool_ids`` can only ever be closed out manually).
 
-    Fix #2 — The False Success Blocker: when the Planner declared
-    ``expected_tools`` for this task (``_tool_create_plan``'s own per-task
-    ``expected_tool_ids``), at least one of them must have been
-    SUCCESSFULLY dispatched while the task was active (tracked in its
-    ``executed_tools`` set by ``_advance_fsm_on_dispatch``) before this call
-    is allowed to close it out. Without this, a task like "add the mounting
-    hole pattern" (``expected_tools=["batch_pattern_array"]``) could be
-    marked complete having never actually run the required operation — the
-    exact hallucinated-completion failure mode this fix exists to block.
-    Note this gate is normally moot for the auto-advance path: a
-    successfully dispatched expected tool already closes the task out via
+    Evidence-Based Task Completion (Topological Grounding) is the actual
+    hard gate now: the required ``created_feature_names`` argument is
+    checked against ``_object_registry()`` (real dispatch results, not
+    declared intent) before anything else runs — see that check's own
+    inline comment. The ``expected_tool_ids``/``executed_tools`` check
+    below this is intentionally just an advisory warning now, not a block.
+
+    Fix #2 — The False Success Blocker, now advisory: when the Planner
+    declared ``expected_tools`` for this task and none of them was recorded
+    as successfully dispatched while the task was active (tracked in its
+    ``executed_tools`` set by ``_advance_fsm_on_dispatch``), or the task has
+    no fixed signature and nothing was dispatched at all, this call still
+    ALWAYS succeeds — a manual ``mark_task_completed`` is an ultimate
+    override — but the result carries a WARNING the model (and telemetry)
+    can see. See this function's own inline comment for the live deadlock
+    (a hard block used to be able to cause) that this downgrade fixes. Note
+    this check is normally moot for the auto-advance path: a successfully
+    dispatched expected tool already closes the task out via
     ``_advance_fsm_on_dispatch`` itself, so reaching THIS function with the
     task still "active" and a non-empty ``expected_tool_ids`` means, by
-    construction, that none of them has succeeded yet.
+    construction, that none of them has succeeded yet — that's the case
+    the warning exists to surface, not to prevent.
+
+    Redundant-Confirmation Short-Circuit: a task the auto-advance path
+    already closed out is "completed" before the model ever gets another
+    turn to call this itself — the "you do NOT need to (and normally
+    should not)" hint in the executor prompt is advisory only, and a model
+    that calls it anyway used to pay for that with a full extra
+    ``task_board.mark_task_completed`` round-trip (which unconditionally
+    demotes whatever task is currently "active" back to "pending" before
+    re-promoting the lowest-id pending task — a no-op ONLY because that
+    happens to be the same task, today; a real hazard the moment a
+    lower-id task is legitimately pending at the same time). Confirmed live
+    (rover chassis stress test #1, session 4f3cb8f1): the model called this
+    once per auto-advanced task for all 13 of the plan's tool-mapped tasks,
+    each one burning a full reasoning step it didn't need — doubling the
+    turns actually used and tripping ``_MAX_REACT_ITERATIONS`` three tasks
+    short of the plan's end, with every individual tool call in the
+    transcript otherwise succeeding on its first attempt (no face/topology
+    lookup failure, no FSM out-of-order block, no bad alias).
+
+    This used to return ``ok: False`` here (an actual rejection, escalated
+    from an earlier friendly ``ok: True`` no-op after stress test #2,
+    session 23c34005, showed that no-op wasn't a strong enough deterrent —
+    the model still burned this same redundant call on 11 of 15
+    tool-mapped tasks before dying at the same ``_MAX_REACT_ITERATIONS``
+    ceiling). That escalation traded one bug for a worse one: confirmed
+    live, ``dana.api.server``'s own end-of-turn ``unacknowledged_failure``
+    gate treats ANY ``ok: False`` dispatch result as a failure the model
+    must acknowledge/retry/explain before it's allowed to finish its turn
+    (see that gate's own module comment) — for THIS specific rejection,
+    every one of those three options loops right back to calling this same
+    already-completed ``task_id`` again (the only tool call that looked
+    relevant), which fails identically, which trips the same gate again:
+    an unrecoverable ``unacknowledged_failure_rejected`` lockup, not merely
+    a wasted turn. A wasted turn is an acceptable cost for a deterrent; a
+    hard lockup is not — so this is ``ok: True`` again, but unlike the
+    original friendly no-op, the message is not merely a confirmation: it
+    names the task that already owns "active" now and its exact next tool
+    (or says the plan may be fully done), so the very next turn still has
+    a concrete, correct action to take instead of guessing again.
     """
     try:
         task_id = int(args.get("task_id"))
@@ -654,30 +1086,362 @@ def _tool_mark_task_completed(args: dict[str, Any], _engine: Any, _cp: Any) -> d
     entry = _PLAN_STATE_REGISTRY.get(get_session_id())
     tasks = entry.get("tasks") if entry else None
     task = next((t for t in tasks if t.get("id") == task_id), None) if tasks else None
+    if task is not None and task.get("status") == "completed":
+        current = next((t for t in tasks if t.get("status") == "active"), None)
+        if current is not None:
+            current_tools = sorted(current.get("expected_tool_ids") or ())
+            next_action = (
+                f"call {current_tools[0]}" if len(current_tools) == 1
+                else f"call one of {current_tools}" if current_tools
+                else "call this task's own tool, or mark_task_completed if it has none"
+            )
+            current_note = f"Task {current['id']} ({current['description']!r}) is active now -- {next_action}."
+        else:
+            current_note = "No task is currently active -- the plan may already be fully done."
+        # ok: True, never False -- see this function's own docstring
+        # (Redundant-Confirmation Short-Circuit) for why an ok: False
+        # rejection here is a worse bug than the wasted turn it deters:
+        # dana.api.server's unacknowledged_failure gate forces the model to
+        # acknowledge/retry/explain any failed dispatch before it can end
+        # its turn, and the only "retry" available for an already-completed
+        # task_id is this exact same call, which fails identically forever.
+        return {
+            "ok": True,
+            "message": (
+                f"No-op: task {task_id} was already completed automatically the instant its own "
+                f"tool call succeeded. Proceed to the next task. {current_note}"
+            ),
+        }
+
+    # Evidence-Based Task Completion (Topological Grounding — replaces the
+    # tool-COUNTING guards above as the actual hard gate; those stay below
+    # as an advisory warning only). Rather than trusting that the model
+    # dispatched what it SAID it would (expected_tool_ids — exactly the
+    # bookkeeping that kept breaking: hallucinated tool names, work
+    # recorded against the wrong task's window, ...), this checks the one
+    # thing that can't be talked around: does the feature it's now
+    # claiming credit for actually exist in this session's FreeCAD
+    # document. `_object_registry()` is populated by dispatch_tool_call
+    # itself, from every successful geometry result's own resolved "name"
+    # (FreeCAD's real, possibly auto-deduped name — "Pocket001", not
+    # necessarily the "Pocket" that was requested) — real dispatch
+    # evidence, not a declared intention.
+    raw_features = args.get("created_feature_names")
+    if not isinstance(raw_features, list) or not raw_features:
+        return {"ok": False, "error": "mark_task_completed requires a non-empty created_feature_names list"}
+    claimed = [str(n) for n in raw_features]
+    if [n.strip().lower() for n in claimed] != ["none"]:
+        registry = _object_registry()
+        # Extension-tolerant lookup: a tool whose OWN "path" ends in a
+        # filename that differs from its registered "name" (export_
+        # assembly_to_urdf/generate_urdf_assembly both return name="robot"
+        # but path=".../robot.urdf") is a live-confirmed attractive
+        # nuisance (dana_runtime.log, session 110e6db1) — the model
+        # reasonably claimed created_feature_names=["robotic_arm.urdf"]
+        # (the FILENAME it just saw in that same tool's own result),
+        # which the registry itself never holds as a key (only the bare
+        # "robotic_arm"). Stripping one trailing ".<ext>" before the
+        # membership check accepts either spelling without weakening the
+        # check itself — a name genuinely absent from the registry still
+        # fails whether or not it happens to end in a dot-extension.
+        missing = [n for n in claimed if n not in registry and n.rsplit(".", 1)[0] not in registry]
+        if missing:
+            telemetry.log_error(
+                stage="mark_task_completed_grounding_failed", task_id=task_id, missing_features=missing
+            )
+            # Explicitly names what DOES exist, not just what doesn't —
+            # confirmed live (same session) that without this the model
+            # burned a second full turn guessing a different (unrelated
+            # but coincidentally also-registered) name before it got
+            # lucky, rather than being told outright which of its own
+            # already-created objects it could have named instead.
+            known = sorted(registry)
+            known_hint = (
+                f" Objects that DO exist in this session: {known}."
+                if known
+                else " No objects exist in this session yet."
+            )
+            return {
+                "ok": False,
+                "error": (
+                    f"Execution blocked: You attempted to complete the task by claiming you created "
+                    f"{missing}, but they do not exist in the FreeCAD document. Use one of the exact "
+                    f"names below, or actually execute the tools to create them before completing this "
+                    f"task.{known_hint}"
+                ),
+            }
+
+    # entry/tasks/task already resolved above (Redundant-Confirmation
+    # Short-Circuit) -- reused here rather than re-fetched, since nothing
+    # between there and here mutates _PLAN_STATE_REGISTRY.
+    # False-Success-Blocker, downgraded from a hard block to an advisory
+    # warning: a manual mark_task_completed is now an ULTIMATE OVERRIDE —
+    # it always succeeds, the model just gets told when it looks like it's
+    # closing out a task with no recorded work behind it. Confirmed live
+    # (dana_runtime.log, session 41d1967d) that the HARD version of this
+    # check could deadlock a real run: the model grouped a later task's
+    # work (the housing sketch + sweep) into an EARLIER task's own
+    # execution window (its own plan's task boundaries didn't match how it
+    # actually chose to work), so by the time the LATER task needed credit
+    # for that same real work, its own per-task `executed_tools` bucket
+    # was empty — genuinely correct work had already happened, just
+    # recorded against the wrong task id, with no way to retroactively
+    # reassign it. The task rejected mark_task_completed 4 times in a row
+    # with nothing the model could do to satisfy it short of re-dispatching
+    # already-done geometry under a new name. A hard block can't tell that
+    # apart from a genuine zero-effort hallucinated completion; a warning
+    # can't either, but at least never traps the model with no way out —
+    # the operator/model's own explicit "I'm calling this done" now wins.
+    warning: str | None = None
     if task is not None:
         expected = task.get("expected_tool_ids") or frozenset()
         executed = task.get("executed_tools") or set()
         if expected and not (expected & executed):
             missing = sorted(expected)
             telemetry.log_error(
-                stage="mark_task_completed_rejected", task_id=task_id, missing_expected_tools=missing
+                stage="mark_task_completed_warned", task_id=task_id, missing_expected_tools=missing
             )
-            return {
-                "ok": False,
-                "error": (
-                    f"Task {task_id} declared expected_tools {missing} when the plan was created, "
-                    "but none of them has been successfully executed yet. You must execute one of "
-                    f"the required tool(s) (e.g. {missing[0]}) before calling mark_task_completed — "
-                    "completing a task without running its required operation is not allowed."
-                ),
-            }
+            warning = (
+                f"WARNING: Task {task_id} declared expected_tools {missing}, but none of them was "
+                "recorded as executed while this task was active (the work may have happened under "
+                "an earlier/later task's window instead). Completing anyway since you called "
+                "mark_task_completed explicitly."
+            )
+        elif not expected and not executed:
+            telemetry.log_error(stage="mark_task_completed_warned_no_dispatch", task_id=task_id)
+            warning = (
+                f"WARNING: Task {task_id} has no fixed expected_tools and no tool was recorded as "
+                "dispatched while it was active. Completing anyway since you called "
+                "mark_task_completed explicitly — double check this task's work actually happened."
+            )
 
     result = _tb_mark_task_completed(task_id, next_task_id)
     if result.get("ok"):
         # Keep the session-scoped Focused Plan Anchor (_get_active_plan) in
         # sync with task_board's own global state — see _set_session_plan_tasks.
-        _mark_session_task_completed(task_id, next_task_id)
-        telemetry.log_task_state_change(task_id=task_id, status="completed", next_task_id=next_task_id)
+        # Resolved id, NOT the raw (possibly None) argument: Robust Task
+        # Auto-Advancement means task_board may have promoted a task the
+        # caller never named at all (an omitted next_task_id auto-resolves
+        # to the lowest-id pending task) — this mirror must apply THAT
+        # decision, or the FSM registry (which hard_restrict_to reads)
+        # would disagree with task_board/the system-prompt anchor about
+        # which task is actually active.
+        resolved_next_task_id = result.get("plan", {}).get("current_task_id")
+        _mark_session_task_completed(task_id, resolved_next_task_id)
+        telemetry.log_task_state_change(task_id=task_id, status="completed", next_task_id=resolved_next_task_id)
+        # Retroactive Credit cascade (see _cascade_retroactive_completions'
+        # own docstring): the task THIS call just promoted to active may
+        # already have had its own declared tool dispatched earlier, under
+        # THIS now-completed task's window (the common case being a
+        # no-fixed-signature task like this one, which tolerates any tool
+        # without crediting it to whoever actually declared it).
+        cascade_note = _cascade_retroactive_completions(get_session_id())
+        if cascade_note:
+            existing = result.get("message")
+            result["message"] = f"{existing} {cascade_note}".strip() if existing else cascade_note
+        if warning:
+            existing = result.get("message")
+            result["message"] = f"{existing} {warning}".strip() if existing else warning
+    return result
+
+
+_PLAN_MUTATION_BUDGET = 3
+
+
+def _mutation_budget_error(session_id: str | None = None) -> str | None:
+    """Read-only check for ``insert_task``/``cancel_pending_task``/
+    ``cancel_active_task`` — Dynamic FSM Replanning's own runaway-loop
+    guard, same family as the Introspection Streak/Plan Gate/Escape Hatch
+    counters elsewhere in this module. ONE shared budget across all three
+    tools (not one each): an insertion and a cancellation (of either kind)
+    are all "the plan changed shape," and a model oscillating between them
+    to avoid ever finishing is exactly the failure mode this exists to cap.
+    Deliberately does NOT bump the counter itself — call this BEFORE
+    attempting the mutation, and only call ``_bump_mutation_budget`` below
+    once task_board has confirmed the mutation actually succeeded, or a
+    call rejected for an unrelated reason (bad task id, wrong status, ...)
+    would burn budget for nothing ever actually changing.
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    entry = _PLAN_STATE_REGISTRY.setdefault(sid, {})
+    count = entry.get("plan_mutation_count", 0)
+    if count >= _PLAN_MUTATION_BUDGET:
+        telemetry.log_error(stage="plan_mutation_budget_exceeded", session_id=sid, count=count)
+        return (
+            f"Execution blocked: this plan has already used its mutation budget "
+            f"({_PLAN_MUTATION_BUDGET} of {_PLAN_MUTATION_BUDGET} insert_task/cancel_pending_task/"
+            "cancel_active_task calls). No further plan mutations are allowed — complete the plan as "
+            "currently structured, or call mark_task_completed to close out what's left."
+        )
+    return None
+
+
+def _bump_mutation_budget(session_id: str | None = None) -> None:
+    sid = session_id if session_id is not None else get_session_id()
+    entry = _PLAN_STATE_REGISTRY.setdefault(sid, {})
+    entry["plan_mutation_count"] = entry.get("plan_mutation_count", 0) + 1
+
+
+# Dynamic FSM Replanning — insert_task. Always core (see _CORE_TOOL_IDS
+# below) and deliberately reachable mid-EXECUTING despite hard_restrict_to
+# normally hard-locking that phase's tool schema to the active task's own
+# declared set: this IS the legal escape valve for "the plan itself was
+# wrong," so it must be visible from inside the exact phase that discovers
+# the gap, not just from PLANNING. See dana_runtime.log session 41d1967d
+# for the live incident (a forgotten pocketing step smuggled into the
+# WRONG task's window) this exists to replace with a real fix.
+#
+# FSM Recovery / Prerequisite Insertion (insert_before_task_id): the
+# ORIGINAL insert_after_task_id-only shape could never insert a task
+# BEFORE one that had already gone "active" — confirmed live (a rover
+# assembly build, task_board dana_conversation.log ~16:08-16:09): the
+# agent needed to position wheel_2 before defining its kinematic joint,
+# but by the time it noticed, the joint task was already "active";
+# insert_task(insert_after_task_id=<the completed task before it>) was
+# refused ("already completed"), and cancel_pending_task on the active
+# joint task was ALSO refused ("it is 'active'") — a genuine deadlock with
+# no legal way out short of abandoning the plan. insert_before_task_id
+# closes that hole: aimed at the currently active task, it demotes that
+# task back to "pending" and promotes the new one in its place, same call.
+def _tool_insert_task(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    description = str(args.get("description") or "").strip()
+    if not description:
+        return {"ok": False, "error": "insert_task requires a non-empty description"}
+
+    raw_after = args.get("insert_after_task_id")
+    raw_before = args.get("insert_before_task_id")
+    if (raw_after is None) == (raw_before is None):
+        return {
+            "ok": False,
+            "error": "insert_task requires EXACTLY ONE of insert_after_task_id or insert_before_task_id",
+        }
+    try:
+        insert_after_task_id = int(raw_after) if raw_after is not None else None
+        insert_before_task_id = int(raw_before) if raw_before is not None else None
+    except (TypeError, ValueError):
+        bad_raw = raw_after if raw_after is not None else raw_before
+        return {
+            "ok": False,
+            "error": f"insert_after_task_id/insert_before_task_id must be an integer, got: {bad_raw!r}",
+        }
+
+    budget_error = _mutation_budget_error()
+    if budget_error is not None:
+        return {"ok": False, "error": budget_error}
+
+    # Same Tolerant Plan Validation / Planner Tool Name Sanitization
+    # _tool_create_plan applies to its own expected_tools — an inserted
+    # task is subject to the exact same hallucination risk a brand-new
+    # plan's tasks are.
+    raw_expected = args.get("expected_tools")
+    declared_raw = frozenset(str(x) for x in raw_expected) if isinstance(raw_expected, list) else frozenset()
+    sanitized_pairs = [(guess, _sanitize_expected_tool_id(guess)) for guess in declared_raw]
+    declared = frozenset(real for _guess, real in sanitized_pairs)
+    bad_ids = frozenset(tool_id for tool_id in declared if tool_id not in TOOL_HANDLERS)
+    expected_tool_ids = declared - bad_ids
+
+    result = _tb_insert_task(
+        description,
+        insert_after_task_id,
+        insert_before_task_id=insert_before_task_id,
+    )
+    if not result.get("ok"):
+        return result
+    _bump_mutation_budget()  # only AFTER task_board confirms the mutation actually happened
+
+    new_task_id = result["inserted_task_id"]
+    _insert_session_plan_task(
+        new_task_id,
+        description,
+        expected_tool_ids,
+        insert_after_task_id=insert_after_task_id,
+        insert_before_task_id=insert_before_task_id,
+    )
+    telemetry.log_error(  # log_error is this codebase's generic structured-event sink, not an error signal
+        stage="insert_task", task_id=new_task_id, insert_after_task_id=insert_after_task_id,
+        insert_before_task_id=insert_before_task_id, demoted_task_id=result.get("demoted_task_id"),
+        expected_tool_ids=sorted(expected_tool_ids),
+    )
+    messages = []
+    demoted_task_id = result.get("demoted_task_id")
+    if demoted_task_id is not None:
+        messages.append(
+            f"Task {new_task_id} inserted and promoted straight to active (FSM Recovery); task "
+            f"{demoted_task_id} was demoted back to pending, right after it."
+        )
+    if bad_ids:
+        messages.append(
+            f"Task {new_task_id} inserted. WARNING: expected_tools {sorted(bad_ids)} do not exist in "
+            "the catalog and were dropped."
+        )
+    if messages:
+        result["message"] = " ".join(messages)
+    return result
+
+
+# Dynamic FSM Replanning — cancel_pending_task. Always core, same
+# reasoning/reachability as insert_task above. Deliberately CANNOT touch a
+# task's own description/expected_tools — see this tool's task_board.py
+# handler docstring for why that narrowness is the actual point, not a
+# missing feature: an editable existing task is a retroactive-rewrite
+# vector, a cancel-only primitive is not.
+def _tool_cancel_pending_task(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    try:
+        task_id_to_cancel = int(args.get("task_id_to_cancel"))
+    except (TypeError, ValueError):
+        return {
+            "ok": False,
+            "error": f"task_id_to_cancel must be an integer, got: {args.get('task_id_to_cancel')!r}",
+        }
+    reason = str(args.get("reason") or "").strip()
+    if not reason:
+        return {"ok": False, "error": "cancel_pending_task requires a non-empty reason"}
+
+    budget_error = _mutation_budget_error()
+    if budget_error is not None:
+        return {"ok": False, "error": budget_error}
+
+    result = _tb_cancel_pending_task(task_id_to_cancel, reason)
+    if not result.get("ok"):
+        return result
+    _bump_mutation_budget()  # only AFTER task_board confirms the mutation actually happened
+
+    _cancel_session_plan_task(task_id_to_cancel)
+    telemetry.log_task_state_change(task_id=task_id_to_cancel, status="cancelled", next_task_id=None)
+    return result
+
+
+# FSM Recovery — cancel_active_task. Always core, same reasoning/
+# reachability as insert_task/cancel_pending_task above. A DELIBERATELY
+# separate tool rather than loosening cancel_pending_task's own "active"
+# rejection: cancel_pending_task's narrower "only pending" contract stays
+# intact for its existing callers, and a distinct tool name keeps "drop the
+# task I'm on" (this) visibly different from "drop a task I haven't
+# started" (cancel_pending_task) rather than one tool silently meaning
+# either depending on the target's current status. Use insert_task's
+# insert_before_task_id instead when the active task is still correct and
+# only a prerequisite is missing before it — this one is for when the
+# active task itself should never have been scheduled.
+def _tool_cancel_active_task(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    reason = str(args.get("reason") or "").strip()
+    if not reason:
+        return {"ok": False, "error": "cancel_active_task requires a non-empty reason"}
+
+    budget_error = _mutation_budget_error()
+    if budget_error is not None:
+        return {"ok": False, "error": budget_error}
+
+    result = _tb_cancel_active_task(reason)
+    if not result.get("ok"):
+        return result
+    _bump_mutation_budget()  # only AFTER task_board confirms the mutation actually happened
+
+    cancelled_task_id = result["cancelled_task_id"]
+    promoted_task_id = result.get("plan", {}).get("current_task_id")
+    _cancel_active_session_plan_task(cancelled_task_id, promoted_task_id)
+    telemetry.log_task_state_change(
+        task_id=cancelled_task_id, status="cancelled", next_task_id=promoted_task_id
+    )
     return result
 
 
@@ -1205,6 +1969,34 @@ def _object_registry() -> dict[str, str]:
     return _OBJECT_PATH_REGISTRY.setdefault(get_session_id(), {})
 
 
+def _format_object_registry_overlay(session_id: str | None = None) -> str:
+    """Renders THIS session's real, dispatch-confirmed feature names (every
+    key ``_object_registry()`` holds — populated by ``dispatch_tool_call``
+    from a successful geometry result's own resolved "name", never a
+    declared intention) as one compact line: the Markov-state substitute
+    for the verbatim tool-result history ``dana.core.context_manager.
+    compact_trajectory_to_recent_pairs`` now drops on the local-model path.
+
+    Without this, once turns 1-8's own tool results are gone from what the
+    local model actually sees, it has no way to know e.g. "PocketSketch"
+    or "Pad" already exist except by hallucinating one or misremembering
+    from whatever's left in the (now much shorter) trajectory window.
+    ``session_id`` explicit, not the ambient ``dana.session_context``
+    contextvar — same reasoning ``_active_task``'s own ``session_id``
+    param already documents, and this is looked up from the exact same
+    caller (``next_react_turn``, before every LLM call in the chain).
+
+    Returns ``""`` (skip the line entirely) once there's nothing to show
+    yet — same empty-state convention ``format_core_memory_for_prompt``
+    already uses.
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    names = sorted(_OBJECT_PATH_REGISTRY.get(sid, {}))
+    if not names:
+        return ""
+    return f"Current Document Features: {names}"
+
+
 # Topological Lineage Graph (TLG) — Phase 5: replaces the flat
 # active_solid/consumed-ancestors scheme (Phase 4) with a real DAG the
 # frontend's DAG Monitor can render directly, and which derives "is this
@@ -1274,12 +2066,74 @@ _TOPOLOGY_INPUT_ARG_KEYS: dict[str, tuple[str, ...]] = {
     "perform_freecad_edge_operation": ("target_object",),
     "create_freecad_feature_on_face": ("object_name",),
     "modify_freecad_parameter": ("target_object",),
+    "apply_sketch_constraint": ("sketch_name",),
+    "create_freecad_pad": ("sketch_name",),
+    "create_freecad_pocket": ("sketch_name",),
+    "create_freecad_polar_pattern": ("feature_name",),
+    "create_freecad_linear_pattern": ("feature_name",),
+    "create_freecad_sweep": ("profile_sketch", "path_sketch"),
+    # create_freecad_loft's own "cross_section_sketches" is deliberately
+    # ABSENT here — it's list-valued (like perform_freecad_boolean's
+    # "objects"), not a single string this dict's generic per-key loop can
+    # handle; see _LOFT_SKETCHES_ARG_KEY and _apply_topology_redirects' own
+    # create_freecad_loft-specific branch below instead.
+    "add_parts_to_assembly": ("assembly_name",),
+    # add_parts_to_assembly's own "part_names" is deliberately ABSENT here —
+    # same list-valued reasoning as cross_section_sketches above; see
+    # _ASSEMBLY_PART_NAMES_ARG_KEY and _apply_topology_redirects' own
+    # add_parts_to_assembly-specific branch below instead.
+    "position_assembly_part": ("part_name",),
+    # apply_assembly_constraint's own "part1_name"/"part2_name" (and
+    # define_kinematic_joint's own "child_link"/"parent_link" below) are
+    # deliberately ABSENT here — see _apply_topology_redirects' own
+    # apply_assembly_constraint/define_kinematic_joint-specific branches
+    # for exactly why (the same "grouping/relating, not consuming"
+    # reasoning add_parts_to_assembly's own part_names exception above
+    # already documents, and the live-verified regression this
+    # re-fixes: recording either as an input_name fed a topology_dag
+    # edge into the OTHER name's node, making resolve_living_leaf
+    # silently redirect a later reference onto it).
+    "define_kinematic_joint": ("assembly_name",),
+    # define_kinematic_joint's own "assembly_name" stays here (unlike
+    # child_link/parent_link) because it's always THIS call's own
+    # output_name too (see engine.py's define_kinematic_joint — it
+    # returns name=assembly) — _record_topology_node's self-edge guard
+    # already filters that case out, so it's harmless to redirect
+    # through the generic loop above.
+    "export_assembly_to_urdf": ("assembly_name",),
+    # validate_assembly_collisions is a read-only, whole-assembly audit —
+    # same "assembly_name is also this call's own output name" reasoning as
+    # define_kinematic_joint/export_assembly_to_urdf above.
+    "validate_assembly_collisions": ("assembly_name",),
 }
 # export_freecad_model's target_objects is list-valued (not a single name)
 # and never produces its own topology_dag node — an export is a terminal
 # read, not a new object — so it's redirected separately in
 # _apply_topology_redirects rather than folded into the dict above.
 _EXPORT_TARGETS_ARG_KEY = "target_objects"
+# perform_freecad_boolean's optional multi-object fuse/intersect list (see
+# apply_boolean's own docstring) — list-valued like target_objects above,
+# but DOES produce a topology_dag node (the fused/intersected result), so
+# it's redirected separately in _apply_topology_redirects rather than
+# folded into _TOPOLOGY_INPUT_ARG_KEYS above (which assumes one bare
+# string per key), with every resolved entry still added to input_names.
+_BOOLEAN_OBJECTS_ARG_KEY = "objects"
+# create_freecad_loft's ordered cross-section list — list-valued like
+# perform_freecad_boolean's own "objects" above (and for the exact same
+# reason redirected separately in _apply_topology_redirects rather than
+# folded into _TOPOLOGY_INPUT_ARG_KEYS), but UNLIKE "objects" this one's
+# order is semantically load-bearing (the loft blends through entries in
+# list order) — its own branch below preserves index order exactly while
+# still resolving/warning/recording each entry independently.
+_LOFT_SKETCHES_ARG_KEY = "cross_section_sketches"
+# add_parts_to_assembly's own part list — list-valued like
+# perform_freecad_boolean's own "objects"/create_freecad_loft's own
+# cross_section_sketches above, redirected separately in
+# _apply_topology_redirects for the same reason. Unlike cross_section_
+# sketches, order isn't semantically load-bearing here (grouping membership
+# doesn't care about sequence), but it's still preserved for simplicity —
+# same in-place-resolve style as every other list branch here.
+_ASSEMBLY_PART_NAMES_ARG_KEY = "part_names"
 
 # Fix #3 — Kill Silent Auto-Redirection: perform_freecad_edge_operation
 # (a fillet/chamfer radius) and create_freecad_feature_on_face (a feature
@@ -1370,7 +2224,22 @@ def _apply_topology_redirects(
     raises instead of substituting.
     """
     keys = _TOPOLOGY_INPUT_ARG_KEYS.get(tool_id, ())
-    if not keys and tool_id != "export_freecad_model":
+    # export_freecad_model and create_freecad_loft both have NO entry in
+    # _TOPOLOGY_INPUT_ARG_KEYS at all (their own object references are
+    # list-valued — target_objects/cross_section_sketches — not a single
+    # bare string per key that dict's generic loop below can handle), so
+    # `keys` is always empty for both. Without this explicit exemption,
+    # the early-return here would fire before either tool_id's own
+    # dedicated list-handling branch further down is ever reached.
+    # apply_assembly_constraint and anchor_assembly_root join them for a
+    # different reason: both HAVE single-string keys (part1_name/
+    # part2_name, or assembly_name/part_name), but none of them belong in
+    # the generic dict above (see that dict's own comment) — their own
+    # dedicated redirect-without-consuming branches below still need to
+    # run.
+    if not keys and tool_id not in (
+        "export_freecad_model", "create_freecad_loft", "apply_assembly_constraint", "anchor_assembly_root",
+    ):
         return arguments, [], None
 
     resolved = dict(arguments)
@@ -1414,7 +2283,208 @@ def _apply_topology_redirects(
             # Deliberately NOT added to input_names — export never produces
             # a topology_dag node of its own for these to be edges into.
 
+    if tool_id == "perform_freecad_boolean":
+        raw_objects = resolved.get(_BOOLEAN_OBJECTS_ARG_KEY)
+        if isinstance(raw_objects, list):
+            # Multi-object fuse/intersect — the SAME "self-heal a stale
+            # reference" redirect base_object/tool_object already get above
+            # (perform_freecad_boolean is deliberately NOT a
+            # _STRICT_RESOLUTION_TOOLS member, same reasoning as those), but
+            # for each entry in the list instead of one fixed key. UNLIKE
+            # export_freecad_model's target_objects, these genuinely ARE
+            # consumed into this call's own new topology_dag node, so every
+            # resolved entry is also added to input_names — an unfused
+            # object left out here would never get an edge recorded, and a
+            # LATER call referencing it by its original name would never
+            # self-heal onto whatever consumed it in THIS fuse.
+            new_objects = []
+            for raw_name in raw_objects:
+                requested = str(raw_name).strip()
+                living = resolve_living_leaf(requested) if requested else requested
+                if living != requested:
+                    warnings.append(
+                        f"Note: Auto-redirected an objects entry from '{requested}' to '{living}' "
+                        "to reflect recent boolean/feature operations."
+                    )
+                new_objects.append(living)
+                input_names.append(living)
+            resolved[_BOOLEAN_OBJECTS_ARG_KEY] = new_objects
+
+    if tool_id == "create_freecad_loft":
+        raw_sketches = resolved.get(_LOFT_SKETCHES_ARG_KEY)
+        if isinstance(raw_sketches, list):
+            # Ordered cross-section list — same self-heal redirect
+            # perform_freecad_boolean's own "objects" list gets above
+            # (create_freecad_loft is deliberately NOT a
+            # _STRICT_RESOLUTION_TOOLS member, same reasoning as
+            # perform_freecad_boolean/modify_freecad_parameter), but list
+            # INDEX ORDER is preserved exactly — resolving in place rather
+            # than reordering — since the loft blends through these entries
+            # in the exact order given, unlike a boolean fuse's own
+            # order-independent "objects". Every resolved entry genuinely IS
+            # consumed into this call's new topology_dag node, so each is
+            # added to input_names, same reasoning as "objects" above.
+            new_sketches = []
+            for raw_name in raw_sketches:
+                requested = str(raw_name).strip()
+                living = resolve_living_leaf(requested) if requested else requested
+                if living != requested:
+                    warnings.append(
+                        f"Note: Auto-redirected a cross_section_sketches entry from '{requested}' "
+                        f"to '{living}' to reflect recent boolean/feature operations."
+                    )
+                new_sketches.append(living)
+                input_names.append(living)
+            resolved[_LOFT_SKETCHES_ARG_KEY] = new_sketches
+
+    if tool_id == "add_parts_to_assembly":
+        raw_parts = resolved.get(_ASSEMBLY_PART_NAMES_ARG_KEY)
+        if isinstance(raw_parts, list):
+            # Same self-heal redirect perform_freecad_boolean's own
+            # "objects" list gets above (add_parts_to_assembly is
+            # deliberately NOT a _STRICT_RESOLUTION_TOOLS member, same
+            # reasoning as perform_freecad_boolean/modify_freecad_parameter)
+            # — a STALE name (the part underwent some other, genuinely
+            # replacing operation before being grouped) still gets healed.
+            #
+            # UNLIKE perform_freecad_boolean/create_freecad_loft's own
+            # "objects"/cross_section_sketches above, these names are
+            # deliberately NOT added to input_names — a boolean/loft
+            # genuinely CONSUMES its inputs (the old names stop being
+            # separately addressable, only the fused/blended result is),
+            # but grouping into an App::Part assembly does not: "Base" and
+            # "Post" stay fully independent, separately-addressable
+            # objects after add_parts_to_assembly, just organized under a
+            # parent container. Confirmed live: recording them as
+            # input_names here fed a topology_dag edge Base->Asm /
+            # Post->Asm that made resolve_living_leaf silently redirect
+            # BOTH names to "Asm" on every later call (apply_assembly_
+            # constraint's own "part1_name and part2_name must be two
+            # different parts" check caught this exact collision) —
+            # position_assembly_part("Base", ...) would have silently
+            # repositioned the WHOLE assembly instead, with no error at
+            # all. The trade-off: the DAG Monitor no longer draws a
+            # visual edge from a part to the assembly it was grouped
+            # into — correctness of by-name resolution for every
+            # downstream assembly tool matters more than that one edge.
+            new_parts = []
+            for raw_name in raw_parts:
+                requested = str(raw_name).strip()
+                living = resolve_living_leaf(requested) if requested else requested
+                if living != requested:
+                    warnings.append(
+                        f"Note: Auto-redirected a part_names entry from '{requested}' to '{living}' "
+                        "to reflect recent boolean/feature operations."
+                    )
+                new_parts.append(living)
+            resolved[_ASSEMBLY_PART_NAMES_ARG_KEY] = new_parts
+
+    if tool_id == "apply_assembly_constraint":
+        # None of assembly_name/part1_name/part2_name are consumed by a
+        # constraint call — part1 stays fixed, part2 only gets a new
+        # Placement (still the SAME object, same name) — same "relating,
+        # not consuming" reasoning as add_parts_to_assembly's own
+        # part_names branch above. Live-verified regression this
+        # restores: because this call's own result payload reports
+        # part2_name as its "name" (see engine.py's
+        # apply_assembly_constraint — it returns name=part2_name),
+        # recording part1_name/assembly_name as input_names fed a
+        # topology_dag edge part1_name -> part2_name (and
+        # assembly_name -> part2_name) once dispatch_tool_call's own
+        # generic post-success registration ran, so resolve_living_leaf
+        # silently redirected any LATER reference to part1_name (or the
+        # assembly itself) onto part2_name instead. Redirected here for
+        # stale-name healing exactly as before — just never fed into
+        # input_names.
+        for key in ("assembly_name", "part1_name", "part2_name"):
+            raw = resolved.get(key)
+            if isinstance(raw, str) and raw.strip():
+                requested = raw.strip()
+                living = resolve_living_leaf(requested)
+                if living != requested:
+                    warnings.append(
+                        f"Note: Auto-redirected '{key}' from '{requested}' to '{living}' to reflect "
+                        "recent boolean/feature operations."
+                    )
+                resolved[key] = living
+
+    if tool_id == "anchor_assembly_root":
+        # Same "relating, not consuming" reasoning as apply_assembly_constraint
+        # above — anchor_assembly_root's result payload reports part_name as
+        # its "name" (see engine.py's anchor_assembly_root: name=part), so
+        # recording assembly_name as an input_name would feed a topology_dag
+        # edge assembly_name -> part_name, silently redirecting a LATER
+        # reference to the assembly itself onto this one part instead.
+        for key in ("assembly_name", "part_name"):
+            raw = resolved.get(key)
+            if isinstance(raw, str) and raw.strip():
+                requested = raw.strip()
+                living = resolve_living_leaf(requested)
+                if living != requested:
+                    warnings.append(
+                        f"Note: Auto-redirected '{key}' from '{requested}' to '{living}' to reflect "
+                        "recent boolean/feature operations."
+                    )
+                resolved[key] = living
+
+    if tool_id == "define_kinematic_joint":
+        # child_link/parent_link reference EXISTING assembly members a
+        # joint definition does not consume — same reasoning as
+        # apply_assembly_constraint above, and the exact live-verified
+        # regression this restores: recording either as an input_name
+        # fed a topology_dag edge into the assembly's own node (this
+        # call's result payload reports the ASSEMBLY's name, per
+        # engine.py's define_kinematic_joint), so resolve_living_leaf
+        # silently redirected a LATER reference to that same link (a
+        # SECOND define_kinematic_joint call using it as a different
+        # child's parent) onto the assembly's name instead — which isn't
+        # a member of itself, crashing that later call.
+        # "assembly_name" itself stays in _TOPOLOGY_INPUT_ARG_KEYS above
+        # (safe: it's always this call's own output_name too, so
+        # _record_topology_node's self-edge guard already filters it).
+        for key in ("child_link", "parent_link"):
+            raw = resolved.get(key)
+            if isinstance(raw, str) and raw.strip():
+                requested = raw.strip()
+                living = resolve_living_leaf(requested)
+                if living != requested:
+                    warnings.append(
+                        f"Note: Auto-redirected '{key}' from '{requested}' to '{living}' to reflect "
+                        "recent boolean/feature operations."
+                    )
+                resolved[key] = living
+
     return resolved, input_names, (" ".join(warnings) or None)
+
+
+def _record_kinematic_joint_node(joint_name: str, parent_link: str, child_link: str) -> None:
+    """Registers a ``define_kinematic_joint`` result as its own
+    topology_dag node — ``type: "kinematic_joint"``, never the hardcoded
+    ``"geometry"`` ``_record_topology_node`` below always uses, since a
+    joint is metadata persisted on the assembly's own custom property
+    (see ``dana.plugins.freecad.engine.define_kinematic_joint``'s own
+    docstring), never a real BRep object any ``create_freecad_*``/
+    ``perform_freecad_boolean`` call would produce.
+
+    Deliberately adds NO edges to/from ``parent_link``/``child_link``: an
+    edge FROM either INTO this node would make ``resolve_living_leaf``
+    treat that link as "consumed" the same way a boolean's real inputs
+    are — silently redirecting any LATER reference to that same link (a
+    second ``define_kinematic_joint`` call using it as a different
+    child's parent, a ``position_assembly_part`` call, ...) onto this
+    joint's name instead, which isn't a real object anything else could
+    act on. ``parent_link``/``child_link`` are still recorded as plain
+    node metadata (for the frontend graph to render the relationship),
+    just not as DAG edges.
+    """
+    dag = get_topology_dag()
+    dag["nodes"][joint_name] = {
+        "id": joint_name,
+        "label": joint_name,
+        "type": "kinematic_joint",
+        "parent_link": parent_link,
+        "child_link": child_link,
+    }
 
 
 def _record_topology_node(output_name: str, input_object_names: Iterable[str]) -> None:
@@ -1469,6 +2539,132 @@ def _set_has_plan(status: bool, plan_text: str, session_id: str | None = None) -
     _PLAN_STATE_REGISTRY[sid] = {"has_plan": status, "plan_text": plan_text}
 
 
+# Agentic Loop Breaker — Documentation Paralysis: a live cross-model run (a
+# lightweight cloud model against the ~42-tool freecad_full domain) spent 12
+# CONSECUTIVE turns calling introspection/discovery tools (search_tool_
+# catalog, load_capability, check_plugin_registry, read_system_architecture,
+# ...) without ever attempting a single geometry-producing call, eventually
+# burning through its max-output-token budget before doing any real work.
+# _CORE_TOOL_IDS deliberately keeps these tools ALWAYS available (see that
+# set's own comments) and neither the plan gate nor the FSM out-of-order
+# check above restricts them either — by design, since a model legitimately
+# needs to explore its own tool surface sometimes. This tracks a SEPARATE
+# axis: not "is this tool allowed right now" but "has the model been doing
+# ONLY this instead of making progress" — a runaway STREAK, not a single
+# call, is what gets blocked. Deliberately narrower than "every non-geometry
+# tool": create_plan/mark_task_completed (task progress) and a read-only CAD
+# inspection like get_freecad_bounding_box (legitimate workflow) never count
+# against the streak, so this only fires on the exact
+# "spinning on self-discovery instead of acting" pattern the incident showed.
+_INTROSPECTION_TOOL_IDS = frozenset(
+    {
+        "search_tool_catalog",
+        "load_capability",
+        "unload_capability",
+        "load_specific_tool",
+        "check_plugin_registry",
+        "read_system_architecture",
+        "system_state",
+    }
+)
+_INTROSPECTION_STREAK_LIMIT = 4
+
+_INTROSPECTION_STREAK_REGISTRY: dict[str, int] = {}
+
+
+def _get_introspection_streak(session_id: str | None = None) -> int:
+    sid = session_id if session_id is not None else get_session_id()
+    return _INTROSPECTION_STREAK_REGISTRY.get(sid, 0)
+
+
+def _bump_introspection_streak(tool_id: str, session_id: str | None = None) -> None:
+    """Called once per dispatch, for every call that reaches this point
+    (i.e. wasn't already refused by an earlier gate) — increments the
+    streak for another introspection/discovery call, or resets it to 0 the
+    moment the model does ANYTHING else (a geometry call, create_plan,
+    reading a file, ...). Deliberately keyed on tool_id alone, not
+    success/failure: a FAILED search_tool_catalog call is still "not making
+    progress," same as a successful one.
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    if tool_id in _INTROSPECTION_TOOL_IDS:
+        _INTROSPECTION_STREAK_REGISTRY[sid] = _INTROSPECTION_STREAK_REGISTRY.get(sid, 0) + 1
+    else:
+        _INTROSPECTION_STREAK_REGISTRY[sid] = 0
+
+
+# Ephemeral Introspection Compaction: once the model follows an
+# introspection/discovery call (_INTROSPECTION_TOOL_IDS above) with a
+# genuinely substantive action — create_plan, or an actual FreeCAD geometry
+# tool — the earlier introspection result has already done its one job (it
+# informed THAT decision); re-sending its full payload (a tool catalog dump,
+# the whole architecture doc, ...) on every later turn of the same multi-step
+# ReAct chain is pure token cost with no further decision left for it to
+# inform. Only ever rewrites the `content` of an existing "tool" role
+# message already in `messages` — never removes a message or touches an
+# assistant message's own `tool_calls` entry — so the assistant/tool
+# role-alternation the OpenAI wire format requires is never at risk of
+# desyncing, unlike a scheme that deletes messages outright.
+_INTROSPECTION_COMPACTION_STUB = json.dumps({"status": "ok", "summary": "Tool catalog searched / capabilities loaded."})
+
+
+def compact_resolved_introspection(messages: list[dict[str, Any]], triggered_tool_id: str) -> None:
+    """Mutates ``messages`` in place: when ``triggered_tool_id`` (the tool
+    the model is about to be dispatched for THIS turn) is a substantive
+    action — ``create_plan``, or an actual FreeCAD geometry tool
+    (``_FREECAD_TOOL_IDS``, defined later in this module — looked up off the
+    module's own globals at call time, not captured at function-definition
+    time, since this function is defined before that set exists) — every
+    earlier ``"tool"`` role message in this same ReAct chain whose matching
+    assistant call was an introspection/discovery tool
+    (``_INTROSPECTION_TOOL_IDS``) has its ``content`` collapsed down to
+    ``_INTROSPECTION_COMPACTION_STUB``.
+
+    A no-op for a non-substantive ``triggered_tool_id`` (another
+    introspection call, a read-only inspection tool, ...) — compaction only
+    fires once the model has actually moved on to real work, never
+    speculatively while it might still need the full result to decide its
+    NEXT call. Idempotent: an already-compacted message's content is just
+    the same stub again, so calling this more than once in a turn is safe.
+    """
+    if triggered_tool_id != "create_plan" and triggered_tool_id not in _FREECAD_TOOL_IDS:
+        return
+    introspection_call_ids: set[str] = set()
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        for tool_call in msg.get("tool_calls") or []:
+            name = (tool_call.get("function") or {}).get("name")
+            if name in _INTROSPECTION_TOOL_IDS:
+                introspection_call_ids.add(tool_call.get("id"))
+    if not introspection_call_ids:
+        return
+    chars_before = 0
+    compacted_count = 0
+    for msg in messages:
+        if msg.get("role") == "tool" and msg.get("tool_call_id") in introspection_call_ids:
+            content = msg.get("content")
+            if content == _INTROSPECTION_COMPACTION_STUB:
+                continue  # already compacted (idempotent — see this function's own docstring)
+            chars_before += len(str(content))
+            compacted_count += 1
+            msg["content"] = _INTROSPECTION_COMPACTION_STUB
+    if compacted_count:
+        # Compaction Proof (Phase 2 ground truth): DEBUG tier, not INFO —
+        # same reason _collapse_resolved_retry's own proof log uses DEBUG
+        # (dana.core.telemetry's module docstring reserves INFO for its
+        # seven fixed event kinds only). This function never changes the
+        # messages ARRAY's length (it only rewrites existing "tool"
+        # messages' own content in place — see its own docstring) — the
+        # meaningful before/after number here is characters freed, not
+        # array length, unlike _collapse_resolved_retry's proof log.
+        chars_after = compacted_count * len(_INTROSPECTION_COMPACTION_STUB)
+        telemetry.debug(
+            f"Context compacted (introspection): triggered_by={triggered_tool_id!r} "
+            f"collapsed {compacted_count} tool result(s), {chars_before} to {chars_after} chars"
+        )
+
+
 def _set_session_plan_tasks(
     objective: str, tasks: list[dict[str, Any]], session_id: str | None = None
 ) -> None:
@@ -1506,6 +2702,15 @@ def _mark_session_task_completed(
     ``expected_tool_ids`` (a visual-only inspection, an under-specified
     task the planner's k=3 narrowing simply missed) — see this module's own
     Plan-and-Execute FSM docstring block below for the full design.
+
+    ``next_task_id`` here MUST be the already-RESOLVED task id — i.e. the
+    caller (``_tool_mark_task_completed``) reads it back from
+    ``_tb_mark_task_completed``'s own returned ``plan["current_task_id"]``,
+    never the raw (possibly ``None``) argument the LLM passed in. Robust
+    Task Auto-Advancement lives entirely in ``task_board.mark_task_completed``
+    — an omitted argument there gets auto-resolved to the lowest-id pending
+    task BEFORE this function ever runs, so this mirror only ever needs to
+    apply whatever task_board already decided, not re-derive it.
     """
     sid = session_id if session_id is not None else get_session_id()
     entry = _PLAN_STATE_REGISTRY.get(sid)
@@ -1517,8 +2722,121 @@ def _mark_session_task_completed(
             task["status"] = "completed"
         elif next_task_id is not None and task.get("id") == next_task_id:
             task["status"] = "active"
+        elif task.get("status") == "active":
+            # Strict FSM State Enforcement, mirroring task_board.
+            # mark_task_completed's own invariant onto this session's
+            # separate copy: at most one task may be "active" here at any
+            # time. Demoted to "pending", not "completed" — this mirror
+            # has no independent evidence the demoted task's work is done.
+            task["status"] = "pending"
     if entry.get("fsm_state") in ("executing", "validating"):
         entry["fsm_state"] = "executing" if any(t.get("status") in ("pending", "active") for t in tasks) else "done"
+
+
+def _insert_session_plan_task(
+    new_task_id: int,
+    description: str,
+    expected_tool_ids: frozenset[str],
+    *,
+    insert_after_task_id: int | None = None,
+    insert_before_task_id: int | None = None,
+    session_id: str | None = None,
+) -> None:
+    """Mirrors ``_tool_insert_task``'s splice onto task_board's global plan
+    into THIS session's own ``_PLAN_STATE_REGISTRY`` entry — same
+    dual-write ``_set_session_plan_tasks``/``_mark_session_task_completed``
+    already do for create/complete, so a session-scoped task (with its own
+    ``expected_tool_ids``/``executed_tools`` the FSM actually enforces
+    against) exists here too, not just in task_board's plainer shape.
+
+    Exactly one of ``insert_after_task_id``/``insert_before_task_id``, same
+    as ``task_board.insert_task`` itself was just called with. When
+    ``insert_before_task_id`` names a task that's currently ``"active"`` in
+    THIS mirror, the new task is mirrored in as ``"active"`` and the anchor
+    demoted to ``"pending"`` right here too — this registry's own
+    ``_active_task`` is a pure status scan with no separate id pointer to
+    keep in sync, so getting the STATUS right on both tasks in this one
+    write is sufficient for the very next dispatch to see the swap.
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    entry = _PLAN_STATE_REGISTRY.get(sid)
+    tasks = entry.get("tasks") if entry else None
+    if not tasks:
+        return
+
+    if insert_after_task_id is not None:
+        anchor_index = next((i for i, t in enumerate(tasks) if t.get("id") == insert_after_task_id), None)
+        if anchor_index is None:
+            return
+        tasks.insert(
+            anchor_index + 1,
+            {
+                "id": new_task_id,
+                "description": description,
+                "status": "pending",
+                "expected_tool_ids": expected_tool_ids,
+                "executed_tools": set(),
+            },
+        )
+        return
+
+    anchor_index = next((i for i, t in enumerate(tasks) if t.get("id") == insert_before_task_id), None)
+    if anchor_index is None:
+        return
+    anchor = tasks[anchor_index]
+    activates = anchor.get("status") == "active"
+    if activates:
+        anchor["status"] = "pending"
+    tasks.insert(
+        anchor_index,
+        {
+            "id": new_task_id,
+            "description": description,
+            "status": "active" if activates else "pending",
+            "expected_tool_ids": expected_tool_ids,
+            "executed_tools": set(),
+        },
+    )
+
+
+def _cancel_session_plan_task(task_id_to_cancel: int, session_id: str | None = None) -> None:
+    """Mirrors ``_tool_cancel_pending_task``'s status change onto THIS
+    session's own ``_PLAN_STATE_REGISTRY`` entry — same reasoning as
+    ``_insert_session_plan_task`` above."""
+    sid = session_id if session_id is not None else get_session_id()
+    entry = _PLAN_STATE_REGISTRY.get(sid)
+    tasks = entry.get("tasks") if entry else None
+    if not tasks:
+        return
+    for task in tasks:
+        if task.get("id") == task_id_to_cancel:
+            task["status"] = "cancelled"
+            break
+
+
+def _cancel_active_session_plan_task(
+    cancelled_task_id: int, promoted_task_id: int | None, session_id: str | None = None
+) -> None:
+    """Mirrors ``_tool_cancel_active_task``'s cancel-and-fallback-promote
+    onto THIS session's own ``_PLAN_STATE_REGISTRY`` entry — same reasoning
+    as ``_insert_session_plan_task``/``_cancel_session_plan_task`` above.
+
+    ``promoted_task_id`` must be the already-RESOLVED id
+    ``task_board.cancel_active_task`` decided to promote (or ``None`` if
+    nothing was pending) — read back from its own result, never
+    re-derived here, the same convention ``_mark_session_task_completed``'s
+    own ``next_task_id`` argument already follows.
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    entry = _PLAN_STATE_REGISTRY.get(sid)
+    tasks = entry.get("tasks") if entry else None
+    if not tasks:
+        return
+    for task in tasks:
+        if task.get("id") == cancelled_task_id:
+            task["status"] = "cancelled"
+        elif promoted_task_id is not None and task.get("id") == promoted_task_id:
+            task["status"] = "active"
 
 
 # ---------------------------------------------------------------------------
@@ -1539,8 +2857,13 @@ def _mark_session_task_completed(
 #                 not to.
 #   executing  -- a plan exists; exactly one task is "active", and ONLY that
 #                 task's own `expected_tool_ids` (plus core tools) are
-#                 offered/protected from narrowing (next_react_turn's
-#                 `narrowing_query`/`task_tool_ids`).
+#                 offered at all -- a tool-mapped task promotes its
+#                 `expected_tool_ids` straight into `hard_restrict_to`
+#                 (next_react_turn), the same physically-can't-see-it
+#                 guarantee PLANNING gets, not just narrowing/`must_keep`
+#                 protection for the one id; a task with no fixed tool
+#                 signature falls back to `narrowing_query`/`task_tool_ids`
+#                 as a soft bias over the full domain instead.
 #   validating -- entered the instant a dispatched tool matches the active
 #                 task's `expected_tool_ids` (Phase 1's "expected_tool_
 #                 dispatched" event) — for that common, tool-mapped case
@@ -1561,6 +2884,8 @@ def _mark_session_task_completed(
 #                 GEOMETRY_TOOLS's own docstring on why post-plan cleanup
 #                 must stay reachable, not re-gated).
 # ---------------------------------------------------------------------------
+
+_TASK_TOOL_ESCAPE_HATCH_THRESHOLD = 2  # see the Wrong-Tool Escape Hatch comment in _advance_fsm_on_dispatch
 
 _FSM_TABLE: dict[tuple[str, str], str] = {
     ("planning", "create_plan_succeeded"): "executing",
@@ -1697,19 +3022,221 @@ def _fsm_out_of_order_check(tool_id: str, session_id: str | None = None) -> str 
     expected = active.get("expected_tool_ids") or frozenset()
     if not expected or tool_id in expected:
         return None
+    # Wrong-Tool Escape Hatch (see _advance_fsm_on_dispatch's own comment):
+    # once THIS task's own declared tool has failed
+    # _TASK_TOOL_ESCAPE_HATCH_THRESHOLD times in a row, next_react_turn
+    # widens the SCHEMA it offers to the full essential CAD set — this gate
+    # must recognize that same widened set too, or a model that finally
+    # gets to see e.g. perform_freecad_boolean in its tools= payload would
+    # still get hard-blocked the instant it actually tried to call it,
+    # reopening the exact dead end the escape hatch exists to close.
+    if active.get("tool_escape_hatch") and tool_id in _FREECAD_ESSENTIAL_TOOL_IDS:
+        return None
     telemetry.log_error(
         stage="fsm_out_of_order_blocked",
         tool_id=tool_id,
         active_task_id=active["id"],
         expected_tool_ids=sorted(expected),
     )
+    # Kept short and to the point deliberately: digest_error's fallback path
+    # (this reason is never a recognized kernel-error signature) truncates
+    # ``reason``/``raw_error`` at _RAW_ERROR_MAX_CHARS (400) — the original,
+    # more verbose wording silently cut off well before reaching this last
+    # sentence, so the one new actionable option (insert_before_task_id)
+    # never actually reached the model. Every clause below earns its place.
     return (
-        f"Execution blocked: '{tool_id}' is not one of task {active['id']}'s declared "
-        f"expected_tools ({sorted(expected)}) — \"{active.get('description')}\". You are still on "
-        f"task {active['id']}; call one of its declared tool(s) for the CURRENT task, or call "
-        f"mark_task_completed(task_id={active['id']}, ...) to advance to the task that actually "
-        "needs this tool first. Tools cannot be executed out of order."
+        f"Execution blocked: '{tool_id}' isn't task {active['id']}'s declared tool "
+        f"({sorted(expected)}). Call its own tool, or mark_task_completed to advance. If "
+        f"'{tool_id}' is instead a missing PREREQUISITE for task {active['id']}, call "
+        f"insert_task(insert_before_task_id={active['id']}, ...) — it activates immediately, "
+        f"task {active['id']} is queued right after it. No out-of-order execution."
     )
+
+
+# Position-Before-Measurement Gate (Rule 14 Hard Enforcement) — confirmed live
+# (dana_conversation.log, session f9f6fb1d-804f-4892-a2fa-9b3320ff8c5d): the
+# prompt-only "SPATIAL DISTRIBUTION FOR MULTI-PART LAYOUTS" rule
+# (_EXECUTOR_ENGINEERING_RULES) was silently skipped entirely — the model
+# never called get_freecad_bounding_box/inspect_spatial_properties even
+# once, instead assuming the main body's bounding box was centered at the
+# origin when it was actually corner-at-origin (returned as
+# [0,0,0,40,20,10] by create_freecad_box's own result, sitting right there
+# in the same conversation). All four wheels ended up clustered at one end
+# of the chassis. A prompt rule a model can silently ignore isn't a
+# constraint; this makes the measurement step structurally unskippable for
+# position_assembly_part specifically — the raw-XYZ-guessing tool Rules
+# 13/14 exist to guard — the same way _fsm_out_of_order_check makes task
+# ordering unskippable rather than merely requested.
+_MEASUREMENT_TOOL_IDS = frozenset({"get_freecad_bounding_box", "inspect_spatial_properties"})
+_POSITION_TOOLS_REQUIRING_PRIOR_MEASUREMENT = frozenset({"position_assembly_part"})
+# Session-scoped, NOT plan-scoped (deliberately not reset on create_plan/
+# _bump_mutation_budget's own reset) -- a fact learned about the CURRENT
+# FreeCAD document's real geometry stays true across a plan getting
+# recreated mid-session; only a brand-new session (a fresh dict entry,
+# falsy by default) starts unmeasured again.
+_BOUNDING_BOX_MEASURED_BY_SESSION: dict[str, bool] = {}
+
+
+def _mark_measurement_done(tool_id: str, session_id: str | None = None) -> None:
+    """Records that THIS session has read a real object's bounding box at
+    least once — called unconditionally on every successful dispatch (see
+    dispatch_tool_call's own call site), a no-op for any tool_id outside
+    ``_MEASUREMENT_TOOL_IDS``.
+
+    Deliberately session-wide, not per-object: tracks "has this session
+    ever measured something," not "has this session measured THIS
+    specific reference object recently." Simpler and matches the
+    live-confirmed failure mode (zero measurement calls all session, not a
+    stale one) — see this gate's own module-level comment. Worth
+    tightening (e.g. per-reference-object, or invalidated by a later
+    create_plan) only if that looser version turns out to be exploited in
+    practice, the same incremental-hardening path the Wrong-Tool Escape
+    Hatch/mutation budget elsewhere in this module already followed.
+    """
+    if tool_id in _MEASUREMENT_TOOL_IDS:
+        sid = session_id if session_id is not None else get_session_id()
+        _BOUNDING_BOX_MEASURED_BY_SESSION[sid] = True
+
+
+def _position_before_measurement_check(tool_id: str, session_id: str | None = None) -> str | None:
+    """Hard-blocks ``position_assembly_part`` until THIS session has called
+    ``get_freecad_bounding_box``/``inspect_spatial_properties`` at least
+    once — returns a human-readable rejection reason for
+    ``dispatch_tool_call`` to surface as an ordinary digested tool failure,
+    or ``None`` if the dispatch may proceed. A no-op for any other
+    tool_id.
+    """
+    if tool_id not in _POSITION_TOOLS_REQUIRING_PRIOR_MEASUREMENT:
+        return None
+    sid = session_id if session_id is not None else get_session_id()
+    if _BOUNDING_BOX_MEASURED_BY_SESSION.get(sid):
+        return None
+    return (
+        "Execution blocked: call `get_freecad_bounding_box` (or `inspect_spatial_properties`) on "
+        "the reference object at least once THIS session before calling `position_assembly_part` "
+        "— guessing raw XYZ coordinates without measuring the real geometry is how parts end up "
+        "clustered or embedded in each other (Rule 14). Measure the reference object's actual "
+        "bounding box, then derive this part's target coordinate from its real half-extents/center."
+    )
+
+
+# Kinematic Axis Task-Compliance Gate — confirmed live (4-wheel rover e2e
+# run, session e2e-0a431ba0): engine.py's own Kinematic Axis Guard
+# (define_kinematic_joint's geometry-vs-axis check) correctly rejected
+# axis=[1,0,0] against a wheel mated flush to the chassis's TOP face (real
+# symmetry axis Z) — exactly as designed. But the model's own "fix" wasn't
+# to re-mate the wheel; it was to retry with axis=[0,0,1], matching wherever
+# the wheel already, wrongly, sat. That passes the engine's own consistency
+# check (axis now agrees with geometry) while producing a URDF joint that
+# spins the "wheel" like a coin on a table instead of rolling it — the
+# engine has no way to know the user asked for rotation "around the X-axis"
+# specifically, only that axis and geometry now agree with EACH OTHER.
+# Malicious/lazy compliance: changing one text argument is a cheaper move
+# for an LLM to generate than stepping back and physically re-mating a
+# part, so a purely internal-consistency check can always be satisfied by
+# the wrong side of the equation. This gate closes that specific loophole
+# at the ONE place both facts are available at once: the task's own stated
+# intent (its description, written by the SAME planner that reliably
+# writes "...around the X-axis" for every wheel/joint task — see
+# _build_planner_prompt's own URDF/wheel-axis guidance) and the argument
+# about to be dispatched. Deliberately narrow — a single unambiguous
+# "X-axis"/"Y-axis"/"Z-axis" phrase in the active task's own description,
+# nothing inferred from the objective or earlier turns — so it only ever
+# fires when the model's own plan already stated an axis and the call
+# about to run contradicts it, never on genuine ambiguity.
+_AXIS_INTENT_PATTERN = re.compile(r"\b([xyz])-axis\b", re.IGNORECASE)
+_AXIS_INTENT_VECTORS: dict[str, tuple[float, float, float]] = {
+    "x": (1.0, 0.0, 0.0),
+    "y": (0.0, 1.0, 0.0),
+    "z": (0.0, 0.0, 1.0),
+}
+_KINEMATIC_AXIS_TOOL_IDS = frozenset({"define_kinematic_joint"})
+
+
+def _kinematic_axis_task_compliance_check(
+    tool_id: str, arguments: dict[str, Any], session_id: str | None = None
+) -> str | None:
+    """Rejects a ``define_kinematic_joint`` call whose ``axis`` contradicts
+    an unambiguous axis stated in the ACTIVE task's own description (e.g.
+    "...around the X-axis") — see this gate's own module-level comment for
+    the exact live incident this closes. Returns a human-readable rejection
+    reason for ``dispatch_tool_call`` to surface as an ordinary digested
+    tool failure, or ``None`` if the dispatch may proceed (no active task,
+    no unambiguous axis phrase in its description, a "fixed" joint_type
+    where ``axis`` is documented as ignored, an unparseable ``axis`` value
+    — left to the tool's own validation — or an ``axis`` that DOES agree).
+    """
+    if tool_id not in _KINEMATIC_AXIS_TOOL_IDS:
+        return None
+    joint_type = str(arguments.get("joint_type") or "fixed").strip().lower()
+    if joint_type == "fixed":
+        return None
+    active = _active_task(session_id)
+    if active is None:
+        return None
+    description = str(active.get("description") or "")
+    matches = _AXIS_INTENT_PATTERN.findall(description)
+    distinct_axes = {m.lower() for m in matches}
+    if len(distinct_axes) != 1:
+        return None
+    expected_letter = next(iter(distinct_axes))
+    expected_vec = _AXIS_INTENT_VECTORS[expected_letter]
+    raw_axis = arguments.get("axis", (0.0, 0.0, 1.0))
+    try:
+        requested = [float(v) for v in raw_axis]
+    except (TypeError, ValueError):
+        return None
+    if len(requested) != 3:
+        return None
+    length = sum(v * v for v in requested) ** 0.5
+    if length < 1e-9:
+        return None
+    normalized = [v / length for v in requested]
+    dot = abs(sum(a * b for a, b in zip(normalized, expected_vec)))
+    if dot >= 0.9:
+        return None
+    face_hint = (
+        "Face1 (-X) or Face2 (+X)"
+        if expected_letter == "x"
+        else f"whichever chassis face's outward normal points along {expected_letter.upper()}"
+    )
+    return (
+        f"Task compliance failure: the active task ('{description}') requires an "
+        f"{expected_letter.upper()}-axis joint, but you submitted axis={requested!r}. Do NOT change "
+        "the joint axis to bypass a geometry mismatch the engine already rejected — that produces a "
+        "URDF joint that spins the part in place instead of rolling/rotating it the way the task "
+        "actually needs, even though the numbers now technically agree with each other. You MUST use "
+        f"apply_assembly_constraint to physically re-mate this part to the correct chassis face "
+        f"({face_hint}) so its REAL geometry matches, then retry define_kinematic_joint with "
+        f"axis={list(expected_vec)!r} (the axis this task requires) unchanged."
+    )
+
+
+def _register_task_escape_hatch_failure(active: dict[str, Any], offending_tool_id: str) -> str | None:
+    """Shared failure counter behind the Wrong-Tool Escape Hatch — bumps
+    ``active``'s ``failed_attempts`` and flips ``tool_escape_hatch`` on once
+    ``_TASK_TOOL_ESCAPE_HATCH_THRESHOLD`` is reached. Called from BOTH of
+    the two places a wrong-tool attempt can be rejected: ``_advance_fsm_
+    on_dispatch`` below (a real, DECLARED tool that reached dispatch and
+    failed there) and ``next_react_turn`` (a hallucinated name, or a real
+    but undeclared tool, bounced by the ``allowed_tool_ids`` router BEFORE
+    dispatch ever runs — Escape Hatch Blindspot: that case never reached
+    ``_advance_fsm_on_dispatch`` at all, so a model stuck guessing names
+    that never even pass the router could retry forever without ever
+    crossing the threshold). Returns the unlock note only on the turn the
+    threshold is actually crossed, ``None`` otherwise (a failure that
+    doesn't cross it yet, or one recorded after the hatch is already open).
+    """
+    failed = active.get("failed_attempts", 0) + 1
+    active["failed_attempts"] = failed
+    if failed >= _TASK_TOOL_ESCAPE_HATCH_THRESHOLD and not active.get("tool_escape_hatch"):
+        active["tool_escape_hatch"] = True
+        return (
+            f"[Plan] Task {active['id']}'s declared tool ({offending_tool_id}) has failed {failed} times "
+            "in a row. Essential FreeCAD tools are now unlocked for this task — you may use any other "
+            "FreeCAD tool that actually fits it, in case the declared one was the wrong choice."
+        )
+    return None
 
 
 def _advance_fsm_on_dispatch(tool_id: str, ok: bool, session_id: str | None = None) -> str | None:
@@ -1765,6 +3292,48 @@ def _advance_fsm_on_dispatch(tool_id: str, ok: bool, session_id: str | None = No
         # checks this set directly rather than inferring "was something run"
         # from FSM state alone.
         active.setdefault("executed_tools", set()).add(tool_id)
+        # Retroactive Credit: a tool_id let through while THIS task is
+        # active can genuinely be a LATER pending task's own declared tool,
+        # dispatched "early" — but ONLY when it is NOT already this task's
+        # OWN claimed work. Two independent guards, both required:
+        #
+        # 1. tool_id must NOT be in THIS task's own expected_tool_ids. A
+        #    dispatch that legitimately matches the active task's own
+        #    signature is spoken for by THAT task, full stop — it must
+        #    never spill over to some other task just because they happen
+        #    to share a tool_id. Confirmed live (rover chassis stress test
+        #    #5, session ff4c916a): tasks 2-5 ("create the first/second/
+        #    third/fourth wheel") all declare the IDENTICAL
+        #    expected_tool_ids ({"create_freecad_cylinder"}) — the exact
+        #    shape every "N identical objects" plan produces once
+        #    atomized. Without this guard, wheel_1's own ordinary dispatch
+        #    for task 2 ALSO "retroactively credited" tasks 3/4/5 (whichever
+        #    of them was still uniquely pending at each step) — the plan
+        #    jumped from task 2 straight to "Create a rover assembly" with
+        #    wheel_2/3/4 never actually created, and the model spent the
+        #    rest of its 30-turn budget confused and recovering (a failed
+        #    add_parts_to_assembly, hallucinated tool names,
+        #    cancel_pending_task attempts, a duplicate second
+        #    rover_assembly) instead of finishing. This case is meant for a
+        #    task whose OWN signature does NOT already explain the
+        #    dispatch — overwhelmingly a no-fixed-signature task, which
+        #    tolerates any tool (see the empty-`expected` branch below).
+        # 2. Even then, the tool_id must name EXACTLY ONE pending task.
+        #    Several pending tasks sharing one tool_id is genuinely
+        #    ambiguous — there is no way to tell which single dispatch was
+        #    "for" — so crediting any of them is a guess, not evidence; the
+        #    only safe move is to credit NONE.
+        this_task_expected = active.get("expected_tool_ids") or frozenset()
+        if tool_id not in this_task_expected:
+            pending_candidates = [
+                other
+                for other in tasks
+                if other is not active
+                and other.get("status") == "pending"
+                and tool_id in (other.get("expected_tool_ids") or ())
+            ]
+            if len(pending_candidates) == 1:
+                pending_candidates[0].setdefault("executed_tools", set()).add(tool_id)
     expected = active.get("expected_tool_ids") or frozenset()
     if not expected:
         if not ok:
@@ -1784,7 +3353,56 @@ def _advance_fsm_on_dispatch(tool_id: str, ok: bool, session_id: str | None = No
     entry["fsm_state"] = _fsm_transition("executing", "expected_tool_dispatched")
     if not ok:
         entry["fsm_state"] = _fsm_transition(entry["fsm_state"], "tool_failed")
-        return None  # nothing to advance -- the model retries the SAME active task
+        # Wrong-Tool Escape Hatch: the Planner's OWN declared expected_tools
+        # can name a real-but-wrong tool for what the task actually needs
+        # (e.g. `modify_existing_freecad_document` declared for a boolean-
+        # union step instead of `perform_freecad_boolean`) — existence-
+        # validated at create_plan time, but never semantically checked.
+        # Since next_react_turn's hard_restrict_to (Plan-and-Execute FSM,
+        # Phase 3) now hard-locks EXECUTING to exactly this task's declared
+        # tool(s) + core tools (see that function's own comment), a wrong
+        # declaration used to be a genuine dead end: the correct tool's
+        # schema was never even offered, so the model just kept retrying
+        # the one it was locked into. After _TASK_TOOL_ESCAPE_HATCH_
+        # THRESHOLD consecutive failures of its OWN declared tool, widen
+        # this task's schema back out to the full essential CAD set
+        # (next_react_turn reads `tool_escape_hatch` below) — a bounded,
+        # one-time correction, not a return to the pre-hard-restrict
+        # brute-force-every-schema behavior the lock exists to prevent. See
+        # _register_task_escape_hatch_failure's own docstring for why this
+        # counter is shared with next_react_turn's router-bounce path too.
+        # Nothing to advance either way -- the model retries the SAME active
+        # task, now possibly with a wider tool set if this just unlocked one.
+        return _register_task_escape_hatch_failure(active, tool_id)
+    # Strengthened Auto-Advance Contract: a task can declare MULTIPLE
+    # expected_tools (e.g. "create the assembly container, add the parts,
+    # position the housing" -> {create_freecad_assembly,
+    # add_parts_to_assembly, position_assembly_part}) — completing the
+    # instant the FIRST one succeeds used to silently skip whatever the
+    # rest of the declared set was for. Confirmed live (dana_runtime.log,
+    # session 627a2874): a task worded exactly that way auto-completed on
+    # create_freecad_assembly alone, leaving the housing never added to
+    # the container and never positioned, while the plan itself reported
+    # "done". `executed_tools` already accumulates every successful
+    # dispatch regardless of match (Fix #2 above) — reusing it here means
+    # this needs no new bookkeeping, only a stricter condition: ALL of
+    # `expected` must appear in `executed_tools`, not just this one.
+    if not expected.issubset(active.get("executed_tools") or set()):
+        remaining = sorted(expected - (active.get("executed_tools") or set()))
+        # Back to "executing" (not left at the "validating" the transition
+        # a few lines up just set) — this task is NOT done, so
+        # _fsm_out_of_order_check must keep enforcing its declared set for
+        # whatever comes next, same as before this dispatch ever happened.
+        # Leaving it at "validating" here would silently disable that
+        # check for the rest of this still-incomplete multi-tool task —
+        # the exact class of bug the Fail-Safe Plan Gate above exists to
+        # backstop, reintroduced by this fix if left unhandled.
+        entry["fsm_state"] = _fsm_transition("validating", "tool_ok")
+        return (
+            f"[Plan] Task {active['id']}: '{tool_id}' recorded, but this task also declared "
+            f"{remaining} — still need to dispatch {'it' if len(remaining) == 1 else 'them'} before "
+            "this task can advance."
+        )
     active["status"] = "completed"
     next_task = next((t for t in tasks if t.get("status") == "pending"), None)
     _tb_mark_task_completed(active["id"], next_task["id"] if next_task else None)
@@ -1792,11 +3410,186 @@ def _advance_fsm_on_dispatch(tool_id: str, ok: bool, session_id: str | None = No
         task_id=active["id"], status="completed", auto_advanced_by=tool_id, next_task_id=next_task["id"] if next_task else None
     )
     if next_task is not None:
+        # Strict FSM State Enforcement (same invariant task_board.
+        # mark_task_completed/_mark_session_task_completed enforce): guard
+        # against a stale fracture already left in THIS session's own list
+        # by an earlier out-of-order manual mark_task_completed call
+        # surviving into this auto-advance path.
+        for other in tasks:
+            if other is not active and other is not next_task and other.get("status") == "active":
+                other["status"] = "pending"
         next_task["status"] = "active"
         entry["fsm_state"] = _fsm_transition("validating", "tool_ok")
-        return f"[Plan] Task {active['id']} complete -- now on task {next_task['id']}: {next_task['description']}."
+        cascade_note = _cascade_retroactive_completions(sid)
+        return (
+            f"[Plan] Task {active['id']} complete -- now on task {next_task['id']}: "
+            f"{next_task['description']} Do NOT call mark_task_completed for task "
+            f"{active['id']} -- it already advanced automatically and any such call is a "
+            "no-op. Proceed straight to task "
+            f"{next_task['id']}'s own tool(s)."
+            + (f" {cascade_note}" if cascade_note else "")
+        )
     entry["fsm_state"] = "done"
-    return f"[Plan] Task {active['id']} complete -- all tasks in the plan are now done."
+    return (
+        f"[Plan] Task {active['id']} complete -- all tasks in the plan are now done. Do NOT "
+        f"call mark_task_completed for task {active['id']} -- it already advanced "
+        "automatically and any such call is a no-op."
+    )
+
+
+def _cascade_retroactive_completions(session_id: str) -> str | None:
+    """After a task is promoted to "active" (by either the auto-advance
+    path above or ``_tool_mark_task_completed``'s manual path), completes
+    it immediately — and any further consecutive tasks — if its own
+    ``expected_tool_ids`` were ALREADY fully satisfied by a dispatch
+    recorded against it earlier via ``_advance_fsm_on_dispatch``'s
+    Retroactive Credit step, rather than leaving it sitting "active"
+    waiting for a redundant re-dispatch or a manual ``mark_task_completed``
+    nobody actually needs to make.
+
+    Confirmed live (rover chassis stress test #4, session ac015575):
+    ``generate_simulation_wrapper`` ran successfully while task 16
+    ("Export this rover assembly to a URDF file", no fixed
+    ``expected_tool_ids``) was still active — a no-fixed-signature task
+    tolerates ANY tool without blocking OR crediting it to whichever task
+    actually declared it. Task 17 (whose own declared tool IS
+    ``generate_simulation_wrapper``) only became "active" once task 16 was
+    manually closed out — by which point the work it needed had ALREADY
+    happened, one turn earlier, under task 16's own window. With nothing
+    to retroactively credit it, task 17 sat "active" waiting for a call
+    nobody needed to make again, and the run hit ``_MAX_REACT_ITERATIONS``
+    one turn short of a plan that was, in substance, already 100% done.
+
+    Bounded to at most one pass per task in the plan — this can only ever
+    cascade forward through ALREADY-completed-in-substance tasks, never
+    loop.
+    """
+    entry = _PLAN_STATE_REGISTRY.get(session_id)
+    if not entry:
+        return None
+    tasks = entry.get("tasks") or []
+    notes: list[str] = []
+    for _ in range(len(tasks) + 1):
+        active = next((t for t in tasks if t.get("status") == "active"), None)
+        if active is None:
+            break
+        expected = active.get("expected_tool_ids") or frozenset()
+        executed = active.get("executed_tools") or set()
+        # A no-fixed-signature task (empty `expected`) is deliberately NEVER
+        # cascaded — it has no hard evidence to cascade ON, by design (see
+        # this module's own Plan-and-Execute FSM docstring on why that case
+        # always waits for an explicit human/model judgment call instead).
+        if not expected or not expected.issubset(executed):
+            break
+        next_task = next((t for t in tasks if t.get("status") == "pending"), None)
+        next_id = next_task["id"] if next_task else None
+        _tb_mark_task_completed(active["id"], next_id)
+        _mark_session_task_completed(active["id"], next_id, session_id=session_id)
+        telemetry.log_task_state_change(
+            task_id=active["id"], status="completed", auto_advanced_by="retroactive_credit", next_task_id=next_id
+        )
+        if next_task is None:
+            notes.append(
+                f"Task {active['id']} was ALSO already done (its own declared tool already ran "
+                "earlier, under a prior task's window) -- the whole plan is now complete."
+            )
+            break
+        notes.append(
+            f"Task {active['id']} was ALSO already done (its own declared tool already ran "
+            f"earlier, under a prior task's window) -- now on task {next_task['id']}: "
+            f"{next_task['description']}"
+        )
+    return " ".join(notes) if notes else None
+
+
+# Fail-Safe Plan Gate: deliberately INDEPENDENT of _advance_fsm_on_dispatch
+# above, not a counter added inside it — that function's own top guard
+# (``fsm_state != "executing"``) goes inert the instant a signature-less
+# task's first successful dispatch parks fsm_state in "validating", and
+# nothing resets it back to "executing" until an explicit
+# mark_task_completed (_mark_session_task_completed) fires. That means a
+# SECOND, THIRD, ... dispatch against the same still-"active" task is
+# invisible to it entirely — confirmed live (dana_runtime.log, session
+# a67d12b7): a 14B local model chained 5 successful geometry calls
+# against Task 1 (every declared expected_tools guess had already been
+# dropped as hallucinated, leaving it "no fixed tool signature") with
+# zero intervention, then flatlined on an empty completion rather than
+# ever calling mark_task_completed on its own. Keyed by (session, active
+# task id) rather than session alone — the count resets for free the
+# moment the active task actually changes (manual completion, or a
+# tool-mapped task auto-advancing on its own declared tool succeeding),
+# no separate reset call needed anywhere.
+#
+# Raised from the original 4 to 8: a single "build the assembly" task
+# legitimately chains far more than 4 successful calls before there's
+# anything to mark complete — create_freecad_assembly, one
+# create_freecad_* per part, add_parts_to_assembly,
+# position_assembly_part per part, one define_kinematic_joint per joint —
+# and the old threshold deadlocked exactly that flow: blocked from
+# dispatching the NEXT define_kinematic_joint call by this gate, but also
+# unable to satisfy mark_task_completed's Evidence-Based Gate yet (the
+# assembly wasn't fully wired up), with no legal move in either
+# direction. Still bounded (not removed) — it exists to catch a model
+# that never intends to call mark_task_completed at all, which 8 chained
+# calls doesn't distinguish from a genuinely runaway loop any worse than 4
+# did.
+_PLAN_GATE_REGISTRY: dict[str, tuple[int, int]] = {}
+_PLAN_GATE_THRESHOLD = 8
+
+
+def _plan_gate_count(session_id: str | None = None) -> int:
+    sid = session_id if session_id is not None else get_session_id()
+    active = _active_task(sid)
+    if active is None:
+        return 0
+    last_task_id, count = _PLAN_GATE_REGISTRY.get(sid, (None, 0))
+    return count if last_task_id == active["id"] else 0
+
+
+def _bump_plan_gate_counter(tool_id: str, session_id: str | None = None) -> None:
+    """Called once per SUCCESSFUL non-core dispatch, regardless of FSM
+    state or whether ``tool_id`` matched the active task's own declared
+    ``expected_tool_ids`` — a tool-mapped task advances (or the Wrong-Tool
+    Escape Hatch engages) through its own existing machinery regardless,
+    so in practice this only ever accumulates past 1 for the "no fixed
+    tool signature" case ``_plan_gate_check`` below exists to backstop.
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    active = _active_task(sid)
+    if active is None:
+        return
+    last_task_id, count = _PLAN_GATE_REGISTRY.get(sid, (None, 0))
+    _PLAN_GATE_REGISTRY[sid] = (active["id"], count + 1 if last_task_id == active["id"] else 1)
+
+
+def _plan_gate_check(tool_id: str, session_id: str | None = None) -> str | None:
+    """Refuses dispatch once the currently active task has already racked
+    up ``_PLAN_GATE_THRESHOLD`` consecutive successful tool dispatches
+    without advancing — see the module-level comment above
+    ``_PLAN_GATE_REGISTRY`` for the live incident this backstops. Core
+    tools are exempt: ``mark_task_completed`` itself (the way OUT of this
+    gate) and the discovery tools a model would reasonably reach for to
+    figure out what's missing must always stay dispatchable, or this
+    would trade one deadlock for another.
+    """
+    if tool_id in _CORE_TOOL_IDS:
+        return None
+    sid = session_id if session_id is not None else get_session_id()
+    count = _plan_gate_count(sid)
+    if count < _PLAN_GATE_THRESHOLD:
+        return None
+    active = _active_task(sid)
+    telemetry.log_error(
+        stage="plan_gate_blocked",
+        task_id=active.get("id") if active else None,
+        tool_id=tool_id,
+        consecutive_dispatch_count=count,
+    )
+    return (
+        "Execution blocked: You have executed multiple operations for the current task. You must "
+        "now evaluate if the task is complete by calling mark_task_completed, or clearly state what "
+        "is missing before continuing."
+    )
 
 
 def _format_focused_plan_anchor(objective: str, tasks: list[dict[str, Any]]) -> str:
@@ -1873,7 +3666,23 @@ _RESTRICTED_GEOMETRY_TOOLS = frozenset(
         "create_freecad_star_prism",
         "create_freecad_polygon",
         "create_freecad_pipe",
+        "create_freecad_helix",
         "create_freecad_sketch_extrude",
+        "create_freecad_sketch",
+        "create_freecad_pad",
+        "create_freecad_pocket",
+        "create_freecad_polar_pattern",
+        "create_freecad_linear_pattern",
+        "create_freecad_sweep",
+        "create_freecad_loft",
+        "create_freecad_assembly",
+        # add_parts_to_assembly/position_assembly_part are deliberately
+        # ABSENT here — same reasoning as modify_freecad_parameter/
+        # align_freecad_objects/create_assembly_mate above: both only
+        # ADJUST already-existing objects (grouping membership / Placement)
+        # rather than creating new topology, so gating them behind a
+        # required create_plan call would only block legitimate post-plan
+        # assembly cleanup with no corresponding benefit.
         "perform_freecad_boolean",
         "perform_freecad_edge_operation",
         "create_freecad_feature_on_face",
@@ -1894,31 +3703,58 @@ def _tool_perform_freecad_boolean(args: dict[str, Any], engine: Any, _cp: Any) -
             "ok": False,
             "error": "perform_freecad_boolean requires operation to be one of cut, union, intersect",
         }
-    base_name = str(args.get("base_object") or "").strip()
-    tool_name = str(args.get("tool_object") or "").strip()
-    if not base_name or not tool_name:
-        return {"ok": False, "error": "perform_freecad_boolean requires base_object and tool_object"}
-    # base_object/tool_object have already been redirected to their
+    # base_object/tool_object/objects have already been redirected to their
     # resolve_living_leaf by dispatch_tool_call's _apply_topology_redirects,
     # before this handler ever runs — see that function's docstring.
     #
-    # Existence is still checked against _OBJECT_PATH_REGISTRY (populated by
+    # Silent Data Loss fix: base_object/tool_object and objects USED to be
+    # treated as mutually exclusive — the instant `objects` was non-empty,
+    # base_object/tool_object were silently ignored outright, even when the
+    # model populated BOTH in the same call (e.g. base_object="hub" AND
+    # objects=["helix1", "helix2", "helix3"]) — confirmed live: the hub
+    # never reached apply_boolean at all in that shape, producing a fuse of
+    # only the three helices (a disjoint, non-intersecting compound) with no
+    # error anywhere to say the hub was dropped. Every name across all three
+    # fields is now merged into ONE order-preserving, deduplicated list
+    # before anything else runs, so nothing the model actually named is ever
+    # silently discarded regardless of which argument(s) it used to name it.
+    raw_objects = args.get("objects")
+    listed = [str(o).strip() for o in raw_objects if str(o).strip()] if isinstance(raw_objects, list) else []
+    base_name = str(args.get("base_object") or "").strip()
+    tool_name = str(args.get("tool_object") or "").strip()
+    merged: list[str] = []
+    for candidate in (base_name, tool_name, *listed):
+        if candidate and candidate not in merged:
+            merged.append(candidate)
+    if len(merged) < 2:
+        return {
+            "ok": False,
+            "error": "perform_freecad_boolean requires either base_object+tool_object, or objects (2+ names)",
+        }
+    if operation == "cut" and len(merged) != 2:
+        return {
+            "ok": False,
+            "error": (
+                f"perform_freecad_boolean: 'cut' takes exactly 2 objects, got {len(merged)} {merged} — "
+                "cut has no multi-object form; use base_object/tool_object only"
+            ),
+        }
+    # Existence is still checked against _object_registry (populated by
     # dispatch_tool_call as a side effect of every successful create/modify
     # call), but the resolved PATH itself is no longer what's passed down —
     # every session-scoped creation tool now shares the SAME underlying
     # document, so a path alone can't tell two objects apart. apply_boolean
-    # resolves base_object/tool_object by NAME against that shared session.
-    if base_name not in _object_registry():
+    # resolves every name by NAME against that shared session.
+    unknown = [n for n in merged if n not in _object_registry()]
+    if unknown:
         return {
             "ok": False,
-            "error": f"unknown base_object '{base_name}' — create it first with a create_freecad_* tool",
+            "error": f"unknown object(s) {unknown} — create them first with a create_freecad_* tool",
         }
-    if tool_name not in _object_registry():
-        return {
-            "ok": False,
-            "error": f"unknown tool_object '{tool_name}' — create it first with a create_freecad_* tool",
-        }
-    return engine.apply_boolean(operation, base_name, tool_name, name=str(args.get("name") or "").strip() or None)
+    resolved_name = str(args.get("name") or "").strip() or None
+    if operation == "cut":
+        return engine.apply_boolean(operation, merged[0], merged[1], name=resolved_name)
+    return engine.apply_boolean(operation, name=resolved_name, objects=merged)
 
 
 _EDGE_OPERATIONS = frozenset({"fillet", "chamfer"})
@@ -1974,31 +3810,70 @@ def _tool_perform_freecad_edge_operation(args: dict[str, Any], engine: Any, _cp:
 # "Placement"/"Placement.Base" are the one dimensional-ish property that
 # isn't a bare number — a 3D translation — so modify_freecad_parameter
 # accepts a [x, y, z] vector for either spelling instead of requiring a
-# single float.
+# single float. Rotation is NEVER packed into this vector (Neuro-Symbolic
+# RPY refactor — see _snap_cardinal_rpy below): it's the tool's own
+# separate yaw/pitch/roll parameters, so no raw quaternion/matrix/6-number
+# array can reach this function.
 _VECTOR_PARAMETER_NAMES = frozenset({"placement", "placement.base"})
 
 
 def _parse_vector_new_value(raw_value: Any) -> tuple[float, ...] | None:
-    """Parse a 3-number ``[x, y, z]`` or 6-number ``[x, y, z, yaw, pitch,
-    roll]`` vector from a list-like value or a JSON-array string such as
-    ``"[30, 20, 10]"`` or ``"[30, 20, 10, 90, 0, 0]"``. Returns ``None`` on
-    anything that isn't exactly 3 or 6 numbers — never raises. The 6-number
-    form (mm position + DEGREES Euler rotation — see
-    ``dana.plugins.freecad.engine.modify_parameter``'s own docstring for
-    the live-confirmed units) lets a kinematic-assembly caller move AND
-    orient a part in one call instead of two."""
+    """Parse a 3-number ``[x, y, z]`` vector from a list-like value or a
+    JSON-array string such as ``"[30, 20, 10]"``. Returns ``None`` on
+    anything that isn't exactly 3 numbers — never raises."""
     components = raw_value
     if isinstance(components, str):
         try:
             components = json.loads(components)
         except (TypeError, ValueError):
             return None
-    if not isinstance(components, (list, tuple)) or len(components) not in (3, 6):
+    if not isinstance(components, (list, tuple)) or len(components) != 3:
         return None
     try:
         return tuple(float(c) for c in components)
     except (TypeError, ValueError):
         return None
+
+
+# Neuro-Symbolic RPY rigidity: every roll/pitch/yaw a placement-mutating
+# tool (modify_freecad_parameter, position_assembly_part) receives from the
+# LLM must land on a 0/90/180/270-degree cardinal increment — a rigid,
+# deterministic orthogonal alignment, never an arbitrary hallucinated tilt
+# like 45.3 degrees. Values within _CARDINAL_SNAP_TOLERANCE_DEG of a
+# cardinal are SNAPPED to it (ordinary float noise from a prior computed
+# rotation, e.g. 89.97, is not a real off-axis intent and shouldn't be
+# rejected); anything further off is REJECTED outright — never silently
+# rounded away, since that would quietly discard the caller's actual
+# stated angle — unless override_cardinal=True is passed, which skips
+# validation entirely and passes the raw value through untouched for a
+# genuinely non-orthogonal orientation.
+_CARDINAL_STEP_DEG = 90.0
+_CARDINAL_SNAP_TOLERANCE_DEG = 1.0
+
+
+def _snap_cardinal_angle(value: float, axis_label: str, override_cardinal: bool) -> float:
+    v = float(value)
+    if override_cardinal:
+        return v
+    nearest = round(v / _CARDINAL_STEP_DEG) * _CARDINAL_STEP_DEG
+    if abs(v - nearest) > _CARDINAL_SNAP_TOLERANCE_DEG:
+        raise ValueError(
+            f"{axis_label}={v!r} is not a cardinal angle — rigid assembly placements must use "
+            f"0/90/180/270-degree increments (nearest is {nearest % 360.0:g}, off by "
+            f"{abs(v - nearest):.2f} degrees). Pass override_cardinal=true if a genuinely "
+            "non-orthogonal orientation is intended."
+        )
+    return nearest % 360.0
+
+
+def _snap_cardinal_rpy(
+    yaw: float, pitch: float, roll: float, override_cardinal: bool
+) -> tuple[float, float, float]:
+    return (
+        _snap_cardinal_angle(yaw, "yaw", override_cardinal),
+        _snap_cardinal_angle(pitch, "pitch", override_cardinal),
+        _snap_cardinal_angle(roll, "roll", override_cardinal),
+    )
 
 
 def _tool_modify_freecad_parameter(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
@@ -2015,25 +3890,42 @@ def _tool_modify_freecad_parameter(args: dict[str, Any], engine: Any, _cp: Any) 
     parameter_name = str(args.get("parameter_name") or "").strip()
     if not parameter_name:
         return {"ok": False, "error": "modify_freecad_parameter requires parameter_name"}
-    raw_value = args.get("new_value")
+
     if parameter_name.lower() in _VECTOR_PARAMETER_NAMES:
+        raw_value = args.get("new_value")
         vector = _parse_vector_new_value(raw_value)
         if vector is None:
             return {
                 "ok": False,
                 "error": (
                     "modify_freecad_parameter: Placement new_value must be a 3-number "
-                    "[x, y, z] vector (e.g. '[30, 20, 10]') or a 6-number "
-                    "[x, y, z, yaw, pitch, roll] vector in mm + degrees "
-                    f"(e.g. '[30, 20, 10, 90, 0, 0]') — got {raw_value!r}"
+                    "[x, y, z] vector (e.g. '[30, 20, 10]') — got "
+                    f"{raw_value!r}. Rotation is set via the separate yaw/pitch/roll "
+                    "parameters, never packed into this vector."
                 ),
             }
-        new_value: float | tuple[float, ...] = vector
-    else:
+        yaw_raw, pitch_raw, roll_raw = args.get("yaw"), args.get("pitch"), args.get("roll")
+        if yaw_raw is None and pitch_raw is None and roll_raw is None:
+            return engine.modify_parameter(target_name, parameter_name, vector)
         try:
-            new_value = float(raw_value)
+            yaw_f = float(yaw_raw) if yaw_raw is not None else 0.0
+            pitch_f = float(pitch_raw) if pitch_raw is not None else 0.0
+            roll_f = float(roll_raw) if roll_raw is not None else 0.0
         except (TypeError, ValueError):
-            return {"ok": False, "error": "modify_freecad_parameter requires a numeric new_value"}
+            return {"ok": False, "error": "modify_freecad_parameter: yaw/pitch/roll must all be numbers"}
+        override_cardinal = bool(args.get("override_cardinal", False))
+        try:
+            yaw_f, pitch_f, roll_f = _snap_cardinal_rpy(yaw_f, pitch_f, roll_f, override_cardinal)
+        except ValueError as exc:
+            return {"ok": False, "error": f"modify_freecad_parameter: {exc}"}
+        return engine.modify_parameter(
+            target_name, parameter_name, vector, yaw=yaw_f, pitch=pitch_f, roll=roll_f
+        )
+
+    try:
+        new_value = float(args.get("new_value"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "modify_freecad_parameter requires a numeric new_value"}
     return engine.modify_parameter(target_name, parameter_name, new_value)
 
 
@@ -2061,6 +3953,23 @@ def _tool_inspect_spatial_properties(args: dict[str, Any], engine: Any, _cp: Any
             "error": f"unknown target_object '{target_name}' — create it first with a create_freecad_* tool",
         }
     return engine.inspect_spatial_properties(target_path, target_object=target_name)
+
+
+def _tool_query_topology(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    part_name = str(args.get("part_name") or "").strip()
+    if not part_name:
+        return {"ok": False, "error": "query_topology requires part_name"}
+    # Same non-redirected existence check as get_freecad_bounding_box/
+    # inspect_spatial_properties above (query_topology is not in
+    # _TOPOLOGY_INPUT_ARG_KEYS) -- a read-only "look before you leap" query
+    # should error on a stale/wrong name rather than silently self-heal onto
+    # whatever a boolean/feature op most recently produced.
+    if part_name not in _object_registry():
+        return {
+            "ok": False,
+            "error": f"unknown part_name '{part_name}' — create it first with a create_freecad_* tool",
+        }
+    return engine.query_topology(part_name)
 
 
 def _bbox_overlap(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
@@ -2123,6 +4032,28 @@ def _tool_create_freecad_pipe(args: dict[str, Any], engine: Any, _cp: Any) -> di
         length_or_angle,
         name=str(args.get("name") or "Pipe"),
         placement=_extract_placement(args),
+    )
+
+
+def _tool_create_freecad_helix(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    try:
+        coil_radius = float(args.get("coil_radius"))
+        pitch = float(args.get("pitch"))
+        height = float(args.get("height"))
+        pipe_radius = float(args.get("pipe_radius"))
+    except (TypeError, ValueError):
+        return {
+            "ok": False,
+            "error": "create_freecad_helix requires numeric coil_radius, pitch, height, and pipe_radius",
+        }
+    return engine.create_helix(
+        coil_radius,
+        pitch,
+        height,
+        pipe_radius,
+        name=str(args.get("name") or "Helix"),
+        placement=_extract_placement(args),
+        angle_offset=float(args.get("angle_offset", 0.0) or 0.0),
     )
 
 
@@ -2285,6 +4216,523 @@ def _tool_create_freecad_sketch_extrude(args: dict[str, Any], engine: Any, _cp: 
     )
 
 
+_SKETCH_PLANES = frozenset({"XY", "XZ", "YZ"})
+
+
+def _tool_create_freecad_sketch(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    name = str(args.get("name") or "").strip()
+    if not name:
+        return {"ok": False, "error": "create_freecad_sketch requires a non-empty name"}
+    plane = str(args.get("plane") or "").strip().upper()
+    if plane not in _SKETCH_PLANES:
+        return {"ok": False, "error": "create_freecad_sketch requires plane to be one of XY, XZ, YZ"}
+    geometry = args.get("geometry")
+    if not isinstance(geometry, list) or not geometry:
+        return {"ok": False, "error": "create_freecad_sketch requires a non-empty geometry list"}
+    return engine.create_sketch(name, plane, geometry)
+
+
+_SKETCH_CONSTRAINT_TYPES = frozenset({"Coincident", "Horizontal", "Vertical", "Distance", "Radius"})
+
+
+def _tool_apply_sketch_constraint(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    sketch_name = str(args.get("sketch_name") or "").strip()
+    if not sketch_name:
+        return {"ok": False, "error": "apply_sketch_constraint requires sketch_name"}
+    # sketch_name has already been redirected to its resolve_living_leaf by
+    # dispatch_tool_call's _apply_topology_redirects, before this handler
+    # ever runs — see that function's docstring.
+    if sketch_name not in _object_registry():
+        return {
+            "ok": False,
+            "error": f"unknown sketch_name '{sketch_name}' — create it first with create_freecad_sketch",
+        }
+    constraint_type = str(args.get("constraint_type") or "").strip()
+    if constraint_type not in _SKETCH_CONSTRAINT_TYPES:
+        return {
+            "ok": False,
+            "error": (
+                "apply_sketch_constraint requires constraint_type to be one of "
+                "Coincident, Horizontal, Vertical, Distance, Radius"
+            ),
+        }
+    raw_indices = args.get("geometry_indices")
+    if not isinstance(raw_indices, list) or not raw_indices:
+        return {"ok": False, "error": "apply_sketch_constraint requires a non-empty geometry_indices list"}
+    try:
+        indices = [int(i) for i in raw_indices]
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "apply_sketch_constraint: geometry_indices must be a list of integers"}
+    value = args.get("value")
+    if value is not None:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "apply_sketch_constraint: value must be numeric if given"}
+    return engine.apply_sketch_constraint(sketch_name, constraint_type, indices, value=value)
+
+
+def _tool_create_freecad_pad(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    sketch_name = str(args.get("sketch_name") or "").strip()
+    if not sketch_name:
+        return {"ok": False, "error": "create_freecad_pad requires sketch_name"}
+    # sketch_name has already been redirected to its resolve_living_leaf by
+    # dispatch_tool_call's _apply_topology_redirects, before this handler
+    # ever runs — see that function's docstring.
+    if sketch_name not in _object_registry():
+        return {
+            "ok": False,
+            "error": f"unknown sketch_name '{sketch_name}' — create it first with create_freecad_sketch",
+        }
+    try:
+        length = float(args.get("length"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "create_freecad_pad requires a numeric length"}
+    return engine.create_pad(
+        sketch_name,
+        length,
+        symmetric_to_plane=bool(args.get("symmetric_to_plane", False)),
+        reversed_direction=bool(args.get("reversed_direction", False)),
+    )
+
+
+def _tool_create_freecad_pocket(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    sketch_name = str(args.get("sketch_name") or "").strip()
+    if not sketch_name:
+        return {"ok": False, "error": "create_freecad_pocket requires sketch_name"}
+    # sketch_name has already been redirected to its resolve_living_leaf by
+    # dispatch_tool_call's _apply_topology_redirects, before this handler
+    # ever runs — see that function's docstring.
+    if sketch_name not in _object_registry():
+        return {
+            "ok": False,
+            "error": f"unknown sketch_name '{sketch_name}' — create it first with create_freecad_sketch",
+        }
+    try:
+        depth = float(args.get("depth"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "create_freecad_pocket requires a numeric depth"}
+    return engine.create_pocket(
+        sketch_name,
+        depth,
+        through_all=bool(args.get("through_all", False)),
+        symmetric_to_plane=bool(args.get("symmetric_to_plane", False)),
+        reversed_direction=bool(args.get("reversed_direction", False)),
+    )
+
+
+_PATTERN_AXES = frozenset({"X", "Y", "Z"})
+
+
+def _tool_create_freecad_polar_pattern(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    feature_name = str(args.get("feature_name") or "").strip()
+    if not feature_name:
+        return {"ok": False, "error": "create_freecad_polar_pattern requires feature_name"}
+    # feature_name has already been redirected to its resolve_living_leaf by
+    # dispatch_tool_call's _apply_topology_redirects, before this handler
+    # ever runs — see that function's docstring.
+    if feature_name not in _object_registry():
+        return {
+            "ok": False,
+            "error": (
+                f"unknown feature_name '{feature_name}' — create it first with "
+                "create_freecad_pad or create_freecad_pocket"
+            ),
+        }
+    try:
+        occurrences = int(args.get("occurrences"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "create_freecad_polar_pattern requires an integer occurrences"}
+    if occurrences < 2:
+        return {"ok": False, "error": "create_freecad_polar_pattern requires occurrences to be at least 2"}
+    axis = str(args.get("axis") or "Z").strip().upper()
+    if axis not in _PATTERN_AXES:
+        return {"ok": False, "error": "create_freecad_polar_pattern requires axis to be one of X, Y, Z"}
+    raw_angle = args.get("angle", 360.0)
+    try:
+        angle = float(raw_angle) if raw_angle is not None else 360.0
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "create_freecad_polar_pattern: angle must be numeric if given"}
+    return engine.create_polar_pattern(
+        feature_name,
+        occurrences,
+        angle=angle,
+        axis=axis,
+        reversed_direction=bool(args.get("reversed_direction", False)),
+    )
+
+
+def _tool_create_freecad_linear_pattern(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    feature_name = str(args.get("feature_name") or "").strip()
+    if not feature_name:
+        return {"ok": False, "error": "create_freecad_linear_pattern requires feature_name"}
+    # feature_name has already been redirected to its resolve_living_leaf by
+    # dispatch_tool_call's _apply_topology_redirects, before this handler
+    # ever runs — see that function's docstring.
+    if feature_name not in _object_registry():
+        return {
+            "ok": False,
+            "error": (
+                f"unknown feature_name '{feature_name}' — create it first with "
+                "create_freecad_pad or create_freecad_pocket"
+            ),
+        }
+    try:
+        occurrences = int(args.get("occurrences"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "create_freecad_linear_pattern requires an integer occurrences"}
+    if occurrences < 2:
+        return {"ok": False, "error": "create_freecad_linear_pattern requires occurrences to be at least 2"}
+    try:
+        length = float(args.get("length"))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "create_freecad_linear_pattern requires a numeric length"}
+    direction = str(args.get("direction") or "X").strip().upper()
+    if direction not in _PATTERN_AXES:
+        return {"ok": False, "error": "create_freecad_linear_pattern requires direction to be one of X, Y, Z"}
+    return engine.create_linear_pattern(
+        feature_name,
+        occurrences,
+        length,
+        direction=direction,
+        reversed_direction=bool(args.get("reversed_direction", False)),
+    )
+
+
+def _tool_create_freecad_sweep(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    profile_sketch = str(args.get("profile_sketch") or "").strip()
+    if not profile_sketch:
+        return {"ok": False, "error": "create_freecad_sweep requires profile_sketch"}
+    path_sketch = str(args.get("path_sketch") or "").strip()
+    if not path_sketch:
+        return {"ok": False, "error": "create_freecad_sweep requires path_sketch"}
+    # profile_sketch/path_sketch have already been redirected to their
+    # resolve_living_leaf by dispatch_tool_call's _apply_topology_redirects,
+    # before this handler ever runs — see that function's docstring.
+    unknown = [n for n in (profile_sketch, path_sketch) if n not in _object_registry()]
+    if unknown:
+        return {
+            "ok": False,
+            "error": f"unknown sketch(es) {unknown} — create them first with create_freecad_sketch",
+        }
+    return engine.create_sweep(profile_sketch, path_sketch, frenet=bool(args.get("frenet", True)))
+
+
+def _tool_create_freecad_loft(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    raw_sketches = args.get("cross_section_sketches")
+    if not isinstance(raw_sketches, list):
+        return {"ok": False, "error": "create_freecad_loft requires cross_section_sketches to be a list"}
+    names = [str(s).strip() for s in raw_sketches if str(s).strip()]
+    if len(names) < 2:
+        return {"ok": False, "error": "create_freecad_loft requires at least 2 cross_section_sketches"}
+    # Every entry has already been redirected to its own resolve_living_leaf
+    # by dispatch_tool_call's _apply_topology_redirects, before this handler
+    # ever runs — see that function's own create_freecad_loft-specific
+    # list-handling branch (cross_section_sketches is list-valued, unlike
+    # the single-string keys _TOPOLOGY_INPUT_ARG_KEYS normally handles; the
+    # same special-casing perform_freecad_boolean's own "objects" list uses).
+    unknown = [n for n in names if n not in _object_registry()]
+    if unknown:
+        return {
+            "ok": False,
+            "error": f"unknown sketch(es) {unknown} — create them first with create_freecad_sketch",
+        }
+    return engine.create_loft(
+        names,
+        ruled=bool(args.get("ruled", False)),
+        closed=bool(args.get("closed", False)),
+    )
+
+
+def _tool_create_freecad_assembly(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    name = str(args.get("name") or "").strip()
+    if not name:
+        return {"ok": False, "error": "create_freecad_assembly requires a non-empty name"}
+    return engine.create_assembly(name)
+
+
+def _tool_add_parts_to_assembly(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    assembly_name = str(args.get("assembly_name") or "").strip()
+    if not assembly_name:
+        return {"ok": False, "error": "add_parts_to_assembly requires assembly_name"}
+    raw_parts = args.get("part_names")
+    if not isinstance(raw_parts, list):
+        return {"ok": False, "error": "add_parts_to_assembly requires part_names to be a list"}
+    names = [str(p).strip() for p in raw_parts if str(p).strip()]
+    if not names:
+        return {"ok": False, "error": "add_parts_to_assembly requires a non-empty part_names list"}
+    # assembly_name has already been redirected to its own resolve_living_leaf
+    # via the generic _TOPOLOGY_INPUT_ARG_KEYS single-key loop; every entry
+    # in part_names has ALSO already been redirected to ITS OWN
+    # resolve_living_leaf by dispatch_tool_call's _apply_topology_redirects,
+    # before this handler ever runs — see that function's own
+    # add_parts_to_assembly-specific list-handling branch (part_names is
+    # list-valued, unlike the single-string keys _TOPOLOGY_INPUT_ARG_KEYS
+    # normally handles; the same special-casing perform_freecad_boolean's
+    # own "objects" list and create_freecad_loft's own
+    # cross_section_sketches list already use).
+    if assembly_name not in _object_registry():
+        return {
+            "ok": False,
+            "error": f"unknown assembly_name '{assembly_name}' — create it first with create_freecad_assembly",
+        }
+    unknown = [n for n in names if n not in _object_registry()]
+    if unknown:
+        return {
+            "ok": False,
+            "error": f"unknown part(s) {unknown} — create them first with a create_freecad_* tool",
+        }
+    return engine.add_parts_to_assembly(assembly_name, names)
+
+
+def _tool_position_assembly_part(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    part_name = str(args.get("part_name") or "").strip()
+    if not part_name:
+        return {"ok": False, "error": "position_assembly_part requires part_name"}
+    # part_name has already been redirected to its resolve_living_leaf by
+    # dispatch_tool_call's _apply_topology_redirects, before this handler
+    # ever runs — see that function's docstring.
+    if part_name not in _object_registry():
+        return {
+            "ok": False,
+            "error": f"unknown part_name '{part_name}' — create it first with a create_freecad_* tool",
+        }
+    try:
+        placement_x = float(args.get("placement_x", 0.0) or 0.0)
+        placement_y = float(args.get("placement_y", 0.0) or 0.0)
+        placement_z = float(args.get("placement_z", 0.0) or 0.0)
+        yaw = float(args.get("yaw", 0.0) or 0.0)
+        pitch = float(args.get("pitch", 0.0) or 0.0)
+        roll = float(args.get("roll", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return {
+            "ok": False,
+            "error": "position_assembly_part: placement_x/y/z and yaw/pitch/roll must all be numeric if given",
+        }
+    override_cardinal = bool(args.get("override_cardinal", False))
+    try:
+        yaw, pitch, roll = _snap_cardinal_rpy(yaw, pitch, roll, override_cardinal)
+    except ValueError as exc:
+        return {"ok": False, "error": f"position_assembly_part: {exc}"}
+    return engine.position_assembly_part(
+        part_name,
+        placement_x=placement_x,
+        placement_y=placement_y,
+        placement_z=placement_z,
+        yaw=yaw,
+        pitch=pitch,
+        roll=roll,
+    )
+
+
+def _tool_apply_assembly_constraint(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    assembly_name = str(args.get("assembly_name") or "").strip()
+    part1_name = str(args.get("part1_name") or "").strip()
+    part2_name = str(args.get("part2_name") or "").strip()
+    if not assembly_name:
+        return {"ok": False, "error": "apply_assembly_constraint requires assembly_name"}
+    if not part1_name or not part2_name:
+        return {"ok": False, "error": "apply_assembly_constraint requires part1_name and part2_name"}
+    if args.get("uv_tensor") is not None:
+        # Hard gate: uv_tensor is a face-local (u, v) guess with no
+        # guaranteed relationship to any world axis (verified: the same
+        # world-space direction can map to u on one face and v on another),
+        # and repeated real runs showed the orchestrator does not reliably
+        # self-correct from a runtime hint alone even when told the exact
+        # correct mapping — see engine.apply_assembly_constraint's own
+        # world_fractions docstring. world_fractions covers the same 2
+        # degrees of freedom (up to two world axes at once, e.g. a corner
+        # as {"X": 0.0, "Y": 0.0}), so this doesn't remove any placement
+        # capability, only the raw-(u, v) path to it from this ReAct
+        # surface. engine.apply_assembly_constraint's own uv_tensor
+        # parameter is untouched for non-LLM callers (tests, scripts) that
+        # call it directly.
+        return {
+            "ok": False,
+            "error": (
+                'ConstraintError: uv_tensor is strictly forbidden. Use world_fractions '
+                '(e.g. {"X": 0.9, "Y": 0.1}) to distribute geometry along global axes.'
+            ),
+        }
+    # part1_name/part2_name have already been redirected to their
+    # resolve_living_leaf by dispatch_tool_call's _apply_topology_redirects
+    # (see _TOPOLOGY_INPUT_ARG_KEYS), before this handler ever runs — same
+    # as position_assembly_part's own part_name above.
+    for p_name in (part1_name, part2_name):
+        if p_name not in _object_registry():
+            return {
+                "ok": False,
+                "error": f"unknown part '{p_name}' — create it first with a create_freecad_* tool",
+            }
+    return engine.apply_assembly_constraint(
+        assembly_name,
+        part1_name,
+        str(args.get("part1_element") or "").strip(),
+        part2_name,
+        str(args.get("part2_element") or "").strip(),
+        str(args.get("constraint_type") or "").strip(),
+        offset=args.get("offset", 0.0),
+        world_fractions=args.get("world_fractions"),
+    )
+
+
+def _tool_anchor_assembly_root(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    assembly_name = str(args.get("assembly_name") or "").strip()
+    part_name = str(args.get("part_name") or "").strip()
+    if not assembly_name:
+        return {"ok": False, "error": "anchor_assembly_root requires assembly_name"}
+    if not part_name:
+        return {"ok": False, "error": "anchor_assembly_root requires part_name"}
+    # assembly_name/part_name have already been redirected to their
+    # resolve_living_leaf by dispatch_tool_call's _apply_topology_redirects
+    # (see its own anchor_assembly_root branch) — same as
+    # apply_assembly_constraint's part1_name/part2_name above.
+    if part_name not in _object_registry():
+        return {
+            "ok": False,
+            "error": f"unknown part_name '{part_name}' — create it first with a create_freecad_* tool",
+        }
+    return engine.anchor_assembly_root(assembly_name, part_name)
+
+
+def _tool_define_kinematic_joint(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    from dana.tools.urdf_builder import ROOT_LINK_NAME
+
+    assembly_name = str(args.get("assembly_name") or "").strip()
+    child_link = str(args.get("child_link") or "").strip()
+    if not assembly_name:
+        return {"ok": False, "error": "define_kinematic_joint requires assembly_name"}
+    if not child_link:
+        return {"ok": False, "error": "define_kinematic_joint requires child_link"}
+    parent_link = str(args.get("parent_link") or ROOT_LINK_NAME).strip() or ROOT_LINK_NAME
+    # assembly_name/child_link/parent_link have already been redirected to
+    # their resolve_living_leaf by dispatch_tool_call's
+    # _apply_topology_redirects — same as every other assembly tool's own
+    # name arguments above. parent_link is deliberately NOT validated
+    # against _object_registry() when it's still the synthetic root
+    # (ROOT_LINK_NAME) — that name was never created by any create_freecad_*
+    # tool, it's the export's own synthetic world frame.
+    if assembly_name not in _object_registry():
+        return {
+            "ok": False,
+            "error": f"unknown assembly_name '{assembly_name}' — create it first with create_freecad_assembly",
+        }
+    if child_link not in _object_registry():
+        return {
+            "ok": False,
+            "error": f"unknown child_link '{child_link}' — create it first with a create_freecad_* tool",
+        }
+    if parent_link != ROOT_LINK_NAME and parent_link not in _object_registry():
+        return {
+            "ok": False,
+            "error": f"unknown parent_link '{parent_link}' — create it first with a create_freecad_* tool",
+        }
+    limits = args.get("limits") or {}
+    if not isinstance(limits, dict):
+        return {"ok": False, "error": "define_kinematic_joint: limits must be an object if given"}
+    result = engine.define_kinematic_joint(
+        assembly_name,
+        child_link,
+        parent_link=parent_link,
+        joint_type=str(args.get("joint_type") or "fixed").strip(),
+        axis=args.get("axis") or (0.0, 0.0, 1.0),
+        joint_name=args.get("joint_name"),
+        limit_lower=limits.get("lower"),
+        limit_upper=limits.get("upper"),
+        limit_effort=limits.get("effort"),
+        limit_velocity=limits.get("velocity"),
+    )
+    if isinstance(result, dict) and result.get("ok"):
+        resolved_joint_name = str((result.get("dimensions") or {}).get("joint_name") or "").strip()
+        if resolved_joint_name:
+            # Evidence-Based Gate fix: a joint is never a top-level BRep
+            # object create_freecad_*/perform_freecad_boolean would leave
+            # in _object_registry() on its own — it's metadata on the
+            # assembly's own custom property (see engine.py's own
+            # docstring) — so without this, mark_task_completed's
+            # grounding check rejects a model's entirely accurate
+            # created_feature_names claim for the joint it just defined,
+            # deadlocking against the Fail-Safe Plan Gate below with no
+            # legal way to advance. Path points at the SAME session
+            # document the joint's own JSON blob actually lives in — a
+            # joint has no separate file of its own to point at.
+            _object_registry()[resolved_joint_name] = str(result.get("path") or "")
+            _record_kinematic_joint_node(resolved_joint_name, parent_link, child_link)
+    return result
+
+
+def _tool_validate_assembly_collisions(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    assembly_name = str(args.get("assembly_name") or "").strip()
+    if not assembly_name:
+        return {"ok": False, "error": "validate_assembly_collisions requires assembly_name"}
+    # assembly_name has already been redirected to its resolve_living_leaf
+    # by dispatch_tool_call's _apply_topology_redirects — same as every
+    # other assembly tool's own name argument above.
+    if assembly_name not in _object_registry():
+        return {
+            "ok": False,
+            "error": f"unknown assembly_name '{assembly_name}' — create it first with create_freecad_assembly",
+        }
+    return engine.validate_assembly_collisions(assembly_name)
+
+
+def _tool_export_assembly_to_urdf(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    assembly_name = str(args.get("assembly_name") or "").strip()
+    if not assembly_name:
+        return {"ok": False, "error": "export_assembly_to_urdf requires assembly_name"}
+    # assembly_name has already been redirected to its resolve_living_leaf
+    # by dispatch_tool_call's _apply_topology_redirects — same as every
+    # other assembly tool's own name argument above.
+    if assembly_name not in _object_registry():
+        return {
+            "ok": False,
+            "error": f"unknown assembly_name '{assembly_name}' — create it first with create_freecad_assembly",
+        }
+    export_directory = args.get("export_directory")
+    density_kg_m3 = args.get("density_kg_m3")
+    return engine.export_assembly_to_urdf(
+        assembly_name,
+        str(export_directory).strip() if export_directory else None,
+        float(density_kg_m3) if density_kg_m3 is not None else None,
+    )
+
+
+_SIM_TARGET_PLATFORMS = frozenset({"isaac_sim", "gazebo", "ros2"})
+
+
+def _tool_generate_simulation_wrapper(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    from dana.tools.sim_wrapper_generator import generate_simulation_wrapper
+
+    assembly_name = str(args.get("assembly_name") or "").strip()
+    if not assembly_name:
+        return {"ok": False, "error": "generate_simulation_wrapper requires assembly_name"}
+    target_platform = str(args.get("target_platform") or "").strip().lower()
+    if target_platform not in _SIM_TARGET_PLATFORMS:
+        return {
+            "ok": False,
+            "error": f"generate_simulation_wrapper: target_platform must be one of {sorted(_SIM_TARGET_PLATFORMS)}",
+        }
+    urdf_path = str(args.get("urdf_path") or "").strip()
+    if not urdf_path:
+        return {"ok": False, "error": "generate_simulation_wrapper requires urdf_path"}
+    # assembly_name is a cosmetic label here (the output filename / robot
+    # class name fallback), not a reference to a still-live session object —
+    # urdf_path (validated inside generate_simulation_wrapper itself, same
+    # hallucinated-path guard as generate_urdf_assembly's own mesh_path) is
+    # the actual source of truth this tool loads from, so unlike every
+    # other assembly_name argument above, this one deliberately does NOT go
+    # through _object_registry()/resolve_living_leaf.
+    output_path = args.get("output_path")
+    return json.loads(
+        generate_simulation_wrapper(
+            assembly_name,
+            target_platform,
+            urdf_path,
+            str(output_path).strip() if output_path else None,
+        )
+    )
+
+
 def _tool_create_freecad_feature_on_face(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
     object_name = str(args.get("object_name") or "").strip()
     if not object_name:
@@ -2395,13 +4843,32 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "modify_freecad_parameter": _tool_modify_freecad_parameter,
     "get_freecad_bounding_box": _tool_get_freecad_bounding_box,
     "inspect_spatial_properties": _tool_inspect_spatial_properties,
+    "query_topology": _tool_query_topology,
     "analyze_bounding_box_collisions": _tool_analyze_bounding_box_collisions,
     "create_freecad_pipe": _tool_create_freecad_pipe,
+    "create_freecad_helix": _tool_create_freecad_helix,
     "align_freecad_objects": _tool_align_freecad_objects,
     "create_assembly_mate": _tool_create_assembly_mate,
     "export_freecad_model": _tool_export_freecad_model,
     "generate_2d_blueprint": _tool_generate_2d_blueprint,
     "create_freecad_sketch_extrude": _tool_create_freecad_sketch_extrude,
+    "create_freecad_sketch": _tool_create_freecad_sketch,
+    "apply_sketch_constraint": _tool_apply_sketch_constraint,
+    "create_freecad_pad": _tool_create_freecad_pad,
+    "create_freecad_pocket": _tool_create_freecad_pocket,
+    "create_freecad_polar_pattern": _tool_create_freecad_polar_pattern,
+    "create_freecad_linear_pattern": _tool_create_freecad_linear_pattern,
+    "create_freecad_sweep": _tool_create_freecad_sweep,
+    "create_freecad_loft": _tool_create_freecad_loft,
+    "create_freecad_assembly": _tool_create_freecad_assembly,
+    "add_parts_to_assembly": _tool_add_parts_to_assembly,
+    "position_assembly_part": _tool_position_assembly_part,
+    "apply_assembly_constraint": _tool_apply_assembly_constraint,
+    "anchor_assembly_root": _tool_anchor_assembly_root,
+    "define_kinematic_joint": _tool_define_kinematic_joint,
+    "validate_assembly_collisions": _tool_validate_assembly_collisions,
+    "export_assembly_to_urdf": _tool_export_assembly_to_urdf,
+    "generate_simulation_wrapper": _tool_generate_simulation_wrapper,
     "create_freecad_feature_on_face": _tool_create_freecad_feature_on_face,
     "batch_pattern_array": _tool_batch_pattern_array,
     "insert_standard_part": _tool_insert_standard_part,
@@ -2417,6 +4884,9 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "update_core_memory": _tool_update_core_memory,
     "create_plan": _tool_create_plan,
     "mark_task_completed": _tool_mark_task_completed,
+    "insert_task": _tool_insert_task,
+    "cancel_pending_task": _tool_cancel_pending_task,
+    "cancel_active_task": _tool_cancel_active_task,
     "compile_plan_as_skill": _tool_compile_plan_as_skill,
     "save_new_skill": _tool_save_new_skill,
     "read_skill_source": _tool_read_skill_source,
@@ -2598,6 +5068,9 @@ def describe_tool_call(call: ToolCall) -> str:
     if call.tool_id == "inspect_spatial_properties":
         target = call.arguments.get("target_object", "?")
         return f"Inspect volume/area/validity/topology of `{target}` in FreeCAD."
+    if call.tool_id == "query_topology":
+        target = call.arguments.get("part_name", "?")
+        return f"Query per-face topology (area/normal/centroid) of `{target}` in FreeCAD."
     if call.tool_id == "analyze_bounding_box_collisions":
         a = call.arguments.get("object_a", "?")
         b = call.arguments.get("object_b", "?")
@@ -2609,6 +5082,15 @@ def describe_tool_call(call: ToolCall) -> str:
         if path_type == "arc":
             return f"Create a curved pipe (radius {radius}mm) bending {value} degrees in FreeCAD."
         return f"Create a straight pipe (radius {radius}mm, length {value}mm) in FreeCAD."
+    if call.tool_id == "create_freecad_helix":
+        coil_radius = call.arguments.get("coil_radius", "?")
+        pitch = call.arguments.get("pitch", "?")
+        height = call.arguments.get("height", "?")
+        pipe_radius = call.arguments.get("pipe_radius", "?")
+        return (
+            f"Create a helical coil (coil radius {coil_radius}mm, pitch {pitch}mm, height {height}mm, "
+            f"tube radius {pipe_radius}mm) in FreeCAD."
+        )
     if call.tool_id == "align_freecad_objects":
         source = call.arguments.get("source_object", "?")
         target = call.arguments.get("target_object", "?")
@@ -2752,6 +5234,16 @@ _CORE_TOOL_IDS = frozenset(
         # always available so a long-horizon goal can be broken down in ANY session, plugin or not.
         "mark_task_completed",  # same reasoning — updating progress on the current plan must
         # never be gated behind a specific plugin being active.
+        "insert_task",  # Dynamic FSM Replanning — the legal way to fix a plan that turns out
+        # to be missing a step, deliberately reachable from inside EXECUTING (not just PLANNING)
+        # so hard_restrict_to's own hard tool-schema lock doesn't force the model to smuggle the
+        # missing work into an unrelated task's window instead. See its own handler docstring.
+        "cancel_pending_task",  # same reasoning/reachability as insert_task — the legal way to
+        # drop a task that turns out to be unnecessary, without touching any OTHER task's record.
+        "cancel_active_task",  # FSM Recovery — same reasoning/reachability, but for the task
+        # CURRENTLY active rather than a not-yet-started one; cancel_pending_task structurally
+        # cannot reach it (see that tool's own hard rejection of "active"), so without this a
+        # wrongly-scheduled active task had no legal way off the plan at all.
         "compile_plan_as_skill",  # Composite Skill Compiler — see
         # dana.plugins.freecad.skill_compiler; always available for the same "not gated behind
         # a specific plugin" reasoning as create_plan/save_new_skill, which this composes.
@@ -2771,13 +5263,32 @@ _FREECAD_TOOL_IDS = frozenset(
         "modify_freecad_parameter",
         "get_freecad_bounding_box",
         "inspect_spatial_properties",
+        "query_topology",
         "analyze_bounding_box_collisions",
         "create_freecad_pipe",
+        "create_freecad_helix",
         "align_freecad_objects",
         "create_assembly_mate",
         "export_freecad_model",
         "generate_2d_blueprint",
         "create_freecad_sketch_extrude",
+        "create_freecad_sketch",
+        "apply_sketch_constraint",
+        "create_freecad_pad",
+        "create_freecad_pocket",
+        "create_freecad_polar_pattern",
+        "create_freecad_linear_pattern",
+        "create_freecad_sweep",
+        "create_freecad_loft",
+        "create_freecad_assembly",
+        "add_parts_to_assembly",
+        "position_assembly_part",
+        "apply_assembly_constraint",
+        "anchor_assembly_root",
+        "define_kinematic_joint",
+        "validate_assembly_collisions",
+        "export_assembly_to_urdf",
+        "generate_simulation_wrapper",
         "create_freecad_feature_on_face",
         "batch_pattern_array",
         "insert_standard_part",
@@ -2836,6 +5347,13 @@ _FREECAD_ESSENTIAL_TOOL_IDS = frozenset(
         "modify_freecad_parameter",
         "get_freecad_bounding_box",
         "export_freecad_model",
+        "create_freecad_helix",  # a live E2E run building an explicitly helical-coil
+        # request escalated to load_capability(domain="freecad_full") to reach this
+        # tool at all -- unlocking the full ~31-tool/~13.4KB schema in one jump (vs.
+        # ~0.6KB to add just this one tool here) preceded that same turn's local
+        # model producing an empty/invalid completion. Not proven causal, but cheap
+        # enough (+69 est. tokens) to just remove the incentive to escalate for
+        # this specific, common "wound coil/spring" shape.
         "insert_standard_part",  # frequently needed for basic hardware (bolts/nuts/
         # bearings/fasteners) and previously essential-only via a load_capability
         # ("freecad_full") hunt — the agent would spend several turns trying to reach it
@@ -2851,6 +5369,50 @@ _FREECAD_ESSENTIAL_TOOL_IDS = frozenset(
         # failed to surface it), so the agent fabricated a "fused result" bounding
         # box without ever calling this tool or perform_freecad_boolean. Same
         # "reachable from turn one" reasoning as insert_standard_part above.
+        "create_freecad_sketch",  # Sketcher/PartDesign primitives — a live LiDAR-
+        "create_freecad_pad",  # mounting-assembly run named "sketch"/"pad"/"pocket"/
+        "create_freecad_pocket",  # "sweep"/"assembly" in its own first message
+        "create_freecad_polar_pattern",  # (_looks_cad_related's own keyword set,
+        "create_freecad_sweep",  # dana.api.server), correctly pre-seeding
+        "create_freecad_assembly",  # "freecad_essential" turn one — but this whole
+        # PartDesign/Sketcher family was previously freecad_full-only, so the agent
+        # still burned two search_tool_catalog calls + a load_specific_tool call
+        # before its first real geometry call every time (confirmed live,
+        # dana_runtime.log session ddb8d29a-...). Grouped as one family, same
+        # "reachable from turn one" reasoning as insert_standard_part/
+        # import_and_solidify_mesh above — these six are exactly the tools that
+        # keyword set actually implies, not the solid-primitive tools already here.
+        #
+        # Assembly/kinematics/robotics-export family — the exact addition the
+        # "urdf"/"wrapper" alias comment above already warned was needed
+        # FIRST, now confirmed live as an actual (not just theoretical)
+        # deadlock: a 4-wheel rover e2e run planned its "export to URDF" task
+        # with expected_tools=['export_freecad_model'] (a plausible-looking
+        # but wrong guess — that tool only emits STL/STEP), which auto-
+        # completed the instant the STEP export succeeded, advancing the FSM
+        # into the NEXT task (generate_simulation_wrapper) before any .urdf
+        # ever existed. Once there, the model correctly recognized it still
+        # needed export_assembly_to_urdf and called it repeatedly — each
+        # attempt bounced by the Universal FSM Enforcement hard_restrict_to
+        # gate (task_tool_ids | _CORE_TOOL_IDS only), crossing the Wrong-Tool
+        # Escape Hatch's threshold every time, yet the hatch's own fallback
+        # (this frozenset) didn't contain the tool either, so every one of
+        # add_parts_to_assembly/apply_assembly_constraint/position_assembly_
+        # part/define_kinematic_joint/export_assembly_to_urdf stayed
+        # permanently unreachable for the rest of that task — not a timing
+        # race (load_capability/load_specific_tool worked exactly as
+        # designed and correctly widened the SCHEMA the very next turn), but
+        # two independent gates that never learned about each other: schema
+        # visibility (effective_plugins) vs. dispatch-time hard restriction
+        # (hard_restrict_to), which only ever falls back to THIS set once
+        # the escape hatch opens.
+        "add_parts_to_assembly",
+        "position_assembly_part",
+        "apply_assembly_constraint",
+        "anchor_assembly_root",
+        "define_kinematic_joint",
+        "validate_assembly_collisions",
+        "export_assembly_to_urdf",
     }
 )
 
@@ -3422,15 +5984,23 @@ def _llm_tools_schema(
     domain-wide protections `must_keep` deliberately excludes (see that
     comment below) — there's no TPM-budget reason not to unconditionally
     guarantee the one tool THIS task actually needs survives every cut.
+    Only actually consulted here for a tool-less task (empty
+    ``expected_tool_ids``) — ``next_react_turn`` now promotes a non-empty
+    ``task_tool_ids`` straight into ``hard_restrict_to`` instead (see below),
+    since a mere narrowing bias still left every sibling geometry tool's
+    schema in front of the model for it to brute-force after an out-of-order
+    rejection.
 
-    ``hard_restrict_to`` (Plan-and-Execute FSM, Phase 2 — the PLANNING
-    phase) is a genuine hard allow-list, not one more input to the same
-    best-effort pipeline every other caller goes through: when given, this
-    bypasses domain gating, semantic narrowing, sticky/force_include, and
-    the token budget entirely, returning schemas for EXACTLY that id set
-    (intersected with what the registry actually has). The Planner must not
-    be able to see — let alone hallucinate a call to — any geometry tool at
-    all, and a soft narrowing bias (however strongly weighted) is not a
+    ``hard_restrict_to`` (Plan-and-Execute FSM — Phase 2's PLANNING phase,
+    and Phase 3's EXECUTING phase for a task with a non-empty
+    ``expected_tool_ids``) is a genuine hard allow-list, not one more input
+    to the same best-effort pipeline every other caller goes through: when
+    given, this bypasses domain gating, semantic narrowing, sticky/
+    force_include, and the token budget entirely, returning schemas for
+    EXACTLY that id set (intersected with what the registry actually has).
+    Neither the Planner nor a tool-mapped Executor task may see — let alone
+    hallucinate or brute-force a call to — any tool outside its own phase,
+    and a soft narrowing bias (however strongly weighted) is not a
     structural guarantee of that; a fixed allow-list is.
     """
     if hard_restrict_to is not None:
@@ -3831,7 +6401,11 @@ exact object names or spatial coordinates, DO NOT halt the workflow to ask \
 for clarification. Immediately use the get_freecad_bounding_box or \
 inspect_spatial_properties tools to assess the workspace, make the most \
 logical engineering assumption, execute the tool, and document your \
-assumption in your final response to the user.\
+assumption in your final response to the user.
+14. BOOLEAN OVERLAP RULE: The OpenCASCADE kernel crashes on perfectly \
+coplanar boundaries. When performing boolean operations, you MUST \
+intentionally embed or overlap the geometries slightly (e.g., offset by \
+1mm) to ensure a clean intersection.\
 """
 
 # Appended right after _FREECAD_SYSTEM_PROMPT (see build_system_prompt) —
@@ -3984,7 +6558,90 @@ snake_case (e.g. BaseCylinder or base_cylinder).
 coordinates, don't halt to ask — use `get_freecad_bounding_box`/\
 `inspect_spatial_properties` to assess the workspace, make the most logical \
 engineering assumption, execute, and document the assumption in your final \
-reply.\
+reply.
+12. BOOLEAN OVERLAP RULE: The OpenCASCADE kernel crashes on perfectly \
+coplanar boundaries. When performing boolean operations, you MUST \
+intentionally embed or overlap the geometries slightly (e.g., offset by \
+1mm) to ensure a clean intersection.
+13. PREFER TOPOLOGY OVER COORDINATE GUESSING: When positioning one \
+assembly part relative to another, ALWAYS prefer `apply_assembly_constraint` \
+— which computes the real geometric relationship from each part's actual \
+Face/Edge BRep geometry — over hand-typed XYZ numbers via \
+`position_assembly_part`/`modify_freecad_parameter`. Reserve raw \
+coordinates for placements with no shared reference geometry to align to.
+14. SPATIAL DISTRIBUTION FOR MULTI-PART LAYOUTS: before positioning 2+ parts \
+that must sit at DISTINCT locations around another object (corners, sides, \
+a ring/array), call `get_freecad_bounding_box` on the reference object \
+FIRST — never assume it's centered at the origin. Compute its real \
+half-extents and center from the returned min/max (half_x=(max_x-min_x)/2, \
+center_x=(max_x+min_x)/2, same for y/z), then derive each part's target \
+coordinate as center ± half_extent (minus the moving part's own \
+half-thickness for clearance) — NEVER reuse the moving part's own \
+dimensions (e.g. a wheel's radius) as the spatial offset for a DIFFERENT \
+object's layout. Before dispatching the last of the set, confirm every \
+part's computed coordinate actually differs from every other part's in the \
+axis that's supposed to distinguish them — four "corners" that collapse to \
+the same value in any relevant axis is not a corner layout.
+15. VERIFY AFTER POSITIONING: immediately after `position_assembly_part` succeeds for a \
+part that must sit adjacent to (not embedded in, not floating away from) a reference \
+object, call `analyze_bounding_box_collisions` between the two. An unexpected overlap \
+(or a suspiciously large gap) means your computed coordinate was wrong — recompute from \
+the reference object's real bounding box and reposition before calling \
+`define_kinematic_joint`, not after.
+16. WHEEL & AXLE MATING: CRITICAL — in `apply_assembly_constraint`, \
+`part1` is ALWAYS the FIXED reference (e.g. the chassis) and `part2` is \
+the MOVING part (e.g. the wheel). Passing them backwards will silently \
+warp the CHASSIS instead of moving the wheel, with no error to catch it \
+(confirmed live: got this backwards once and every wheel stayed stacked \
+at the origin while the chassis itself rotated/drifted across each \
+successive call instead). A cylinder from create_freecad_cylinder \
+defaults to a Z-axis axle (curved lateral face wraps Z; the two FLAT \
+circular end-caps sit at top/bottom). To get an X-axis axle, you MUST \
+mate the wheel to the chassis's LEFT or RIGHT face (`Face1`=-X or \
+`Face2`=+X). Do NOT use any other chassis face (Front/Back/Top/Bottom), \
+or the axle will point the wrong way. Apply a Coincident constraint with \
+part1=the chassis, part1_element=`Face1` (-X/Left) or `Face2` (+X/Right) \
+for the chassis, and part2=the wheel, part2_element=its \
+FLAT circular end-cap face (never the curved lateral face — Coincident \
+needs a well-defined normal, which only a flat face has). Coincident \
+between two planar faces auto-orients part2's normal opposite part1's, \
+so the solver rotates the wheel's axis onto X for you — no manual \
+rotation and no position_assembly_part needed. Cylinder face indices \
+are NOT a fixed convention like the box's verified Face1-6: don't guess \
+which index is the flat end-cap — if your first guess is rejected or \
+the visual_verification shows the wrong face mated, read the \
+rejection's "available faces" list to find the actual flat one. You \
+MUST also provide a `uv_tensor` (e.g. [0.2, 0.5]) on \
+every one of these calls — leaving it at the default [0.5, 0.5] snaps every \
+wheel mated to the SAME chassis face to that face's exact center point, \
+so two wheels on the same side end up perfectly coincident/overlapping \
+instead of at distinct front/rear positions. Give each wheel on the same \
+face a DIFFERENT uv_tensor (e.g. [0.2, 0.5] vs [0.8, 0.5]) \
+to place them at distinct front/rear spots with zero hand-computed \
+coordinates — uv_tensor is a continuous [u, v] pair, each value between \
+0.0 and 1.0 inclusive (0.0/1.0 sit at the padded corners/edges of the \
+face, 0.5 at its center); it is never a fixed token or a raw \
+world-space coordinate. Landing on an ALREADY-OCCUPIED point on the SAME \
+face is hard-rejected (within 1e-6mm of another part already mated \
+there) — this is a real double-booking guard, not just a naming \
+convention, so do not retry the exact same (face, uv_tensor) pair \
+expecting a different result; pick a uv_tensor at least ~0.3 away in u \
+or v instead.
+17. FINAL COLLISION AUDIT: once every part in an assembly has been \
+positioned (via apply_assembly_constraint/position_assembly_part) and \
+BEFORE calling `export_assembly_to_urdf`, call \
+`validate_assembly_collisions` on that assembly ONCE. uv_tensor's \
+own Geometric Fit Guard and Collision Guard only ever reason about \
+ONE face's 2D footprint — they cannot see a part's geometry punching into \
+a DIFFERENT part of the assembly (e.g. an oversized wheel's axle clipping \
+through the chassis body it's mounted to). `validate_assembly_collisions` \
+is the one check that catches that, via a REAL solid boolean intersection \
+across every member pair, not a bounding-box guess. If it reports any \
+entry in `collisions`, that pair genuinely interpenetrates — reposition or \
+resize one of the two named parts and re-check before exporting; do NOT \
+export a URDF with unresolved collisions still present. Do not call this \
+after every single positioning call — it is a final gate, not real-time \
+feedback.\
 """
 
 
@@ -3997,6 +6654,15 @@ def _build_planner_prompt() -> str:
     ``_CORE_TOOL_IDS`` — the model cannot call a geometry tool here not
     because a rule tells it not to, but because it was never in the payload
     it saw this turn.
+
+    One narrow exception to "no CAD rulebook": a single task-ORDERING
+    heuristic (assembly grouping before kinematic joints) is injected below.
+    This isn't a geometry rule — it doesn't name a shape/feature tool or bias
+    HOW anything is built — it mirrors a real hard constraint the tools
+    already enforce (``define_kinematic_joint`` requires both links to
+    already be assembly members, see its tool description), so getting the
+    task order right the first time avoids a guaranteed-failure retry rather
+    than adding a new restriction.
     """
     return (
         "=== PLANNING PHASE ===\n"
@@ -4011,13 +6677,58 @@ def _build_planner_prompt() -> str:
         "time.\n"
         "Even a single-action request still needs a one-item `tasks` list — "
         "every geometry tool stays gated behind an active plan.\n"
+        "Mandatory CAD sequencing: when the tasks include defining a "
+        "kinematic joint between parts (`define_kinematic_joint`), an "
+        "earlier task MUST already group those parts into an assembly "
+        "(`create_freecad_assembly` + `add_parts_to_assembly`) — a joint "
+        "cannot reference a part that isn't an assembly member yet. "
+        "`define_kinematic_joint` only DECLARES a parent/child relationship "
+        "— it does NOT move geometry. So for EACH part that needs to end up "
+        "somewhere other than where it was created (e.g. every wheel of a "
+        "multi-wheel rover, all created at the same default placement), plan "
+        "its OWN physical-positioning task, placed AFTER that part joins the "
+        "assembly and BEFORE the task that defines its joint. That task's "
+        "expected_tools MUST be `apply_assembly_constraint` — every "
+        "primitive solid (a box, cylinder, or similar) has real Face/Edge "
+        "geometry to align to, and apply_assembly_constraint computes the "
+        "placement directly from that geometry, so it cannot produce the "
+        "wrong numbers a hand-typed coordinate can (confirmed live: guessed "
+        "raw XYZ coordinates clustered/embedded parts in each other across "
+        "multiple runs, even after being told the reference object's exact "
+        "measured bounding box). Declare `position_assembly_part` instead "
+        "ONLY when the part genuinely has no shared reference geometry to "
+        "align to at all — the rare exception, never the default for a "
+        "standard multi-part assembly. One positioning task per part that "
+        "must move, never one task covering a whole group — parts left at "
+        "an identical default placement will still be stacked on top of "
+        "each other after their joints are defined.\n"
+        "When planning wheel attachments for a vehicle, if the wheel axles "
+        "must align with the X-axis, explicitly plan to mate them to the "
+        "Left/Right chassis faces (-X/+X), NOT the Front/Back faces "
+        "(-Y/+Y).\n"
+        "URDF Tool Mapping: when a task exports an assembly (or the "
+        "kinematic joints defined on one) to a URDF file, its expected_tools "
+        "MUST be `export_assembly_to_urdf`. NEVER assign `export_freecad_model` "
+        "for a URDF-export task — that tool only emits STL/STEP for a "
+        "standalone part and does not know about assemblies or joints at "
+        "all; declaring it for a URDF task lets the FSM auto-complete that "
+        "task the instant an unrelated STEP/STL file is written, well "
+        "before any .urdf file exists (confirmed live: a rover-assembly run "
+        "did exactly this, then had to claw its way back to "
+        "export_assembly_to_urdf through several rejected tool calls).\n"
         "`search_tool_catalog`/`check_plugin_registry` are available if you "
         "need to confirm what's possible before committing to a plan.\n"
+        "Only set a task's expected_tools when you're CONFIDENT of the tool's exact snake_case "
+        "id (e.g. you already called it earlier this conversation). If you're unsure, leave "
+        "expected_tools out entirely — the system will infer it from your task description — "
+        "rather than guessing a plausible-sounding name.\n"
         "==========================="
     )
 
 
-def _build_executor_prompt(objective: str, active_task: dict[str, Any], remaining_count: int) -> str:
+def _build_executor_prompt(
+    objective: str, active_task: dict[str, Any], remaining_count: int, session_id: str | None = None
+) -> str:
     """EXECUTING — the ONLY plan content this receives is the objective (one
     line, context only) and the SINGLE current active task; every other
     pending task is reduced to a bare count ("N task(s) remain after this
@@ -4037,11 +6748,31 @@ def _build_executor_prompt(objective: str, active_task: dict[str, Any], remainin
     fixed tool signature at all (e.g. a visual-only inspection) is
     unaffected by the block, but still requires an explicit
     ``mark_task_completed`` since there's nothing to auto-advance on.
+
+    ``session_id`` (Truncation Recovery Nudge): consumes THIS session's
+    one-shot ``_OUTPUT_TRUNCATED_BY_SESSION`` flag (see ``next_react_turn``'s
+    own Token-Truncation Trap) — set the turn a completion actually got cut
+    off by the output-token limit, cleared the very next time this prompt is
+    built. Confirmed live: a cut-off completion correlated with the model
+    losing track of recent state on its next turn (a redundant
+    ``mark_task_completed`` on an already-auto-advanced task; a repeated,
+    already-answered ``search_tool_catalog`` query) even when the truncated
+    response still carried a syntactically valid tool call. ``None`` (the
+    default) reads the ambient current session, same convention every other
+    optional ``session_id`` parameter in this module already follows.
     """
     remaining_note = (
         f"{remaining_count} task(s) remain after this one."
         if remaining_count
         else "This is the LAST task in the plan."
+    )
+    truncation_note = (
+        "\nYour last response was cut off by the output length limit. Be concise this "
+        "turn — call the tool directly, skip extended reasoning — and don't assume "
+        "anything from your cut-off response actually happened until you see its own "
+        "tool_result.\n"
+        if _consume_output_truncated_flag(session_id)
+        else ""
     )
     return (
         f"{_EXECUTOR_ENGINEERING_RULES}\n\n"
@@ -4063,6 +6794,7 @@ def _build_executor_prompt(objective: str, active_task: dict[str, Any], remainin
         "auto-advancing — for that case, you MUST call `mark_task_completed` yourself "
         "once you've confirmed it's genuinely done, or the plan will stall here even "
         "though the work is finished.\n"
+        f"{truncation_note}"
         "==========================="
     )
 
@@ -4231,7 +6963,11 @@ def build_system_prompt(
             last_validation = _PLAN_STATE_REGISTRY.get(sid_for_lookup, {}).get("last_validation")
             lines = [_build_validator_prompt(objective, active_task, last_validation)]
         else:
-            lines = [_build_executor_prompt(objective, active_task, _pending_task_count(session_id))]
+            lines = [
+                _build_executor_prompt(
+                    objective, active_task, _pending_task_count(session_id), session_id=session_id
+                )
+            ]
     else:
         lines = [_FREECAD_SYSTEM_PROMPT if freecad_active else _CORE_SYSTEM_PROMPT]
         if freecad_active:
@@ -4285,7 +7021,54 @@ def build_system_prompt(
             f"\n=== ACTIVE PLAN ===\n{active_plan}\n===================\n"
             "Stick to this naming convention and topological strategy."
         )
+    if fsm_phase == "planning":
+        # Dynamic Planning Nudge: appended AFTER every other section (skill
+        # debugging, core memory, mounts, working memory) so it's the
+        # genuinely LAST text in the prompt, where recency bias is
+        # strongest. _build_planner_prompt()'s own "no CAD tool is
+        # offered... your ONLY job is create_plan" text (lines[0] above)
+        # is NOT actually the end of the assembled prompt -- this function
+        # keeps appending sections after it regardless of phase -- so
+        # appending there instead would have buried it. Confirmed live: a
+        # local qwen2.5-coder:14b kept attempting geometry tools (e.g.
+        # create_freecad_cylinder) despite that existing text and
+        # hard_restrict_to already hiding those tools from its schema.
+        #
+        # Task Atomization Nudge: a live run building three separate coils
+        # grouped all three into ONE task (expected_tools=["create_freecad_
+        # helix"]) instead of three -- EXECUTING then hard-restricts that
+        # task's schema to exactly its declared tool(s) (next_react_turn's
+        # hard_restrict_to, Phase 3), so the model had the right tool but
+        # no code-enforced way to loop it three times and auto-advance
+        # after each coil; it stalled trying to reconcile "one task" with
+        # "three distinct objects." Same recency-bias placement reasoning
+        # as the paragraph above.
+        lines.append(
+            "CRITICAL: You are currently in the PLANNING phase. You are forbidden from "
+            "using geometry tools until you explicitly outline your steps using the "
+            "'create_plan' tool. Call 'create_plan' now.\n"
+            "CRITICAL: You must break down repetitive or multi-part geometry actions into "
+            "completely separate tasks. Never group multiple parts into a single task. For "
+            "example, if you need to create 3 coils, you must create three distinct tasks "
+            "(e.g., Task 2: First coil, Task 3: Second coil, Task 4: Third coil)."
+        )
     return "\n".join(lines)
+
+
+# Mirrors exactly the keys `_finalize_call_arguments` below injects into
+# call.arguments for these two tool_ids, from live canvas-selection/camera-
+# preset state rather than the LLM's own call — see that function's own
+# comments for why they're deliberately absent from these tools' LLM-facing
+# tools.json schema. dispatch_tool_call's Silent Parameter Dropping gate
+# reads this SAME constant so it never rejects one of these as an
+# "unexpected parameter" (see that gate's own comment). Keep in sync with
+# `_finalize_call_arguments` by construction: add a key here the moment a
+# new `call.arguments[...] = ...`/`call.arguments = {...}` injection is
+# added there, not after the first false-positive rejection shows up.
+_CONTEXT_INJECTED_ARGS: dict[str, frozenset[str]] = {
+    "manipulate_camera": frozenset({"position", "target"}),
+    "perform_freecad_edge_operation": frozenset({"face_centroid"}),
+}
 
 
 def _resolve_camera_call(call: ToolCall, active_selection: dict[str, Any] | None) -> None:
@@ -4511,6 +7294,9 @@ async def _call_llm_once(
     narrowing_query: str | None = None,
     task_tool_ids: frozenset[str] = frozenset(),
     hard_restrict_to: frozenset[str] | None = None,
+    provider_override: str | None = None,
+    is_planning_phase: bool = False,
+    state_overlay: str = "",
 ) -> dict[str, Any]:
     """One raw LLM turn against the running ``messages`` history, via the
     existing OpenAI-tool-calling bridge (``dana.core.model_provider.
@@ -4532,9 +7318,25 @@ async def _call_llm_once(
     Not hardcoded here so this one call site stays the single place that
     decision is made, regardless of which provider ends up selected.
 
+    ``provider_override`` (Two-Layer Context Management, Layer 2 — see
+    ``dana.api.server._run_react_loop``'s Context Handoff check), when
+    given, wins outright over ``tool_calling_provider()`` for this one
+    turn — set once a session's running history has been latched onto
+    cloud after crossing 85% of local Ollama's configured
+    ``dana.core.model_provider.ollama_num_ctx``. ``None`` (the default)
+    changes nothing: the provider resolves exactly as it always has.
+
     ``active_plugins`` (capability routing, from a session's active
     frontend plugins) narrows which tools this turn's ``tools=`` schema
     even offers the model — see ``_llm_tools_schema``/``_tool_ids_for_plugins``.
+
+    ``is_planning_phase`` (Planning-Phase Cloud Lock — computed by
+    ``next_react_turn`` alongside ``hard_restrict_to``, from the SAME "no
+    plan yet" FSM check, never by a caller directly) forces this turn off
+    Ollama onto ``"openrouter"`` even when ``tool_calling_provider()`` (or
+    ``provider_override``) resolved to ``"ollama"`` — see this function's
+    own target_provider resolution below for why this specific turn, and
+    only this one, is hard-blocked rather than narrowed by tool schema.
 
     ``narrowing_query``/``task_tool_ids``/``hard_restrict_to`` (Plan-and-
     Execute FSM, Phases 2-3 — all three computed by ``next_react_turn`` from
@@ -4585,14 +7387,34 @@ async def _call_llm_once(
     instead, so the loop always ends in a clean "final" turn rather than
     the generic "I ran into a problem" message ``next_react_turn`` gives a
     genuine model/connection error.
+
+    Trajectory Compaction (Markov State), local-model path only:
+    ``compact_trajectory_to_recent_pairs`` drops every (assistant, tool)
+    pair older than the last 2 outright (see its own docstring — this is
+    NOT the same as ``compress_tool_output_history``'s "shrink but keep"
+    contract just above it) so token cost stays flat across a 30-iteration
+    chain instead of growing linearly into the Two-Layer Context
+    Management handoff (confirmed live: tripped it at turn 11).
+    ``state_overlay`` (``next_react_turn``'s ``_format_object_registry_
+    overlay`` — the compensating Markov-sufficient-statistic for what this
+    removes) is appended as one extra ``system`` message, ONLY to this
+    disposable ``pruned_messages`` copy, never to the caller's own
+    ``messages``, so the local model still knows what already exists in
+    the document without needing turns 1-8's verbatim history to say so.
+    A cloud turn gets neither — cloud has the context headroom this exists
+    to save local VRAM from, and dropping its history for no reason would
+    only cost quality with nothing gained.
     """
     provider = ModelProvider(api_keys=api_keys)
     deduped_messages = prune_message_history(messages)
+    is_local_ollama_turn = (provider_override or tool_calling_provider()) == "ollama"
     pruned_messages = (
-        compress_tool_output_history(deduped_messages)
-        if tool_calling_provider() == "ollama"
+        compact_trajectory_to_recent_pairs(compress_tool_output_history(deduped_messages))
+        if is_local_ollama_turn
         else prune_tool_output_history(deduped_messages)
     )
+    if is_local_ollama_turn and state_overlay:
+        pruned_messages = [*pruned_messages, {"role": "system", "content": state_overlay}]
     # _keyword_suggested_tool_ids folded in alongside the existing "already
     # invoked"/"load_capability-unlocked" sticky sources — a domain the
     # user's own words just named (see _keyword_suggested_domains, called
@@ -4642,7 +7464,65 @@ async def _call_llm_once(
     # log line/apology text (see _timeout_apology_text) never blames the
     # wrong one (a real Groq TPM stall previously got logged/apologized
     # for as if it were "the local model").
-    target_provider = tool_calling_provider()
+    # provider_override wins outright once a session has been latched onto
+    # cloud (Two-Layer Context Management) — tool_calling_provider() would
+    # otherwise keep resolving back to "ollama" every subsequent turn,
+    # since that decision is env-based, not session-aware.
+    target_provider = provider_override or tool_calling_provider()
+    # Planning-Phase Cloud Lock: unconditional, even over an explicit
+    # provider_override — confirmed live (dana_runtime.log) that a 7B local
+    # model reliably fails create_plan's own nested tasks[i].expected_tools
+    # schema, and this IS the one turn create_plan can't be avoided on (see
+    # next_react_turn's own is_planning_phase comment: create_plan is a
+    # _CORE_TOOL_ID, offered on every turn, so it can't be excluded from
+    # Ollama by tool-schema CONTENT the way a geometry tool can — this FSM-
+    # phase signal is the actual narrow window that's safe to hard-block).
+    # Forced to the literal string "openrouter", NOT
+    # dana.core.model_provider.cloud_provider_name() — that function's own
+    # env-unset default is bare "gemini", which is itself in
+    # _NON_OPENAI_SCHEMA_PROVIDERS and would raise NotImplementedError
+    # immediately; "openrouter" is the provider this codebase's own
+    # DANA_OPENROUTER_MODEL env var (and _resolve_openai_endpoint's
+    # matching branch) already exist to configure.
+    # Full-Local Override (routing_config.yaml's defaults.allow_cloud:
+    # false — dana.core.routing_config.cloud_allowed()) takes precedence
+    # over the lock below: an operator who has explicitly opted OUT of
+    # cloud entirely gets Turn 0 forced ONTO Ollama instead of off it, on
+    # the same "no plan yet" signal. This does reintroduce the exact
+    # create_plan schema-adherence risk the lock below exists to prevent —
+    # confirmed live (dana_runtime.log) against a 7B local model, and never
+    # re-verified against the current qwen2.5-coder:14b default — but that
+    # tradeoff is exactly what a full-local policy is choosing to accept in
+    # exchange for never touching cloud, not an oversight.
+    if is_planning_phase and not cloud_allowed():
+        if target_provider != "ollama":
+            telemetry.log_error(
+                stage="planning_phase_local_forced",
+                detail="Turn 0 (no plan yet) forced onto Ollama — routing_config.yaml's allow_cloud is false.",
+            )
+            target_provider = "ollama"
+    elif is_planning_phase and target_provider == "ollama":
+        telemetry.log_error(
+            stage="planning_phase_cloud_lock",
+            detail="Turn 0 (no plan yet) forced off Ollama onto the cloud provider to establish the plan.",
+        )
+        target_provider = "openrouter"
+    # Dynamic LLM Router hand-off: a standard turn (no provider_override
+    # latched, not the Planning-Phase Cloud Lock above) has NOT already
+    # decided its provider, so pass provider=None and let
+    # dana.core.model_provider.complete_with_tool_calls's own `if provider
+    # is None` branch hand off to llm_router.resolve_chain(routing_config.yaml)
+    # for this turn — see that branch's docstring: no routing_config.yaml
+    # (or an invalid one) makes resolve_chain return None there, which falls
+    # straight through to the unchanged legacy target_provider path below,
+    # so this is safe with or without a fleet configured. provider_override
+    # (Two-Layer Context Management) and the Planning-Phase Cloud Lock both
+    # represent a turn that already made its own provider decision for a
+    # reason unrelated to fleet selection, so both keep forcing target_provider
+    # exactly as before rather than being second-guessed by the router.
+    router_eligible = provider_override is None and not is_planning_phase
+    call_provider = None if router_eligible else target_provider
+
     # Cloud-primary turns call whichever single provider
     # tool_calling_provider() resolved (OpenRouter by default) directly —
     # no local gateway process in between. OpenRouter's own server-side
@@ -4650,7 +7530,13 @@ async def _call_llm_once(
     # see model_provider._resolve_openai_endpoint's "openrouter" branch)
     # is what retries a 429/5xx against the next model upstream now.
     def _run_completion() -> dict[str, Any]:
-        return provider.complete_with_tool_calls(pruned_messages, tools=tools, provider=target_provider)
+        # num_predict explicit here (not left to complete_with_tool_calls's
+        # own default) so the ReAct loop's actual token budget is visible at
+        # its own call site, not several layers removed — see dana.config's
+        # own docstring for why this was raised from 1024 to 4096.
+        return provider.complete_with_tool_calls(
+            pruned_messages, tools=tools, provider=call_provider, num_predict=LLM_MAX_OUTPUT_TOKENS
+        )
 
     try:
         return await asyncio.wait_for(
@@ -5022,6 +7908,30 @@ def _anchor_suggested_tool_ids(raw_text: str) -> frozenset[str]:
     )
 
 
+# Truncation Recovery Nudge — session-scoped, one-shot flag set by the
+# Token-Truncation Trap (below, in next_react_turn) and consumed by the very
+# next _build_executor_prompt call for that session. Deliberately a single
+# dict, not folded into _PLAN_STATE_REGISTRY: a truncated completion can
+# happen in ANY phase (planning, executing, validating, or even idle), not
+# just while a plan is active, so this must survive independently of
+# whatever _PLAN_STATE_REGISTRY entry (if any) exists for the session.
+_OUTPUT_TRUNCATED_BY_SESSION: dict[str, bool] = {}
+
+
+def _mark_output_truncated(session_id: str | None = None) -> None:
+    sid = session_id if session_id is not None else get_session_id()
+    _OUTPUT_TRUNCATED_BY_SESSION[sid] = True
+
+
+def _consume_output_truncated_flag(session_id: str | None = None) -> bool:
+    """Reads AND clears THIS session's flag in one step — one-shot by
+    design, so the nudge fires exactly once right after a truncation, not
+    on every subsequent turn for the rest of the session.
+    """
+    sid = session_id if session_id is not None else get_session_id()
+    return _OUTPUT_TRUNCATED_BY_SESSION.pop(sid, False)
+
+
 async def next_react_turn(
     messages: list[dict[str, Any]],
     active_selection: dict[str, Any] | None = None,
@@ -5031,6 +7941,10 @@ async def next_react_turn(
     active_plugins: frozenset[str] | None = None,
     hidden_tool_ids: frozenset[str] = frozenset(),
     session_id: str | None = None,
+    provider_override: str | None = None,
+    phase_violation_retried: bool = False,
+    empty_completion_retried: bool = False,
+    final_exit_retried: bool = False,
 ) -> ReactTurn:
     """One step of the multi-step ReAct loop: given the full running
     ``messages`` history (system + user + any prior assistant/tool turns
@@ -5065,6 +7979,47 @@ async def next_react_turn(
     "re-checked, not just un-offered" treatment a deactivated plugin's
     tools already get.
 
+    ``phase_violation_retried`` (Honest Error Handler) is ``True`` only on
+    the ONE recursive self-call this function makes when the model's tool
+    call was real but out-of-phase (e.g. a geometry tool attempted before
+    ``create_plan``) — caps that recovery at exactly one extra hop, the
+    same "exactly one corrective retry" philosophy
+    ``_retry_after_unknown_tool_id`` already uses for a genuinely
+    hallucinated name, so a model that ignores the correction twice still
+    ends the turn instead of recursing forever. Callers should never pass
+    this explicitly.
+
+    ``empty_completion_retried`` (Escape Hatch Blindspot — Silent Stall) is
+    ``True`` only on the ONE recursive self-call this function makes when a
+    genuinely empty completion (no ``tool_calls``, no ``content``) opens the
+    active task's Wrong-Tool Escape Hatch UNCONDITIONALLY, on the very first
+    occurrence — NOT via ``_register_task_escape_hatch_failure``'s usual
+    threshold count, unlike the router-bounce/dispatch-failure paths.
+    Logical Trap this deliberately avoids: this path's own no-hatch
+    fallback is ``ReactTurn("final", ...)``, which ends the WHOLE loop — so
+    a sub-threshold count here would never get a second empty completion to
+    ever reach the threshold with, permanently disabling the hatch for this
+    failure mode. Same "exactly one extra hop" cap as
+    ``phase_violation_retried``, for the same reason. Callers should never
+    pass this explicitly.
+
+    ``final_exit_retried`` (Premature Conversational Exit) is ``True`` only
+    on the ONE recursive self-call this function makes when the model
+    returns a genuinely non-empty ``"final"`` completion (real text, e.g.
+    "I don't have the capability to do that") while the FSM is
+    ``"executing"`` with a task still active — the model surrendering the
+    turn conversationally instead of either using its declared tool or
+    calling ``mark_task_completed``. Unlike ``empty_completion_retried``
+    (no ``content`` at all — nothing to preserve), the model's own attempted
+    final message IS appended to ``messages`` before the correction, so the
+    transcript still reflects what it actually said. Same "exactly one
+    extra hop" cap as every other Honest Error Handler retry in this
+    function — a model that still insists on ending the turn after this one
+    nudge is trusted the second time (a genuine clarifying question needing
+    real user input looks identical to a premature surrender from here, so
+    this cap exists to avoid overriding that indefinitely). Callers should
+    never pass this explicitly.
+
     ``session_id`` (Plan-and-Execute FSM) is what THIS function reads its
     own FSM state from (``_get_fsm_state``/``_active_task``) to decide how
     to narrow/restrict this turn's tool schema — passed explicitly rather
@@ -5095,6 +8050,18 @@ async def next_react_turn(
     hard_restrict_to: frozenset[str] | None = None
     narrowing_query: str | None = None
     task_tool_ids: frozenset[str] = frozenset()
+    # Planning-Phase Cloud Lock: True for the exact same turn hard_restrict_to
+    # below narrows to core-only for — the FSM's PLANNING phase, no plan yet.
+    # Passed down to _call_llm_once so it can force this turn off Ollama
+    # regardless of tool_calling_provider()'s normal local/cloud preference —
+    # confirmed live (dana_runtime.log) that a 7B local model reliably fails
+    # create_plan's own nested tasks[i].expected_tools schema, and since
+    # create_plan is a _CORE_TOOL_ID (offered on literally every turn, not
+    # just planning), it can never be excluded by tool-schema CONTENT alone
+    # the way a geometry tool can — this FSM-phase signal is the actual,
+    # narrow "Turn 0" window that's safe to hard-block without also
+    # disabling Ollama for every later turn.
+    is_planning_phase = False
     freecad_domain_active = effective_plugins is not None and bool(
         effective_plugins & {"freecad", "freecad_essential", "freecad_full"}
     )
@@ -5104,15 +8071,58 @@ async def next_react_turn(
             # schema's hard_restrict_to docstring for why this is a hard
             # allow-list, not a narrowing bias.
             hard_restrict_to = _CORE_TOOL_IDS | {"search_tool_catalog", "check_plugin_registry"}
+            is_planning_phase = True
         elif _get_fsm_state(session_id) == "executing":
             active_task = _active_task(session_id)
             if active_task is not None:
                 narrowing_query = active_task.get("description") or raw_text
                 task_tool_ids = active_task.get("expected_tool_ids") or frozenset()
+                if task_tool_ids:
+                    # EXECUTING, tool-mapped task: same hard allow-list as
+                    # PLANNING above, not just a narrowing bias -- a model
+                    # that gets an out-of-order rejection from
+                    # _fsm_out_of_order_check still saw every OTHER geometry
+                    # tool's schema this turn (task_tool_ids only protected
+                    # the right one from being narrowed OUT, it never kept
+                    # the wrong ones from being offered), so it kept
+                    # brute-forcing siblings instead of retrying correctly.
+                    # A task with an empty expected_tool_ids (no fixed
+                    # signature) still falls through to the soft-narrowed
+                    # neutral default below, exactly like _fsm_out_of_order_
+                    # check's own permissiveness for that case.
+                    hard_restrict_to = task_tool_ids | _CORE_TOOL_IDS
+                    if active_task.get("tool_escape_hatch"):
+                        # Wrong-Tool Escape Hatch: the Planner's declared
+                        # tool for this task has failed repeatedly (see
+                        # _advance_fsm_on_dispatch) -- widen back out to the
+                        # full essential CAD set (not the full ~31-tool
+                        # freecad_full domain) so a genuinely wrong
+                        # declaration has a real correct tool to fall back
+                        # to, instead of being locked forever into the one
+                        # id that keeps failing. _fsm_out_of_order_check
+                        # mirrors this same widened set at dispatch time.
+                        hard_restrict_to = hard_restrict_to | _FREECAD_ESSENTIAL_TOOL_IDS
         # "validating" (a task with no expected_tool_ids, parked awaiting a
         # manual mark_task_completed) and "done" (plan finished, ad-hoc
         # cleanup) both fall through to the neutral defaults above --
         # exactly today's full-domain, whole-objective-narrowed behavior.
+
+    # Context-Footprint Ground Truth: a plain, dependency-free stand-in for
+    # a real tokenizer count (~4 chars/token is the usual rough-order-of-
+    # magnitude for English + JSON) — not exact, but cheap (no tiktoken/
+    # provider-specific encoder needed) and, more importantly, CONSISTENT
+    # across every provider/turn, unlike dana_performance.log's existing
+    # tools_schema_bytes (only the tools array, never the system prompt or
+    # conversation history the model actually pays for). Logged every turn
+    # so Phase 1/2's actual context-footprint effect has a real, comparable
+    # number to check against instead of inferring it from schema size
+    # alone. Deliberately BEFORE the provider call: this measures what's
+    # about to be SENT, not what came back, and must still be logged even
+    # if the call below raises/times out.
+    estimated_tokens = sum(len(str(m)) // 4 for m in messages)
+    from dana.perf import log_metric
+
+    log_metric("context_tokens", estimated_tokens=estimated_tokens, message_count=len(messages), session_id=session_id)
 
     try:
         result = await _call_llm_once(
@@ -5124,6 +8134,9 @@ async def next_react_turn(
             narrowing_query=narrowing_query,
             task_tool_ids=task_tool_ids,
             hard_restrict_to=hard_restrict_to,
+            provider_override=provider_override,
+            is_planning_phase=is_planning_phase,
+            state_overlay=_format_object_registry_overlay(session_id),
         )
     except Exception as exc:  # noqa: BLE001 — Ollama unreachable/model missing surfaces as an error turn
         # str(exc) is all the UI-facing "error" turn carries onward (server.py
@@ -5149,23 +8162,172 @@ async def next_react_turn(
         "cost_usd": result.get("cost_usd"),
     }
 
+    # Token-Truncation Trap: "length" (OpenAI/OpenRouter/Ollama wording) or
+    # "MAX_TOKENS" (some OpenAI-compatible Gemini endpoints) means the
+    # completion was cut off by num_predict/LLM_MAX_OUTPUT_TOKENS, not
+    # finished naturally — a grammar-constrained function-calling decoder can
+    # still close out syntactically VALID JSON when this happens, silently
+    # dropping whatever trailing tasks/steps didn't fit (see the forensic RCA
+    # on a 9-step CAD plan silently truncated to 8 tasks — nothing anywhere
+    # in this codebase read finish_reason before this). Tracked, not fatal:
+    # the turn still proceeds with whatever content/tool_calls it got, same
+    # as always — this only makes the truncation visible instead of silent.
+    finish_reason = str(result.get("finish_reason") or "").strip().lower()
+    if finish_reason in ("length", "max_tokens"):
+        telemetry.log_error(
+            stage="llm_output_truncated",
+            finish_reason=finish_reason,
+            model=result.get("model"),
+            provider=result.get("provider"),
+            num_predict=LLM_MAX_OUTPUT_TOKENS,
+        )
+        # Truncation Recovery Nudge: confirmed live (dana_runtime.log, two
+        # truncation events in one rover-assembly run) that a cut-off
+        # completion — even one still carrying a syntactically valid tool
+        # call, per this block's own docstring above — correlates with the
+        # model losing track of recent state on its VERY NEXT turn (a
+        # redundant mark_task_completed on an already-auto-advanced task; a
+        # second, already-answered search_tool_catalog query). Flagging it
+        # here, one-shot, lets the NEXT _build_executor_prompt call surface a
+        # concrete "be concise" reminder instead of the model silently
+        # repeating the same chatty-response pattern that got it cut off.
+        _mark_output_truncated(session_id)
+
     tool_calls = result.get("tool_calls") or []
     if not tool_calls:
+        final_content = result.get("content") or ""
+        if not final_content:
+            # Empty-Completion Diagnostic: this exact shape has now fired
+            # for 3 unrelated-looking triggers (freecad_full's 31-tool
+            # schema; a redundant load_specific_tool call) with duplicate
+            # tool schemas and context-window exhaustion both already
+            # ruled out -- printed here, the one place the RAW provider
+            # response (dana.core.model_provider.ModelProvider.
+            # complete_with_tool_calls's own return dict) is still in
+            # scope, before it collapses into ReactTurn("final", content="")
+            # and everything but a plain empty string is lost. Temporary:
+            # remove once the actual root cause is found, not a permanent
+            # fixture.
+            print(
+                f"[EMPTY_COMPLETION_DEBUG] finish_reason={result.get('finish_reason')!r} "
+                f"content={result.get('content')!r} tool_calls={result.get('tool_calls')!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+            # Escape Hatch Blindspot -- Silent Stall: a genuinely empty
+            # completion (no tool_calls, no content) never reaches EITHER
+            # the router-bounce check below OR dispatch_tool_call's
+            # _advance_fsm_on_dispatch -- there is no tool_id here to bounce
+            # or dispatch at all -- so a model that goes quiet instead of
+            # guessing a wrong/hallucinated name (e.g. realizing mid-task
+            # that its schema is locked to the wrong tool, but not even
+            # attempting a call) could stall this task's plan forever.
+            #
+            # Logical Trap (fixed): this path used to go through the SAME
+            # threshold-counting _register_task_escape_hatch_failure the
+            # router-bounce/dispatch-failure paths use -- but those two
+            # paths let the ReAct loop keep running after a sub-threshold
+            # failure (the model just gets another turn), so the counter
+            # genuinely gets a chance to reach _TASK_TOOL_ESCAPE_HATCH_
+            # THRESHOLD across several attempts. THIS path's own fallback on
+            # a sub-threshold count is `return ReactTurn("final", ...)` a few
+            # lines down -- which ends the ENTIRE loop -- so the very first
+            # empty completion always hit that fallback before a second one
+            # could ever occur to push the count over threshold. The hatch
+            # could never actually open this way. Opened unconditionally on
+            # the very first empty completion instead -- still capped at
+            # exactly one extra hop via `empty_completion_retried`, like
+            # every other Honest Error Handler retry in this function.
+            if not empty_completion_retried and _get_fsm_state(session_id) == "executing":
+                active_task_for_failure = _active_task(session_id)
+                if active_task_for_failure is not None:
+                    active_task_for_failure["tool_escape_hatch"] = True
+                    nudge = {
+                        "role": "user",
+                        "content": (
+                            "You returned an empty response. If you have finished the current task, "
+                            "you must call 'mark_task_completed'. If you are stuck, the escape hatch "
+                            "has been triggered and essential tools are now unlocked. Please continue."
+                        ),
+                    }
+                    return await next_react_turn(
+                        messages + [nudge],
+                        active_selection,
+                        raw_text=raw_text,
+                        api_keys=api_keys,
+                        active_plugins=effective_plugins,
+                        hidden_tool_ids=hidden_tool_ids,
+                        session_id=session_id,
+                        provider_override=provider_override,
+                        empty_completion_retried=True,
+                    )
+        elif not final_exit_retried and _get_fsm_state(session_id) == "executing":
+            # Premature Conversational Exit: a real, non-empty "final"
+            # answer (e.g. "I don't have the capability to do that") is NOT
+            # a stall the way an empty completion is -- the model clearly
+            # DID think it was done -- but the FSM previously just trusted
+            # it and exited the loop with the active task's plan left
+            # unfinished. The model's own attempted surrender is preserved
+            # in the transcript (unlike the empty-completion case, there IS
+            # real content worth keeping) before the correction, so it can
+            # see what it said and why it was rejected.
+            active_task_for_exit = _active_task(session_id)
+            if active_task_for_exit is not None:
+                assistant_msg = {"role": "assistant", "content": final_content}
+                nudge = {
+                    "role": "user",
+                    "content": (
+                        f"You attempted to end the conversation, but Task "
+                        f"'{active_task_for_exit.get('description')}' is still active. You must use a "
+                        "tool to complete the task. If you are missing a tool, use 'search_tool_catalog' "
+                        "to find it."
+                    ),
+                }
+                return await next_react_turn(
+                    messages + [assistant_msg, nudge],
+                    active_selection,
+                    raw_text=raw_text,
+                    api_keys=api_keys,
+                    active_plugins=effective_plugins,
+                    hidden_tool_ids=hidden_tool_ids,
+                    session_id=session_id,
+                    provider_override=provider_override,
+                    final_exit_retried=True,
+                )
         telemetry.debug("[ReAct] LLM finished with final response (no tool call)")
-        return ReactTurn("final", content=result.get("content") or "", usage_info=usage_info)
+        return ReactTurn("final", content=final_content, usage_info=usage_info)
     call = tool_calls[0]  # one tool per LLM turn — the loop itself is what allows chaining several
-    # PLANNING's hard_restrict_to is the actual offered/allowed set in that
-    # phase -- _tool_ids_for_plugins(effective_plugins) would report the
-    # FULL domain (create_plan is gated on has_plan, not on schema
-    # visibility, elsewhere), which would wrongly let a hallucinated
-    # geometry tool_id through this check even though it was never in the
-    # schema the model actually saw this turn.
+    # A hard_restrict_to (PLANNING, or EXECUTING with a tool-mapped task) IS
+    # the actual offered/allowed set for that phase --
+    # _tool_ids_for_plugins(effective_plugins) would report the FULL domain
+    # (create_plan is gated on has_plan, not on schema visibility, elsewhere;
+    # a task's expected_tool_ids gates dispatch, not schema visibility,
+    # without this), which would wrongly let a hallucinated OR merely
+    # out-of-task geometry tool_id through this check even though it was
+    # never in the schema the model actually saw this turn.
     allowed_tool_ids = (
         (hard_restrict_to - hidden_tool_ids)
         if hard_restrict_to is not None
         else (_tool_ids_for_plugins(effective_plugins) - hidden_tool_ids)
     )
     if call.tool_id not in TOOL_HANDLERS or call.tool_id not in allowed_tool_ids:
+        # Escape Hatch Blindspot: a hallucinated name (e.g.
+        # "create_freecad_spiral") or a real-but-undeclared tool for the
+        # active task is bounced HERE, by allowed_tool_ids, BEFORE dispatch_
+        # tool_call/_advance_fsm_on_dispatch ever sees it -- that counter
+        # only increments on an actually-DISPATCHED tool failing, so a
+        # model stuck guessing names that never even reach dispatch could
+        # retry forever without ever crossing _TASK_TOOL_ESCAPE_HATCH_
+        # THRESHOLD. Counted here too, on the SAME per-task counter (see
+        # _register_task_escape_hatch_failure), so a router-level bounce
+        # during EXECUTING counts exactly like a dispatch-level one. Scoped
+        # to "executing, with an active task" only -- PLANNING-phase
+        # bounces (no active task at all) aren't this failure mode.
+        escape_hatch_note: str | None = None
+        if _get_fsm_state(session_id) == "executing":
+            active_task_for_failure = _active_task(session_id)
+            if active_task_for_failure is not None:
+                escape_hatch_note = _register_task_escape_hatch_failure(active_task_for_failure, call.tool_id)
         # Real, observed quirk (live against qwen2.5-coder:7b): the model
         # can invent a plausible-but-nonexistent tool name (e.g.
         # "create_object" instead of "create_freecad_cylinder") even with
@@ -5186,8 +8348,66 @@ async def next_react_turn(
             narrowing_query=narrowing_query,
             task_tool_ids=task_tool_ids,
             hard_restrict_to=hard_restrict_to,
+            provider_override=provider_override,
+            is_planning_phase=is_planning_phase,
+            session_id=session_id,
         )
         if retry_call is None:
+            # Honest Error Handler: `result` (the ORIGINAL, pre-retry
+            # response) may well have contained a REAL tool call -- `call`,
+            # e.g. create_freecad_cylinder -- rejected only because it
+            # wasn't in `allowed_tool_ids` for this phase (most often the
+            # Plan-and-Execute FSM's PLANNING-phase hard_restrict_to, which
+            # deliberately hides every geometry tool from the SCHEMA until
+            # create_plan succeeds -- a model can still attempt one it was
+            # never offered). Falling back to `result.get("content") or ""`
+            # unconditionally (the previous behavior) reported this as "no
+            # tool call and no text content", which is false: there WAS a
+            # tool call, it was just out of phase. Confirmed live via
+            # [HALLUCINATED_TOOL_DEBUG]: every occurrence of the "empty
+            # completion" bug this session chased down to this exact line
+            # had a real, non-empty `tool_calls` array in `result`.
+            #
+            # Tell the model that directly, as the SAME assistant/tool
+            # message pair a real dispatch would produce (never actually
+            # executing the disallowed tool — that would silently defeat
+            # the whole point of hard_restrict_to), and give it exactly
+            # one more shot at responding correctly THIS turn.
+            # phase_violation_retried caps this at one extra hop so a
+            # model that ignores the correction twice still ends the turn.
+            original_tool_calls = result.get("tool_calls") or []
+            if original_tool_calls and not phase_violation_retried:
+                assistant_msg, call_id = build_assistant_tool_call_message(call)
+                phase_error_payload = {
+                    "ok": False,
+                    "error": (
+                        f"Execution blocked: Tool '{call.tool_id}' is not allowed in the "
+                        "current phase. You must call 'create_plan' to outline your steps "
+                        "before executing geometry."
+                    ),
+                }
+                if escape_hatch_note:
+                    # Only ever set above when the router-bounce JUST pushed
+                    # this task's failure count past the threshold this
+                    # turn -- appended into the SAME payload the model sees
+                    # for this rejection, so the unlock isn't silent.
+                    phase_error_payload["error"] += f" Escape hatch triggered: {escape_hatch_note}"
+                tool_result_msg = {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": json.dumps(phase_error_payload),
+                }
+                return await next_react_turn(
+                    messages + [assistant_msg, tool_result_msg],
+                    active_selection,
+                    raw_text=raw_text,
+                    api_keys=api_keys,
+                    active_plugins=effective_plugins,
+                    hidden_tool_ids=hidden_tool_ids,
+                    session_id=session_id,
+                    provider_override=provider_override,
+                    phase_violation_retried=True,
+                )
             return ReactTurn("final", content=result.get("content") or "", usage_info=usage_info)
         call = retry_call
     call.raw_text = raw_text
@@ -5208,24 +8428,53 @@ async def _retry_after_unknown_tool_id(
     narrowing_query: str | None = None,
     task_tool_ids: frozenset[str] = frozenset(),
     hard_restrict_to: frozenset[str] | None = None,
+    provider_override: str | None = None,
+    is_planning_phase: bool = False,
+    session_id: str | None = None,
 ) -> "ToolCall | None":
     """Exactly one corrective retry for ``next_react_turn`` when the model
-    names a tool_id that isn't dispatchable (hallucinated, or a genuinely
-    stale reference to a plugin the user just deactivated) — nudges with
-    the precise available tool ids instead of silently giving up on the
-    whole turn. Never mutates the caller's own ``messages`` list (appends
-    the nudge to a fresh copy for this one extra call only); returns the
-    corrected ``ToolCall``, or ``None`` if the retry doesn't recover a valid
-    one either, in which case the caller falls back to "final" exactly as
-    it would have without this retry.
+    names a tool_id that isn't dispatchable — nudges with the precise
+    available tool ids instead of silently giving up on the whole turn.
+    Never mutates the caller's own ``messages`` list (appends the nudge to
+    a fresh copy for this one extra call only); returns the corrected
+    ``ToolCall``, or ``None`` if the retry doesn't recover a valid one
+    either, in which case the caller falls back to "final" exactly as it
+    would have without this retry.
+
+    Escape Hatch Blindspot, Corrected Messaging: ``bad_tool_id`` reaches
+    here for TWO structurally different reasons (see the call site's own
+    comment) that used to get the identical "it doesn't exist" nudge —
+    confirmed live (dana_runtime.log): 7 of 9 real occurrences across two
+    rover-assembly runs were ``position_assembly_part``/``search_codebase``,
+    both genuinely real, existing tool ids that simply weren't in
+    ``allowed_tool_ids`` YET (Lazy Loading / FSM task-tool gating hadn't
+    unlocked them this turn) — telling the model a tool it correctly
+    remembered "doesn't exist" is false, and is exactly what drove the
+    repeated ``search_tool_catalog``/``load_specific_tool`` churn in both
+    runs. Only a genuinely unmapped id (``bad_tool_id not in
+    TOOL_HANDLERS`` — a real hallucination, invented from nothing) still
+    gets the original wording; a real-but-locked id gets an accurate one
+    that points at the actual remedy instead.
     """
-    nudge = {
-        "role": "user",
-        "content": (
-            f"'{bad_tool_id}' is not a real tool — it doesn't exist. The exact tool names you can call "
-            f"right now are: {', '.join(sorted(allowed_tool_ids))}. Call the correct one now with the same intent."
-        ),
-    }
+    if bad_tool_id in TOOL_HANDLERS:
+        nudge = {
+            "role": "user",
+            "content": (
+                f"'{bad_tool_id}' is a real tool, but it isn't available in your CURRENT turn — "
+                "it may still need `search_tool_catalog`/`load_specific_tool` to unlock it, or it "
+                "belongs to a different task than the one you're on right now. The exact tool "
+                f"names you CAN call right now are: {', '.join(sorted(allowed_tool_ids))}. Call "
+                "the correct one now with the same intent."
+            ),
+        }
+    else:
+        nudge = {
+            "role": "user",
+            "content": (
+                f"'{bad_tool_id}' is not a real tool — it doesn't exist. The exact tool names you can call "
+                f"right now are: {', '.join(sorted(allowed_tool_ids))}. Call the correct one now with the same intent."
+            ),
+        }
     try:
         result = await _call_llm_once(
             messages + [nudge],
@@ -5236,9 +8485,37 @@ async def _retry_after_unknown_tool_id(
             narrowing_query=narrowing_query,
             task_tool_ids=task_tool_ids,
             hard_restrict_to=hard_restrict_to,
+            provider_override=provider_override,
+            is_planning_phase=is_planning_phase,
+            state_overlay=_format_object_registry_overlay(session_id),
         )
     except Exception:  # noqa: BLE001 — the retry itself is best-effort, never worth failing the turn over
         return None
+    # Retry Diagnostic: printed unconditionally right here (not at
+    # next_react_turn's own `if retry_call is None:` site) because THIS is
+    # the only scope that ever holds the retry's raw response dict --
+    # _retry_after_unknown_tool_id returns only a ToolCall | None to its
+    # caller, never the dict itself, so a print at the caller's return site
+    # would have nothing but bad_tool_id to show. Fires for every retry
+    # outcome below (empty retry_calls, or a still-invalid retry_call),
+    # not just one specific exit, since both are "the corrective retry
+    # didn't recover a valid call" in the same sense. Temporary: remove
+    # once the actual root cause is found, not a permanent fixture.
+    #
+    # Tag split (see this function's own docstring): a real hallucination
+    # (bad_tool_id not in TOOL_HANDLERS at all) and a real-but-currently-
+    # locked tool are different failure modes needing different fixes --
+    # confirmed live that lumping both under "HALLUCINATED" misled exactly
+    # this kind of log forensics into diagnosing a prompt/naming problem
+    # when the actual fix belonged in the FSM's tool-unlock gating instead.
+    debug_tag = "HALLUCINATED_TOOL_DEBUG" if bad_tool_id not in TOOL_HANDLERS else "LOCKED_TOOL_DEBUG"
+    print(
+        f"[{debug_tag}] bad_tool_id={bad_tool_id!r} "
+        f"finish_reason={result.get('finish_reason')!r} content={result.get('content')!r} "
+        f"tool_calls={result.get('tool_calls')!r}",
+        file=sys.stderr,
+        flush=True,
+    )
     retry_calls = result.get("tool_calls") or []
     if not retry_calls:
         return None
@@ -5301,18 +8578,27 @@ def build_assistant_tool_call_message(call: ToolCall) -> tuple[dict[str, Any], s
     tripping through this custom ``messages`` array only needs internal
     self-consistency between this message and its own tool-result reply —
     not the model's original id — so one is generated here.
+
+    ``call.provider_extra`` (Gemini's ``{"google": {"thought_signature":
+    ...}}``, set by ``openai_tool_calls_to_ir`` — see ``ToolCall``'s own
+    docstring) is reattached onto the SAME reconstructed ``tool_calls[0]``
+    entry it was received on, since that's the exact spot Gemini's
+    OpenAI-compat endpoint requires it echoed back on the next turn. ``None``
+    for every other provider (OpenAI, Groq, Ollama), so this is a no-op for
+    them — same message shape as before.
     """
     call_id = f"call_{uuid.uuid4().hex[:24]}"
+    tool_call_entry: dict[str, Any] = {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": call.tool_id, "arguments": json.dumps(call.arguments)},
+    }
+    if call.provider_extra:
+        tool_call_entry["extra_content"] = call.provider_extra
     message = {
         "role": "assistant",
         "content": "",
-        "tool_calls": [
-            {
-                "id": call_id,
-                "type": "function",
-                "function": {"name": call.tool_id, "arguments": json.dumps(call.arguments)},
-            }
-        ],
+        "tool_calls": [tool_call_entry],
     }
     return message, call_id
 
@@ -5339,9 +8625,23 @@ _GEOMETRY_RESULT_TOOL_IDS = frozenset(
         "perform_freecad_edge_operation",
         "modify_freecad_parameter",
         "create_freecad_pipe",
+        "create_freecad_helix",
         "align_freecad_objects",
         "create_assembly_mate",
         "create_freecad_sketch_extrude",
+        "create_freecad_sketch",
+        "apply_sketch_constraint",
+        "create_freecad_pad",
+        "create_freecad_pocket",
+        "create_freecad_polar_pattern",
+        "create_freecad_linear_pattern",
+        "create_freecad_sweep",
+        "create_freecad_loft",
+        "create_freecad_assembly",
+        "add_parts_to_assembly",
+        "position_assembly_part",
+        "apply_assembly_constraint",
+        "anchor_assembly_root",
         "create_freecad_feature_on_face",
         "batch_pattern_array",
         "insert_standard_part",
@@ -5459,6 +8759,7 @@ def dispatch_tool_call(
     call_log: CadCallLog | None = None,
     api_keys: dict[str, str] | None = None,
     allowed_mounts: list[str] | None = None,
+    raw_user_text: str = "",
 ) -> ToolResult:
     """Dispatch ``call`` and, when ``call_log`` is given, append a
     ``CadCallRecord`` of the outcome — the single choke point every tool
@@ -5512,7 +8813,67 @@ def dispatch_tool_call(
     dispatched tool matches the active task's own ``expected_tool_ids`` —
     the code-enforced replacement for trusting a separate
     ``mark_task_completed`` call; see that function's own docstring.
+
+    Zero-Trust Monolith Ban: ``execute_freecad_script`` is hard-intercepted
+    below, unconditionally, BEFORE any plan/FSM check runs at all — a live
+    run defeated the text-only "FORBIDDEN as a workaround" system-prompt
+    rule by calling ``create_plan`` a SECOND time mid-turn to declare this
+    tool_id as an ``expected_tool`` for some task, legitimizing it through
+    the Universal FSM Enforcement check below (which only asks "does the
+    active task expect this tool", something a rewritten plan can always
+    satisfy). ``create_plan`` can no longer even attempt that rewrite (see
+    ``_tool_create_plan``'s own Plan Immutability gate), and this check
+    doesn't consult plan state at all regardless — the ONLY thing that can
+    authorize this tool is ``raw_user_text`` (THIS turn's own original user
+    message, threaded in by ``dana.api.server._execute_and_continue``)
+    explicitly naming a script/code request, never anything the model
+    itself declares intent through (a plan, an argument, a prior tool
+    result).
     """
+    # Silent Parameter Dropping fix, Phase 0 (runs before EVERY other gate
+    # below): a tool_id with a registered tools.json ToolSpec now gets its
+    # raw call.arguments checked against that SAME schema
+    # to_openai_function_schema already advertises to the LLM — an
+    # invented/hallucinated parameter (or the wrong JSON type for a real
+    # one) is refused right here, as an ordinary digested tool failure the
+    # model can read and correct on its next call, instead of silently
+    # vanishing the moment a hand-written `_tool_*` handler below reads
+    # only the specific keys it happens to know about. No-op for a tool_id
+    # with no registered ToolSpec (a manifest.json plugin tool or a user
+    # skill) — those already fail loud a different way (see
+    # `_wrap_plugin_handler`'s own `fn(**args)` call, which raises a plain
+    # TypeError on an unexpected keyword argument).
+    #
+    # _CONTEXT_INJECTED_ARGS excludes the handful of keys
+    # `_finalize_call_arguments` (the caller's pre-dispatch hook, run
+    # BEFORE call.arguments ever reaches here) merges in from live canvas-
+    # selection/camera-preset state rather than anything the LLM itself
+    # supplied — `manipulate_camera`'s position/target and
+    # `perform_freecad_edge_operation`'s face_centroid are deliberately
+    # ABSENT from these tools' own LLM-facing schema (see
+    # `_finalize_call_arguments`'s own comments: the model must never be
+    # invited to guess/hallucinate a raw coordinate itself), so validating
+    # them against that public schema would reject a legitimate,
+    # system-injected call every time one actually fires. Every other key
+    # for these same tool_ids is still validated normally.
+    _tool_spec = _native_tool_spec(call.tool_id)
+    if _tool_spec is not None:
+        _injected = _CONTEXT_INJECTED_ARGS.get(call.tool_id)
+        _args_to_validate = (
+            {k: v for k, v in call.arguments.items() if k not in _injected} if _injected else call.arguments
+        )
+        _schema_error = validate_tool_arguments(_tool_spec, _args_to_validate)
+        if _schema_error is not None:
+            return ToolResult(
+                call.tool_id, False, {"ok": False, **digest_error(call.tool_id, _schema_error)}, _schema_error, 0
+            )
+
+    if call.tool_id == "execute_freecad_script":
+        lowered_prompt = (raw_user_text or "").lower()
+        if not any(keyword in lowered_prompt for keyword in ("python", "script", "code")):
+            reason = "Execution blocked: Strict DAG enforcement active. You must use granular CAD nodes."
+            return ToolResult(call.tool_id, False, {"ok": False, **digest_error(call.tool_id, reason)}, reason, 0)
+
     if call.tool_id in _RESTRICTED_GEOMETRY_TOOLS and not _get_has_plan():
         reason = (
             "Execution blocked. You MUST call 'create_plan' to explicitly outline your "
@@ -5538,6 +8899,65 @@ def dispatch_tool_call(
                 out_of_order_reason,
                 0,
             )
+        # Position-Before-Measurement Gate — see _position_before_measurement_
+        # check's own module-level comment (Rule 14 Hard Enforcement).
+        measurement_reason = _position_before_measurement_check(call.tool_id)
+        if measurement_reason is not None:
+            return ToolResult(
+                call.tool_id,
+                False,
+                {"ok": False, **digest_error(call.tool_id, measurement_reason)},
+                measurement_reason,
+                0,
+            )
+        # Fail-Safe Plan Gate — see _PLAN_GATE_REGISTRY's own module-level
+        # comment: catches the specific case _fsm_out_of_order_check can't
+        # (a "no fixed tool signature" task, where its own executing-only
+        # guard goes inert after the first successful dispatch).
+        plan_gate_reason = _plan_gate_check(call.tool_id)
+        if plan_gate_reason is not None:
+            return ToolResult(
+                call.tool_id,
+                False,
+                {"ok": False, **digest_error(call.tool_id, plan_gate_reason)},
+                plan_gate_reason,
+                0,
+            )
+        # Kinematic Axis Task-Compliance Gate — see
+        # _kinematic_axis_task_compliance_check's own module-level comment.
+        axis_compliance_reason = _kinematic_axis_task_compliance_check(call.tool_id, call.arguments)
+        if axis_compliance_reason is not None:
+            return ToolResult(
+                call.tool_id,
+                False,
+                {"ok": False, **digest_error(call.tool_id, axis_compliance_reason)},
+                axis_compliance_reason,
+                0,
+            )
+
+    # Agentic Loop Breaker — Documentation Paralysis: refuse ANOTHER
+    # introspection/discovery call once the model has already made
+    # _INTROSPECTION_STREAK_LIMIT of them in a row with nothing else in
+    # between — see _INTROSPECTION_TOOL_IDS' own module-level comment for
+    # the live incident this closes. Checked BEFORE the streak is bumped for
+    # THIS call, so exactly _INTROSPECTION_STREAK_LIMIT consecutive calls are
+    # let through before the (limit + 1)-th is refused — a hard, actionable
+    # block (same style as the plan-gate/FSM checks above), not a soft
+    # suggestion, since a soft nudge is exactly what a model already stuck
+    # in this loop has been ignoring.
+    if call.tool_id in _INTROSPECTION_TOOL_IDS and _get_introspection_streak() >= _INTROSPECTION_STREAK_LIMIT:
+        reason = (
+            f"Execution blocked: {_INTROSPECTION_STREAK_LIMIT} consecutive introspection/discovery tool "
+            "calls (search_tool_catalog, load_capability, check_plugin_registry, read_system_architecture, "
+            "...) without producing any geometry or otherwise advancing the task. You already have enough "
+            "information — call a geometry-producing tool right now (e.g. create_freecad_box, "
+            "create_freecad_sketch, create_freecad_pad, perform_freecad_boolean, ...), or if the task "
+            "genuinely cannot be completed with the tools available, say so plainly to the user instead of "
+            "continuing to explore the tool catalog. No further introspection/discovery calls will be "
+            "accepted until real progress is made."
+        )
+        return ToolResult(call.tool_id, False, {"ok": False, **digest_error(call.tool_id, reason)}, reason, 0)
+    _bump_introspection_streak(call.tool_id)
 
     handler = TOOL_HANDLERS.get(call.tool_id)
     if handler is None:
@@ -5590,9 +9010,21 @@ def dispatch_tool_call(
             payload["traceback"] = skill_traceback
         message = digested["reason"]
         if call.tool_id not in _CORE_TOOL_IDS:  # Universal FSM Enforcement — see the gate above
-            _advance_fsm_on_dispatch(call.tool_id, ok=False)
+            # Wrong-Tool Escape Hatch note (see _advance_fsm_on_dispatch's
+            # own comment) surfaces only after repeated failures, so it must
+            # reach the model the SAME way the success-path fsm_note already
+            # does below — previously discarded here, silently dropping the
+            # one turn that told the model its declared tool's schema lock
+            # had just been lifted.
+            fsm_note = _advance_fsm_on_dispatch(call.tool_id, ok=False)
+            if fsm_note:
+                payload["message"] = f"{message} {fsm_note}".strip()
     else:
         message = "ok"
+        _mark_measurement_done(call.tool_id)  # Position-Before-Measurement Gate — unconditional,
+        # not nested under the name/path guard below: get_freecad_bounding_box/
+        # inspect_spatial_properties are read-only queries with no "path" of
+        # their own to register as an object.
         if isinstance(payload, dict) and payload.get("name") and payload.get("path"):
             _object_registry()[str(payload["name"])] = str(payload["path"])
             _record_topology_node(str(payload["name"]), input_object_names)
@@ -5600,6 +9032,7 @@ def dispatch_tool_call(
             existing = payload.get("message")
             payload["message"] = f"{existing} {topology_warning}".strip() if existing else topology_warning
         if call.tool_id not in _CORE_TOOL_IDS and isinstance(payload, dict):  # Universal FSM Enforcement
+            _bump_plan_gate_counter(call.tool_id)  # Fail-Safe Plan Gate — see _PLAN_GATE_REGISTRY's own comment
             fsm_note = _advance_fsm_on_dispatch(call.tool_id, ok=True)
             if fsm_note:
                 existing = payload.get("message")
@@ -5629,6 +9062,7 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         "perform_freecad_boolean",
         "perform_freecad_edge_operation",
         "create_freecad_pipe",
+        "create_freecad_helix",
         "create_freecad_sketch_extrude",
         "create_freecad_feature_on_face",
         "batch_pattern_array",
@@ -5646,6 +9080,10 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
             f"valid={payload.get('is_valid')}, faces={payload.get('face_count')}, "
             f"edges={payload.get('edge_count')}."
         )
+    if call.tool_id == "query_topology":
+        faces = payload.get("faces", [])
+        planar = sum(1 for f in faces if f.get("is_planar"))
+        return f"`{payload.get('part_name')}`: {payload.get('face_count')} face(s), {planar} planar."
     if call.tool_id == "analyze_bounding_box_collisions":
         if payload.get("collision"):
             return f"`{payload.get('object_a')}` and `{payload.get('object_b')}` overlap — volume {payload.get('overlap_volume')}."
@@ -5757,6 +9195,7 @@ __all__ = (
     "build_tool_result_message",
     "build_user_message",
     "build_visual_inspection_result",
+    "compact_resolved_introspection",
     "describe_tool_call",
     "dispatch_tool_call",
     "driver_state",

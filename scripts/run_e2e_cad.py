@@ -56,10 +56,30 @@ defensive no-op in practice (see that function's own docstring) rather
 than the load-bearing fix it was before per-session CAD workspace
 isolation existed.
 
+``--bypass-hitl-gate-unsafe``: sets this run's own ``session["auto_approve"]``
+to ``True`` — the SAME field ``dana.api.server``'s real HITL gate already
+checks (``_run_react_loop``: ``is_mutating_tool(...) and not
+session.get("auto_approve") and ...``), and the one field that comment
+explicitly documents as having NO carve-out: unlike
+``_HITL_ALWAYS_APPROVED_TOOLS``/``_CI_PREAPPROVED_TOOLS`` above (both
+deliberately narrow, tool_id-by-tool_id allowlists), ``auto_approve`` waves
+through EVERY mutating tool, ``execute_freecad_script``/
+``modify_existing_freecad_document`` (arbitrary caller-supplied script
+execution) included — which is exactly why this is opt-in and named
+``--unsafe``, never the default. Without this flag, a scenario that reaches
+either of those two tools still suspends and this runner still fails loudly
+(by design — see the module docstring above); this flag exists for a
+deliberately unattended run that specifically NEEDS to exercise one of
+them. Also honors ``DANA_AUTO_APPROVE=1`` (the existing, real env var
+``dana.api.server._default_auto_approve`` reads for a genuine ``ws_chat``
+connection) for parity, in case a caller's environment already sets it —
+either one is sufficient, neither is required for the default run.
+
 Usage (from repo root)::
 
     python scripts/run_e2e_cad.py                 # runs the default master prompt
     python scripts/run_e2e_cad.py "some other prompt"
+    python scripts/run_e2e_cad.py --bypass-hitl-gate-unsafe "prompt needing execute_freecad_script"
 """
 
 from __future__ import annotations
@@ -69,6 +89,19 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+
+# Force UTF-8 stdout/stderr regardless of the host OS locale -- on Windows
+# these default to the console's own codepage (cp1252 observed live), which
+# raises UnicodeEncodeError the instant an LLM response contains a
+# character outside that codepage (e.g. "->" as a real U+2192 arrow rather
+# than ASCII), crashing this runner AFTER a real run already succeeded and
+# exported its artifact, purely on the final summary print. reconfigure()
+# is available on every real stdout/stderr TextIOWrapper since Python 3.7;
+# guarded anyway in case a caller has swapped in something else entirely
+# (e.g. piping through a non-reconfigurable stream in a test harness).
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
@@ -90,7 +123,7 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(_ROOT / ".env")
 load_dotenv()
 
-from dana.api.server import _process_user_text  # noqa: E402
+from dana.api.server import _default_auto_approve, _process_user_text  # noqa: E402
 from dana.api.sessions import SESSIONS_DIR, new_session_id  # noqa: E402
 from dana.platform.factory import get_cad_engine  # noqa: E402
 from dana.plugins.freecad.call_log import CadCallLog  # noqa: E402
@@ -106,6 +139,10 @@ from dana.session_context import session_scoped_dir  # noqa: E402
 # flat directory.
 _FREECAD_OUTPUT_BASE = _ROOT / "freecad_output"
 _SESSION_DOCUMENT_NAME = "Session_Active.FCStd"
+
+# See the module docstring's own "--bypass-hitl-gate-unsafe" section for
+# exactly what this does and does not exempt.
+_BYPASS_HITL_FLAG = "--bypass-hitl-gate-unsafe"
 
 _MASTER_PROMPT = (
     "Build a box 60x40x20 and insert an ISO4017 hex bolt size M8 length 30. "
@@ -127,6 +164,41 @@ _CI_PREAPPROVED_TOOLS: frozenset[str] = frozenset(
         "export_freecad_model",
         "create_assembly_mate",
         "generate_3d_from_image",
+        # Added for the wheel/axle mating stress test (Rule 16 in
+        # _EXECUTOR_ENGINEERING_RULES): a real multi-part assembly scenario
+        # legitimately reaches all four of these, same "not on the permanent
+        # allowlist but fine for an unattended CI run" rationale as the four
+        # above.
+        "create_freecad_assembly",
+        "add_parts_to_assembly",
+        "apply_assembly_constraint",
+        "anchor_assembly_root",
+        # anchor_assembly_root (Neuro-Symbolic RPY refactor) is a new
+        # mutating tool in the same assembly family as the five above --
+        # same "not on the permanent allowlist but fine for an unattended
+        # CI run" rationale, same gap pattern confirmed live: a full rover
+        # run reached this exact HITL suspension right after add_parts_to_
+        # assembly, one call before any wheel could be positioned against
+        # a locked reference frame.
+        "position_assembly_part",
+        "define_kinematic_joint",
+        # export_assembly_to_urdf is the assembly-aware URDF exporter (takes
+        # assembly_name directly, reads back define_kinematic_joint's own
+        # DanaKinematicJoints property) -- distinct from generate_urdf_assembly
+        # above (a lower-level, hand-specified links/joints builder). A rover
+        # scenario that already went through create_freecad_assembly +
+        # define_kinematic_joint calls this one, not generate_urdf_assembly --
+        # omitting it here was a real gap (confirmed live: a full 4-wheel rover
+        # run reached this exact HITL suspension one step from actually
+        # exercising the URDF/ROS2 export path this harness exists to cover).
+        "export_assembly_to_urdf",
+        # generate_simulation_wrapper (the sanitized target of the "generate
+        # a ROS2 simulation wrapper" task) is the final step of the same
+        # CAD-to-robotics pipeline the five entries above exist to cover --
+        # same rationale, same gap pattern (confirmed live: a full run
+        # reached export_assembly_to_urdf successfully, one task later hit
+        # this exact HITL suspension on the very last step).
+        "generate_simulation_wrapper",
     }
 )
 
@@ -250,13 +322,28 @@ class _FakeWebSocket:
             )
 
 
-async def run(prompt: str) -> int:
+async def run(prompt: str, *, bypass_hitl_gate_unsafe: bool = False) -> int:
     session_id = f"e2e-{new_session_id()}"
     _wipe_session_state(session_id)
     engine = get_cad_engine()
     print(f"[runner] CAD engine driver: {type(engine).__name__}", flush=True)
     print(f"[runner] Session: {session_id}", flush=True)
     print(f"[runner] Prompt: {prompt}", flush=True)
+
+    # Same field a real ws_chat connection seeds via _default_auto_approve()
+    # (DANA_AUTO_APPROVE=1) — honored here too for parity — OR'd with this
+    # run's own --bypass-hitl-gate-unsafe flag. See the module docstring's
+    # own section on this flag for exactly what it does and doesn't exempt
+    # (spoiler: nothing — unlike _HITL_ALWAYS_APPROVED_TOOLS/
+    # _CI_PREAPPROVED_TOOLS, auto_approve has no carve-out at all).
+    auto_approve = _default_auto_approve() or bypass_hitl_gate_unsafe
+    if auto_approve:
+        print(
+            "[runner] auto_approve is ON for this run — every mutating tool's HITL prompt is "
+            "bypassed, arbitrary-script tools (execute_freecad_script, "
+            "modify_existing_freecad_document) included.",
+            flush=True,
+        )
 
     websocket = _FakeWebSocket()
     # Mirrors dana.api.server.ws_chat's own session dict shape verbatim
@@ -273,6 +360,7 @@ async def run(prompt: str) -> int:
         "session_title": None,
         "session_created_at": None,
         "api_keys": {},
+        "auto_approve": auto_approve,
         # "freecad" is the full raw CAD tool domain (create_freecad_*,
         # perform_freecad_boolean, generate_urdf_assembly, export_freecad_model,
         # ...) — what a real session gets with the CAD tab active, and the
@@ -323,5 +411,9 @@ async def run(prompt: str) -> int:
 
 
 if __name__ == "__main__":
-    prompt = " ".join(sys.argv[1:]) or _MASTER_PROMPT
-    sys.exit(asyncio.run(run(prompt)))
+    argv = sys.argv[1:]
+    bypass_hitl_gate_unsafe = _BYPASS_HITL_FLAG in argv
+    if bypass_hitl_gate_unsafe:
+        argv = [a for a in argv if a != _BYPASS_HITL_FLAG]
+    prompt = " ".join(argv) or _MASTER_PROMPT
+    sys.exit(asyncio.run(run(prompt, bypass_hitl_gate_unsafe=bypass_hitl_gate_unsafe)))

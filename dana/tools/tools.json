@@ -828,7 +828,7 @@
     },
     {
       "id": "architect_new_tool",
-      "description_en": "Use this tool to WRITE, BUILD, FORGE, or CREATE a brand new custom tool from scratch. This is the code generation engine (Tool Forge: AST + security review + hot-load into custom_tools/). Prefer this whenever the user asks to build/compile/create a new tool.",
+      "description_en": "Generates a new custom tool from a natural-language description (Tool Forge: AST validation, security review, hot-load into custom_tools/).",
       "parameters": [
         {
           "name": "goal",
@@ -1287,7 +1287,7 @@
     },
     {
       "id": "draft_cursor_prompt",
-      "description_en": "USE THIS TOOL EXCLUSIVELY FOR ALL SYSTEM MODIFICATIONS, BUG FIXES, ARCHITECTURAL TICKETS, AND SELF-IMPROVEMENT REQUESTS. This is the only authorized tool for logging code changes. It APPENDS a PENDING ticket to CAMGRASPER/dana_security/patch_ledger.md for the human to execute in their IDE. Do not attempt to hot-patch live core memory.",
+      "description_en": "Appends a PENDING code-change ticket to CAMGRASPER/dana_security/patch_ledger.md for a human to review and apply in their IDE. For system modifications, bug fixes, architectural tickets, and self-improvement requests that need a human-reviewed code change. Does not modify live core memory or apply patches directly.",
       "ephemeral": false,
       "parameters": [
         {
@@ -1301,7 +1301,7 @@
           "name": "context",
           "type": "string",
           "required": true,
-          "description_en": "TECHNICAL PRODUCT MANAGER RULE: When the user gives a high-level or casual voice command for a code change, you must act as a Technical Product Manager. Translate their vague request into a highly detailed technical prompt for the Cursor IDE. If the user does not provide file paths, use your reasoning to outline clear architectural goals, logic steps, and acceptance criteria in the context argument. Do not ask the user for more details—expand their intent into a usable developer ticket.",
+          "description_en": "Detailed ticket body for the Cursor IDE: architectural goals, logic steps, and acceptance criteria for the requested code change. Include target file paths/symbols when known; note them as unconfirmed if the user didn't specify them.",
           "description_fa": "   : ‌         Cursor  .       ‌       context      ."
         }
       ],
@@ -1840,7 +1840,7 @@
     },
     {
       "id": "perform_freecad_boolean",
-      "description_en": "Combine two solids from create_freecad_box/cylinder/polygon/insert_standard_part (same session doc) via cut/union/intersect, by object name.",
+      "description_en": "Combine solids from create_freecad_box/cylinder/polygon/insert_standard_part (same session doc) via cut/union/intersect, by object name. Give EITHER base_object+tool_object (exactly two objects) OR objects (three or more, 'union'/'intersect' only — 'cut' is always exactly two objects, never a list) to fuse/intersect every listed object in ONE call instead of chaining separate two-object calls.",
       "parameters": [
         {
           "name": "operation",
@@ -1856,14 +1856,21 @@
         {
           "name": "base_object",
           "type": "string",
-          "required": true,
-          "description_en": "Name of the main/base solid (e.g. the block being drilled)."
+          "required": false,
+          "description_en": "Name of the main/base solid (e.g. the block being drilled). Required unless 'objects' is given instead."
         },
         {
           "name": "tool_object",
           "type": "string",
-          "required": true,
-          "description_en": "Name of the solid acting as the tool (e.g. the cylinder drilling the hole)."
+          "required": false,
+          "description_en": "Name of the solid acting as the tool (e.g. the cylinder drilling the hole). Required unless 'objects' is given instead."
+        },
+        {
+          "name": "objects",
+          "type": "array",
+          "items_type": "string",
+          "required": false,
+          "description_en": "Alternative to base_object/tool_object: three or more object names to fuse ('union') or intersect ('intersect') in ONE call, e.g. ['hub', 'helix1', 'helix2', 'helix3']. Not valid for 'cut' — a cut is always exactly base_object minus tool_object. Omit base_object/tool_object when using this."
         },
         {
           "name": "name",
@@ -1903,7 +1910,7 @@
     },
     {
       "id": "modify_freecad_parameter",
-      "description_en": "Modifies a dimensional property of an existing object (e.g. changing a box's Height, or a cylinder's Radius), or moves and/or rotates it (parameter_name='Placement' or 'Placement.Base'), in place without recreating it.",
+      "description_en": "Modifies a dimensional property of an existing object (e.g. changing a box's Height, or a cylinder's Radius), or moves and/or rotates it (parameter_name='Placement' or 'Placement.Base'), in place without recreating it. Refuses outright if target_object was anchored via anchor_assembly_root.",
       "parameters": [
         {
           "name": "target_object",
@@ -1921,7 +1928,31 @@
           "name": "new_value",
           "type": "string",
           "required": true,
-          "description_en": "New value for the parameter. A plain number in mm for dimensional properties (e.g. '50'). For parameter_name 'Placement'/'Placement.Base': a '[x, y, z]' vector in mm (e.g. '[30, 20, 10]') to move the object while keeping its current rotation, OR a 6-element '[x, y, z, yaw, pitch, roll]' vector (position in mm, yaw/pitch/roll in DEGREES, e.g. '[30, 20, 10, 90, 0, 0]') to move AND rotate it in one call — use the 6-element form for kinematic assemblies (URDF joints, assembly mates) where a part needs a specific orientation, not just a position."
+          "description_en": "New value for the parameter. A plain number in mm for dimensional properties (e.g. '50'). For parameter_name 'Placement'/'Placement.Base': a '[x, y, z]' position vector in mm ONLY (e.g. '[30, 20, 10]') — NEVER a 6-element or matrix/quaternion form; rotation is set via the separate yaw/pitch/roll parameters below, not packed into this vector."
+        },
+        {
+          "name": "yaw",
+          "type": "number",
+          "required": false,
+          "description_en": "For parameter_name 'Placement'/'Placement.Base' only: yaw (rotation about Z) in DEGREES. Omit yaw/pitch/roll entirely to keep the object's current rotation (a pure translate); give any one of the three to REPLACE the whole rotation with a fresh FreeCAD.Rotation(yaw, pitch, roll) (the other two default to 0). Must be a cardinal angle (0/90/180/270) — snapped if within 1 degree of one, otherwise rejected unless override_cardinal is true."
+        },
+        {
+          "name": "pitch",
+          "type": "number",
+          "required": false,
+          "description_en": "For parameter_name 'Placement'/'Placement.Base' only: pitch (rotation about Y) in DEGREES. Same cardinal-angle rule as yaw."
+        },
+        {
+          "name": "roll",
+          "type": "number",
+          "required": false,
+          "description_en": "For parameter_name 'Placement'/'Placement.Base' only: roll (rotation about X) in DEGREES. Same cardinal-angle rule as yaw."
+        },
+        {
+          "name": "override_cardinal",
+          "type": "boolean",
+          "required": false,
+          "description_en": "Defaults to false. When false (the default), yaw/pitch/roll must each be within 1 degree of a 0/90/180/270 cardinal angle — anything else is rejected outright rather than silently rounded, to keep assembly placements rigid and orthogonal. Set true ONLY when a genuinely non-orthogonal orientation is intended, which disables this check entirely and passes the exact angles through."
         }
       ]
     },
@@ -1991,6 +2022,66 @@
       ]
     },
     {
+      "id": "create_freecad_helix",
+      "description_en": "Creates a solid helical coil (a spring/thread-like shape) by sweeping a circular cross-section along a cylindrical helical path. Use this for wound coils, springs, or helical stands -- not create_freecad_pipe, which only sweeps along straight or circular-arc paths.",
+      "parameters": [
+        {
+          "name": "coil_radius",
+          "type": "number",
+          "required": true,
+          "description_en": "Overall radius of the coil (distance from the central axis to the tube's centerline), in mm."
+        },
+        {
+          "name": "pitch",
+          "type": "number",
+          "required": true,
+          "description_en": "Vertical rise per full turn of the coil, in mm."
+        },
+        {
+          "name": "height",
+          "type": "number",
+          "required": true,
+          "description_en": "Total vertical height of the coil, in mm. The number of turns is height / pitch."
+        },
+        {
+          "name": "pipe_radius",
+          "type": "number",
+          "required": true,
+          "description_en": "Radius of the coil's own circular cross-section (the tube's thickness), in mm. Must be smaller than coil_radius."
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description_en": "Name for the created object."
+        },
+        {
+          "name": "placement_x",
+          "type": "number",
+          "required": false,
+          "description_en": "Global X-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_y",
+          "type": "number",
+          "required": false,
+          "description_en": "Global Y-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_z",
+          "type": "number",
+          "required": false,
+          "description_en": "Global Z-axis offset in mm. Defaults to 0."
+        },
+        {
+          "name": "angle_offset",
+          "type": "number",
+          "required": false,
+          "description_en": "Rotates the coil about the global Z axis, in degrees. Defaults to 0. Use this to fan several coils evenly around a shared central hub without them overlapping (e.g. three coils at angle_offset 0, 120, and 240) — placement_x/y/z alone can only move a coil, never turn it to face a different direction around that shared axis."
+        }
+      ]
+    },
+    {
       "id": "export_freecad_model",
       "read_only": true,
       "description_en": "Exports the specified 3D objects to an STL file (for 3D printing) or a STEP file (for external CAD software). Saves to the local output directory.",
@@ -2022,7 +2113,7 @@
     },
     {
       "id": "align_freecad_objects",
-      "description_en": "Snaps the source_object directly to the bounding box of the target_object. Use 'top_center' to stack an object perfectly on top of another.",
+      "description_en": "Snaps the source_object directly to the bounding box of the target_object. Use 'top_center' to stack an object perfectly on top of another. Refuses outright if source_object was anchored via anchor_assembly_root.",
       "parameters": [
         {
           "name": "source_object",
@@ -2060,6 +2151,19 @@
           "type": "string",
           "required": true,
           "description_en": "Name of the existing object to inspect (e.g. 'Box')."
+        }
+      ]
+    },
+    {
+      "id": "query_topology",
+      "read_only": true,
+      "description_en": "Returns per-face topology of an existing object: for every face, its face_index (e.g. 'Face3', 1-based — matching apply_assembly_constraint's own part1_element/part2_element numbering), area, is_planar, surface_type, centroid, and normal (a 3-vector ONLY when is_planar is true — null with an explanatory normal_warning for any curved face, since a single normal vector is not well-defined across a cylindrical/conical/toroidal/B-Spline surface). For a PLANAR face only (null for any curved face, same reasoning as normal): u_span_physical_mm/v_span_physical_mm (that face's own real, trimmed extent in mm along each of its two parametric axes — compare these to tell which axis is the LONGER one) and u_direction_vector/v_direction_vector (those two axes' real WORLD-space [x, y, z] directions, correct regardless of which way the face's normal points). Use these BEFORE calling apply_assembly_constraint with a uv_tensor: compare u_direction_vector/v_direction_vector against a chassis's own elongation axis (from get_bounding_box) to deterministically pick whether varying uv_tensor's u or v spreads parts along the chassis's long (e.g. front-to-back) axis, instead of guessing and re-mating. Read-only — does not modify anything. Use this BEFORE apply_assembly_constraint to mathematically deduce opposite faces (matching areas, anti-parallel normals), the largest flat face (a candidate mounting surface), or top/bottom (by centroid Z) from real BRep data, instead of guessing a Face index blind. Face indices reflect a snapshot of the object's CURRENT shape only — re-query after any boolean/fillet/pattern operation on this part rather than trusting a stale index.",
+      "parameters": [
+        {
+          "name": "part_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing object to inspect (e.g. 'rover_main_body')."
         }
       ]
     },
@@ -2121,6 +2225,552 @@
           "type": "string",
           "required": false,
           "description_en": "Object/document name. Defaults to 'Sketch'."
+        }
+      ]
+    },
+    {
+      "id": "create_freecad_sketch",
+      "description_en": "Creates a real, constrainable Sketcher::SketchObject in the shared session document, mapped onto one of the three standard base planes (XY/XZ/YZ) — unlike create_freecad_sketch_extrude's one-shot Part wire, this stays a live parametric sketch you can lock down afterward with apply_sketch_constraint, one geometry element at a time. Each entry in 'geometry' becomes that sketch's Geometry[i] — the exact 0-based index apply_sketch_constraint's geometry_indices reference, in the SAME order you list them here.",
+      "parameters": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name for the new sketch object."
+        },
+        {
+          "name": "plane",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "XY",
+            "XZ",
+            "YZ"
+          ],
+          "description_en": "Standard base work plane the sketch is mapped onto."
+        },
+        {
+          "name": "geometry",
+          "type": "array",
+          "required": true,
+          "description_en": "Ordered list of raw 2D geometry elements (in the sketch's own local plane coordinates, mm). Every field below is REQUIRED for its type — a circle/arc with no \"center\" is invalid and will be rejected. EXAMPLES (one line each): line -> {\"type\": \"line\", \"start\": [0, 0], \"end\": [10, 0]}. circle -> {\"type\": \"circle\", \"center\": [0, 0], \"radius\": 50}. arc -> {\"type\": \"arc\", \"center\": [0, 0], \"radius\": 20, \"start_angle\": 0, \"end_angle\": 90}. There is no \"rectangle\" type — build one from 4 \"line\" entries forming a closed loop, e.g. a 10x20 rectangle: [{\"type\":\"line\",\"start\":[0,0],\"end\":[10,0]},{\"type\":\"line\",\"start\":[10,0],\"end\":[10,20]},{\"type\":\"line\",\"start\":[10,20],\"end\":[0,20]},{\"type\":\"line\",\"start\":[0,20],\"end\":[0,0]}]. List position i becomes geometry index i for apply_sketch_constraint."
+        }
+      ]
+    },
+    {
+      "id": "apply_sketch_constraint",
+      "description_en": "CRITICAL: sketch_name MUST be the name of a 2D sketch. You CANNOT constrain 3D solids or features (a Pad, Pocket, boolean result, or any other solid will be rejected). Applies a real Sketcher::Constraint to an existing sketch (from create_freecad_sketch), locking down its raw geometry by index. geometry_indices are 0-based positions into that sketch's own geometry list, in the SAME order create_freecad_sketch's 'geometry' argument listed them. Required count of geometry_indices depends on constraint_type: 'Coincident' needs exactly 4 ints [geoId1, posId1, geoId2, posId2] (posId 1=start point, 2=end point, 3=center); 'Horizontal'/'Vertical' need exactly 1 int [geoId] (a line); 'Distance' needs exactly 1 int [geoId] plus a required 'value' (the edge's length in mm); 'Radius' needs exactly 1 int [geoId] (a circle or arc) plus a required 'value' (the radius in mm).",
+      "parameters": [
+        {
+          "name": "sketch_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing 2D sketch object to constrain (from create_freecad_sketch) — NEVER a 3D solid/feature name (e.g. a Pad or Pocket result)."
+        },
+        {
+          "name": "constraint_type",
+          "type": "string",
+          "required": true,
+          "enum": [
+            "Coincident",
+            "Horizontal",
+            "Vertical",
+            "Distance",
+            "Radius"
+          ],
+          "description_en": "Which Sketcher constraint to apply."
+        },
+        {
+          "name": "geometry_indices",
+          "type": "array",
+          "items_type": "integer",
+          "required": true,
+          "description_en": "0-based geometry indices this constraint targets. Exact count required depends on constraint_type — see this tool's own description."
+        },
+        {
+          "name": "value",
+          "type": "number",
+          "required": false,
+          "description_en": "Numeric value for the constraint, in mm. Required for 'Distance' (edge length) and 'Radius' (circle/arc radius); unused otherwise."
+        }
+      ]
+    },
+    {
+      "id": "create_freecad_pad",
+      "description_en": "Extrudes a create_freecad_sketch profile into a real, solid PartDesign::Pad — the parametric equivalent of create_freecad_sketch_extrude, but backed by a proper PartDesign::Body feature tree instead of a one-shot Part wire, so further Pad/Pocket features can keep building on the same solid. Handles PartDesign containment automatically: if the sketch isn't already inside a PartDesign::Body, a Body is created (or an existing one reused) and the sketch is moved into it before the Pad is applied. IMPORTANT: the sketch's own geometry should already be FULLY CONSTRAINED via apply_sketch_constraint before padding — an under-constrained sketch can still extrude, but its resulting shape is only as reliable as its raw, unlocked coordinates.",
+      "parameters": [
+        {
+          "name": "sketch_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing sketch object to extrude (from create_freecad_sketch)."
+        },
+        {
+          "name": "length",
+          "type": "number",
+          "required": true,
+          "description_en": "Extrusion distance in mm."
+        },
+        {
+          "name": "symmetric_to_plane",
+          "type": "boolean",
+          "required": false,
+          "description_en": "If true, extrudes 'length' mm split evenly on both sides of the sketch plane instead of only forward from it. Defaults to false."
+        },
+        {
+          "name": "reversed_direction",
+          "type": "boolean",
+          "required": false,
+          "description_en": "If true, flips which side of the sketch plane a non-symmetric extrusion grows into. Defaults to false."
+        }
+      ]
+    },
+    {
+      "id": "create_freecad_pocket",
+      "description_en": "Subtracts material from the active PartDesign::Body's existing solid using a create_freecad_sketch profile, via a real PartDesign::Pocket. Requires the body to already have SOME solid to cut into — typically build one first with create_freecad_pad in the same body. Handles PartDesign containment the same way create_freecad_pad does. IMPORTANT: the sketch's own geometry should already be FULLY CONSTRAINED via apply_sketch_constraint before pocketing — an under-constrained sketch can still cut, but its resulting shape is only as reliable as its raw, unlocked coordinates.",
+      "parameters": [
+        {
+          "name": "sketch_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing sketch object to cut with (from create_freecad_sketch)."
+        },
+        {
+          "name": "depth",
+          "type": "number",
+          "required": true,
+          "description_en": "Cut depth in mm. Ignored (but still required) when through_all is true."
+        },
+        {
+          "name": "through_all",
+          "type": "boolean",
+          "required": false,
+          "description_en": "If true, cuts all the way through the body's solid regardless of 'depth'. Defaults to false."
+        },
+        {
+          "name": "symmetric_to_plane",
+          "type": "boolean",
+          "required": false,
+          "description_en": "If true, cuts 'depth' mm split evenly on both sides of the sketch plane instead of only into one side of it. Defaults to false."
+        },
+        {
+          "name": "reversed_direction",
+          "type": "boolean",
+          "required": false,
+          "description_en": "If true, flips which side of the sketch plane a non-symmetric cut grows into. Defaults to false."
+        }
+      ]
+    },
+    {
+      "id": "create_freecad_polar_pattern",
+      "description_en": "Repeats an existing 3D feature (a Pad/Pocket) evenly around a body axis, via PartDesign::PolarPattern. feature_name MUST be a 3D feature from create_freecad_pad/create_freecad_pocket — NEVER a create_freecad_sketch profile; pad/pocket it first, then pattern the result.",
+      "parameters": [
+        {
+          "name": "feature_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing 3D feature to repeat — never a raw sketch name."
+        },
+        {
+          "name": "occurrences",
+          "type": "integer",
+          "required": true,
+          "description_en": "Total number of copies around the circle, INCLUDING the original feature itself. Must be at least 2."
+        },
+        {
+          "name": "angle",
+          "type": "number",
+          "required": false,
+          "description_en": "Total angular span the copies are spread across, in degrees. Defaults to 360.0 (a full circle)."
+        },
+        {
+          "name": "axis",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "Z",
+            "Y",
+            "X"
+          ],
+          "description_en": "Which of the feature's own body principal axes to rotate around. Defaults to Z."
+        },
+        {
+          "name": "reversed_direction",
+          "type": "boolean",
+          "required": false,
+          "description_en": "If true, spreads the copies in the opposite rotational direction. Defaults to false."
+        }
+      ]
+    },
+    {
+      "id": "create_freecad_linear_pattern",
+      "description_en": "Repeats an existing 3D feature (a Pad/Pocket) evenly along a body axis, via PartDesign::LinearPattern. feature_name MUST be a 3D feature from create_freecad_pad/create_freecad_pocket — NEVER a create_freecad_sketch profile; pad/pocket it first, then pattern the result.",
+      "parameters": [
+        {
+          "name": "feature_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing 3D feature to repeat — never a raw sketch name."
+        },
+        {
+          "name": "occurrences",
+          "type": "integer",
+          "required": true,
+          "description_en": "Total number of copies along the line, INCLUDING the original feature itself. Must be at least 2."
+        },
+        {
+          "name": "length",
+          "type": "number",
+          "required": true,
+          "description_en": "Total span the copies are spread across, in mm, from the first copy to the last."
+        },
+        {
+          "name": "direction",
+          "type": "string",
+          "required": false,
+          "enum": [
+            "X",
+            "Y",
+            "Z"
+          ],
+          "description_en": "Which of the feature's own body principal axes to space the copies along. Defaults to X."
+        },
+        {
+          "name": "reversed_direction",
+          "type": "boolean",
+          "required": false,
+          "description_en": "If true, spreads the copies in the opposite direction along the axis. Defaults to false."
+        }
+      ]
+    },
+    {
+      "id": "create_freecad_sweep",
+      "description_en": "Sweeps a 2D create_freecad_sketch profile along another create_freecad_sketch path into a real solid, via a real PartDesign::AdditivePipe. Both must already exist (from create_freecad_sketch) — they're automatically moved into the same shared PartDesign::Body before sweeping if they aren't already there. Use for organic/curved solids (handles, hooks, wound tubes, hose fittings) a straight create_freecad_pad can't express.",
+      "parameters": [
+        {
+          "name": "profile_sketch",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing sketch to sweep — the 2D cross-section shape carried along the path."
+        },
+        {
+          "name": "path_sketch",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing sketch defining the path/spine to sweep the profile along. Must be a different sketch than profile_sketch. For a PARTIAL curved path (e.g. 'sweep along a 90-degree arc'), that sketch's geometry must use create_freecad_sketch's \"arc\" type ({\"type\": \"arc\", \"center\": [x, y], \"radius\": r, \"start_angle\": a1, \"end_angle\": a2}) — a full \"circle\" entry sweeps a closed 360-degree loop instead, not the partial curve you asked for."
+        },
+        {
+          "name": "frenet",
+          "type": "boolean",
+          "required": false,
+          "description_en": "If true, the profile's orientation follows the Frenet frame along the path (twists to stay normal to the path's own curvature); if false, keeps a fixed orientation throughout the sweep. Defaults to true."
+        }
+      ]
+    },
+    {
+      "id": "create_freecad_loft",
+      "description_en": "Blends a smooth solid through an ORDERED list of 2 or more existing create_freecad_sketch cross-sections, via a real PartDesign::AdditiveLoft. Every listed sketch must already exist and is automatically moved into the same shared PartDesign::Body before lofting if not already there. Use for tapered/organic transitions (e.g. a square base blending into a circular top) a straight create_freecad_pad can't express. cross_section_sketches must be a JSON array/list of sketch-name strings, in the exact order the solid should blend between them — never a single string.",
+      "parameters": [
+        {
+          "name": "cross_section_sketches",
+          "type": "array",
+          "items_type": "string",
+          "required": true,
+          "description_en": "Ordered list (minimum 2) of existing sketch names to loft through, in the order the solid should blend between them — e.g. the base cross-section first, the tip cross-section last. Every name must be distinct."
+        },
+        {
+          "name": "ruled",
+          "type": "boolean",
+          "required": false,
+          "description_en": "If true, connects consecutive cross-sections with straight ruled surfaces instead of a smooth blend. Defaults to false."
+        },
+        {
+          "name": "closed",
+          "type": "boolean",
+          "required": false,
+          "description_en": "If true, loops the loft back from the last cross-section to the first, forming a closed solid. Defaults to false."
+        }
+      ]
+    },
+    {
+      "id": "create_freecad_assembly",
+      "description_en": "Creates a real App::Part assembly container in the shared session document — a plain organizational grouping object with no geometry of its own. Use this to start grouping independent PartDesign::Body instances (from create_freecad_pad/create_freecad_pocket/create_freecad_sweep/create_freecad_loft) into one positioned sub-assembly, then add them with add_parts_to_assembly.",
+      "parameters": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name for the new assembly container."
+        }
+      ]
+    },
+    {
+      "id": "add_parts_to_assembly",
+      "description_en": "Moves the named parts (typically PartDesign::Body instances) into an existing create_freecad_assembly container, so they become one grouped sub-assembly. A part already in the assembly is silently left alone rather than re-added.",
+      "parameters": [
+        {
+          "name": "assembly_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing assembly container to add parts to (from create_freecad_assembly)."
+        },
+        {
+          "name": "part_names",
+          "type": "array",
+          "items_type": "string",
+          "required": true,
+          "description_en": "List of existing part names (e.g. PartDesign::Body instances) to move into the assembly. Must be a JSON array/list of strings — never a single string."
+        }
+      ]
+    },
+    {
+      "id": "position_assembly_part",
+      "description_en": "LAST RESORT for a part with NO shared reference geometry to align to. If the reference object has real Face/Edge geometry (a box's flat sides, a cylinder's axis) — which covers most assembly layouts, including distributing several parts around a shared body — use apply_assembly_constraint instead: it computes the placement from that geometry directly, so it can't produce the wrong numbers the way typed-in coordinates here can (confirmed live: this exact failure clustered/embedded parts in each other across multiple runs). Reserve this tool for a placement with no shared reference geometry at all — e.g. an arbitrary free-floating part, or a relationship apply_assembly_constraint's Coincident/Concentric/Parallel/Distance/Perpendicular vocabulary genuinely can't express. Moves and/or orients a previously-created part (typically a PartDesign::Body inside a create_freecad_assembly container, but works on any named object) by replacing its whole Placement — REPLACES any prior rotation rather than composing with it. Takes ABSOLUTE world coordinates, not relative/local ones — before positioning several parts around another object, read that object's real bounding box (get_freecad_bounding_box) and derive each target from its actual half-extents and center; do not reuse one part's own dimensions as the offset for another object's layout. Refuses outright if part_name was anchored via anchor_assembly_root.",
+      "parameters": [
+        {
+          "name": "part_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing part to reposition/reorient."
+        },
+        {
+          "name": "placement_x",
+          "type": "number",
+          "required": false,
+          "description_en": "New X position in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_y",
+          "type": "number",
+          "required": false,
+          "description_en": "New Y position in mm. Defaults to 0."
+        },
+        {
+          "name": "placement_z",
+          "type": "number",
+          "required": false,
+          "description_en": "New Z position in mm. Defaults to 0."
+        },
+        {
+          "name": "yaw",
+          "type": "number",
+          "required": false,
+          "description_en": "New yaw (rotation about Z) in degrees. Defaults to 0. Must be a cardinal angle (0/90/180/270) — snapped if within 1 degree of one, otherwise rejected unless override_cardinal is true."
+        },
+        {
+          "name": "pitch",
+          "type": "number",
+          "required": false,
+          "description_en": "New pitch (rotation about Y) in degrees. Defaults to 0. Same cardinal-angle rule as yaw."
+        },
+        {
+          "name": "roll",
+          "type": "number",
+          "required": false,
+          "description_en": "New roll (rotation about X) in degrees. Defaults to 0. Same cardinal-angle rule as yaw."
+        },
+        {
+          "name": "override_cardinal",
+          "type": "boolean",
+          "required": false,
+          "description_en": "Defaults to false. When false (the default), yaw/pitch/roll must each be within 1 degree of a 0/90/180/270 cardinal angle — anything else is rejected outright rather than silently rounded, to keep assembly placements rigid and orthogonal. Set true ONLY when a genuinely non-orthogonal orientation is intended, which disables this check entirely and passes the exact angles through."
+        }
+      ]
+    },
+    {
+      "id": "apply_assembly_constraint",
+      "description_en": "PREFERRED over position_assembly_part whenever the reference object has real Face/Edge geometry to align to — positions part2 relative to part1 by a real geometric relationship between two named Face/Edge elements, instead of typed-in XYZ numbers, computed directly from each element's actual BRep geometry (its real centroid/normal/axis), so it can't produce the wrong numbers a hand-typed coordinate can. NOT live/re-solving if the referenced geometry's own parameters change later (re-call this again if that happens; this is a one-shot alignment — see 'Available faces/edges' in the error message below for how a bad reference is caught). Both parts must already be members of assembly_name (add_parts_to_assembly first). part1 stays fixed; part2 is moved/rotated to satisfy the constraint. FIXED FACE ORDER for a create_freecad_box object (verified live, this exact FreeCAD build, stable/deterministic for Part::Box): Face1=-X (left), Face2=+X (right), Face3=-Y (front), Face4=+Y (back), Face5=-Z (bottom), Face6=+Z (top) — use these directly, never guess or measure to find which face is which side.",
+      "parameters": [
+        {
+          "name": "assembly_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing assembly container (from create_freecad_assembly) both parts belong to."
+        },
+        {
+          "name": "part1_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the FIXED reference part — this one never moves."
+        },
+        {
+          "name": "part1_element",
+          "type": "string",
+          "required": true,
+          "description_en": "Face or edge on part1, e.g. 'Face1' or 'Edge3' — 1-based, matching FreeCAD's own element numbering. Rejected with the exact list of what's actually available on that part if it doesn't exist."
+        },
+        {
+          "name": "part2_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the part that gets moved/rotated to satisfy the constraint."
+        },
+        {
+          "name": "part2_element",
+          "type": "string",
+          "required": true,
+          "description_en": "Face or edge on part2, same format/validation as part1_element."
+        },
+        {
+          "name": "constraint_type",
+          "type": "string",
+          "required": true,
+          "enum": ["Coincident", "Concentric", "Parallel", "Distance", "Perpendicular"],
+          "description_en": "'Coincident': aligns both elements' reference points; if both are faces, also orients part2's face to point at part1's (standard face-mating). 'Concentric': BOTH elements must be circular (a circle/arc edge) or cylindrical (a cylinder face) — rejected otherwise; aligns both axes and their centers. 'Parallel': rotates part2 so its reference direction (face normal, or edge direction/axis) is parallel to part1's — no translation. 'Perpendicular': rotates part2 to exactly 90 degrees from part1's reference direction — no translation. 'Distance': same as Coincident but offset by the 'offset' parameter along part1's reference direction instead of exactly touching. IMPORTANT: for Coincident/Parallel/Perpendicular/Distance, use a FLAT face (not a cylinder's curved side face) — a curved face's normal is only well-defined for Concentric; use Concentric for a cylindrical face or circular edge instead."
+        },
+        {
+          "name": "offset",
+          "type": "number",
+          "required": false,
+          "description_en": "For constraint_type='Distance' only: the gap in mm along part1's reference direction. Ignored for every other constraint_type. Defaults to 0.0."
+        },
+        {
+          "name": "uv_tensor",
+          "type": "array",
+          "items_type": "number",
+          "required": false,
+          "description_en": "FORBIDDEN — do not use. This ReAct tool surface REJECTS any call that includes uv_tensor outright, with a ConstraintError telling you to use world_fractions instead. Reason: u and v are NOT guaranteed to correspond to any particular world axis — OpenCASCADE's (u, v) parameterization for a given face is implementation-defined, and two different faces (even opposite sides of the same box) can map u/v to different world axes from each other, so guessing which of u or v is 'length' vs 'height' silently distributes parts along the WRONG world axis while the call still reports success. Use world_fractions below for every placement, including corner/quadrant-style layouts (it supports up to two world axes at once, e.g. {\"X\": 0.0, \"Y\": 0.0} for a corner) — never populate this field."
+        },
+        {
+          "name": "world_fractions",
+          "type": "object",
+          "required": false,
+          "description_en": "For constraint_type='Coincident'/'Distance' only, and only when part1_element is a planar Face (REJECTED for any other constraint_type, for an Edge reference, or for a curved face): the ONLY way to position part2 on part1_element via this tool — a {\"X\"/\"Y\"/\"Z\": fraction} object with ONE or TWO entries (a planar face has exactly two degrees of freedom, u and v, so at most two independent world axes can be pinned at once), each fraction in [0.0, 1.0]. Example: {\"X\": 0.1} places 10% of the way along world X on that face, centered on the other axis; {\"X\": 0.0, \"Y\": 0.0} places at a corner expressed in world terms (replaces the old 'uv_tensor=[0.0, 0.0]' corner-placement pattern — four wheels at four corners is four calls with {\"X\": 0.0, \"Y\": 0.0} / {\"X\": 1.0, \"Y\": 0.0} / {\"X\": 0.0, \"Y\": 1.0} / {\"X\": 1.0, \"Y\": 1.0}). The engine determines, from part1_element's own real geometry, whichever of its two parametric axes (u or v) actually points along (or against) each requested world axis, and applies that axis's fraction to it — this is the ambiguity a raw (u, v) guess cannot resolve on its own, verified to matter in practice (an earlier attempt using a raw u/v guess for 'distribute wheels longitudinally' silently placed them at the wrong world axis while every call still reported success). REJECTED outright if a requested axis doesn't align closely enough with either parametric axis of the face, or if two requested axes would resolve to the SAME parametric axis (they conflict) — call query_topology first in that case to inspect the real u_direction_vector/v_direction_vector mapping. Geometric Fit Guard and Collision Guard both still apply exactly as under the old uv_tensor parameter (padding by part2's own half-extent, rejecting placements that would collide with a sibling already in this assembly)."
+        }
+      ]
+    },
+    {
+      "id": "anchor_assembly_root",
+      "description_en": "Deterministically pins a part — typically the chassis/main body, the rigid reference every other part in the assembly gets positioned against — to the assembly's origin: resets its Placement to IDENTITY (position (0,0,0), rotation (0,0,0)) and locks it so no other placement tool can move or tilt it afterward. There is no live FreeCAD Assembly-workbench solver reachable from this headless execution model to enforce a real 'Fixed' joint constraint, so this is the deterministic Python-side substitute: once anchored, position_assembly_part, modify_freecad_parameter's Placement/Placement.Base branch, and apply_assembly_constraint (when this part is passed as part2) all REFUSE outright to move or rotate it — call anchor_assembly_root again to intentionally reset/re-lock it. The anchored part may still be used as apply_assembly_constraint's part1 (the fixed reference), since that side never moves anyway. Call this ONCE per assembly, on the main body, before positioning any other part against it, so every subsequent placement is measured from a known-rigid origin instead of an arbitrary/possibly-tilted starting Placement.",
+      "parameters": [
+        {
+          "name": "assembly_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing assembly container (from create_freecad_assembly) part_name belongs to."
+        },
+        {
+          "name": "part_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing part to anchor (e.g. 'rover_main_body'). Must already be a member of assembly_name (add_parts_to_assembly first)."
+        }
+      ]
+    },
+    {
+      "id": "define_kinematic_joint",
+      "description_en": "Declares a real parent/child kinematic joint between two members of an existing assembly (from create_freecad_assembly) — what export_assembly_to_urdf needs to build an actual articulated kinematic tree (for dynamic/RL simulation) instead of its default flat 'every part fixed to one synthetic base_link' star topology. Persisted state: a later export_assembly_to_urdf call reads back whatever was declared here. Calling this again for the same child_link REPLACES its joint definition (a link can only have one parent), so redefining a joint (change its type, move it under a different parent) is just calling this again. Both child_link and parent_link must already be members of the assembly (add_parts_to_assembly first) EXCEPT parent_link may also be the literal string 'base_link' (the default) — the synthetic root export_assembly_to_urdf always emits, meaning 'attach directly to the world' instead of to another real part. Cycle/dangling-parent validation happens at export_assembly_to_urdf time, not here, since joints are typically defined in an arbitrary order while a whole tree is still being built.",
+      "parameters": [
+        {
+          "name": "assembly_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing assembly container (from create_freecad_assembly) both links belong to."
+        },
+        {
+          "name": "child_link",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the part that becomes the joint's CHILD link — the part that moves relative to parent_link."
+        },
+        {
+          "name": "parent_link",
+          "type": "string",
+          "required": false,
+          "description_en": "Name of the part that becomes the joint's PARENT link, or the literal string 'base_link' (default) for the synthetic world root. Must already be a member of the assembly unless it's 'base_link'."
+        },
+        {
+          "name": "joint_type",
+          "type": "string",
+          "required": false,
+          "enum": ["fixed", "revolute", "continuous", "prismatic"],
+          "description_en": "'fixed' (default): rigid, no axis/limits. 'revolute': rotates about axis within limits.lower/upper (radians). 'prismatic': slides along axis within limits.lower/upper. 'continuous': unlimited rotation about axis, no limits."
+        },
+        {
+          "name": "axis",
+          "type": "array",
+          "required": false,
+          "description_en": "[x, y, z] rotation/translation axis for revolute/continuous/prismatic joints, e.g. [0, 0, 1] for Z-axis rotation. Ignored for 'fixed'. Defaults to [0, 0, 1]."
+        },
+        {
+          "name": "joint_name",
+          "type": "string",
+          "required": false,
+          "description_en": "Name for the URDF <joint> element. Defaults to '<parent_link>_to_<child_link>'."
+        },
+        {
+          "name": "limits",
+          "type": "object",
+          "required": false,
+          "description_en": "{\"lower\": number, \"upper\": number, \"effort\": number, \"velocity\": number} — joint limits for 'revolute'/'prismatic' joints (lower/upper in radians for revolute, mm for prismatic). Ignored for 'fixed'/'continuous'. Any field omitted falls back to a generic placeholder at export time — pass real actuator numbers when known."
+        }
+      ]
+    },
+    {
+      "id": "validate_assembly_collisions",
+      "read_only": true,
+      "description_en": "Volumetric Validation Gate: a whole-assembly, TRUE solid-intersection audit — every member pair's real geometric overlap via FreeCAD's native boolean intersection (Volume of Shape.common(...)), NOT a bounding-box overlap like analyze_bounding_box_collisions (a wheel whose bounding box merely brushes the chassis's but whose actual curved geometry doesn't touch it reports no collision here, while a wheel whose axle genuinely clips through the chassis body IS caught, even if the mating constraint that placed it looked perfectly valid — uv_tensor and the Geometric Fit Guard only ever reason about one face's 2D footprint, never the full 3D solid). Read-only — does not modify anything, no HITL approval needed. Call this ONCE, explicitly, as a final QA pass after every part in the assembly has been positioned, BEFORE export_assembly_to_urdf — it is deliberately NOT wired into every apply_assembly_constraint/position_assembly_part call, since a volumetric check is comparatively expensive and gives no actionable direction to correct from, unlike the Fit Guard's 'resize or pick another face'.",
+      "parameters": [
+        {
+          "name": "assembly_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing assembly container (from create_freecad_assembly) to audit."
+        }
+      ]
+    },
+    {
+      "id": "export_assembly_to_urdf",
+      "description_en": "CAD-to-robotics bridge: exports assembly_name (a create_freecad_assembly container) into a .urdf robot description for ROS2/Gazebo/Isaac Sim/dynamic RL simulation. Every member part becomes a URDF link with real physics, not just visuals: its own real geometry (tessellated to its own meshes/<name>.stl, reused for both <visual> and <collision>) plus a computed <inertial> block — mass, center-of-mass, and inertia tensor derived from that part's own FreeCAD Shape (volume x density_kg_m3). Each link is jointed onto whatever parent a prior define_kinematic_joint call declared for it (real revolute/continuous/prismatic joints with axis/limits included), building an actual articulated kinematic tree — a part no one ever called define_kinematic_joint on falls back to the original flat 'fixed onto one synthetic base_link' star topology, so this remains fully backward compatible. Fails with a clear error if the assembly doesn't exist, has no parts, or its declared joints contain an unknown/dangling parent reference or a cycle.",
+      "parameters": [
+        {
+          "name": "assembly_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing assembly container (from create_freecad_assembly) to export."
+        },
+        {
+          "name": "export_directory",
+          "type": "string",
+          "required": false,
+          "description_en": "Absolute directory to write the .urdf file and its meshes/ subdirectory into. Defaults to a '<assembly_name>_urdf' folder under this session's own output directory."
+        },
+        {
+          "name": "density_kg_m3",
+          "type": "number",
+          "required": false,
+          "description_en": "Material density (kg/m^3) used to derive each part's mass and inertia tensor from its real Shape volume. Defaults to aluminum (2700); pass ~1250 for PLA, or the real material's density if known."
+        }
+      ]
+    },
+    {
+      "id": "generate_simulation_wrapper",
+      "description_en": "RL Pipeline bridge: writes a standalone Python simulation-loader script that loads a previously-exported .urdf (from export_assembly_to_urdf/generate_urdf_assembly) into a physics simulator, so a caller doesn't have to hand-write the loader boilerplate. For target_platform='isaac_sim': a standalone Isaac Sim script that boots SimulationApp, imports the URDF via the URDF importer extension, spawns it at the origin on a ground plane, and wraps it in a minimal Gym-style RL environment class with empty reset()/step() stubs operating on PyTorch tensors (reward/termination logic is left as TODOs — that's task-specific modeling only the caller can do). For 'gazebo': a ROS2 Python launch file that starts robot_state_publisher plus Gazebo (gazebo_ros's gazebo.launch.py) and spawns the robot into it via spawn_entity.py. For 'ros2': the same launch file shape with no Gazebo dependency — just robot_state_publisher/joint_state_publisher (e.g. for RViz2 visualization or a ros2_control-driven simulator). Fails with a clear error if urdf_path doesn't resolve to a real file (same hallucinated-path guard generate_urdf_assembly's own mesh_path uses) rather than emitting a script that would immediately fail when run. Returns the written file's path plus exact run instructions for the chosen platform.",
+      "parameters": [
+        {
+          "name": "assembly_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the assembly this wrapper is for — used as the output filename's stem and the robot class name fallback (if the URDF's own <robot name=...> can't be parsed). Purely a label; the actual geometry/kinematics all come from urdf_path."
+        },
+        {
+          "name": "target_platform",
+          "type": "string",
+          "required": true,
+          "enum": ["isaac_sim", "gazebo", "ros2"],
+          "description_en": "Which simulator/framework to generate a loader for. 'isaac_sim': standalone Omniverse Isaac Sim Python script. 'gazebo': ROS2 launch file that also starts Gazebo and spawns the robot into it. 'ros2': ROS2 launch file with robot_state_publisher/joint_state_publisher only, no Gazebo."
+        },
+        {
+          "name": "urdf_path",
+          "type": "string",
+          "required": true,
+          "description_en": "Path to a previously-exported .urdf file (from export_assembly_to_urdf or generate_urdf_assembly). Resolved against a few likely locations if given as a bare filename; rejected with a clear error if it doesn't exist."
+        },
+        {
+          "name": "output_path",
+          "type": "string",
+          "required": false,
+          "description_en": "Where to write the generated Python file. Defaults to '<assembly_name>_<target_platform>_sim.py' written next to the resolved urdf_path."
         }
       ]
     },
@@ -2327,7 +2977,7 @@
     },
     {
       "id": "create_assembly_mate",
-      "description_en": "Positions one existing object (moving_obj) relative to another (fixed_obj) as a named kinematic mate, expressing a true assembly relationship rather than a bounding-box snap. Prefer this over align_freecad_objects once you're building a real multi-part assembly (e.g. mating a shaft concentric inside a bearing bore, or a plate flush on a boss).",
+      "description_en": "Positions one existing object (moving_obj) relative to another (fixed_obj) as a named kinematic mate, expressing a true assembly relationship rather than a bounding-box snap. Prefer this over align_freecad_objects once you're building a real multi-part assembly (e.g. mating a shaft concentric inside a bearing bore, or a plate flush on a boss). Refuses outright if moving_obj was anchored via anchor_assembly_root.",
       "parameters": [
         {
           "name": "fixed_obj",
@@ -2579,11 +3229,11 @@
               "type": "array",
               "items_type": "string",
               "required": false,
-              "description_en": "The EXACT tool_id(s) you intend to call to complete THIS task (e.g. ['create_freecad_cylinder'], or ['perform_freecad_boolean'] for a cut step). You have the real semantic context for what each task needs — declare it explicitly rather than leaving it for a guess. Omit only for a task with no single fixed tool (a pure visual inspection/adjustment step)."
+              "description_en": "The EXACT tool_id(s) you intend to call to complete THIS task — copy the id character-for-character from this list, never invent or guess a name (e.g. 'freecad_create_sketch' and 'create_sketch' are NOT real tool_ids and will be silently dropped from your plan). The real FreeCAD tool_ids are: create_freecad_box, create_freecad_cylinder, create_freecad_sketch, create_freecad_pad, create_freecad_pocket, create_freecad_sweep, create_freecad_polar_pattern, create_freecad_assembly, add_parts_to_assembly, position_assembly_part, create_freecad_helix, perform_freecad_boolean, perform_freecad_edge_operation, modify_freecad_parameter, get_freecad_bounding_box, export_freecad_model, insert_standard_part, import_and_solidify_mesh. Assembly tasks need MULTIPLE of these: creating the container (create_freecad_assembly) does NOT add parts to it or position them — declare add_parts_to_assembly and/or position_assembly_part too for a task that groups and places parts, or that work will silently never happen. You have the real semantic context for what each task needs — declare it explicitly rather than leaving it for a guess. Omit only for a task with no single fixed tool (a pure visual inspection/adjustment step)."
             }
           ],
           "required": true,
-          "description_en": "The ordered checklist of steps. One object per step, in the exact order they must happen, e.g. [{'description': 'Create the base box', 'expected_tools': ['create_freecad_box']}, {'description': 'Create the mounting cylinder', 'expected_tools': ['create_freecad_cylinder']}, {'description': 'Cut the cylinder from the box', 'expected_tools': ['perform_freecad_boolean']}, {'description': 'Export the final model as STEP', 'expected_tools': ['export_freecad_model']}]. IDs are assigned automatically by position — do not include numbers yourself."
+          "description_en": "The ordered checklist of steps. One object per step, in the exact order they must happen, e.g. [{'description': 'Create the base box', 'expected_tools': ['create_freecad_box']}, {'description': 'Create the mounting cylinder', 'expected_tools': ['create_freecad_cylinder']}, {'description': 'Cut the cylinder from the box', 'expected_tools': ['perform_freecad_boolean']}, {'description': 'Export the final model as STEP', 'expected_tools': ['export_freecad_model']}]. IDs are assigned automatically by position — do not include numbers yourself. CRITICAL: You must atomize geometry. Do not group multiple objects (e.g., 3 coils) into a single task. Create a separate task for each individual object — e.g. 'Create the first coil', 'Create the second coil', 'Create the third coil' as three distinct entries, never one 'Create the three coils' entry, since each task can only auto-advance once its own declared tool is dispatched ONE time. This also applies to assembly steps: creating a container, adding parts to it, and positioning those parts are three DIFFERENT operations (create_freecad_assembly, add_parts_to_assembly, position_assembly_part) — either declare all of them as this ONE task's expected_tools (it only auto-advances once EVERY declared tool has been dispatched at least once), or split them into separate tasks. Never write one task like 'Group the parts into an assembly and position them' and declare only create_freecad_assembly for it — the container would be created but the parts inside it never actually added or moved."
         }
       ]
     },
@@ -2615,7 +3265,7 @@
     {
       "id": "mark_task_completed",
       "read_only": true,
-      "description_en": "Marks a task complete — ONLY once its create_/modify_ tool already returned ok:true; never mark done before actually building it.",
+      "description_en": "Marks a task complete — ONLY once its create_/modify_ tool already returned ok:true; never mark done before actually building it. Evidence-Based Task Completion: created_feature_names is checked against what actually exists in the FreeCAD document — a name that isn't there gets this call rejected, not silently accepted.",
       "parameters": [
         {
           "name": "task_id",
@@ -2624,10 +3274,81 @@
           "description_en": "The id of the task that is now complete (see the '## Current Active Plan' block in your own system prompt for the current ids)."
         },
         {
+          "name": "created_feature_names",
+          "type": "array",
+          "items_type": "string",
+          "required": true,
+          "description_en": "You must provide the exact names of the FreeCAD features you created or modified to fulfill this task, exactly as returned in each tool result's own \"name\" field (FreeCAD may have renamed one, e.g. \"Pocket001\" instead of \"Pocket\", if that name already existed — use the name it actually reported back, not the one you requested). If the task involved creating a pocket and a sweep, list them, e.g. [\"Pocket\", \"Sweep\"]. If no features were created or modified (e.g. this task was just an export, or a pure inspection step), pass [\"none\"] — every name listed here is verified against the live document, and a name that doesn't exist gets this call rejected."
+        },
+        {
           "name": "next_task_id",
           "type": "integer",
           "required": false,
           "description_en": "The id of the task to promote to active next, if you already know which one that is."
+        }
+      ]
+    },
+    {
+      "id": "insert_task",
+      "read_only": true,
+      "description_en": "Dynamic FSM Replanning: inserts ONE new task into your active plan when you discover mid-execution that a step is missing (e.g. you forgot to pocket before patterning, or a part needs positioning before its kinematic joint is defined). Use this instead of doing the missing work under the wrong task's name — that leaves your plan's own record out of sync with what you actually built. Give EXACTLY ONE of insert_after_task_id/insert_before_task_id. insert_before_task_id targeting the CURRENTLY ACTIVE task is FSM Recovery / Prerequisite Insertion: the new task is promoted straight to active and the previously-active task is safely demoted back to pending right after it — the one legal way to insert a prerequisite once the FSM has already moved past where it belonged (insert_after_task_id alone cannot reach 'before the active task', since the task before it is already completed history). Limited: at most 3 insert_task/cancel_pending_task/cancel_active_task calls total per plan.",
+      "parameters": [
+        {
+          "name": "description",
+          "type": "string",
+          "required": true,
+          "description_en": "Short plain-text description of the missing step, e.g. 'Position wheel_2 at the right side face of the main body before its kinematic joint is defined.'"
+        },
+        {
+          "name": "insert_after_task_id",
+          "type": "integer",
+          "required": false,
+          "description_en": "The id of the existing task this new one goes right after (see '## Current Active Plan' for current ids). Must not be a task already marked completed — you cannot insert into finished history, only into what's still open. Mutually exclusive with insert_before_task_id — give exactly one."
+        },
+        {
+          "name": "insert_before_task_id",
+          "type": "integer",
+          "required": false,
+          "description_en": "The id of the existing task this new one goes right before. If that task is the CURRENTLY ACTIVE one, it is demoted back to pending and this new task becomes active immediately instead — use this to insert a prerequisite the FSM already walked past. If that task is merely pending, this just splices the new task ahead of it, no promotion involved. Cannot target an already-completed or cancelled task. Mutually exclusive with insert_after_task_id — give exactly one."
+        },
+        {
+          "name": "expected_tools",
+          "type": "array",
+          "items_type": "string",
+          "required": false,
+          "description_en": "Same meaning as create_plan's own expected_tools: the exact tool_id(s) you intend to call for this new task. Omit only if this step has no single fixed tool."
+        }
+      ]
+    },
+    {
+      "id": "cancel_pending_task",
+      "read_only": true,
+      "description_en": "Dynamic FSM Replanning: cancels a task you have NOT started yet and NEVER need — e.g. you realize two remaining tasks are redundant, or the objective changed. Cannot cancel the task currently active (use cancel_active_task for that instead) or one already completed (that's history, not something to remove). Limited: at most 3 insert_task/cancel_pending_task/cancel_active_task calls total per plan.",
+      "parameters": [
+        {
+          "name": "task_id_to_cancel",
+          "type": "integer",
+          "required": true,
+          "description_en": "The id of the still-pending (not started, not active) task to cancel."
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "required": true,
+          "description_en": "Short plain-text reason this task is no longer needed."
+        }
+      ]
+    },
+    {
+      "id": "cancel_active_task",
+      "read_only": true,
+      "description_en": "FSM Recovery: cancels the task you are CURRENTLY ACTIVE on outright, when that task itself turns out to be wrong, redundant, or impossible — not just missing a prerequisite before it (for that, use insert_task with insert_before_task_id instead, which keeps the active task and only delays it). cancel_pending_task cannot touch the active task; this is the dedicated tool for that case. The lowest-id still-pending task (if any) is auto-promoted to active immediately after; with nothing pending left, no task is active and you should insert_task/create_plan to continue. Limited: at most 3 insert_task/cancel_pending_task/cancel_active_task calls total per plan.",
+      "parameters": [
+        {
+          "name": "reason",
+          "type": "string",
+          "required": true,
+          "description_en": "Short plain-text reason the currently active task is no longer needed as scheduled."
         }
       ]
     },
@@ -2881,7 +3602,7 @@
     },
     {
       "id": "generate_urdf_assembly",
-      "description_en": "Assembles previously-generated CAD parts (.stl mesh artifacts from create_freecad_*/export operations) into a single kinematic URDF (Unified Robot Description Format) robot model — the universal interchange hub for ROS2, Gazebo, and Isaac Sim. Each part becomes a URDF link (optionally carrying its mesh as visual+collision geometry); each connection between two links becomes a URDF joint (fixed, revolute, or continuous). Saves '<robot_name>.urdf' to the workspace.",
+      "description_en": "Assembles previously-generated CAD parts (.stl mesh artifacts from create_freecad_*/export operations) into a single kinematic URDF (Unified Robot Description Format) robot model — the universal interchange hub for ROS2, Gazebo, and Isaac Sim. Each part becomes a URDF link (optionally carrying its mesh as visual+collision geometry); each connection between two links becomes a URDF joint (fixed, revolute, continuous, or prismatic). Saves '<robot_name>.urdf' to the workspace.",
       "parameters": [
         {
           "name": "robot_name",
@@ -2899,7 +3620,7 @@
           "name": "joints",
           "type": "array",
           "required": true,
-          "description_en": "Ordered list of joint objects connecting two links, each: {\"name\": optional str, \"parent\": str link name, \"child\": str link name, \"type\": \"fixed\"|\"revolute\"|\"continuous\", \"origin_xyz\": optional [x, y, z] — the child frame's offset from the parent, \"axis\": optional [x, y, z] — the rotation axis for revolute/continuous joints, defaults to [0, 0, 1]}."
+          "description_en": "Ordered list of joint objects connecting two links, each: {\"name\": optional str, \"parent\": str link name, \"child\": str link name, \"type\": \"fixed\"|\"revolute\"|\"continuous\"|\"prismatic\", \"origin_xyz\": optional [x, y, z] — the child frame's offset from the parent, \"axis\": optional [x, y, z] — the rotation/translation axis for revolute/continuous/prismatic joints, defaults to [0, 0, 1], \"limit_lower\"/\"limit_upper\"/\"limit_effort\"/\"limit_velocity\": optional floats for revolute/prismatic joints, default to generic placeholders if omitted}."
         }
       ]
     },

@@ -76,18 +76,28 @@ class BaseCADEngine(ABC):
 
     @abstractmethod
     def apply_boolean(
-        self, operation: str, base_object: str, tool_object: str, name: str | None = None
+        self,
+        operation: str,
+        base_object: str | None = None,
+        tool_object: str | None = None,
+        name: str | None = None,
+        objects: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Combine two previously-created solids with a Boolean operation:
-        ``"cut"`` subtracts the tool from the base, ``"union"`` fuses them,
-        ``"intersect"`` keeps only their overlapping volume. ``base_object``/
-        ``tool_object`` are the exact object NAMES returned by
-        ``create_box``/``create_cylinder``/``insert_standard_part`` (or a
-        prior ``apply_boolean``) — resolved by name against this driver's own
+        """Combine previously-created solids with a Boolean operation:
+        ``"cut"`` subtracts the tool from the base (always exactly
+        ``base_object``/``tool_object`` — a cut has no N-ary equivalent),
+        ``"union"`` fuses every given shape into one, ``"intersect"`` keeps
+        only their overlapping volume. ``base_object``/``tool_object`` are
+        the exact object NAMES returned by ``create_box``/
+        ``create_cylinder``/``insert_standard_part`` (or a prior
+        ``apply_boolean``) — resolved by name against this driver's own
         shared session state, not a file path (every session-scoped creation
         call shares one underlying document/session, so a path alone can no
-        longer tell two objects apart). Returns a result dict including
-        ``{"ok": bool, "path": str, "name": str}``."""
+        longer tell two objects apart). ``objects`` (2+ names), when given
+        INSTEAD of ``base_object``/``tool_object``, fuses/intersects every
+        one of them in a single call — valid only for ``"union"``/
+        ``"intersect"``. Returns a result dict including ``{"ok": bool,
+        "path": str, "name": str}``."""
 
     @abstractmethod
     def apply_edge_operation(
@@ -173,7 +183,13 @@ class BaseCADEngine(ABC):
 
     @abstractmethod
     def modify_parameter(
-        self, target_object: str, parameter_name: str, new_value: float | Sequence[float]
+        self,
+        target_object: str,
+        parameter_name: str,
+        new_value: float | Sequence[float],
+        yaw: float | None = None,
+        pitch: float | None = None,
+        roll: float | None = None,
     ) -> dict[str, Any]:
         """Change a single dimensional property (e.g. ``"Height"``,
         ``"Radius"``) on a previously-created object, by NAME, in place —
@@ -181,9 +197,13 @@ class BaseCADEngine(ABC):
         than creating a new one. ``parameter_name`` of ``"Placement"``/
         ``"Placement.Base"`` is special: ``new_value`` must then be a
         3-number ``[x, y, z]`` vector (mm), applied to the object's
-        ``Placement.Base`` while its ``Placement.Rotation`` is preserved.
-        Returns a result dict including ``{"ok": bool, "path": str,
-        "name": str}``."""
+        ``Placement.Base``. Rotation is NEVER packed into ``new_value`` —
+        it's set via the separate ``yaw``/``pitch``/``roll`` DEGREES
+        parameters instead: all three omitted preserves the object's
+        current ``Placement.Rotation``; any one given replaces the whole
+        rotation with a fresh ``FreeCAD.Rotation(yaw, pitch, roll)``
+        (omitted axes default to 0.0). Returns a result dict including
+        ``{"ok": bool, "path": str, "name": str}``."""
 
     @abstractmethod
     def get_bounding_box(self, target_path: str, target_object: str | None = None) -> dict[str, Any]:
@@ -210,6 +230,22 @@ class BaseCADEngine(ABC):
         "vertex_count": int}``."""
 
     @abstractmethod
+    def query_topology(self, part_name: str) -> dict[str, Any]:
+        """Read-only: per-face topology of a previously-created object,
+        resolved by NAME against this driver's own shared session state —
+        for every face on ``part_name``'s ``Shape``: its 1-based face index
+        (e.g. ``"Face3"``, matching ``apply_assembly_constraint``'s own
+        ``part1_element``/``part2_element`` numbering), area, whether it's
+        planar, surface type, centroid, and normal (``None``, with an
+        explanatory ``normal_warning``, for any curved face — a face's
+        normal is only a single well-defined vector when it's planar).
+        Never mutates anything. Intended as a "look before you leap" query
+        ahead of ``apply_assembly_constraint`` — see the real engine's own
+        docstring for the exact contract. Returns a result dict including
+        ``{"ok": bool, "part_name": str, "path": str, "face_count": int,
+        "faces": [...]}``."""
+
+    @abstractmethod
     def create_pipe(
         self,
         pipe_radius: float,
@@ -224,6 +260,27 @@ class BaseCADEngine(ABC):
         straight line; ``path_type="arc"`` sweeps ``length_or_angle``
         degrees along a circular arc (a curved elbow). Same result shape
         as ``create_box``."""
+
+    @abstractmethod
+    def create_helix(
+        self,
+        coil_radius: float,
+        pitch: float,
+        height: float,
+        pipe_radius: float,
+        name: str = "Helix",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        angle_offset: float = 0.0,
+    ) -> dict[str, Any]:
+        """Sweep a circular profile (``pipe_radius`` mm cross-section) along
+        a cylindrical helical spine (``coil_radius`` mm coil radius,
+        ``pitch`` mm rise per turn, ``height`` mm total vertical extent)
+        into a solid coil tube, translated by ``placement`` (global X/Y/Z
+        offset in mm) and rotated ``angle_offset`` degrees about the global
+        Z axis — lets several coils share one central hub without
+        interpenetrating (e.g. three coils at 0/120/240 degrees). Number of
+        turns is implied (``height / pitch``), not a separate parameter.
+        Same result shape as ``create_pipe``."""
 
     @abstractmethod
     def align_objects(
@@ -300,6 +357,308 @@ class BaseCADEngine(ABC):
         solid — a higher-leverage primitive than ``create_extrusion`` for
         profiles with rounded/arc edges a straight-edged polyline can't
         express. Same result shape as ``create_box``."""
+
+    @abstractmethod
+    def create_sketch(
+        self,
+        name: str,
+        plane: str,
+        geometry: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Create a real, constrainable ``Sketcher::SketchObject`` mapped onto
+        one of the three standard base planes (``"XY"``/``"XZ"``/``"YZ"``),
+        from an ordered list of raw 2D geometry elements — each ``{"type":
+        "line", "start": [x, y], "end": [x, y]}`` / ``{"type": "circle",
+        "center": [x, y], "radius": r}`` / ``{"type": "arc", "center":
+        [x, y], "radius": r, "start_angle": deg, "end_angle": deg}``. List
+        position ``i`` becomes that sketch's ``Geometry[i]`` — the exact
+        0-based index ``apply_sketch_constraint``'s ``geometry_indices``
+        reference. Unlike ``create_sketch_extrude``, this never extrudes —
+        the sketch stays a live parametric object a later
+        ``apply_sketch_constraint`` call can lock down. Same result shape as
+        ``create_box``."""
+
+    @abstractmethod
+    def apply_sketch_constraint(
+        self,
+        sketch_name: str,
+        constraint_type: str,
+        geometry_indices: list[int],
+        value: float | None = None,
+    ) -> dict[str, Any]:
+        """Lock down a previously-created sketch's raw geometry with a real
+        ``Sketcher::Constraint``, resolved by NAME — same by-name story as
+        ``apply_boolean``/``modify_parameter``. ``geometry_indices`` are
+        0-based positions into the target sketch's own ``Geometry`` list:
+        ``"Coincident"`` needs exactly 4 ints ``[geoId1, posId1, geoId2,
+        posId2]`` (``posId`` 1=start, 2=end, 3=center); ``"Horizontal"``/
+        ``"Vertical"`` need exactly 1 int ``[geoId]``; ``"Distance"``/
+        ``"Radius"`` need exactly 1 int ``[geoId]`` plus a required
+        ``value`` (edge length / circle-arc radius, in mm). Returns a
+        result dict including ``{"ok": bool, "path": str, "name": str}``."""
+
+    @abstractmethod
+    def create_pad(
+        self,
+        sketch_name: str,
+        length: float,
+        symmetric_to_plane: bool = False,
+        reversed_direction: bool = False,
+    ) -> dict[str, Any]:
+        """Extrude a previously-created ``create_sketch`` profile into a real
+        ``PartDesign::Pad`` solid, resolved by NAME — same by-name story as
+        ``apply_boolean``/``modify_parameter``. Ensures PartDesign
+        containment itself: if the sketch isn't already inside a
+        ``PartDesign::Body``, one is created (or an existing one reused) and
+        the sketch is moved into it before the Pad is applied.
+        ``symmetric_to_plane`` extrudes evenly on both sides of the sketch
+        plane (``Midplane``) instead of only forward from it;
+        ``reversed_direction`` flips which side a non-symmetric extrusion
+        grows into (``Reversed``). Same result shape as ``create_box``."""
+
+    @abstractmethod
+    def create_pocket(
+        self,
+        sketch_name: str,
+        depth: float,
+        through_all: bool = False,
+        symmetric_to_plane: bool = False,
+        reversed_direction: bool = False,
+    ) -> dict[str, Any]:
+        """Subtract material from the active ``PartDesign::Body``'s existing
+        solid using a previously-created ``create_sketch`` profile, via a
+        real ``PartDesign::Pocket`` — same by-name/containment story as
+        ``create_pad``. Requires the body to already have some solid to cut
+        into. ``through_all`` cuts all the way through regardless of
+        ``depth``; otherwise the cut goes exactly ``depth`` mm deep.
+        ``symmetric_to_plane``/``reversed_direction`` mirror ``create_pad``'s
+        own ``Midplane``/``Reversed`` semantics. Same result shape as
+        ``create_box``."""
+
+    @abstractmethod
+    def create_polar_pattern(
+        self,
+        feature_name: str,
+        occurrences: int,
+        angle: float = 360.0,
+        axis: str = "Z",
+        reversed_direction: bool = False,
+    ) -> dict[str, Any]:
+        """Repeat a previously-created ``create_pad``/``create_pocket`` 3D
+        feature evenly around one of its own ``PartDesign::Body``'s
+        principal axes (``"X"``/``"Y"``/``"Z"``), via a real
+        ``PartDesign::PolarPattern``, resolved by NAME — same by-name story
+        as ``apply_boolean``/``modify_parameter``. ``feature_name`` must
+        already be a 3D feature inside a body (never a bare ``create_sketch``
+        profile). ``occurrences`` (>= 2) is the TOTAL copy count including
+        the original; ``angle`` is the total angular span those copies are
+        spread across, in degrees; ``reversed_direction`` spreads them in
+        the opposite rotational direction. Same result shape as
+        ``create_box``."""
+
+    @abstractmethod
+    def create_linear_pattern(
+        self,
+        feature_name: str,
+        occurrences: int,
+        length: float,
+        direction: str = "X",
+        reversed_direction: bool = False,
+    ) -> dict[str, Any]:
+        """Repeat a previously-created ``create_pad``/``create_pocket`` 3D
+        feature evenly along one of its own ``PartDesign::Body``'s principal
+        axes (``"X"``/``"Y"``/``"Z"``), via a real
+        ``PartDesign::LinearPattern`` — same by-name/containment story as
+        ``create_polar_pattern``. ``occurrences`` (>= 2) is the TOTAL copy
+        count including the original; ``length`` is the total span those
+        copies are spread across, in mm, from the first copy to the last;
+        ``reversed_direction`` spreads them in the opposite direction along
+        the axis. Same result shape as ``create_box``."""
+
+    @abstractmethod
+    def create_sweep(self, profile_sketch: str, path_sketch: str, frenet: bool = True) -> dict[str, Any]:
+        """Sweep a previously-created ``create_sketch`` profile along
+        another ``create_sketch`` path into a real solid, via a real
+        ``PartDesign::AdditivePipe``, resolved by NAME — same by-name story
+        as ``apply_boolean``/``modify_parameter``. Both sketches must
+        already exist; neither needs to already be inside a
+        ``PartDesign::Body`` — one is found/created and BOTH are moved into
+        it before the sweep is applied. ``frenet``, when true, makes the
+        profile's orientation follow the path's own Frenet frame instead of
+        keeping a fixed orientation throughout. Same result shape as
+        ``create_box``."""
+
+    @abstractmethod
+    def create_loft(
+        self,
+        cross_section_sketches: list[str],
+        ruled: bool = False,
+        closed: bool = False,
+    ) -> dict[str, Any]:
+        """Blend a smooth solid through an ORDERED list of 2+ previously-
+        created ``create_sketch`` cross-sections, via a real
+        ``PartDesign::AdditiveLoft`` — same by-name/containment story as
+        ``create_sweep``. The first entry becomes the feature's own
+        ``Profile``; every other entry becomes an additional ``Sections``
+        cross-section, blended through in list order. ``ruled``, when true,
+        connects consecutive cross-sections with straight ruled surfaces
+        instead of a smooth blend; ``closed``, when true, loops the loft
+        back from the last cross-section to the first. Same result shape as
+        ``create_box``."""
+
+    @abstractmethod
+    def create_assembly(self, name: str) -> dict[str, Any]:
+        """Create a real ``App::Part`` assembly container — a plain
+        organizational grouping object with no geometry of its own, used to
+        gather independent ``PartDesign::Body`` instances into one
+        positioned sub-assembly via ``add_parts_to_assembly``/
+        ``position_assembly_part``. Returns a result dict including at
+        least ``{"ok": bool, "path": str, "name": str}`` — no
+        ``bounding_box``, since an ``App::Part`` has no ``Shape`` of its
+        own."""
+
+    @abstractmethod
+    def add_parts_to_assembly(self, assembly_name: str, part_names: list[str]) -> dict[str, Any]:
+        """Move the named parts (typically ``PartDesign::Body`` instances)
+        into a previously-created ``create_assembly`` container, resolved
+        by NAME — same by-name story as ``apply_boolean``/
+        ``modify_parameter``. A part already in the assembly is silently
+        left alone rather than re-added. Same result shape as
+        ``create_assembly``."""
+
+    @abstractmethod
+    def position_assembly_part(
+        self,
+        part_name: str,
+        placement_x: float = 0.0,
+        placement_y: float = 0.0,
+        placement_z: float = 0.0,
+        yaw: float = 0.0,
+        pitch: float = 0.0,
+        roll: float = 0.0,
+    ) -> dict[str, Any]:
+        """Move and/or orient a previously-created part (typically a
+        ``PartDesign::Body`` inside a ``create_assembly`` container, but
+        works on any named object) by REPLACING its whole ``Placement``,
+        resolved by NAME — same by-name story as ``apply_boolean``/
+        ``modify_parameter``. ``(placement_x, placement_y, placement_z)``
+        is the new position in mm; ``(yaw, pitch, roll)`` is a fresh Euler
+        rotation in DEGREES, replacing any prior rotation rather than
+        composing with it. Same result shape as ``create_assembly``."""
+
+    @abstractmethod
+    def apply_assembly_constraint(
+        self,
+        assembly_name: str,
+        part1_name: str,
+        part1_element: str,
+        part2_name: str,
+        part2_element: str,
+        constraint_type: str,
+        offset: float = 0.0,
+        uv_tensor: Sequence[float] | None = None,
+        world_fractions: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        """Move ``part2_name`` so ``part2_element`` (a ``Face``/``Edge``
+        reference, e.g. ``"Face1"``) satisfies ``constraint_type``
+        (``"Coincident"``/``"Concentric"``/``"Parallel"``/``"Perpendicular"``/
+        ``"Distance"``) against ``part1_name``'s ``part1_element`` — a
+        ONE-SHOT geometric Placement computed from each element's real
+        BRep geometry, not a live re-solvable constraint (see
+        ``dana.plugins.freecad.engine.apply_assembly_constraint``'s own
+        docstring for exactly why the native Assembly workbench's real
+        joints aren't reachable from this headless execution model). Both
+        parts must already be members of ``assembly_name``.
+
+        ``uv_tensor`` (Continuous Parametric UV Placement, Coincident/
+        Distance + a Face ``part1_element`` only): an optional ``[u, v]``
+        pair, each in ``[0.0, 1.0]`` — shifts the target from that face's
+        center (the default, ``[0.5, 0.5]``) to any continuous point on it,
+        deterministically resolved against that face's own real (u, v)
+        range — see the real engine's own docstring for the exact
+        contract.
+
+        ``world_fractions`` (same Coincident/Distance + Face restriction,
+        mutually exclusive with ``uv_tensor``): a ``{"X"/"Y"/"Z": fraction}``
+        dict resolving which of the face's own ``u``/``v`` axes actually
+        points along each given world-space direction, instead of the
+        caller guessing — see the real engine's own docstring for the
+        exact contract."""
+
+    @abstractmethod
+    def anchor_assembly_root(self, assembly_name: str, part_name: str) -> dict[str, Any]:
+        """Deterministically pins ``part_name`` (already a member of
+        ``assembly_name``) to the assembly's origin: resets its
+        ``Placement`` to IDENTITY (position and rotation both zero) and
+        marks it ``DanaAnchored``, which every placement-mutating tool
+        here (``position_assembly_part``, ``modify_freecad_parameter``'s
+        ``Placement``/``Placement.Base`` branch, ``apply_assembly_constraint``
+        when this part is passed as ``part2``) then refuses to move or
+        rotate — see the real engine's own docstring for exactly why this
+        is the deterministic substitute for a real FreeCAD "Fixed" joint
+        constraint."""
+
+    @abstractmethod
+    def define_kinematic_joint(
+        self,
+        assembly_name: str,
+        child_link: str,
+        parent_link: str = "base_link",
+        joint_type: str = "fixed",
+        axis: Sequence[float] = (0.0, 0.0, 1.0),
+        joint_name: str | None = None,
+        limit_lower: float | None = None,
+        limit_upper: float | None = None,
+        limit_effort: float | None = None,
+        limit_velocity: float | None = None,
+    ) -> dict[str, Any]:
+        """Declares a real parent/child kinematic joint between two
+        members of ``assembly_name`` — persisted state a later
+        ``export_assembly_to_urdf`` call reads back to build an actual
+        kinematic TREE instead of a flat "every part fixed to base_link"
+        star (``parent_link`` may also be the literal ``"base_link"``, the
+        synthetic root, meaning "attach to the world" — see
+        ``dana.plugins.freecad.engine.define_kinematic_joint``'s own
+        docstring for exactly how/where this is stored and why redefining
+        the same ``child_link`` replaces its prior joint). ``joint_type``:
+        ``"fixed"``, ``"revolute"``/``"prismatic"`` (need ``axis``, and
+        accept ``limit_lower``/``limit_upper``/``limit_effort``/
+        ``limit_velocity``), or ``"continuous"`` (unlimited rotation about
+        ``axis``, no limit)."""
+
+    @abstractmethod
+    def validate_assembly_collisions(self, assembly_name: str) -> dict[str, Any]:
+        """Volumetric Validation Gate: TRUE solid-intersection audit (via
+        real boolean intersection, not a bounding-box overlap) across every
+        pair of ``assembly_name``'s members — see the real engine's own
+        docstring for exactly why this is a distinct, whole-assembly,
+        called-once-before-export check rather than real-time coordinate
+        feedback. Returns ``collisions`` (a list of ``{"part_a", "part_b",
+        "overlap_volume"}`` dicts) and ``has_collisions``/
+        ``checked_members`` alongside it."""
+
+    @abstractmethod
+    def export_assembly_to_urdf(
+        self,
+        assembly_name: str,
+        export_directory: str | None = None,
+        density_kg_m3: float | None = None,
+    ) -> dict[str, Any]:
+        """Export ``assembly_name`` (a real ``create_assembly`` container)
+        into a ``.urdf`` robot description — each member becomes a link
+        (its own ``.stl`` under ``meshes/``, reused as both ``<visual>``
+        and ``<collision>``) jointed onto whatever parent a prior
+        ``define_kinematic_joint`` call declared for it (or the synthetic
+        ``base_link`` root by default, for a flat "star" topology, same as
+        before ``define_kinematic_joint`` existed), at that member's real
+        Placement RELATIVE TO THAT PARENT, and carries a real
+        ``<inertial>`` block (mass/center-of-mass/inertia tensor from that
+        member's own Shape volume times ``density_kg_m3``) — see
+        ``dana.plugins.freecad.engine.export_assembly_to_urdf``'s own
+        docstring. ``export_directory`` defaults to a
+        ``<assembly_name>_urdf`` folder under this session's own output
+        directory. ``density_kg_m3`` defaults to aluminum (see that same
+        docstring)."""
 
     @abstractmethod
     def create_feature_on_face(

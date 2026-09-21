@@ -432,3 +432,249 @@ def test_feature_on_face_composite_rectangle_uses_width_and_length():
     assert "_hl_1 = 3.0" in script
     assert "Part.makePolygon" in script
     compile(script, "<generated>", "exec")
+
+
+# --------------------------------------------------------------------------
+# apply_assembly_constraint — uv_tensor validation and script rendering.
+#
+# test_apply_assembly_constraint_script_renders_with_uv_tensor is a
+# regression guard for a real incident: an unescaped {'u': ...} example
+# inside the collision-guard error message broke
+# _APPLY_ASSEMBLY_CONSTRAINT_SCRIPT.format() for EVERY call, not just ones
+# that reach that branch, because the whole ~200-line template is formatted
+# unconditionally before FreeCADCmd ever sees it (str.format treats any
+# unescaped { as a field reference). compile() alone wouldn't have caught
+# this -- the KeyError happens at .format() time, before there's any script
+# text to compile -- so this test calls .format() itself, the same way
+# apply_assembly_constraint() does at call time. Still relevant after the
+# semantic_alignment -> uv_tensor migration retired the old dict-literal
+# lookup and the DanaOccupiedAlignments JSON block (both were also
+# unescaped-brace risks in the same template).
+# --------------------------------------------------------------------------
+
+
+def test_apply_assembly_constraint_script_renders_with_uv_tensor():
+    script = engine._APPLY_ASSEMBLY_CONSTRAINT_SCRIPT.format(
+        assembly_name="asm",
+        part1_name="chassis",
+        part1_element="Face1",
+        part2_name="wheel1",
+        part2_element="Face2",
+        constraint_type="Coincident",
+        offset=0.0,
+        uv_tensor=(0.0, 1.0),
+        world_fractions=None,
+        session_path="s.FCStd",
+        session_doc_name="Session_Active",
+        marker="OK",
+    )
+    compile(script, "<generated>", "exec")
+
+
+def test_apply_assembly_constraint_script_renders_with_world_fractions():
+    script = engine._APPLY_ASSEMBLY_CONSTRAINT_SCRIPT.format(
+        assembly_name="asm",
+        part1_name="chassis",
+        part1_element="Face3",
+        part2_name="wheel1",
+        part2_element="Face2",
+        constraint_type="Coincident",
+        offset=0.0,
+        uv_tensor=(0.5, 0.5),
+        world_fractions={"X": 0.1, "Z": 0.9},
+        session_path="s.FCStd",
+        session_doc_name="Session_Active",
+        marker="OK",
+    )
+    compile(script, "<generated>", "exec")
+
+
+def test_apply_assembly_constraint_rejects_invalid_uv_tensor():
+    # apply_assembly_constraint returns a JSON string (same convention as
+    # every other engine.py tool function, via _ok/_error), not a dict.
+    import json
+
+    # Not a 2-element numeric array: rejected outright, with a clean
+    # message -- never a semantic token or a single raw float accepted here.
+    result = json.loads(
+        engine.apply_assembly_constraint(
+            assembly_name="asm",
+            part1_name="A",
+            part1_element="Face1",
+            part2_name="B",
+            part2_element="Face1",
+            constraint_type="Coincident",
+            uv_tensor="top_left",
+        )
+    )
+    assert result["ok"] is False
+    assert "uv_tensor must be a [u, v] array" in result["error"]
+
+    # Out of the required [0.0, 1.0] range: rejected outright.
+    result = json.loads(
+        engine.apply_assembly_constraint(
+            assembly_name="asm",
+            part1_name="A",
+            part1_element="Face1",
+            part2_name="B",
+            part2_element="Face1",
+            constraint_type="Coincident",
+            uv_tensor=[0.5, 1.5],
+        )
+    )
+    assert result["ok"] is False
+    assert "uv_tensor values must each be between 0.0 and 1.0" in result["error"]
+
+    # Omitted (defaults to [0.5, 0.5], face-center): NOT an error -- reaches
+    # past validation into the real dry-run path. DANA_OS_DRY_RUN
+    # short-circuits before a real session document would be required,
+    # isolating this assertion to the validation logic alone.
+    import os
+
+    os.environ["DANA_OS_DRY_RUN"] = "1"
+    try:
+        result = json.loads(
+            engine.apply_assembly_constraint(
+                assembly_name="asm",
+                part1_name="A",
+                part1_element="Face1",
+                part2_name="B",
+                part2_element="Face1",
+                constraint_type="Coincident",
+            )
+        )
+    finally:
+        del os.environ["DANA_OS_DRY_RUN"]
+    assert result["ok"] is True
+    assert result["dimensions"]["uv_tensor"] == [0.5, 0.5]
+
+
+def test_apply_assembly_constraint_world_fractions_validation():
+    import json
+
+    # world_fractions and uv_tensor are mutually exclusive.
+    result = json.loads(
+        engine.apply_assembly_constraint(
+            assembly_name="asm",
+            part1_name="A",
+            part1_element="Face1",
+            part2_name="B",
+            part2_element="Face1",
+            constraint_type="Coincident",
+            uv_tensor=[0.5, 0.5],
+            world_fractions={"X": 0.1},
+        )
+    )
+    assert result["ok"] is False
+    assert "mutually exclusive" in result["error"]
+
+    # Must be a dict with 1 or 2 entries — empty dict rejected.
+    result = json.loads(
+        engine.apply_assembly_constraint(
+            assembly_name="asm",
+            part1_name="A",
+            part1_element="Face1",
+            part2_name="B",
+            part2_element="Face1",
+            constraint_type="Coincident",
+            world_fractions={},
+        )
+    )
+    assert result["ok"] is False
+    assert "world_fractions must be a dict with 1 or 2 entries" in result["error"]
+
+    # More than 2 entries rejected (a planar face only has 2 DOF).
+    result = json.loads(
+        engine.apply_assembly_constraint(
+            assembly_name="asm",
+            part1_name="A",
+            part1_element="Face1",
+            part2_name="B",
+            part2_element="Face1",
+            constraint_type="Coincident",
+            world_fractions={"X": 0.1, "Y": 0.2, "Z": 0.3},
+        )
+    )
+    assert result["ok"] is False
+    assert "world_fractions must be a dict with 1 or 2 entries" in result["error"]
+
+    # Keys must be X/Y/Z.
+    result = json.loads(
+        engine.apply_assembly_constraint(
+            assembly_name="asm",
+            part1_name="A",
+            part1_element="Face1",
+            part2_name="B",
+            part2_element="Face1",
+            constraint_type="Coincident",
+            world_fractions={"W": 0.1},
+        )
+    )
+    assert result["ok"] is False
+    assert "world_fractions keys must be 'X'/'Y'/'Z'" in result["error"]
+
+    # Fraction out of [0.0, 1.0] range.
+    result = json.loads(
+        engine.apply_assembly_constraint(
+            assembly_name="asm",
+            part1_name="A",
+            part1_element="Face1",
+            part2_name="B",
+            part2_element="Face1",
+            constraint_type="Coincident",
+            world_fractions={"X": 1.5},
+        )
+    )
+    assert result["ok"] is False
+    assert "must be between 0.0 and 1.0" in result["error"]
+
+    # Only meaningful for Coincident/Distance.
+    result = json.loads(
+        engine.apply_assembly_constraint(
+            assembly_name="asm",
+            part1_name="A",
+            part1_element="Face1",
+            part2_name="B",
+            part2_element="Face1",
+            constraint_type="Parallel",
+            world_fractions={"X": 0.1},
+        )
+    )
+    assert result["ok"] is False
+    assert "world_fractions is only meaningful for" in result["error"]
+
+    # Valid combination (one axis, and two axes) reaches past validation
+    # into the dry-run path.
+    import os
+
+    os.environ["DANA_OS_DRY_RUN"] = "1"
+    try:
+        result = json.loads(
+            engine.apply_assembly_constraint(
+                assembly_name="asm",
+                part1_name="A",
+                part1_element="Face1",
+                part2_name="B",
+                part2_element="Face1",
+                constraint_type="Coincident",
+                world_fractions={"X": 0.1},
+            )
+        )
+        assert result["ok"] is True
+        assert result["dimensions"]["world_fractions"] == {"X": 0.1}
+
+        result = json.loads(
+            engine.apply_assembly_constraint(
+                assembly_name="asm",
+                part1_name="A",
+                part1_element="Face1",
+                part2_name="B",
+                part2_element="Face1",
+                constraint_type="Coincident",
+                world_fractions={"x": 0.0, "y": 0.0},
+            )
+        )
+        assert result["ok"] is True
+        assert result["dimensions"]["world_fractions"] == {"X": 0.0, "Y": 0.0}
+    finally:
+        del os.environ["DANA_OS_DRY_RUN"]

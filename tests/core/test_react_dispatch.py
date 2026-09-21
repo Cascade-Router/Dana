@@ -346,10 +346,19 @@ def test_next_react_turn_compresses_stale_tool_output_for_ollama(
     """For the local Ollama provider specifically, _call_llm_once routes
     through dana.core.context_manager.compress_tool_output_history instead
     of prune_tool_output_history — JSON-structure-aware compression
-    (keep_recent=4) rather than a blind character slice. A stale JSON tool
-    result keeps its name/bounding_box fields verbatim and drops a large
-    low-signal field; an unresolved error stays untouched even though it's
-    the oldest message in the chain."""
+    (keep_recent=4) rather than a blind character slice — AND THEN, on top
+    of that, dana.core.context_manager.compact_trajectory_to_recent_pairs
+    (Trajectory Compaction / Markov State) drops every (assistant, tool)
+    pair older than the last 2 outright, so message COUNT is no longer
+    preserved for the Ollama path the way it still is for
+    prune_tool_output_history's cloud-path sibling — confirmed live
+    (dana_runtime.log): the un-compacted trajectory grew linearly and
+    tripped the Two-Layer Context Management cloud handoff at turn 11. An
+    unresolved error more than 2 pairs back (call_0 here) is no longer
+    protected from THIS layer the way compress_tool_output_history still
+    protects it from ITS OWN compression — it's simply gone, along with
+    every other pair outside the kept window, by design: the local model
+    doesn't need turns 1-3's verbatim history to act on turn 6."""
     monkeypatch.setattr(rd, "tool_calling_provider", lambda: "ollama")
     fake = _mock_llm(monkeypatch, content="done")
 
@@ -383,20 +392,16 @@ def test_next_react_turn_compresses_stale_tool_output_for_ollama(
     asyncio.run(rd.next_react_turn(messages))
 
     sent_messages = fake.calls[0]["messages"]
-    assert len(sent_messages) == len(messages)  # count never changes
+    # system + user anchors, plus only the LAST 2 (assistant, tool) pairs
+    # (call_4, call_5) -- everything else (call_0's error through call_3)
+    # is dropped entirely, not just compressed.
+    assert len(sent_messages) == 6
+    assert [m["role"] for m in sent_messages] == ["system", "user", "assistant", "tool", "assistant", "tool"]
     sent_tool_contents = [m["content"] for m in sent_messages if m["role"] == "tool"]
-
-    # 6 tool messages total, keep_recent=4 -> the 2 OLDEST (call_0's error,
-    # call_1's box result) are stale; call_0 still stays verbatim (unresolved
-    # error), only call_1 actually gets compressed.
-    assert sent_tool_contents[0] == error_result
-    stale = json.loads(sent_tool_contents[1])
-    assert stale["name"] == "Box1"
-    assert stale["bounding_box"] == [0.0, 0.0, 0.0, 60.0, 40.0, 20.0]
-    assert "unlocked_tools" not in stale
-    # The 4 most recent box results stay byte-for-byte intact.
-    for i in range(2, 6):
-        assert sent_tool_contents[i] == _box_result(f"Box{i}")
+    assert sent_tool_contents == [_box_result("Box4"), _box_result("Box5")]
+    # Never even reached the trim: both survivors are inside
+    # compress_tool_output_history's own keep_recent=4 window too, so they
+    # stay byte-for-byte intact rather than compressed.
 
 
 def test_next_react_turn_unknown_tool_id_yields_final(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -978,7 +983,11 @@ def test_dispatch_edge_operation_requires_numeric_value() -> None:
     )
     result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
     assert result.ok is False
-    assert "numeric value" in result.message
+    # Caught one layer earlier than perform_freecad_edge_operation's own
+    # handler now — dispatch_tool_call's schema-validation gate (Silent
+    # Parameter Dropping fix) rejects a non-numeric "value" against its
+    # declared "number" type before the handler ever runs.
+    assert "value" in result.message
 
 
 def test_dispatch_edge_operation_rejects_unknown_object_name() -> None:
@@ -1345,7 +1354,11 @@ def test_dispatch_pipe_requires_numeric_fields() -> None:
     )
     result = rd.dispatch_tool_call(call, engine=None, control_plane=None)
     assert result.ok is False
-    assert "numeric" in result.message
+    # Caught one layer earlier than create_freecad_pipe's own handler now —
+    # dispatch_tool_call's schema-validation gate (Silent Parameter
+    # Dropping fix) rejects a non-numeric "pipe_radius" against its
+    # declared "number" type before the handler ever runs.
+    assert "pipe_radius" in result.message
 
 
 def test_dispatch_pipe_straight_via_mock_engine() -> None:
@@ -2107,7 +2120,9 @@ def test_llm_tools_schema_keeps_newly_unlocked_tools_sticky_across_narrowing() -
 
 def test_load_capability_freecad_full_unlock_stays_under_budget() -> None:
     """Regression for the reported 8,966-token 413: load_capability(domain=
-    "freecad_full") unlocks ~24 tools via its own unlocked_tools payload —
+    "freecad_full") unlocks ~42 tools (Sketcher/PartDesign Pad/Pocket/
+    patterns/sweep/loft/assembly added across the 5-phase CAD expansion,
+    up from the original ~24) via its own unlocked_tools payload —
     _sticky_tool_ids_from_messages used to fold ALL of them into must_keep,
     which _cap_schemas_by_token_budget never trims, so the very next turn's
     schema blew far past _TOOL_TOKEN_BUDGET on its own. The unlocked set must
@@ -2137,10 +2152,19 @@ def test_load_capability_freecad_full_unlock_stays_under_budget() -> None:
         frozenset({"freecad_full"}), query=raw_text, sticky_ids=sticky, force_include=sticky
     )
     schema_tokens = rd._count_tokens(json.dumps(schema))
-    # Well under Groq's 8000 TPM ceiling once system prompt + conversation
-    # history are added on top (~800-1000 tokens) — the old behavior alone
-    # measured at 6,605+ tokens for this same scenario.
-    assert schema_tokens < 4000
+    # Still well under Groq's 8000 TPM ceiling once system prompt +
+    # conversation history are added on top (~800-1000 tokens) — the old
+    # (pre-cap) behavior alone measured at 6,605+ tokens for this same
+    # scenario. Raised from 4000 -> 5000 once the 5-phase CAD expansion
+    # (Sketcher/PartDesign Pad/Pocket/patterns/sweep/loft/assembly) grew
+    # freecad_full from ~24 to ~42 tools: the capped/ranked schema for THIS
+    # query now measures ~4,024-4,138 tokens depending on exactly which
+    # tools the keyword-ranker selects as sticky (confirmed non-deterministic
+    # across small wording changes to individual tool schemas, since
+    # trimming one tool's description can shift the ranking enough to pull
+    # in a DIFFERENT, larger set) — 5000 keeps a deliberate margin above the
+    # observed worst case while still catching a genuine budget blowout.
+    assert schema_tokens < 5000
 
 
 # --- Layer 3: Lazy Loading (search_tool_catalog / load_specific_tool) ------
@@ -2611,6 +2635,75 @@ def test_create_plan_seeds_expected_tool_ids_and_executing_state() -> None:
         assert isinstance(task["expected_tool_ids"], frozenset)
 
 
+def test_create_plan_rejects_grouped_kinematic_joint_task() -> None:
+    # Regression guard for a real incident: a task declaring
+    # expected_tools=['define_kinematic_joint'] but covering all 4 wheels
+    # in its own description let the FSM auto-advance after only the FIRST
+    # wheel's joint was defined (_advance_fsm_on_dispatch treats the task
+    # as done the instant its one declared tool succeeds once), silently
+    # leaving wheels 2-4 without a real joint all the way through export.
+    # "each of the 4 wheels" is deliberately NOT caught by a bare number
+    # word (there is no "four" here, only the digit) -- this exercises the
+    # "each of" phrase instead.
+    set_session_id("fsm-grouped-joints-rejected")
+    with pytest.raises(RuntimeError, match="group multiple objects"):
+        rd._tool_create_plan(
+            {
+                "objective": "rover",
+                "tasks": [
+                    {"description": "Create the main body", "expected_tools": ["create_freecad_box"]},
+                    {
+                        "description": "Define continuous joints between the main body and each of the 4 wheels",
+                        "expected_tools": ["define_kinematic_joint"],
+                    },
+                ],
+            },
+            None,
+            None,
+        )
+
+
+def test_create_plan_rejects_grouped_assembly_constraint_task() -> None:
+    # Same failure mode, different per-object tool -- apply_assembly_
+    # constraint is just as vulnerable to premature auto-advance as
+    # create_freecad_* if a task groups several parts under it.
+    set_session_id("fsm-grouped-constraint-rejected")
+    with pytest.raises(RuntimeError, match="group multiple objects"):
+        rd._tool_create_plan(
+            {
+                "objective": "rover",
+                "tasks": [
+                    {"description": "Create the main body", "expected_tools": ["create_freecad_box"]},
+                    {
+                        "description": "Position every wheel via assembly constraint",
+                        "expected_tools": ["apply_assembly_constraint"],
+                    },
+                ],
+            },
+            None,
+            None,
+        )
+
+
+def test_create_plan_allows_atomized_per_object_tasks() -> None:
+    # The fix must not over-trigger: one task per wheel, no grouping
+    # language, is exactly the correct shape and must still be accepted.
+    set_session_id("fsm-atomized-joints-allowed")
+    result = rd._tool_create_plan(
+        {
+            "objective": "rover",
+            "tasks": [
+                {"description": "Create the main body", "expected_tools": ["create_freecad_box"]},
+                {"description": "Define joint for wheel 1", "expected_tools": ["define_kinematic_joint"]},
+                {"description": "Define joint for wheel 2", "expected_tools": ["define_kinematic_joint"]},
+            ],
+        },
+        None,
+        None,
+    )
+    assert result["ok"] is True
+
+
 def _seed_two_task_plan(
     session_id: str, tool_for_task_1: frozenset[str], tool_for_task_2: frozenset[str]
 ) -> None:
@@ -2793,6 +2886,186 @@ def test_dispatch_parks_validating_for_task_with_no_expected_tools() -> None:
     assert rd._PLAN_STATE_REGISTRY[sid]["fsm_state"] == "done"
 
 
+def test_insert_task_before_active_recovers_from_original_deadlock() -> None:
+    """FSM Recovery / Prerequisite Insertion, exercised through the real
+    dispatch_tool_call pipeline (both task_board's own global plan AND
+    react_dispatch's session mirror), reproducing the exact rover-assembly
+    incident (dana_conversation.log ~15:53-16:09) this feature exists to
+    fix: a prerequisite ("position wheel_2") discovered only after the FSM
+    had already advanced onto the dependent task ("define wheel_2's joint").
+
+    First confirms BOTH originally-attempted recovery paths are still
+    correctly refused (insert_after_task_id can't reach before completed
+    history; cancel_pending_task can't touch the active task), then that
+    insert_before_task_id resolves it with no deadlock: the new task
+    becomes active immediately, the old one is safely queued right after
+    it, and the plan drains cleanly from there with exactly one active task
+    at every step.
+    """
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    sid = "fsm-recovery-insert-before-active"
+    set_session_id(sid)
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+
+    create_result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="create_plan",
+            arguments={
+                "objective": "Build a 4-wheeled rover",
+                "tasks": ["make main body", "define wheel_2 kinematic joint", "export urdf"],
+            },
+        ),
+        engine,
+        control_plane,
+    )
+    assert create_result.ok is True
+
+    # Force-complete task 1 the same way a real run would (its own declared
+    # tool, or the manual override) -- auto-promotes task 2 to active.
+    complete_first = rd.dispatch_tool_call(
+        ToolCall(tool_id="mark_task_completed", arguments={"task_id": 1, "created_feature_names": ["none"]}),
+        engine,
+        control_plane,
+    )
+    assert complete_first.ok is True
+    assert rd._active_task(sid)["id"] == 2
+
+    # Reproduce the original deadlock: neither recovery tool as originally
+    # shaped can insert a prerequisite before the now-active task 2.
+    blocked_after = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="insert_task",
+            arguments={"description": "position wheel_2", "insert_after_task_id": 1},
+        ),
+        engine,
+        control_plane,
+    )
+    assert blocked_after.ok is False
+    assert "already completed" in json.dumps(blocked_after.payload)
+
+    blocked_cancel = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="cancel_pending_task",
+            arguments={"task_id_to_cancel": 2, "reason": "need to position first"},
+        ),
+        engine,
+        control_plane,
+    )
+    assert blocked_cancel.ok is False
+    assert "it is 'active'" in json.dumps(blocked_cancel.payload)
+
+    # THE FIX: insert_before_task_id=2 -- new task promoted to active, task 2
+    # demoted back to pending, in the SAME dispatch, no deadlock.
+    recovery = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="insert_task",
+            arguments={
+                "description": "position wheel_2 at the right side face before its joint",
+                "insert_before_task_id": 2,
+                "expected_tools": ["create_freecad_box"],
+            },
+        ),
+        engine,
+        control_plane,
+    )
+    assert recovery.ok is True
+    new_task_id = recovery.payload["inserted_task_id"]
+    assert recovery.payload["demoted_task_id"] == 2
+
+    active = rd._active_task(sid)
+    assert active["id"] == new_task_id
+    assert active["expected_tool_ids"] == frozenset({"create_freecad_box"})
+    entry = rd._PLAN_STATE_REGISTRY[sid]
+    tasks_by_id = {t["id"]: t for t in entry["tasks"]}
+    assert tasks_by_id[2]["status"] == "pending"
+    assert sum(1 for t in entry["tasks"] if t["status"] == "active") == 1
+
+    # A tool that ISN'T the new prerequisite task's own declared tool is
+    # still correctly refused -- the swap didn't just open the gate wide.
+    still_blocked = rd.dispatch_tool_call(
+        ToolCall(tool_id="define_kinematic_joint", arguments={}), engine, control_plane
+    )
+    assert still_blocked.ok is False
+    assert "insert_before_task_id" in json.dumps(still_blocked.payload)  # the recovery hint itself
+
+    # Satisfying the new prerequisite task auto-advances the FSM straight
+    # back onto task 2 -- the plan resumes exactly where it left off.
+    satisfy_prerequisite = rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"name": "Wheel2Positioned"}),
+        engine,
+        control_plane,
+    )
+    assert satisfy_prerequisite.ok is True
+    assert rd._active_task(sid)["id"] == 2
+    assert sum(1 for t in rd._PLAN_STATE_REGISTRY[sid]["tasks"] if t["status"] == "active") == 1
+
+
+def test_cancel_active_task_promotes_lowest_pending_and_rejects_when_idle() -> None:
+    """FSM Recovery's other primitive: dropping the ACTIVE task outright
+    (not just delaying it) when it turns out to be wrong/redundant, rather
+    than a missing prerequisite before it. cancel_pending_task cannot reach
+    it at all (see the assertion below); cancel_active_task is the
+    dedicated tool for exactly this case.
+    """
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    sid = "fsm-recovery-cancel-active"
+    set_session_id(sid)
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+
+    rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="create_plan",
+            arguments={"objective": "test", "tasks": ["task one", "task two", "task three"]},
+        ),
+        engine,
+        control_plane,
+    )
+    assert rd._active_task(sid)["id"] == 1
+
+    still_refused = rd.dispatch_tool_call(
+        ToolCall(tool_id="cancel_pending_task", arguments={"task_id_to_cancel": 1, "reason": "wrong"}),
+        engine,
+        control_plane,
+    )
+    assert still_refused.ok is False
+
+    cancelled = rd.dispatch_tool_call(
+        ToolCall(tool_id="cancel_active_task", arguments={"reason": "task 1 was scheduled by mistake"}),
+        engine,
+        control_plane,
+    )
+    assert cancelled.ok is True
+    assert cancelled.payload["cancelled_task_id"] == 1
+    active = rd._active_task(sid)
+    assert active is not None and active["id"] == 2  # lowest-id pending auto-promoted
+    entry = rd._PLAN_STATE_REGISTRY[sid]
+    assert {t["id"]: t["status"] for t in entry["tasks"]} == {1: "cancelled", 2: "active", 3: "pending"}
+
+    # Drain the rest, then cancel the very last active task -- must leave a
+    # clean idle plan (no active task) rather than corrupting state.
+    rd.dispatch_tool_call(
+        ToolCall(tool_id="mark_task_completed", arguments={"task_id": 2, "created_feature_names": ["none"]}),
+        engine,
+        control_plane,
+    )
+    assert rd._active_task(sid)["id"] == 3
+    last_cancel = rd.dispatch_tool_call(
+        ToolCall(tool_id="cancel_active_task", arguments={"reason": "objective changed"}), engine, control_plane
+    )
+    assert last_cancel.ok is True
+    assert rd._active_task(sid) is None
+
+    idle_cancel = rd.dispatch_tool_call(
+        ToolCall(tool_id="cancel_active_task", arguments={"reason": "nothing left"}), engine, control_plane
+    )
+    assert idle_cancel.ok is False
+    assert "no task is currently active" in json.dumps(idle_cancel.payload)
+
+
 def test_build_system_prompt_planning_phase_excludes_geometry_rulebook() -> None:
     set_session_id("fsm-prompt-planning")
     prompt = rd.build_system_prompt(None, active_plugins=frozenset({"freecad_essential"}), session_id="fsm-prompt-planning")
@@ -2849,3 +3122,112 @@ def test_next_react_turn_hard_restricts_tools_during_planning(monkeypatch: pytes
     assert "create_plan" in offered_tool_ids
     assert "search_tool_catalog" in offered_tool_ids
     assert "check_plugin_registry" in offered_tool_ids
+
+
+def test_position_assembly_part_blocked_until_measured_this_session() -> None:
+    """Position-Before-Measurement Gate (Rule 14 Hard Enforcement): confirmed
+    live (dana_conversation.log, session f9f6fb1d) that the prompt-only
+    spatial-distribution rule was silently skipped -- the model never called
+    get_freecad_bounding_box/inspect_spatial_properties even once, assumed
+    the main body's bounding box was centered at the origin when it was
+    actually corner-at-origin, and clustered all four wheels at one end of
+    the chassis. This proves position_assembly_part is now hard-blocked
+    until this session has measured something real, and unblocks the
+    instant it does -- no plan/task machinery involved, this gate is purely
+    session-scoped.
+    """
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    sid = "measurement-gate-position-assembly-part"
+    set_session_id(sid)
+    rd._set_has_plan(True, "test-harness plan")  # create_freecad_box is in _RESTRICTED_GEOMETRY_TOOLS
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+
+    create_result = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="create_freecad_box",
+            arguments={"name": "main_body", "length": 40, "width": 20, "height": 10},
+        ),
+        engine,
+        control_plane,
+    )
+    assert create_result.ok is True
+
+    # BLOCKED: this session has never called a measurement tool.
+    blocked = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="position_assembly_part",
+            arguments={"part_name": "main_body", "placement_x": 5, "placement_y": 0, "placement_z": 0},
+        ),
+        engine,
+        control_plane,
+    )
+    assert blocked.ok is False
+    assert "get_freecad_bounding_box" in json.dumps(blocked.payload)
+    assert not rd._BOUNDING_BOX_MEASURED_BY_SESSION.get(sid)
+
+    # Measure the reference object for real.
+    measure_result = rd.dispatch_tool_call(
+        ToolCall(tool_id="get_freecad_bounding_box", arguments={"target_object": "main_body"}),
+        engine,
+        control_plane,
+    )
+    assert measure_result.ok is True
+    assert rd._BOUNDING_BOX_MEASURED_BY_SESSION.get(sid) is True
+
+    # NOW ALLOWED.
+    allowed = rd.dispatch_tool_call(
+        ToolCall(
+            tool_id="position_assembly_part",
+            arguments={"part_name": "main_body", "placement_x": 5, "placement_y": 0, "placement_z": 0},
+        ),
+        engine,
+        control_plane,
+    )
+    assert allowed.ok is True
+
+
+def test_position_before_measurement_check_is_pure_and_session_scoped() -> None:
+    """Direct unit test of the gate function itself, no dispatch/engine
+    machinery -- inspect_spatial_properties satisfies it too (not just
+    get_freecad_bounding_box), a tool outside _POSITION_TOOLS_REQUIRING_
+    PRIOR_MEASUREMENT is never affected, and the flag is per-session."""
+    sid_a = "measurement-gate-unit-a"
+    sid_b = "measurement-gate-unit-b"
+
+    assert rd._position_before_measurement_check("position_assembly_part", sid_a) is not None
+    assert rd._position_before_measurement_check("create_freecad_box", sid_a) is None  # not a gated tool
+
+    rd._mark_measurement_done("inspect_spatial_properties", sid_a)
+    assert rd._position_before_measurement_check("position_assembly_part", sid_a) is None
+    # A different session's own flag is untouched.
+    assert rd._position_before_measurement_check("position_assembly_part", sid_b) is not None
+
+    rd._mark_measurement_done("create_freecad_box", sid_b)  # not a measurement tool -- no-op
+    assert rd._position_before_measurement_check("position_assembly_part", sid_b) is not None
+
+
+def test_tool_apply_assembly_constraint_hard_blocks_uv_tensor() -> None:
+    """uv_tensor is forbidden on this ReAct-facing wrapper (real e2e runs
+    showed the orchestrator doesn't reliably self-correct from a runtime
+    hint alone -- see engine.apply_assembly_constraint's own
+    world_fractions docstring), even when the referenced parts don't
+    exist yet -- the gate fires before the part-existence check, so no
+    object registry setup is needed for this test."""
+    result = rd._tool_apply_assembly_constraint(
+        {
+            "assembly_name": "asm",
+            "part1_name": "does_not_exist_1",
+            "part1_element": "Face1",
+            "part2_name": "does_not_exist_2",
+            "part2_element": "Face1",
+            "constraint_type": "Coincident",
+            "uv_tensor": [0.1, 0.1],
+        },
+        engine=None,
+        _cp=None,
+    )
+    assert result["ok"] is False
+    assert "ConstraintError" in result["error"]
+    assert "world_fractions" in result["error"]

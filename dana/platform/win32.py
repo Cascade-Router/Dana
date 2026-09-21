@@ -95,6 +95,11 @@ class RealFreeCADEngine(BaseCADEngine):
 
         return json.loads(engine.create_box(length, width, height, name, placement=placement))
 
+    def query_topology(self, part_name: str) -> dict:
+        """Returns topological face data for the given part."""
+        from dana.plugins.freecad.engine import query_topology as engine_query_topology
+        return json.loads(engine_query_topology(part_name))
+    
     def create_cylinder(
         self,
         radius: float,
@@ -107,11 +112,16 @@ class RealFreeCADEngine(BaseCADEngine):
         return json.loads(engine.create_cylinder(radius, height, name, placement=placement))
 
     def apply_boolean(
-        self, operation: str, base_object: str, tool_object: str, name: str | None = None
+        self,
+        operation: str,
+        base_object: str | None = None,
+        tool_object: str | None = None,
+        name: str | None = None,
+        objects: list[str] | None = None,
     ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.apply_boolean(operation, base_object, tool_object, name))
+        return json.loads(engine.apply_boolean(operation, base_object, tool_object, name, objects=objects))
 
     def apply_edge_operation(
         self,
@@ -184,11 +194,19 @@ class RealFreeCADEngine(BaseCADEngine):
         return json.loads(engine.export_mesh_stl(source_path, name, target_object=target_object))
 
     def modify_parameter(
-        self, target_object: str, parameter_name: str, new_value: float | Sequence[float]
+        self,
+        target_object: str,
+        parameter_name: str,
+        new_value: float | Sequence[float],
+        yaw: float | None = None,
+        pitch: float | None = None,
+        roll: float | None = None,
     ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
 
-        return json.loads(engine.modify_parameter(target_object, parameter_name, new_value))
+        return json.loads(
+            engine.modify_parameter(target_object, parameter_name, new_value, yaw=yaw, pitch=pitch, roll=roll)
+        )
 
     def get_bounding_box(self, target_path: str, target_object: str | None = None) -> dict[str, Any]:
         from dana.plugins.freecad import engine
@@ -199,6 +217,11 @@ class RealFreeCADEngine(BaseCADEngine):
         from dana.plugins.freecad import engine
 
         return json.loads(engine.inspect_spatial_properties(target_path, target_object=target_object))
+
+    def query_topology(self, part_name: str) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.query_topology(part_name))
 
     def create_pipe(
         self,
@@ -212,6 +235,24 @@ class RealFreeCADEngine(BaseCADEngine):
 
         return json.loads(
             engine.create_pipe(pipe_radius, path_type, length_or_angle, name, placement=placement)
+        )
+
+    def create_helix(
+        self,
+        coil_radius: float,
+        pitch: float,
+        height: float,
+        pipe_radius: float,
+        name: str = "Helix",
+        placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        angle_offset: float = 0.0,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(
+            engine.create_helix(
+                coil_radius, pitch, height, pipe_radius, name, placement=placement, angle_offset=angle_offset
+            )
         )
 
     def align_objects(
@@ -272,6 +313,223 @@ class RealFreeCADEngine(BaseCADEngine):
         return json.loads(
             engine.create_sketch_extrude(segments, height, start=start, plane=plane, name=name, placement=placement)
         )
+
+    def create_sketch(
+        self,
+        name: str,
+        plane: str,
+        geometry: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.create_sketch(name, plane, geometry))
+
+    def apply_sketch_constraint(
+        self,
+        sketch_name: str,
+        constraint_type: str,
+        geometry_indices: list[int],
+        value: float | None = None,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(
+            engine.apply_sketch_constraint(sketch_name, constraint_type, geometry_indices, value=value)
+        )
+
+    def create_pad(
+        self,
+        sketch_name: str,
+        length: float,
+        symmetric_to_plane: bool = False,
+        reversed_direction: bool = False,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(
+            engine.create_pad(
+                sketch_name, length, symmetric_to_plane=symmetric_to_plane, reversed_direction=reversed_direction
+            )
+        )
+
+    def create_pocket(
+        self,
+        sketch_name: str,
+        depth: float,
+        through_all: bool = False,
+        symmetric_to_plane: bool = False,
+        reversed_direction: bool = False,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(
+            engine.create_pocket(
+                sketch_name,
+                depth,
+                through_all=through_all,
+                symmetric_to_plane=symmetric_to_plane,
+                reversed_direction=reversed_direction,
+            )
+        )
+
+    def create_polar_pattern(
+        self,
+        feature_name: str,
+        occurrences: int,
+        angle: float = 360.0,
+        axis: str = "Z",
+        reversed_direction: bool = False,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(
+            engine.create_polar_pattern(
+                feature_name, occurrences, angle=angle, axis=axis, reversed_direction=reversed_direction
+            )
+        )
+
+    def create_linear_pattern(
+        self,
+        feature_name: str,
+        occurrences: int,
+        length: float,
+        direction: str = "X",
+        reversed_direction: bool = False,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(
+            engine.create_linear_pattern(
+                feature_name, occurrences, length, direction=direction, reversed_direction=reversed_direction
+            )
+        )
+
+    def create_sweep(self, profile_sketch: str, path_sketch: str, frenet: bool = True) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.create_sweep(profile_sketch, path_sketch, frenet=frenet))
+
+    def create_loft(
+        self,
+        cross_section_sketches: list[str],
+        ruled: bool = False,
+        closed: bool = False,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.create_loft(cross_section_sketches, ruled=ruled, closed=closed))
+
+    def create_assembly(self, name: str) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.create_assembly(name))
+
+    def add_parts_to_assembly(self, assembly_name: str, part_names: list[str]) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.add_parts_to_assembly(assembly_name, part_names))
+
+    def position_assembly_part(
+        self,
+        part_name: str,
+        placement_x: float = 0.0,
+        placement_y: float = 0.0,
+        placement_z: float = 0.0,
+        yaw: float = 0.0,
+        pitch: float = 0.0,
+        roll: float = 0.0,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(
+            engine.position_assembly_part(
+                part_name,
+                placement_x=placement_x,
+                placement_y=placement_y,
+                placement_z=placement_z,
+                yaw=yaw,
+                pitch=pitch,
+                roll=roll,
+            )
+        )
+
+    def apply_assembly_constraint(
+        self,
+        assembly_name: str,
+        part1_name: str,
+        part1_element: str,
+        part2_name: str,
+        part2_element: str,
+        constraint_type: str,
+        offset: float = 0.0,
+        uv_tensor: Sequence[float] | None = None,
+        world_fractions: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(
+            engine.apply_assembly_constraint(
+                assembly_name,
+                part1_name,
+                part1_element,
+                part2_name,
+                part2_element,
+                constraint_type,
+                offset=offset,
+                uv_tensor=uv_tensor,
+                world_fractions=world_fractions,
+            )
+        )
+
+    def anchor_assembly_root(self, assembly_name: str, part_name: str) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.anchor_assembly_root(assembly_name, part_name))
+
+    def define_kinematic_joint(
+        self,
+        assembly_name: str,
+        child_link: str,
+        parent_link: str = "base_link",
+        joint_type: str = "fixed",
+        axis: Sequence[float] = (0.0, 0.0, 1.0),
+        joint_name: str | None = None,
+        limit_lower: float | None = None,
+        limit_upper: float | None = None,
+        limit_effort: float | None = None,
+        limit_velocity: float | None = None,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(
+            engine.define_kinematic_joint(
+                assembly_name,
+                child_link,
+                parent_link=parent_link,
+                joint_type=joint_type,
+                axis=axis,
+                joint_name=joint_name,
+                limit_lower=limit_lower,
+                limit_upper=limit_upper,
+                limit_effort=limit_effort,
+                limit_velocity=limit_velocity,
+            )
+        )
+
+    def validate_assembly_collisions(self, assembly_name: str) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.validate_assembly_collisions(assembly_name))
+
+    def export_assembly_to_urdf(
+        self,
+        assembly_name: str,
+        export_directory: str | None = None,
+        density_kg_m3: float | None = None,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import engine
+
+        return json.loads(engine.export_assembly_to_urdf(assembly_name, export_directory, density_kg_m3))
 
     def create_feature_on_face(
         self,
