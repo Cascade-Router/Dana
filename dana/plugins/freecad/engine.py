@@ -1576,6 +1576,12 @@ import FreeCAD as App
         "'" + obj.Name + "' is anchored (anchor_assembly_root) and cannot be moved/rotated by "
         "position_assembly_part -- it is this assembly's fixed reference frame."
     )
+if getattr(obj, "DanaConstrained", False):
+    raise RuntimeError(
+        "'" + obj.Name + "' is locked by an active assembly constraint (apply_assembly_constraint) "
+        "and cannot be moved/rotated by position_assembly_part -- re-call apply_assembly_constraint "
+        "against the correct face/edge instead of overriding its Placement directly."
+    )
 obj.Placement = App.Placement(App.Vector({x}, {y}, {z}), App.Rotation({yaw}, {pitch}, {roll}))
 doc.recompute()
 """ + _SESSION_SAVE_SNIPPET + _ASSEMBLY_RESULT_PRINT)
@@ -1599,6 +1605,12 @@ def position_assembly_part(
     ``modify_parameter``'s matching 6-element-vector docstring for the same
     confirmed-live convention), REPLACING any prior rotation rather than
     composing with it.
+
+    Refuses outright (never silently no-ops) if ``part_name`` was anchored via
+    ``anchor_assembly_root``, or if it is currently locked by an active
+    ``apply_assembly_constraint`` mate (``DanaConstrained``) — re-call
+    ``apply_assembly_constraint`` instead of overriding a mated part's
+    ``Placement`` directly.
     """
     target = (part_name or "").strip()
     if not target:
@@ -2030,6 +2042,17 @@ elif constraint_type in ("Coincident", "Distance"):
 else:
     raise RuntimeError("unknown constraint_type: " + constraint_type)
 
+if not hasattr(part2, "DanaConstrained"):
+    part2.addProperty(
+        "App::PropertyBool", "DanaConstrained", "Dana",
+        "Set by apply_assembly_constraint -- this part's Placement was just set by a "
+        "face/edge mate, so position_assembly_part, modify_freecad_parameter's Placement "
+        "branch, and align_freecad_objects all refuse to move or rotate it directly. "
+        "Re-call apply_assembly_constraint (a different element/uv_tensor/constraint_type "
+        "is fine) to reposition it instead -- that is the only path that keeps this flag "
+        "set and the part correctly mated."
+    )
+part2.DanaConstrained = True
 doc.recompute()
 
 obj = part2
@@ -2066,6 +2089,17 @@ def apply_assembly_constraint(
     FreeCADCmd execution model, confirmed live against this install, not
     assumed). If the referenced geometry changes later, re-call this to
     re-align; nothing here auto-re-solves.
+
+    A successful call marks ``part2_name`` with a persistent ``DanaConstrained``
+    property. From then on, ``position_assembly_part``, ``modify_freecad_parameter``'s
+    ``Placement``/``Placement.Base`` branch, and ``align_freecad_objects`` all refuse
+    outright to touch that part's ``Placement`` directly — a raw Euclidean override
+    would silently pull it back out of the mate this call just computed. The only way
+    to reposition an already-constrained part is to call this function again (any
+    element/uv_tensor/constraint_type is fine, including against a different face
+    entirely); doing so simply re-sets ``DanaConstrained`` and moves the part to the
+    newly-computed placement. Refuses outright (same as ``position_assembly_part``) if
+    ``part2_name`` was anchored via ``anchor_assembly_root``.
 
     ``constraint_type``:
 
@@ -3383,7 +3417,10 @@ def modify_parameter(
 
     Refuses outright (never silently no-ops) if ``target_object`` was
     anchored via ``anchor_assembly_root`` — see that function's own
-    docstring.
+    docstring — or, for the ``Placement``/``Placement.Base`` branch, if it
+    is currently locked by an active ``apply_assembly_constraint`` mate
+    (``DanaConstrained``); re-call ``apply_assembly_constraint`` instead of
+    overriding a mated part's ``Placement`` directly.
     """
     param = (parameter_name or "").strip()
     if not param:
@@ -3799,6 +3836,13 @@ doc = App.openDocument({source_path!r})
     raise RuntimeError(
         "'" + obj.Name + "' is anchored (anchor_assembly_root) and cannot be moved by "
         "align_freecad_objects/create_assembly_mate -- it is this assembly's fixed reference frame."
+    )
+if getattr(obj, "DanaConstrained", False):
+    raise RuntimeError(
+        "'" + obj.Name + "' is locked by an active assembly constraint (apply_assembly_constraint) "
+        "and cannot be moved by align_freecad_objects/create_assembly_mate -- re-call "
+        "apply_assembly_constraint against the correct face/edge instead of overriding its "
+        "Placement directly."
     )
 obj.Placement.Base = obj.Placement.Base + App.Vector({dx}, {dy}, {dz})
 doc.recompute()

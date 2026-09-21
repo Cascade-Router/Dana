@@ -489,6 +489,78 @@ def test_apply_assembly_constraint_script_renders_with_world_fractions():
     compile(script, "<generated>", "exec")
 
 
+def test_modify_placement_template_refuses_dana_constrained_part():
+    # modify_freecad_parameter's Placement branch (rendered via the Universal
+    # CAD IR's "modify_placement" kind) must carry the same DanaConstrained
+    # guard as position_assembly_part/align_freecad_objects/
+    # apply_assembly_constraint (below) -- otherwise a raw Placement edit
+    # through THIS tool would silently pull a mated part back out of its
+    # constraint.
+    step = ir._modify_placement_from_args(
+        target_object="wheel1", x=30.0, y=20.0, z=10.0, rotation=None,
+    )
+    script = ir.render_ir_script(
+        [step], doc_mode="session", session_path="session.FCStd", final_var=step["var"], marker="OK",
+    )
+    compile(script, "<generated>", "exec")
+    assert 'getattr(obj, "DanaConstrained", False)' in script
+
+
+def test_apply_assembly_constraint_script_sets_dana_constrained_on_part2():
+    # Topological Lock: a successful apply_assembly_constraint call must mark
+    # part2 with DanaConstrained so position_assembly_part/
+    # modify_freecad_parameter's Placement branch/align_freecad_objects
+    # refuse to override its Placement afterward -- see those scripts' own
+    # matching DanaConstrained guards below.
+    script = engine._APPLY_ASSEMBLY_CONSTRAINT_SCRIPT.format(
+        assembly_name="asm",
+        part1_name="chassis",
+        part1_element="Face1",
+        part2_name="wheel1",
+        part2_element="Face2",
+        constraint_type="Coincident",
+        offset=0.0,
+        uv_tensor=(0.0, 1.0),
+        world_fractions=None,
+        session_path="s.FCStd",
+        session_doc_name="Session_Active",
+        marker="OK",
+    )
+    compile(script, "<generated>", "exec")
+    assert "part2.DanaConstrained = True" in script
+    assert 'part2.addProperty(\n        "App::PropertyBool", "DanaConstrained"' in script
+
+
+def test_position_assembly_part_script_refuses_dana_constrained_part():
+    script = engine._POSITION_ASSEMBLY_PART_SCRIPT.format(
+        lookup=engine._object_lookup_snippet(target_object="wheel1"),
+        x=30.0,
+        y=20.0,
+        z=10.0,
+        yaw=0.0,
+        pitch=0.0,
+        roll=0.0,
+        session_path="s.FCStd",
+        session_doc_name="Session_Active",
+        marker="OK",
+    )
+    compile(script, "<generated>", "exec")
+    assert 'getattr(obj, "DanaConstrained", False)' in script
+
+
+def test_align_apply_script_refuses_dana_constrained_part():
+    script = engine._ALIGN_APPLY_SCRIPT.format(
+        source_path="s.FCStd",
+        lookup=engine._object_lookup_snippet(target_object="wheel1"),
+        dx=1.0,
+        dy=2.0,
+        dz=3.0,
+        marker="OK",
+    )
+    compile(script, "<generated>", "exec")
+    assert 'getattr(obj, "DanaConstrained", False)' in script
+
+
 def test_apply_assembly_constraint_rejects_invalid_uv_tensor():
     # apply_assembly_constraint returns a JSON string (same convention as
     # every other engine.py tool function, via _ok/_error), not a dict.
