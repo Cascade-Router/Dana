@@ -3120,6 +3120,72 @@ def _position_before_measurement_check(tool_id: str, session_id: str | None = No
     )
 
 
+# Collision-Check-Before-Export Gate: export_assembly_to_urdf hard-blocked
+# until validate_assembly_collisions has been called at least once THIS
+# session for the SAME assembly_name -- confirmed live that the ReAct loop
+# builds an intentionally interpenetrating assembly, defines joints, and
+# exports straight to URDF without ever calling validate_assembly_
+# collisions, even though it's referenced in the system prompt: an
+# advisory mention alone doesn't reliably change orchestrator behavior
+# (the same lesson apply_assembly_constraint's world_fractions vs.
+# uv_tensor already taught -- a runtime hint the model can silently ignore
+# isn't a constraint, same reasoning as the measurement gate above).
+# Deliberately NOT a per-placement check inside apply_assembly_constraint
+# itself -- see validate_assembly_collisions's own docstring for why a
+# full pairwise boolean-volume audit after EVERY single placement call
+# would be both expensive and, unlike the Fit Guard, gives no actionable
+# corrective direction. Gating the one irreversible terminal step (export)
+# on having run the audit ONCE keeps the expensive check to a single call
+# per assembly while still making it structurally unskippable before a
+# bad assembly leaves this pipeline.
+_EXPORT_TOOLS_REQUIRING_PRIOR_COLLISION_CHECK = frozenset({"export_assembly_to_urdf"})
+# session_id -> set of assembly_names validated at least once this session.
+_COLLISIONS_VALIDATED_BY_SESSION: dict[str, set[str]] = {}
+
+
+def _mark_collision_validation_done(tool_id: str, arguments: dict[str, Any], session_id: str | None = None) -> None:
+    """Records that THIS session has run ``validate_assembly_collisions``
+    at least once for ``arguments["assembly_name"]`` — called
+    unconditionally on every successful dispatch (see
+    ``dispatch_tool_call``'s own call site), a no-op for any other
+    ``tool_id`` or a missing/blank ``assembly_name``."""
+    if tool_id != "validate_assembly_collisions":
+        return
+    assembly_name = str(arguments.get("assembly_name") or "").strip()
+    if not assembly_name:
+        return
+    sid = session_id if session_id is not None else get_session_id()
+    _COLLISIONS_VALIDATED_BY_SESSION.setdefault(sid, set()).add(assembly_name)
+
+
+def _collision_check_before_export_check(
+    tool_id: str, arguments: dict[str, Any], session_id: str | None = None
+) -> str | None:
+    """Hard-blocks ``export_assembly_to_urdf`` until THIS session has
+    called ``validate_assembly_collisions`` at least once for the SAME
+    ``assembly_name`` — returns a human-readable rejection reason for
+    ``dispatch_tool_call`` to surface as an ordinary digested tool
+    failure, or ``None`` if the dispatch may proceed (a no-op for any
+    other ``tool_id``, or a missing/blank ``assembly_name`` — left to the
+    tool's own validation)."""
+    if tool_id not in _EXPORT_TOOLS_REQUIRING_PRIOR_COLLISION_CHECK:
+        return None
+    assembly_name = str(arguments.get("assembly_name") or "").strip()
+    if not assembly_name:
+        return None
+    sid = session_id if session_id is not None else get_session_id()
+    if assembly_name in _COLLISIONS_VALIDATED_BY_SESSION.get(sid, set()):
+        return None
+    return (
+        f"Execution blocked: call `validate_assembly_collisions` on assembly_name={assembly_name!r} "
+        "at least once THIS session before calling `export_assembly_to_urdf` -- a legal-looking "
+        "apply_assembly_constraint call can still produce a real 3D interpenetration (e.g. a wheel "
+        "mounted to the wrong face, or a uv_tensor/world_fractions value that lands its center inside "
+        "the chassis instead of on its surface) that no single constraint call can detect on its own. "
+        "If it reports has_collisions=true, fix the offending part's placement before retrying export."
+    )
+
+
 # Kinematic Axis Task-Compliance Gate — confirmed live (4-wheel rover e2e
 # run, session e2e-0a431ba0): engine.py's own Kinematic Axis Guard
 # (define_kinematic_joint's geometry-vs-axis check) correctly rejected
@@ -8910,6 +8976,17 @@ def dispatch_tool_call(
                 measurement_reason,
                 0,
             )
+        # Collision-Check-Before-Export Gate — see
+        # _collision_check_before_export_check's own module-level comment.
+        collision_check_reason = _collision_check_before_export_check(call.tool_id, call.arguments)
+        if collision_check_reason is not None:
+            return ToolResult(
+                call.tool_id,
+                False,
+                {"ok": False, **digest_error(call.tool_id, collision_check_reason)},
+                collision_check_reason,
+                0,
+            )
         # Fail-Safe Plan Gate — see _PLAN_GATE_REGISTRY's own module-level
         # comment: catches the specific case _fsm_out_of_order_check can't
         # (a "no fixed tool signature" task, where its own executing-only
@@ -9025,6 +9102,8 @@ def dispatch_tool_call(
         # not nested under the name/path guard below: get_freecad_bounding_box/
         # inspect_spatial_properties are read-only queries with no "path" of
         # their own to register as an object.
+        _mark_collision_validation_done(call.tool_id, call.arguments)  # Collision-Check-Before-
+        # Export Gate — same unconditional, read-only-tool convention as the measurement gate above.
         if isinstance(payload, dict) and payload.get("name") and payload.get("path"):
             _object_registry()[str(payload["name"])] = str(payload["path"])
             _record_topology_node(str(payload["name"]), input_object_names)

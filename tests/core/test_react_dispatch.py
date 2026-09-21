@@ -3208,6 +3208,89 @@ def test_position_before_measurement_check_is_pure_and_session_scoped() -> None:
     assert rd._position_before_measurement_check("position_assembly_part", sid_b) is not None
 
 
+def test_collision_check_before_export_check_is_pure_and_session_scoped() -> None:
+    """Direct unit test of the gate function itself, no dispatch/engine
+    machinery -- mirrors test_position_before_measurement_check_is_pure_
+    and_session_scoped's own shape. Confirmed live: a real e2e run built an
+    intentionally-interpenetrating rover assembly, defined joints, and
+    exported straight to URDF without ever calling
+    validate_assembly_collisions, despite it being referenced in the
+    system prompt -- this makes the check structurally unskippable before
+    export_assembly_to_urdf specifically, scoped per (session, assembly
+    name) rather than session-wide (two different assemblies in the same
+    session must each be validated on their own)."""
+    sid_a = "collision-gate-unit-a"
+    sid_b = "collision-gate-unit-b"
+
+    assert rd._collision_check_before_export_check("export_assembly_to_urdf", {"assembly_name": "rover"}, sid_a) is not None
+    assert rd._collision_check_before_export_check("create_freecad_box", {"assembly_name": "rover"}, sid_a) is None  # not a gated tool
+
+    rd._mark_collision_validation_done("validate_assembly_collisions", {"assembly_name": "rover"}, sid_a)
+    assert rd._collision_check_before_export_check("export_assembly_to_urdf", {"assembly_name": "rover"}, sid_a) is None
+    # A DIFFERENT assembly_name in the SAME session is still blocked.
+    assert rd._collision_check_before_export_check("export_assembly_to_urdf", {"assembly_name": "other_rig"}, sid_a) is not None
+    # A different session's own flag is untouched.
+    assert rd._collision_check_before_export_check("export_assembly_to_urdf", {"assembly_name": "rover"}, sid_b) is not None
+
+    rd._mark_collision_validation_done("create_freecad_box", {"assembly_name": "rover"}, sid_b)  # not the validation tool -- no-op
+    assert rd._collision_check_before_export_check("export_assembly_to_urdf", {"assembly_name": "rover"}, sid_b) is not None
+
+
+def test_export_assembly_to_urdf_blocked_until_collisions_validated_this_session() -> None:
+    """Full dispatch_tool_call integration test: confirms the gate itself
+    fires through the REAL dispatch path (not just the pure function above)
+    before export_assembly_to_urdf ever reaches the engine, and stops
+    firing once validation is recorded. Doesn't dispatch a real
+    validate_assembly_collisions call here — the mock CAD driver
+    deliberately always fails it (and export_assembly_to_urdf itself,
+    "no honest partial stub" — see mock.py's own comment on both), since
+    a real boolean intersection needs actual BRep solids this driver
+    doesn't have; that's an orthogonal, pre-existing limitation of the
+    mock driver, not something this gate changes. Once unblocked, export
+    still fails here too, but with the ENGINE's own "not supported by the
+    mock CAD driver" message rather than the gate's rejection — proving
+    the gate itself, not the mock's inherent limitation, is what moved.
+    """
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    sid = "collision-gate-export-integration"
+    set_session_id(sid)
+    rd._set_has_plan(True, "test-harness plan")
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+
+    assert rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_box", arguments={"name": "chassis", "length": 40, "width": 20, "height": 10}),
+        engine, control_plane,
+    ).ok is True
+    assert rd.dispatch_tool_call(
+        ToolCall(tool_id="create_freecad_assembly", arguments={"name": "rig"}), engine, control_plane
+    ).ok is True
+    assert rd.dispatch_tool_call(
+        ToolCall(tool_id="add_parts_to_assembly", arguments={"assembly_name": "rig", "part_names": ["chassis"]}),
+        engine, control_plane,
+    ).ok is True
+
+    # BLOCKED BY THE GATE: this session has never called validate_assembly_collisions for "rig".
+    blocked = rd.dispatch_tool_call(
+        ToolCall(tool_id="export_assembly_to_urdf", arguments={"assembly_name": "rig"}), engine, control_plane
+    )
+    assert blocked.ok is False
+    assert "validate_assembly_collisions" in json.dumps(blocked.payload)
+    assert "rig" not in rd._COLLISIONS_VALIDATED_BY_SESSION.get(sid, set())
+
+    rd._mark_collision_validation_done("validate_assembly_collisions", {"assembly_name": "rig"}, sid)
+    assert "rig" in rd._COLLISIONS_VALIDATED_BY_SESSION.get(sid, set())
+
+    # GATE NO LONGER BLOCKS — reaches the engine, which fails for its OWN
+    # unrelated, pre-existing reason (mock has no real BRep solids).
+    past_gate = rd.dispatch_tool_call(
+        ToolCall(tool_id="export_assembly_to_urdf", arguments={"assembly_name": "rig"}), engine, control_plane
+    )
+    assert past_gate.ok is False
+    assert "not supported by the mock CAD driver" in json.dumps(past_gate.payload)
+
+
 def test_tool_apply_assembly_constraint_hard_blocks_uv_tensor() -> None:
     """uv_tensor is forbidden on this ReAct-facing wrapper (real e2e runs
     showed the orchestrator doesn't reliably self-correct from a runtime
