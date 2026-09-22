@@ -90,20 +90,62 @@ doc.recompute()
 
 {% elif step.kind == "boolean" %}
 {{ step.var }} = doc.addObject({{ step.feature_type|pyrepr }}, {{ step.name|pyrepr }})
+{% set combined_names = [] %}
+{% for _n in [step.base_object, step.tool_object] + (step.objects or []) %}
+{% if _n and _n not in combined_names %}
+{% set _ = combined_names.append(_n) %}
+{% endif %}
+{% endfor %}
+{% if step.operation == "cut" %}
 _base_{{ step.index }} = doc.getObject({{ step.base_object|pyrepr }})
 _tool_{{ step.index }} = doc.getObject({{ step.tool_object|pyrepr }})
 if _base_{{ step.index }} is None:
     raise RuntimeError("no object named " + {{ step.base_object|pyrepr }} + " in the session document")
 if _tool_{{ step.index }} is None:
     raise RuntimeError("no object named " + {{ step.tool_object|pyrepr }} + " in the session document")
-{% if step.operation == "cut" %}
 {{ step.var }}.Base = _base_{{ step.index }}
 {{ step.var }}.Tool = _tool_{{ step.index }}
-{% else %}
-{{ step.var }}.Shapes = [_base_{{ step.index }}, _tool_{{ step.index }}]
-{% endif %}
 _base_{{ step.index }}.Visibility = False
 _tool_{{ step.index }}.Visibility = False
+{% else %}
+{# Silent Data Loss fix: base_object/tool_object and objects USED to be
+   mutually exclusive here (whichever the caller's step dict happened to
+   carry) -- a caller that populated BOTH (e.g. a replayed/compiled-skill
+   step logged before dana.core.react_dispatch._tool_perform_freecad_boolean
+   started merging them itself) silently lost base_object/tool_object the
+   instant `objects` was non-empty, fusing a disjoint compound missing a
+   real, named part with no error anywhere. combined_names (deduplicated,
+   order-preserving) is EVERY name across all three fields, so this template
+   can never silently drop one just because a caller split them across
+   different arguments. #}
+_shapes_{{ step.index }} = [doc.getObject(_n) for _n in {{ combined_names|pyrepr }}]
+for _n, _s in zip({{ combined_names|pyrepr }}, _shapes_{{ step.index }}):
+    if _s is None:
+        raise RuntimeError("no object named " + _n + " in the session document")
+{{ step.var }}.Shapes = _shapes_{{ step.index }}
+for _s in _shapes_{{ step.index }}:
+    _s.Visibility = False
+{% endif %}
+doc.recompute()
+# Boolean Assembly Inheritance: if this boolean's primary input (base_object
+# -- for a multi-object union/intersect, the first name in objects) was a
+# member of an App::Part assembly, add this boolean's own RESULT into that
+# same assembly. FreeCAD's own scope-consistency rules (see this module's
+# apply_boolean/perform_freecad_boolean docstrings) then keep Base/Tool/
+# Shapes correctly co-located with the feature that references them, rather
+# than evicting them to the document root the way an UNGROUPED boolean
+# result otherwise forces. Deliberately does NOT call removeObject on
+# anything -- confirmed live that explicitly evicting an operand (instead
+# of just adding the result and letting FreeCAD's own scope rules resolve
+# the rest) collapses the WHOLE Group to empty instead of a clean swap.
+{% set primary_name = combined_names[0] if combined_names else "" %}
+_primary_input_{{ step.index }} = doc.getObject({{ primary_name|pyrepr }})
+if _primary_input_{{ step.index }} is not None:
+    for _asm_{{ step.index }} in [_o for _o in doc.Objects if _o.TypeId == "App::Part"]:
+        if _primary_input_{{ step.index }} in _asm_{{ step.index }}.Group:
+            if {{ step.var }} not in _asm_{{ step.index }}.Group:
+                _asm_{{ step.index }}.addObject({{ step.var }})
+            break
 doc.recompute()
 _bbox_{{ step.index }} = {{ step.var }}.Shape.BoundBox
 _bbox_collapsed_{{ step.index }} = (
