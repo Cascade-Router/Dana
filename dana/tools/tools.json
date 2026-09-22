@@ -2745,7 +2745,7 @@
     },
     {
       "id": "generate_simulation_wrapper",
-      "description_en": "RL Pipeline bridge: writes a standalone Python simulation-loader script that loads a previously-exported .urdf (from export_assembly_to_urdf/generate_urdf_assembly) into a physics simulator, so a caller doesn't have to hand-write the loader boilerplate. For target_platform='isaac_sim': a standalone Isaac Sim script that boots SimulationApp, imports the URDF via the URDF importer extension, spawns it at the origin on a ground plane, and wraps it in a minimal Gym-style RL environment class with empty reset()/step() stubs operating on PyTorch tensors (reward/termination logic is left as TODOs — that's task-specific modeling only the caller can do). For 'gazebo': a ROS2 Python launch file that starts robot_state_publisher plus Gazebo (gazebo_ros's gazebo.launch.py) and spawns the robot into it via spawn_entity.py. For 'ros2': the same launch file shape with no Gazebo dependency — just robot_state_publisher/joint_state_publisher (e.g. for RViz2 visualization or a ros2_control-driven simulator). Fails with a clear error if urdf_path doesn't resolve to a real file (same hallucinated-path guard generate_urdf_assembly's own mesh_path uses) rather than emitting a script that would immediately fail when run. Returns the written file's path plus exact run instructions for the chosen platform.",
+      "description_en": "RL Pipeline bridge: writes a standalone Python simulation-loader script that loads a previously-exported .urdf (from export_assembly_to_urdf/generate_urdf_assembly) into a physics simulator, so a caller doesn't have to hand-write the loader boilerplate. For target_platform='isaac_sim': a standalone Isaac Sim script that boots SimulationApp, imports the URDF via the URDF importer extension, spawns it at the origin on a ground plane, and wraps it in a minimal Gym-style RL environment class with empty reset()/step() stubs operating on PyTorch tensors (reward/termination logic is left as TODOs — that's task-specific modeling only the caller can do). For 'gazebo': a ROS2 Python launch file that starts robot_state_publisher plus Gazebo (gazebo_ros's gazebo.launch.py) and spawns the robot into it via spawn_entity.py. For 'ros2': the same launch file shape with no Gazebo dependency — just robot_state_publisher/joint_state_publisher (e.g. for RViz2 visualization or a ros2_control-driven simulator). For 'webots': a Webots robot CONTROLLER script (not a standalone loader — Webots has no runtime call that ingests a raw .urdf; the URDF must first be converted offline to a PROTO via the separate urdf2webots tool and placed in your .wbt world file with this script set as its controller), which generically discovers every Motor-type device on the robot and wraps them in the same minimal Gym-style stub shape. Fails with a clear error if urdf_path doesn't resolve to a real file (same hallucinated-path guard generate_urdf_assembly's own mesh_path uses) rather than emitting a script that would immediately fail when run. Returns the written file's path plus exact run instructions for the chosen platform.",
       "parameters": [
         {
           "name": "assembly_name",
@@ -2757,8 +2757,8 @@
           "name": "target_platform",
           "type": "string",
           "required": true,
-          "enum": ["isaac_sim", "gazebo", "ros2"],
-          "description_en": "Which simulator/framework to generate a loader for. 'isaac_sim': standalone Omniverse Isaac Sim Python script. 'gazebo': ROS2 launch file that also starts Gazebo and spawns the robot into it. 'ros2': ROS2 launch file with robot_state_publisher/joint_state_publisher only, no Gazebo."
+          "enum": ["isaac_sim", "gazebo", "ros2", "webots"],
+          "description_en": "Which simulator/framework to generate a loader for. 'isaac_sim': standalone Omniverse Isaac Sim Python script. 'gazebo': ROS2 launch file that also starts Gazebo and spawns the robot into it. 'ros2': ROS2 launch file with robot_state_publisher/joint_state_publisher only, no Gazebo. 'webots': a Webots robot controller script for a PROTO you convert from the URDF yourself first (see this tool's own description)."
         },
         {
           "name": "urdf_path",
@@ -2770,7 +2770,7 @@
           "name": "output_path",
           "type": "string",
           "required": false,
-          "description_en": "Where to write the generated Python file. Defaults to '<assembly_name>_<target_platform>_sim.py' written next to the resolved urdf_path."
+          "description_en": "Where to write the generated Python file. Defaults to '<assembly_name>_<target_platform>_sim.py' under this session's own freecad_output/sim_wrappers/ directory."
         }
       ]
     },

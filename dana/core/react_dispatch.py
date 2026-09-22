@@ -4774,7 +4774,7 @@ def _tool_export_assembly_to_urdf(args: dict[str, Any], engine: Any, _cp: Any) -
     )
 
 
-_SIM_TARGET_PLATFORMS = frozenset({"isaac_sim", "gazebo", "ros2"})
+_SIM_TARGET_PLATFORMS = frozenset({"isaac_sim", "gazebo", "ros2", "webots"})
 
 
 def _tool_generate_simulation_wrapper(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
