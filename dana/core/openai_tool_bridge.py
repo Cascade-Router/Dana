@@ -57,13 +57,17 @@ def build_image_content_part(image_b64: str, *, mime_type: str = "image/png") ->
 def build_multimodal_messages(
     prompt: str,
     *,
-    image_b64: str | None = None,
-    mime_type: str = "image/png",
+    images: list[tuple[str, str]] | None = None,
     system: str | None = None,
 ) -> list[dict[str, Any]]:
-    """One user turn with an optional inline image, as an OpenAI content array."""
+    """One user turn with zero or more inline images, as an OpenAI content
+    array. ``images`` is an ordered list of ``(image_b64, mime_type)`` pairs
+    — multiple images let a multi-view VLM prompt (e.g. orthographic
+    front/top/side projections of the same part) cross-reference them in a
+    single turn instead of describing each in isolation.
+    """
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-    if image_b64:
+    for image_b64, mime_type in images or ():
         content.append(build_image_content_part(image_b64, mime_type=mime_type))
     messages: list[dict[str, Any]] = []
     if system:
@@ -163,7 +167,8 @@ def _complete_openai_with_tools_once(
     """Stream one ``/chat/completions`` turn; return the assembled ``message``.
 
     Returns ``{"content": str | None, "tool_calls": list[dict], "ttft_ms": float | None,
-    "usage": dict | None}`` — the exact shape ``dana.tools.schema.openai_tool_calls_to_ir``
+    "usage": dict | None, "finish_reason": str | None}`` — the exact shape
+    ``dana.tools.schema.openai_tool_calls_to_ir``
     and plain-text callers both need, so there is a single HTTP call site for
     text, tool-calling, and vision requests alike. ``ttft_ms`` is ``None``
     only if the stream ended with no content/tool-call delta at all (an
@@ -238,6 +243,12 @@ def _complete_openai_with_tools_once(
     # stream ends.
     tool_call_parts: dict[int, dict[str, Any]] = {}
     usage: dict[str, Any] | None = None
+    # Token-Truncation Trap: only the LAST chunk of a completion carries a
+    # non-null finish_reason (every intermediate delta chunk has it as
+    # null/absent) — captured here so a caller can distinguish "the model
+    # finished naturally" from "cut off by max_tokens" (finish_reason ==
+    # "length", or "MAX_TOKENS" for some OpenAI-compatible Gemini endpoints).
+    finish_reason: str | None = None
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -262,7 +273,10 @@ def _complete_openai_with_tools_once(
                 choices = chunk.get("choices") or []
                 if not choices:
                     continue
-                delta = (choices[0] or {}).get("delta") or {}
+                choice0 = choices[0] or {}
+                delta = choice0.get("delta") or {}
+                if choice0.get("finish_reason"):
+                    finish_reason = str(choice0["finish_reason"])
 
                 piece = delta.get("content")
                 if piece:
@@ -284,6 +298,15 @@ def _complete_openai_with_tools_once(
                         entry["function"]["name"] += fn_delta["name"]
                     if fn_delta.get("arguments"):
                         entry["function"]["arguments"] += fn_delta["arguments"]
+                    # Gemini's OpenAI-compat endpoint attaches its opaque
+                    # thought_signature here as {"google": {"thought_signature":
+                    # "..."}} — an atomic signature, not text to accumulate
+                    # char-by-char like name/arguments, so this takes whatever
+                    # arrives whole rather than concatenating. Absent for
+                    # every other provider (OpenAI, Groq, Ollama).
+                    tc_extra = tc_delta.get("extra_content")
+                    if isinstance(tc_extra, dict):
+                        entry["extra_content"] = tc_extra
     except urllib.error.HTTPError as exc:
         # The generic exception handler upstream (dana.core.react_dispatch's
         # next_react_turn) only ever sees str(exc) get discarded into a UI
@@ -320,7 +343,13 @@ def _complete_openai_with_tools_once(
         tool_calls = _fallback_tool_calls_from_content(content)
         if tool_calls:
             content = ""  # it was a function call, not a reply meant for the user
-    return {"content": content, "tool_calls": tool_calls, "ttft_ms": ttft_ms, "usage": usage}
+    return {
+        "content": content,
+        "tool_calls": tool_calls,
+        "ttft_ms": ttft_ms,
+        "usage": usage,
+        "finish_reason": finish_reason,
+    }
 
 
 def complete_openai_with_tools(
@@ -367,9 +396,195 @@ def complete_openai_with_tools(
     )
 
 
+def _messages_for_ollama_native(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ollama's native ``/api/chat`` template expects a REPLAYED assistant
+    ``tool_calls[].function.arguments`` to be a real JSON object — sending
+    back the OpenAI-wire JSON-STRING encoding
+    ``dana.core.react_dispatch.build_assistant_tool_call_message`` always
+    produces (the shared ``messages`` history is built once, in that
+    shape, for every provider including cloud ones) made Ollama's own
+    parser choke on the very next turn (``HTTP 400: "Value looks like
+    object, but can't find closing '}' symbol"``) — confirmed live during
+    this function's own validation. Returns a NEW list; the caller's own
+    ``messages``, shared with every other provider, is never mutated.
+    """
+    out: list[dict[str, Any]] = []
+    for message in messages:
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            out.append(message)
+            continue
+        new_calls: list[Any] = []
+        for entry in tool_calls:
+            fn = entry.get("function") if isinstance(entry, dict) else None
+            args = fn.get("arguments") if isinstance(fn, dict) else None
+            if isinstance(args, str):
+                try:
+                    parsed_args = json.loads(args) if args.strip() else {}
+                except (json.JSONDecodeError, ValueError):
+                    parsed_args = {}
+                new_calls.append({**entry, "function": {**fn, "arguments": parsed_args}})
+            else:
+                new_calls.append(entry)
+        out.append({**message, "tool_calls": new_calls})
+    return out
+
+
+def complete_ollama_native_with_tools(
+    messages: list[dict[str, Any]],
+    *,
+    base_url: str,
+    model: str,
+    tools: list[dict[str, Any]] | None = None,
+    num_predict: int = 512,
+    num_ctx: int = 32768,
+    num_gpu: int | None = None,
+    temperature: float = 0.1,
+    timeout: float = 600.0,
+) -> dict[str, Any]:
+    """Ollama's NATIVE ``/api/chat`` surface — distinct from the OpenAI-
+    compat ``/v1/chat/completions`` bridge above. Exists for one reason:
+    the OpenAI-compat surface has no way to request a context-window size
+    (``max_tokens`` only maps to output length, ``num_predict``); the
+    native endpoint accepts ``num_ctx`` directly inside its ``options``
+    object, which is the only way this process can raise it without every
+    machine hand-editing a Modelfile. See ``dana.core.model_provider.
+    ollama_num_ctx``.
+
+    ``num_gpu`` (``dana.core.model_provider.ollama_num_gpu`` — number of
+    model layers to offload to GPU) is ``None`` by default and then simply
+    omitted from ``options``, leaving Ollama's own automatic VRAM-fit
+    heuristic in charge exactly as before this parameter existed; only a
+    caller that explicitly resolved ``DANA_OLLAMA_NUM_GPU`` passes a
+    concrete value here.
+
+    Returns the SAME ``{"content", "tool_calls", "ttft_ms", "usage",
+    "finish_reason"}`` shape ``complete_openai_with_tools`` does, so
+    ``ModelProvider.complete_with_tool_calls`` can call either
+    interchangeably. ``tool_calls[i]["function"]["arguments"]`` is left as
+    the dict Ollama itself returns, never re-serialized to a JSON string —
+    ``dana.tools.schema.openai_tool_calls_to_ir`` already accepts either
+    shape, and no wire ``id`` is preserved either way (Dana synthesizes its
+    own — see ``dana.core.react_dispatch.build_assistant_tool_call_message``'s
+    own docstring), so none is fabricated here.
+
+    No ``tool_choice``: Ollama's native API has no equivalent knob (every
+    call behaves like the OpenAI wire format's ``"auto"``).
+
+    Streamed as newline-delimited JSON (Ollama's own convention, distinct
+    from OpenAI's ``data: `` SSE framing) — one object per line, the last
+    carrying ``"done": true`` plus ``prompt_eval_count``/``eval_count``
+    (used for ``usage``). Unlike OpenAI's per-token tool-call deltas,
+    Ollama emits a chunk's ``message.tool_calls`` whole, not
+    character-by-character — accumulated by extending a list rather than
+    concatenating strings.
+    """
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        # Accept either the bare Ollama origin or the "/v1"-suffixed form
+        # dana.core.model_provider._resolve_openai_endpoint already builds
+        # for the OpenAI-compat path, so callers don't need a second,
+        # native-specific base_url to track.
+        root = root[: -len("/v1")]
+    url = root + "/api/chat"
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": _messages_for_ollama_native(messages),
+        "stream": True,
+        "options": {
+            "temperature": float(temperature),
+            "num_predict": int(num_predict),
+            "num_ctx": int(num_ctx),
+        },
+    }
+    if num_gpu is not None:
+        payload["options"]["num_gpu"] = int(num_gpu)
+    if tools:
+        payload["tools"] = tools
+
+    headers = {"Content-Type": "application/json", "User-Agent": _USER_AGENT}
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
+    )
+
+    start = time.perf_counter()
+    ttft_ms: float | None = None
+    content_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    usage: dict[str, Any] | None = None
+    finish_reason: str | None = None
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                message = chunk.get("message") or {}
+                piece = message.get("content")
+                if piece:
+                    if ttft_ms is None:
+                        ttft_ms = (time.perf_counter() - start) * 1000.0
+                    content_parts.append(piece)
+                chunk_tool_calls = message.get("tool_calls")
+                if chunk_tool_calls:
+                    if ttft_ms is None:
+                        ttft_ms = (time.perf_counter() - start) * 1000.0
+                    tool_calls.extend(chunk_tool_calls)
+                if chunk.get("done"):
+                    finish_reason = chunk.get("done_reason") or ("tool_calls" if tool_calls else "stop")
+                    prompt_tokens = chunk.get("prompt_eval_count")
+                    completion_tokens = chunk.get("eval_count")
+                    if prompt_tokens is not None or completion_tokens is not None:
+                        usage = {
+                            "prompt_tokens": int(prompt_tokens or 0),
+                            "completion_tokens": int(completion_tokens or 0),
+                        }
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 — body read is best-effort diagnostics only
+            body = "<no response body available>"
+        print(
+            f"[openai_tool_bridge] ollama-native HTTP {exc.code} from {url!r} model={model!r}: "
+            f"{exc.reason}\nresponse body: {body}",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise RuntimeError(f"ollama-native HTTP {exc.code}: {exc.reason} -- {body}") from exc
+    except urllib.error.URLError as exc:
+        raise TimeoutError(f"ollama-native endpoint unreachable or stalled: {exc.reason}") from exc
+
+    content = "".join(content_parts) or None
+    if tools and not tool_calls:
+        # The exact qwen2.5-coder quirk _complete_openai_with_tools_once
+        # already recovers from on the OpenAI-compat path (see
+        # _fallback_tool_calls_from_content's own docstring — "verified
+        # live against a running Ollama daemon") reproduces identically
+        # over this native endpoint: confirmed live during this function's
+        # own validation, the model emitted its tool call as a bare JSON
+        # object in message.content with an empty native tool_calls array.
+        tool_calls = _fallback_tool_calls_from_content(content)
+        if tool_calls:
+            content = ""  # it was a function call, not a reply meant for the user
+    return {
+        "content": content,
+        "tool_calls": tool_calls,
+        "ttft_ms": ttft_ms,
+        "usage": usage,
+        "finish_reason": finish_reason,
+    }
+
+
 __all__ = (
     "build_image_content_part",
     "build_multimodal_messages",
+    "complete_ollama_native_with_tools",
     "complete_openai_with_tools",
     "encode_image_bytes",
 )

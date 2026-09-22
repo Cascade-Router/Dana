@@ -1740,7 +1740,9 @@ def _tool_analyze_workspace_image(
 def _tool_analyze_reference_design(
     args: dict[str, Any], _engine: Any, _cp: Any, *, api_keys: dict[str, str] | None = None
 ) -> dict[str, Any]:
-    return _vision_analyze_reference_design(str(args.get("file_path") or ""), api_keys=api_keys)
+    raw_paths = args.get("file_paths")
+    file_paths = [str(p) for p in raw_paths] if isinstance(raw_paths, list) else []
+    return _vision_analyze_reference_design(file_paths, api_keys=api_keys)
 
 
 # Desktop Omni-Vision (dana.plugins.os.desktop_vision) — also needs the
@@ -6295,8 +6297,10 @@ coding engine runs and self-repairs it in this one call.
 `test_command` existed, or the change still needs confirming.
 - When asked to model, build, or CAD something from an uploaded image or \
 picture, immediately call `load_capability(domain="vision_tools")`, then \
-`analyze_reference_design` on that image file — never `take_canvas_screenshot` \
-or `analyze_workspace_image`, which don't produce the CSG blueprint needed \
+`analyze_reference_design` with `file_paths` set to ALL uploaded views of \
+that object (e.g. front/top/side orthographic projections, if more than \
+one was provided) — never `take_canvas_screenshot` or \
+`analyze_workspace_image`, which don't produce the CSG blueprint needed \
 here. Feed the returned blueprint straight into `create_plan`.
 - If step 4's `run_verification_command` errors, do NOT stop — call \
 `execute_code_task` again with the exact traceback in `task_description` \

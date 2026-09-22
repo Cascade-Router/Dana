@@ -11,7 +11,13 @@ from typing import Any, Literal
 
 import requests
 
-from dana.core.openai_tool_bridge import _USER_AGENT, build_multimodal_messages, complete_openai_with_tools
+from dana.config import LLM_MAX_OUTPUT_TOKENS
+from dana.core.openai_tool_bridge import (
+    _USER_AGENT,
+    build_multimodal_messages,
+    complete_ollama_native_with_tools,
+    complete_openai_with_tools,
+)
 from dana.core.pricing import estimate_cost_usd
 from dana.system_health import llm_lock
 from dana.tools.schema import openai_tool_calls_to_ir
@@ -23,7 +29,7 @@ ProviderKind = Literal["local", "cloud", "auto"]
 # shapes; bridging them is out of scope for the OpenAI tool-calling bridge.
 _NON_OPENAI_SCHEMA_PROVIDERS = frozenset({"gemini", "google", "anthropic"})
 
-_DEFAULT_LOCAL_MODEL = "qwen2.5-coder:7b"
+_DEFAULT_LOCAL_MODEL = "qwen2.5-coder:14b"
 # Separate default from _DEFAULT_LOCAL_MODEL on purpose: that one is a
 # text/tool-calling model (e.g. Qwen2.5-Coder), and Ollama's own OpenAI-
 # compat surface rejects a multimodal request outright with an HTTP 400
@@ -54,13 +60,34 @@ _GEMINI_THROTTLE_MAX_WAIT_S = 30.0
 
 
 def ensure_dotenv_loaded() -> None:
+    """Reload ``.env`` into ``os.environ`` — called at the top of every
+    provider-resolving function (``cloud_provider_name``, ``local_model_name``,
+    ``_resolve_openai_endpoint``, ...), not once at process startup, precisely
+    so a hand-edit to ``.env`` takes effect on this process's very next call,
+    no restart needed — the exact same "no backend restart needed" promise
+    ``dana.api.system.save_system_env`` already makes for its own Settings-
+    modal writes (it updates ``.env`` AND ``os.environ`` together in one
+    request for that reason).
+
+    ``override=True`` is required for that promise to actually hold:
+    ``load_dotenv()`` defaults to ``override=False`` (never replacing a key
+    already present in ``os.environ``), which silently breaks it — a value
+    ``os.environ`` picked up ONCE (an earlier ``.env`` load from before an
+    edit, or a prior ``save_system_env`` write from a since-reverted Settings
+    change) then wins forever, no matter how many times ``.env`` is corrected
+    afterward, until the process is restarted. This is exactly the reported
+    bug: ``.env`` read ``DANA_CLOUD_PROVIDER=openai`` but the running
+    process kept resolving "gemini" — a stale ``os.environ`` entry from
+    earlier in that process's life, which the default ``override=False``
+    reload could never dislodge.
+    """
     try:
         from dotenv import load_dotenv
 
         from dana.paths import ENV_PATH
 
-        load_dotenv(ENV_PATH)
-        load_dotenv()
+        load_dotenv(ENV_PATH, override=True)
+        load_dotenv(override=True)
     except Exception:  # noqa: BLE001
         pass
 
@@ -251,6 +278,162 @@ def cloud_primary_enabled() -> bool:
     }
 
 
+def resolve_cloud_tool_provider() -> str:
+    """Which cloud provider name ``tool_calling_provider()`` resolves to
+    once cloud-primary routing is active for the OpenAI-tool-calling
+    bridge — factored out so a caller latching a session onto cloud mid-
+    conversation (see the Context Handoff check in
+    ``dana.api.server._run_react_loop``) computes the EXACT SAME name a
+    normal cloud-primary turn would use. Deliberately NOT
+    ``cloud_provider_name()`` above: that one's own "gemini" default backs
+    the plain-text-only local-vs-cloud complexity-fallback path, and
+    Gemini's OpenAI-compat endpoint has a known thought_signature 400 bug
+    mid-multi-turn tool-calling (see model docstrings elsewhere in this
+    module) — exactly the wrong provider to silently hand a struggling
+    long-running tool-calling session off to.
+
+    Bug fix: this used to return ``DANA_CLOUD_PROVIDER`` verbatim whenever
+    it was explicitly set, with no check against the OpenAI tool-calling
+    bridge's own ``_NON_OPENAI_SCHEMA_PROVIDERS`` — the "avoid gemini"
+    reasoning above only ever protected against ``cloud_provider_name()``'s
+    bare, unset-env default, not an operator's own ``DANA_CLOUD_PROVIDER=
+    gemini`` (set for some other, plain-text call path). Confirmed live
+    (dana_runtime.log): the Context Handoff latched a session onto
+    ``"gemini"``, and every subsequent turn's ``next_react_turn`` raised
+    ``NotImplementedError`` before ever reaching the LLM — a permanent,
+    silent dead end for that session, since ``session["active_provider"]``
+    is never cleared once set. Falling back to ``"openrouter"`` here for
+    any value this bridge genuinely can't serve keeps the actual
+    configured preference for every OTHER call path untouched.
+    """
+    configured = (os.environ.get("DANA_CLOUD_PROVIDER") or "").strip().lower()
+    if configured and configured not in _NON_OPENAI_SCHEMA_PROVIDERS:
+        return configured
+    return "openrouter"
+
+
+def ollama_num_ctx() -> int:
+    """Context-window size (tokens) requested from local Ollama's NATIVE
+    ``/api/chat`` surface via its ``options.num_ctx`` — the OpenAI-compat
+    ``/v1/chat/completions`` surface this bridge used exclusively before
+    has no equivalent knob (``max_tokens`` only maps to output length,
+    ``num_predict``), so a long local tool-calling chain silently
+    truncated at the pulled model tag's own default (often 2048-4096) with
+    no error surfaced anywhere. ``DANA_OLLAMA_NUM_CTX`` overrides.
+
+    Default lowered from 32768 to 8192 (confirmed CUDA OOM on an RTX 2080
+    running Qwen2.5-Coder:14B): Ollama/llama.cpp pre-allocates VRAM for the
+    FULL requested ``num_ctx`` as a fixed-size KV cache at context creation
+    time, regardless of how many tokens a given call actually uses — for
+    this model's architecture that's roughly 192KiB/token of KV cache, so
+    32768 alone commits ~6GB on top of the ~9GB the Q4 weights already
+    need, well past an 8GB (and tight on an 11GB) card before a single real
+    token is processed. 8192 covers this codebase's own per-turn budget
+    (tool schemas capped at ``_TOOL_TOKEN_BUDGET`` in
+    ``dana.core.react_dispatch``, trajectory pruned/compressed by
+    ``dana.core.context_manager``) with headroom, while the Two-Layer
+    Context Management handoff (``dana.api.server._run_react_loop``) still
+    hands a session off to cloud well before it would ever need more.
+    """
+    raw = (os.environ.get("DANA_OLLAMA_NUM_CTX") or "").strip()
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return 8192
+
+
+def unload_ollama_model(model_name: str, *, timeout: float = 5.0) -> bool:
+    """Best-effort request asking local Ollama to immediately unload
+    ``model_name`` from RAM/VRAM, rather than waiting out its own default
+    5-minute ``keep_alive``. Ollama's documented signal for this is an
+    ordinary generate request with an empty ``prompt`` and
+    ``"keep_alive": 0`` (see Ollama's FAQ: "How do I keep a model loaded in
+    memory or make it unload immediately?") — ``/api/generate`` rather than
+    ``/api/chat`` since an empty prompt needs no ``messages`` shape at all,
+    the smallest request that still carries ``keep_alive``.
+
+    Same base-URL normalization ``dana.core.openai_tool_bridge.
+    complete_ollama_native_with_tools`` already uses: accepts either the
+    bare Ollama origin or the ``"/v1"``-suffixed form
+    ``_resolve_openai_endpoint`` builds for the OpenAI-compat path, so a
+    caller never needs a second, native-specific URL to track.
+
+    Never raises: this is opportunistic cleanup a caller fires and forgets
+    once a session (or the whole process) has genuinely gone idle, never a
+    step any turn's own success depends on. Ollama not running, a network
+    hiccup, or the model already unloaded all just mean nothing to reclaim
+    right now — returns ``True``/``False`` only for logging/tests.
+    """
+    model_name = (model_name or "").strip()
+    if not model_name:
+        return False
+    root = (os.environ.get("OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    try:
+        requests.post(
+            f"{root}/api/generate",
+            json={"model": model_name, "prompt": "", "keep_alive": 0},
+            timeout=timeout,
+        )
+        return True
+    except requests.RequestException:
+        return False
+
+
+def ollama_num_gpu() -> int | None:
+    """Number of model layers to offload to GPU, requested from local
+    Ollama's NATIVE ``/api/chat`` surface via its ``options.num_gpu`` — the
+    same "no OpenAI-wire equivalent" gap ``ollama_num_ctx`` documents.
+    Unset (``None``, the default) omits ``num_gpu`` from ``options``
+    entirely, leaving Ollama's own automatic VRAM-fit heuristic in charge,
+    exactly as before this existed. ``DANA_OLLAMA_NUM_GPU``, when set to a
+    valid integer, caps the offload instead — lower than Ollama's own guess
+    trades inference speed for headroom on a GPU shared with something else
+    (the CAD viewport, another process), rather than Ollama silently
+    filling VRAM and starving it.
+    """
+    raw = (os.environ.get("DANA_OLLAMA_NUM_GPU") or "").strip()
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return None
+
+
+def estimate_message_tokens(messages: list[dict[str, Any]], *, tool_schema_tokens: int = 0) -> int:
+    """Cheap, dependency-free token estimate for a ``messages`` history —
+    a character-count heuristic (~3.5 chars/token, a reasonable blend of
+    English prose and JSON tool-call payloads), not a real tokenizer.
+    Good enough for "are we approaching this session's num_ctx budget",
+    not for billing — see ``dana.tools.schema_minify.estimate_tokens`` for
+    the word-count-based sibling heuristic used for schema-size
+    comparisons, a different unit for a different question.
+
+    ``tool_schema_tokens`` (default 0, for callers that genuinely have none
+    to report) adds a flat token count on top of ``messages`` for the
+    ``tools=`` schema payload sent alongside it in the SAME request —
+    without this, a caller measuring only ``messages`` silently
+    undercounts the real prompt Ollama/the provider actually processes by
+    up to ``dana.core.react_dispatch._TOOL_TOKEN_BUDGET`` (2000) tokens,
+    since that schema is serialized into the same context window but was
+    never part of this ``messages`` list to begin with. Pass the tool
+    schema's own hard token ceiling (rather than re-deriving the exact
+    narrowed schema, which would mean re-running the same
+    embedding-ranked narrowing this estimate is trying to avoid paying for
+    twice per turn) for a conservative, never-under, worst-case bound —
+    the actual schema is already capped at exactly that ceiling by
+    ``_cap_schemas_by_token_budget``, so this can never overstate the true
+    figure.
+    """
+    return int(len(json.dumps(messages, default=str)) / 3.5) + max(0, tool_schema_tokens)
+
+
 def tool_calling_provider() -> str:
     """Which ``ModelProvider.complete_with_tool_calls`` provider the ReAct
     loop's hot path should target this turn — the single source of truth
@@ -285,7 +468,7 @@ def tool_calling_provider() -> str:
     """
     if not cloud_primary_enabled():
         return "ollama"
-    return (os.environ.get("DANA_CLOUD_PROVIDER") or "").strip().lower() or "openrouter"
+    return resolve_cloud_tool_provider()
 
 
 def _log_ttft(
@@ -561,7 +744,13 @@ class ModelProvider:
                 (os.environ.get("DANA_OPENROUTER_MODEL") or os.environ.get("OPENROUTER_MODEL") or "").strip()
             )
             model_list = [m.strip() for m in raw_models.split(",") if m.strip()]
-            model = model_list[0] if model_list else "meta-llama/llama-3.3-70b-instruct:free"
+            # meta-llama/llama-3.3-70b-instruct:free confirmed DEAD (live 404 from
+            # OpenRouter itself: "This model is unavailable for free. The paid
+            # version is available now -- use this slug instead: meta-llama/
+            # llama-3.3-70b-instruct") -- verified-live, tool-calling-capable
+            # replacement; see DANA_OPENROUTER_MODEL's own .env comment for the
+            # verification method (openrouter.ai/api/v1/models, not a blog post).
+            model = model_list[0] if model_list else "nvidia/nemotron-3.5-lightning:free"
             fallback_models = model_list[1:]
             if not key:
                 raise RuntimeError("No API key configured for cloud provider='openrouter'")
@@ -626,6 +815,21 @@ class ModelProvider:
                 + "/v1"
             )
             model = (os.environ.get("DANA_OPENAI_TOOLS_MODEL") or "").strip() or self.local_model
+        elif provider == "deepseek":
+            # DeepSeek's own API — OpenAI-wire compatible, so this bridge
+            # needs no new transport, just a new key/base pair. Not free
+            # (unlike OpenRouter's :free tier or Groq's free tier) — see
+            # dana.core.llm_router's cost_per_1m fields for why a routing
+            # config would rank this behind the free entries by default.
+            key = (self._api_keys.get("deepseek") or os.environ.get("DEEPSEEK_API_KEY") or "").strip()
+            base = (
+                (os.environ.get("DEEPSEEK_API_BASE") or "").strip()
+                or "https://api.deepseek.com/v1"
+            )
+            model = (
+                (os.environ.get("DANA_DEEPSEEK_MODEL") or "").strip()
+                or "deepseek-chat"
+            )
         else:
             key = (self._api_keys.get("openai") or os.environ.get("OPENAI_API_KEY") or "").strip()
             base = (
@@ -693,14 +897,15 @@ class ModelProvider:
         tools: list[dict[str, Any]],
         provider: str | None = None,
         tool_choice: str | dict[str, Any] | None = None,
-        num_predict: int = 1024,
+        num_predict: int = LLM_MAX_OUTPUT_TOKENS,
         temperature: float = 0.1,
     ) -> dict[str, Any]:
         """OpenAI-schema tool-calling turn against a cloud or local-Ollama endpoint.
 
         Returns ``{"content": str, "tool_calls": list[ToolCall], "provider": str,
         "model": str, "usage": {"prompt_tokens": int, "completion_tokens": int},
-        "cost_usd": float | None}`` — ``tool_calls`` is already Dana's native IR
+        "cost_usd": float | None, "finish_reason": str | None}`` — ``tool_calls``
+        is already Dana's native IR
         (see ``dana.tools.schema.openai_tool_calls_to_ir``), so callers can hand
         results straight to the existing broker/dispatch path
         (``dana.core.agent_loop.execute_tool_call``) with no OpenAI-shape
@@ -728,6 +933,34 @@ class ModelProvider:
         (cloud + local), so whoever's reading logs doesn't have to go
         hunting for the original cloud error separately.
         """
+        # Dynamic LLM Router (dana.core.llm_router) — entirely opt-in via
+        # routing_config.yaml's presence. ``provider`` being explicitly
+        # forced by the caller always wins (a caller that names a specific
+        # provider has already made its own routing decision); otherwise, a
+        # valid fleet config takes over provider/model selection AND
+        # multi-hop fallback for this turn instead of the single hardcoded
+        # cloud->Ollama hop below. No routing_config.yaml (the default,
+        # out-of-the-box state) -> resolve_chain returns None -> falls
+        # through to the unchanged legacy path beneath this block.
+        if provider is None:
+            # Lazy import — dana.core.__init__ imports FROM this module, so
+            # a top-level `from dana.core import llm_router` here would race
+            # dana.core's own partial initialization; deferring the import
+            # to call time (same convention used throughout this codebase
+            # for exactly this reason) sidesteps it entirely.
+            from dana.core import llm_router
+
+            chain = llm_router.resolve_chain(messages, tools)
+            if chain:
+                return self._complete_with_tool_calls_via_router(
+                    messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    num_predict=num_predict,
+                    temperature=temperature,
+                    chain=chain,
+                )
+
         resolved_provider = (provider or cloud_provider_name()).strip().lower()
         if resolved_provider in _NON_OPENAI_SCHEMA_PROVIDERS:
             raise NotImplementedError(
@@ -744,18 +977,33 @@ class ModelProvider:
         # unserialized, since a cloud call has no local VRAM to contend for.
         try:
             with llm_lock if resolved_provider == "ollama" else contextlib.nullcontext():
-                raw = complete_openai_with_tools(
-                    messages,
-                    api_key=key,
-                    base_url=base,
-                    model=model,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    num_predict=num_predict,
-                    temperature=temperature,
-                    extra_headers=extra_headers,
-                    fallback_models=fallback_models,
-                )
+                if resolved_provider == "ollama":
+                    # Native /api/chat, not the OpenAI-compat surface — see
+                    # complete_ollama_native_with_tools's own docstring for
+                    # why (num_ctx has no OpenAI-wire equivalent).
+                    raw = complete_ollama_native_with_tools(
+                        messages,
+                        base_url=base,
+                        model=model,
+                        tools=tools,
+                        num_predict=num_predict,
+                        num_ctx=ollama_num_ctx(),
+                        num_gpu=ollama_num_gpu(),
+                        temperature=temperature,
+                    )
+                else:
+                    raw = complete_openai_with_tools(
+                        messages,
+                        api_key=key,
+                        base_url=base,
+                        model=model,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        num_predict=num_predict,
+                        temperature=temperature,
+                        extra_headers=extra_headers,
+                        fallback_models=fallback_models,
+                    )
             effective_provider = resolved_provider
         except Exception as exc:  # noqa: BLE001 — any cloud failure falls back to local Ollama below
             if resolved_provider == "ollama" or not ollama_fallback_enabled():
@@ -777,17 +1025,15 @@ class ModelProvider:
             fb_model = (os.environ.get("OLLAMA_FALLBACK_MODEL") or "").strip() or fb_model
             try:
                 with llm_lock:
-                    raw = complete_openai_with_tools(
+                    raw = complete_ollama_native_with_tools(
                         messages,
-                        api_key=fb_key,
                         base_url=fb_base,
                         model=fb_model,
                         tools=tools,
-                        tool_choice=tool_choice,
                         num_predict=num_predict,
+                        num_ctx=ollama_num_ctx(),
+                        num_gpu=ollama_num_gpu(),
                         temperature=temperature,
-                        extra_headers=fb_headers,
-                        fallback_models=fb_fallback_models,
                     )
             except Exception as fallback_exc:  # noqa: BLE001 — see docstring: this replaces exc, deliberately
                 raise RuntimeError(
@@ -822,19 +1068,222 @@ class ModelProvider:
             "model": model,
             "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
             "cost_usd": cost_usd,
+            # Token-Truncation Trap: "length"/"MAX_TOKENS" (provider-dependent
+            # wording) means the completion was cut off by num_predict, not
+            # finished naturally — see openai_tool_bridge's own capture of
+            # this field. None when the endpoint didn't report one at all.
+            "finish_reason": raw.get("finish_reason"),
         }
+
+    @staticmethod
+    def _looks_like_attempted_tool_call(content: str | None) -> bool:
+        """True when ``content`` (a completion's plain-text ``message.content``,
+        already run through ``complete_openai_with_tools``'s own
+        ``_fallback_tool_calls_from_content`` recovery with no luck) still
+        looks like the model was TRYING to emit a structured call rather
+        than giving a genuine conversational answer, rather than ordinary
+        prose. Deliberately loose/cheap (no full JSON parse — that already
+        failed, or this wouldn't be reached) so a real final answer that
+        merely happens to mention a brace in passing is the only realistic
+        false positive, and a false positive here just means one extra
+        fleet-entry hop instead of accepting a slower model's genuine
+        answer, never a crash or a dropped turn.
+
+        Two explicit shapes, confirmed live against a real Ollama
+        production failure (a raw ``{"name": "create_plan", "arguments":
+        ...}`` string landing in ``message.content`` instead of populating
+        ``message.tool_calls``):
+          - starts with ``{`` and contains both ``"name"`` and
+            ``"arguments"`` — the full OpenAI-shape call envelope, the
+            exact shape that incident produced.
+          - starts with ``[`` and contains ``{`` — a list of call-shaped
+            objects.
+        Also still catches the plainer case a small model is at least as
+        likely to produce for a tool like ``create_plan`` — the bare
+        ``arguments`` object with NO ``{"name":..., "arguments":...}``
+        envelope at all (e.g. ``{"objective": ..., "tasks": [...]}``) —
+        via the same ``startswith("{")`` fallback this already had; the two
+        explicit shapes above are checked FIRST purely so a true positive
+        is traceable to a named, specific shape in the log line below
+        rather than a generic "looked bracy" catch-all.
+        """
+        text = (content or "").strip()
+        if not text:
+            return False
+        if text.startswith("```"):
+            text = text.strip("`").strip()
+            if text[:4].lower() == "json":
+                text = text[4:].strip()
+        if text.startswith("{") and '"name"' in text and '"arguments"' in text:
+            return True
+        if text.startswith("[") and "{" in text:
+            return True
+        return text.startswith("{")
+
+    @staticmethod
+    def _tools_include(tools: list[dict[str, Any]] | None, tool_id: str) -> bool:
+        """True when ``tool_id`` is one of the function names in ``tools``
+        (the OpenAI-shape schema this turn actually offered the model —
+        see ``dana.tools.schema.to_openai_function_schema``'s own output
+        shape)."""
+        for tool in tools or []:
+            name = (tool.get("function") or {}).get("name") if isinstance(tool, dict) else None
+            if name == tool_id:
+                return True
+        return False
+
+    def _complete_with_tool_calls_via_router(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None,
+        num_predict: int,
+        temperature: float,
+        chain: "list[Any]",
+    ) -> dict[str, Any]:
+        """Walk ``chain`` (dana.core.llm_router.resolve_chain's output, a
+        list of ``FleetEntry``) in order, advancing to the next entry on ANY
+        exception — same "can't distinguish 402/429/5xx from a real outage"
+        reasoning as ``complete_with_tool_calls``'s own hardcoded Ollama
+        fallback (see that method's docstring) — until one succeeds or the
+        chain is exhausted. Returns the same result shape as
+        ``complete_with_tool_calls`` so callers can't tell which path
+        answered.
+        """
+        from dana.core import llm_router
+
+        errors: list[str] = []
+        for entry in chain:
+            try:
+                fallback_key, base, _, extra_headers, fallback_models = self._resolve_openai_endpoint(
+                    entry.provider
+                )
+            except Exception as exc:  # noqa: BLE001 — this entry has no usable key/base; try the next one
+                errors.append(f"{entry.id} ({entry.provider}): {exc}")
+                continue
+            key = llm_router.api_key_for(entry, fallback_key=fallback_key)
+            if not key:
+                errors.append(f"{entry.id} ({entry.provider}): no API key configured")
+                continue
+            try:
+                with llm_lock if entry.provider == "ollama" else contextlib.nullcontext():
+                    raw = complete_openai_with_tools(
+                        messages,
+                        api_key=key,
+                        base_url=base,
+                        model=entry.model,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        num_predict=num_predict,
+                        temperature=temperature,
+                        extra_headers=extra_headers,
+                        fallback_models=fallback_models,
+                    )
+            except Exception as exc:  # noqa: BLE001 — advance to the next chain entry
+                errors.append(f"{entry.id} ({entry.provider}/{entry.model}): {exc}")
+                print(
+                    f"[LLM Router] {entry.id} failed, advancing to next fleet entry: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                llm_router.report_fleet_entry_failure(entry, exc)
+                continue
+
+            # create_plan Schema-Adherence Gate: geometry tools are excluded
+            # from this chain up front (llm_router._turn_needs_geometry_
+            # precision) whenever they're offered, but create_plan can't be
+            # — it's dana.core.react_dispatch._CORE_TOOL_IDS, offered on
+            # literally every turn, so pre-excluding Ollama on its presence
+            # would exclude Ollama from every turn ever. Instead, react to
+            # the SAME failure mode reactively: complete_openai_with_tools
+            # already tries to recover a tool call an Ollama model emitted
+            # as plain JSON text in message.content instead of populating
+            # message.tool_calls (_fallback_tool_calls_from_content) — if
+            # THAT recovery also came up empty, and this turn offered
+            # create_plan, and the content still looks like an attempted
+            # structured call (JSON-ish, not ordinary prose) rather than a
+            # genuine conversational final answer, treat this entry as
+            # failed and advance — confirmed live (dana_runtime.log) that a
+            # 7B local model can fail create_plan's own nested tasks[i].
+            # expected_tools schema exactly this way.
+            if (
+                entry.provider == "ollama"
+                and not raw.get("tool_calls")
+                and self._tools_include(tools, "create_plan")
+                and self._looks_like_attempted_tool_call(raw.get("content"))
+            ):
+                reason = "returned an unrecoverable raw-text payload instead of a structured create_plan call"
+                errors.append(f"{entry.id} ({entry.provider}/{entry.model}): {reason}")
+                print(
+                    f"[LLM Router] {entry.id} {reason}, advancing to next fleet entry.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                # Explicit interception proof, into dana_runtime.log (NOT a
+                # bare `logging.getLogger(...).warning(...)` — this module
+                # never configures a handler for that, so a call like that
+                # goes nowhere and would look like a silent no-op the next
+                # time this exact failure needs diagnosing). ERROR is one of
+                # dana.core.telemetry's own seven fixed INFO-tier event
+                # kinds (see that module's docstring) — same stage=/detail=
+                # shape as its own EXISTING 'empty_final_turn' ERROR event,
+                # so this reads as one more instance of an already-
+                # established convention, not a new ad hoc log format.
+                from dana.core import telemetry
+
+                telemetry.log_error(
+                    stage="ollama_raw_json_tool_call",
+                    tool_id="create_plan",
+                    fleet_entry=entry.id,
+                    model=entry.model,
+                    detail="Caught raw JSON from Ollama, escalating to next provider",
+                )
+                llm_router.report_fleet_entry_failure(entry, RuntimeError(reason))
+                continue
+
+            _log_ttft(entry.model, raw.get("ttft_ms"), tools_schema_bytes=len(json.dumps(tools)) if tools else 0)
+            self.last_provider = f"router:{entry.id}"
+            usage = raw.get("usage") or {}
+            prompt_tokens = int(usage.get("prompt_tokens") or 0)
+            completion_tokens = int(usage.get("completion_tokens") or 0)
+            cost_usd = (
+                (prompt_tokens / 1_000_000) * entry.cost_per_1m_prompt
+                + (completion_tokens / 1_000_000) * entry.cost_per_1m_completion
+                if (prompt_tokens or completion_tokens)
+                else None
+            )
+            return {
+                "content": str(raw.get("content") or "").strip(),
+                "tool_calls": openai_tool_calls_to_ir(
+                    raw.get("tool_calls"), raw_text=str(raw.get("content") or "")
+                ),
+                "provider": self.last_provider,
+                "model": entry.model,
+                "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
+                "cost_usd": cost_usd,
+                "finish_reason": raw.get("finish_reason"),
+            }
+
+        raise RuntimeError(
+            f"LLM Router: every fleet entry failed ({len(chain)} tried): " + "; ".join(errors)
+        )
 
     def complete_vision(
         self,
         prompt: str,
-        image_b64: str,
+        image_b64: str | list[str],
         *,
-        mime_type: str = "image/png",
+        mime_type: str | list[str] = "image/png",
         provider: str | None = None,
         num_predict: int = 1024,
         temperature: float = 0.1,
     ) -> str:
-        """Describe/analyze ``image_b64`` via an OpenAI-vision-compatible model.
+        """Describe/analyze one or more images via an OpenAI-vision-compatible
+        model. ``image_b64`` is either a single base64 string or a list of
+        them (e.g. multiple orthographic views of the same part); ``mime_type``
+        matches it 1:1 when it's a list, or applies to every image when it's
+        a single string.
 
         ``provider="ollama"`` (the default when cloud fallback is off) hits
         the local Ollama VLM (e.g. Qwen2.5-VL) over its OpenAI-compatible
@@ -857,7 +1306,11 @@ class ModelProvider:
             # for a multimodal request. Override with the dedicated vision
             # model instead; key/base/headers/fallback_models are unaffected.
             model = local_vision_model_name()
-        messages = build_multimodal_messages(prompt, image_b64=image_b64, mime_type=mime_type)
+        images_b64 = image_b64 if isinstance(image_b64, list) else [image_b64]
+        mime_types = mime_type if isinstance(mime_type, list) else [mime_type] * len(images_b64)
+        if len(mime_types) != len(images_b64):
+            raise ValueError("image_b64 and mime_type lists must be the same length")
+        messages = build_multimodal_messages(prompt, images=list(zip(images_b64, mime_types)))
         with llm_lock if resolved_provider == "ollama" else contextlib.nullcontext():
             raw = complete_openai_with_tools(
                 messages,

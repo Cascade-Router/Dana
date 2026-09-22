@@ -26,8 +26,13 @@ _ALLOWED_SUFFIXES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/
 # turn (as an observation string), not machine-parsed here.
 _CSG_BLUEPRINT_PROMPT = (
     "You are a mechanical engineer reverse-engineering a reference image into a "
-    "buildable CAD blueprint. Respond with ONLY markdown in exactly this schema, "
-    "no other prose:\n\n"
+    "buildable CAD blueprint. If more than one image is provided, treat them as "
+    "standard orthographic projections of the SAME part (e.g. front/top/side or "
+    "front/side views, third-angle or first-angle) rather than separate objects: "
+    "cross-reference the views to resolve depth that a single view can't show, "
+    "read any dashed/dotted hidden-line detail, and reconcile everything into "
+    "one consistent 3D bounding box and primitive set. Respond with ONLY "
+    "markdown in exactly this schema, no other prose:\n\n"
     "## Overall Bounding Box\n"
     "Approximate overall dimensions (X x Y x Z) in mm.\n\n"
     "## Primary Primitives\n"
@@ -117,53 +122,67 @@ def analyze_workspace_image(
     return {"ok": False, "error": "all VLM providers failed", "attempts": attempts}
 
 
-def analyze_reference_design(file_path: str, *, api_keys: dict[str, str] | None = None) -> dict[str, Any]:
-    """Reads a sandboxed reference image and asks the VLM to reverse it into a
-    fixed-schema CAD blueprint (bounding box / primitives / spatial mates /
-    joints) via ``_CSG_BLUEPRINT_PROMPT``, instead of ``analyze_workspace_image``'s
-    open-ended ``query`` — the point here is a deterministic markdown shape the
-    next ReAct turn's ``create_plan`` call can read primitives and mates off of,
-    not a caption. Shares every plumbing/safety detail with
-    ``analyze_workspace_image`` (sandboxed path resolution, suffix allowlist,
-    local-first VLM fallback, BYOK ``api_keys`` threading) — see that function's
-    docstring for why each of those exists; read-only, never raises.
+def analyze_reference_design(
+    file_paths: list[str], *, api_keys: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """Reads one or more sandboxed reference images and asks the VLM to reverse
+    them into a fixed-schema CAD blueprint (bounding box / primitives /
+    spatial mates / joints) via ``_CSG_BLUEPRINT_PROMPT``, instead of
+    ``analyze_workspace_image``'s open-ended ``query`` — the point here is a
+    deterministic markdown shape the next ReAct turn's ``create_plan`` call
+    can read primitives and mates off of, not a caption.
+
+    ``file_paths`` takes more than one path when the user supplied multiple
+    orthographic views (front/top/side) of the same part — a single 2D image
+    is depth-ambiguous, so the prompt asks the VLM to cross-reference all
+    supplied views instead of describing each independently. Shares every
+    plumbing/safety detail with ``analyze_workspace_image`` (sandboxed path
+    resolution, suffix allowlist, local-first VLM fallback, BYOK
+    ``api_keys`` threading) — see that function's docstring for why each of
+    those exists; read-only, never raises.
     """
-    try:
-        target = resolve_sandboxed_path(file_path)
-    except PathEscapeError as exc:
-        return {"ok": False, "error": str(exc)}
+    if not file_paths:
+        return {"ok": False, "error": "at least one file_path is required"}
 
-    suffix = target.suffix.lower()
-    if suffix not in _ALLOWED_SUFFIXES:
-        return {
-            "ok": False,
-            "error": f"only {sorted(_ALLOWED_SUFFIXES)} images are supported, got: {file_path!r}",
-        }
-    if not target.exists():
-        return {"ok": False, "error": f"image does not exist: {file_path!r}"}
-    if not target.is_file():
-        return {"ok": False, "error": f"path is not a file: {file_path!r}"}
+    images_b64: list[str] = []
+    mime_types: list[str] = []
+    for file_path in file_paths:
+        try:
+            target = resolve_sandboxed_path(file_path)
+        except PathEscapeError as exc:
+            return {"ok": False, "error": str(exc)}
 
-    try:
-        raw_bytes = target.read_bytes()
-    except OSError as exc:
-        return {"ok": False, "error": f"could not read image: {exc}"}
+        suffix = target.suffix.lower()
+        if suffix not in _ALLOWED_SUFFIXES:
+            return {
+                "ok": False,
+                "error": f"only {sorted(_ALLOWED_SUFFIXES)} images are supported, got: {file_path!r}",
+            }
+        if not target.exists():
+            return {"ok": False, "error": f"image does not exist: {file_path!r}"}
+        if not target.is_file():
+            return {"ok": False, "error": f"path is not a file: {file_path!r}"}
 
-    image_b64 = base64.b64encode(raw_bytes).decode("ascii")
-    mime_type = _ALLOWED_SUFFIXES[suffix]
+        try:
+            raw_bytes = target.read_bytes()
+        except OSError as exc:
+            return {"ok": False, "error": f"could not read image: {exc}"}
+
+        images_b64.append(base64.b64encode(raw_bytes).decode("ascii"))
+        mime_types.append(_ALLOWED_SUFFIXES[suffix])
 
     provider_client = ModelProvider(api_keys=api_keys)
     attempts: list[str] = []
     for candidate in _candidate_providers():
         try:
             blueprint = provider_client.complete_vision(
-                _CSG_BLUEPRINT_PROMPT, image_b64, mime_type=mime_type, provider=candidate
+                _CSG_BLUEPRINT_PROMPT, images_b64, mime_type=mime_types, provider=candidate
             )
         except Exception as exc:  # noqa: BLE001 — try the next candidate provider
             attempts.append(f"{candidate}: {exc}")
             continue
         if blueprint.strip():
-            return {"ok": True, "path": file_path, "blueprint": blueprint.strip()}
+            return {"ok": True, "paths": file_paths, "blueprint": blueprint.strip()}
         attempts.append(f"{candidate}: empty response")
 
     return {"ok": False, "error": "all VLM providers failed", "attempts": attempts}

@@ -3572,13 +3572,14 @@
     {
       "id": "analyze_reference_design",
       "read_only": true,
-      "description_en": "Analyzes a user-uploaded reference image already saved in Dana's sandboxed agent workspace and extracts a strict Constructive Solid Geometry (CSG) blueprint: overall bounding box, primary primitives (Box/Cylinder/Cone/Sphere with estimated dimensions), spatial mating relationships between them, and any kinematic joints. ALWAYS run this first when a user asks to CAD an object from a picture, then feed the returned blueprint directly into create_plan. Requires the 'vision_tools' capability domain to be loaded first via load_capability. Only .png/.jpg/.jpeg images are supported. Read-only.",
+      "description_en": "Analyzes one or more user-uploaded reference images already saved in Dana's sandboxed agent workspace and extracts a strict Constructive Solid Geometry (CSG) blueprint: overall bounding box, primary primitives (Box/Cylinder/Cone/Sphere with estimated dimensions), spatial mating relationships between them, and any kinematic joints. Pass multiple file_paths when the user supplied more than one orthographic view (e.g. front/top/side) of the same part — a single image is depth-ambiguous, so all views are cross-referenced in one call instead of analyzed separately. ALWAYS run this first when a user asks to CAD an object from a picture, then feed the returned blueprint directly into create_plan. Requires the 'vision_tools' capability domain to be loaded first via load_capability. Only .png/.jpg/.jpeg images are supported. Read-only.",
       "parameters": [
         {
-          "name": "file_path",
-          "type": "string",
+          "name": "file_paths",
+          "type": "array",
+          "items_type": "string",
           "required": true,
-          "description_en": "Path to the uploaded reference image, relative to the sandbox root."
+          "description_en": "Paths to the uploaded reference image(s), relative to the sandbox root. Pass every orthographic view of the same part in one call (e.g. ['front_view.jpg', 'top_view.jpg', 'right_view.jpg'])."
         }
       ]
     },
