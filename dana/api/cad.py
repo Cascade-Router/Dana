@@ -23,6 +23,8 @@ session's files might still live directly inside from before this change.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +41,27 @@ _FREECAD_OUTPUT_DIR = DANA_WORKSPACE / "freecad_output"
 _FREECAD_EXPORT_DIR = DANA_WORKSPACE / "exports"
 
 _ARTIFACT_EXTENSIONS = frozenset({".step", ".stp", ".stl", ".fcstd", ".urdf", ".glb", ".obj"})
+
+# Throwaway-intermediate marker: dana.plugins.freecad.engine.export_mesh_stl
+# writes its per-call temp files (``{name}__tmp_{unique}.glb/.stl``,
+# ``{name}__glbtmp_{unique}.glb``) into this SAME session directory, briefly,
+# before one atomic ``Path.replace()`` produces the real ``{name}.glb`` (see
+# that function's own Torn-Write comment). A directory scan that runs while
+# one of these is transiently present would otherwise list it as a
+# clickable artifact — MeshHistoryPicker Race: by the time a user actually
+# clicks it, the temp file has already been renamed away or deleted, so the
+# download 404s (a real, valid HTTPException — but the frontend's GLTFLoader
+# fed that JSON body as if it were binary GLB, producing the exact
+# "Invalid typed array length" crash this was chasing). Never a real,
+# user-facing object name — ``_safe_name`` sanitizes every LLM/user-supplied
+# name, and "__tmp_"/"__glbtmp_" is a deliberately distinctive marker no
+# genuine object name would produce — so this filter can never hide a real
+# artifact, only these throwaway ones.
+_TEMP_FILE_MARKERS = ("__tmp_", "__glbtmp_")
+
+
+def _is_throwaway_temp_file(filename: str) -> bool:
+    return any(marker in filename for marker in _TEMP_FILE_MARKERS)
 
 
 def _artifact_dirs(session_id: str | None) -> tuple[Path, Path]:
@@ -76,6 +99,8 @@ def _list_artifacts(session_id: str | None) -> list[dict[str, Any]]:
         for path in directory.iterdir():
             if not path.is_file() or path.suffix.lower() not in _ARTIFACT_EXTENSIONS:
                 continue
+            if _is_throwaway_temp_file(path.name):
+                continue
             stat = path.stat()
             out.append(
                 {
@@ -96,7 +121,7 @@ def _list_artifacts(session_id: str | None) -> list[dict[str, Any]]:
     # Filtered to THIS session_id — see artifacts_registry.list_artifacts's
     # own docstring.
     for entry in artifacts_registry.list_artifacts(session_id=sid):
-        if entry["filename"] in seen_filenames:
+        if entry["filename"] in seen_filenames or _is_throwaway_temp_file(entry["filename"]):
             continue
         seen_filenames.add(entry["filename"])
         out.append({k: v for k, v in entry.items() if k not in ("path", "session_id")})
@@ -120,6 +145,15 @@ def _resolve_artifact(filename: str, session_id: str | None) -> Path:
     name = Path(filename).name
     if name != filename or Path(name).suffix.lower() not in _ARTIFACT_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"invalid artifact filename: {filename!r}")
+    if _is_throwaway_temp_file(name):
+        # Never served even if it happens to exist RIGHT NOW: a throwaway
+        # export_mesh_stl temp file can still be mid-write in the narrow
+        # window before its own atomic Path.replace() — serving it directly
+        # would hand back a partial/torn file, the exact corruption class
+        # this whole naming convention exists to prevent on the live
+        # mesh_url path (see _EXPORT_MESH_PREVIEW_SCRIPT's Torn-Write
+        # comment). Rejected outright, not just excluded from the listing.
+        raise HTTPException(status_code=404, detail=f"artifact not found: {filename!r}")
     for directory in _artifact_dirs(sid):
         candidate = directory / name
         if candidate.is_file():
@@ -140,6 +174,46 @@ def download_artifact(filename: str, session_id: str | None = None) -> FileRespo
     path = _resolve_artifact(filename, session_id)
     media_type = _MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(path, media_type=media_type, filename=path.name)
+
+
+_PRINTABLE_EXTENSIONS = frozenset({".step", ".stp"})
+
+
+def _open_with_default_app(path: Path) -> None:
+    """Hands `path` off to the OS's own default-application association for
+    its extension — e.g. a .step file opens in whatever CAD viewer/slicer
+    the user has associated with STEP files, no Dana-side app allowlist.
+    Same "let the OS decide" delegation `open_desktop` already gives the
+    FreeCAD GUI specifically, just generalized to whatever app owns this
+    extension instead of a hardcoded launch."""
+    if sys.platform == "win32":
+        import os
+
+        os.startfile(str(path))  # noqa: S606 -- opens via the OS's own file association, not arbitrary exec
+    elif sys.platform == "darwin":
+        subprocess.run(["open", str(path)], check=True)
+    else:
+        subprocess.run(["xdg-open", str(path)], check=True)
+
+
+@router.post("/artifacts/{filename}/print")
+def print_artifact(filename: str, session_id: str | None = None) -> dict[str, Any]:
+    """3D-print handoff: opens a generated STEP file in the OS's own default
+    slicer/viewer (Cura, PrusaSlicer, whatever's associated with .step on
+    this machine) — reuses `_resolve_artifact`'s existing session-scoped,
+    path-traversal-safe lookup, restricted to STEP files specifically since
+    that's what a slicer handoff means.
+    """
+    path = _resolve_artifact(filename, session_id)
+    if path.suffix.lower() not in _PRINTABLE_EXTENSIONS:
+        raise HTTPException(
+            status_code=400, detail=f"artifact is a {path.suffix} file, not a STEP file: {filename!r}"
+        )
+    try:
+        _open_with_default_app(path)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"failed to open {filename!r}: {exc}") from exc
+    return {"ok": True, "filename": path.name}
 
 
 def _newest_fcstd(session_id: str | None) -> Path | None:

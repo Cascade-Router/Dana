@@ -39,6 +39,14 @@ export function CadToolbar({ meshUrl, sessionId, artifacts, onRefreshArtifacts }
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [exportingMesh, setExportingMesh] = useState(false);
+  const [printingFile, setPrintingFile] = useState<string | null>(null);
+
+  // The live viewport mesh's actual format — export_mesh_stl now writes
+  // .glb by default (see that function's docstring), but an older session
+  // could still be showing a plain .stl artifact, so this reads the real
+  // extension off meshUrl rather than assuming either one.
+  const meshFormatLabel =
+    meshUrl?.split(/[\\/]/).pop()?.split("?")[0]?.split(".").pop()?.toUpperCase() || "MESH";
 
   const launchDesktop = useCallback(() => {
     if (!sessionId) return;
@@ -69,6 +77,31 @@ export function CadToolbar({ meshUrl, sessionId, artifacts, onRefreshArtifacts }
     [sessionId]
   );
 
+  // Hands a generated .step/.stp file to the OS's own default 3D
+  // slicer/viewer association (dana.api.cad's print-step endpoint reuses
+  // the same "let the OS pick the app" pattern open-desktop already uses
+  // for FreeCAD, just without hardcoding which app that is). Desktop-only,
+  // same reason launchDesktop is gated on !IS_GRADIO_MODE below — there's
+  // no local OS to hand a file off to in the hosted Gradio/HF Space mode.
+  const printStep = useCallback(
+    (artifact: Artifact) => {
+      if (!sessionId) return;
+      setPrintingFile(artifact.filename);
+      setLaunchError(null);
+      apiFetch(
+        `/api/cad/artifacts/${encodeURIComponent(artifact.filename)}/print?session_id=${encodeURIComponent(sessionId)}`,
+        { method: "POST" }
+      )
+        .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
+        .then(({ ok, data }) => {
+          if (!ok) throw new Error(data.detail || "failed to open in the default app");
+        })
+        .catch((err) => setLaunchError(String(err instanceof Error ? err.message : err)))
+        .finally(() => setPrintingFile(null));
+    },
+    [sessionId]
+  );
+
   // The live viewport mesh (Viewer3D's meshUrl) isn't in the artifacts list
   // above — it's the in-progress geometry, not yet a saved file on either
   // backend. Fetching it as a blob (rather than window.open, which the
@@ -85,7 +118,11 @@ export function CadToolbar({ meshUrl, sessionId, artifacts, onRefreshArtifacts }
       if (!res.ok) throw new Error(`HTTP ${res.status} fetching mesh`);
       const blob = await res.blob();
       const nameFromUrl = meshUrl.split(/[\\/]/).pop()?.split("?")[0];
-      const filename = nameFromUrl && nameFromUrl.includes(".") ? nameFromUrl : "export.stl";
+      // Fallback only fires when meshUrl carries no extension at all (rare
+      // — every real mesh_url does); matches the live preview's actual
+      // current default format (export_mesh_stl writes .glb, not .stl —
+      // see that function's own docstring) rather than a stale STL guess.
+      const filename = nameFromUrl && nameFromUrl.includes(".") ? nameFromUrl : "export.glb";
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = objectUrl;
@@ -129,7 +166,7 @@ export function CadToolbar({ meshUrl, sessionId, artifacts, onRefreshArtifacts }
               onClick={exportMesh}
               disabled={!meshUrl || exportingMesh}
             >
-              <span className="cad-toolbar__export-format">STL</span>
+              <span className="cad-toolbar__export-format">{meshFormatLabel}</span>
               <span className="cad-toolbar__export-name">
                 {exportingMesh ? "Exporting…" : "Current mesh (viewport)"}
               </span>
@@ -138,15 +175,23 @@ export function CadToolbar({ meshUrl, sessionId, artifacts, onRefreshArtifacts }
               <div className="cad-toolbar__export-empty">No artifacts generated yet.</div>
             )}
             {artifacts.map((a, index) => (
-              <button
-                key={`${a.filename}-${index}`}
-                type="button"
-                className="cad-toolbar__export-item"
-                onClick={() => download(a)}
-              >
-                <span className="cad-toolbar__export-format">{a.format.toUpperCase()}</span>
-                <span className="cad-toolbar__export-name">{a.filename}</span>
-              </button>
+              <div key={`${a.filename}-${index}`} className="cad-toolbar__export-row">
+                <button type="button" className="cad-toolbar__export-item" onClick={() => download(a)}>
+                  <span className="cad-toolbar__export-format">{a.format.toUpperCase()}</span>
+                  <span className="cad-toolbar__export-name">{a.filename}</span>
+                </button>
+                {!IS_GRADIO_MODE && (a.format === "step" || a.format === "stp") && (
+                  <button
+                    type="button"
+                    className="cad-toolbar__print-btn"
+                    title="Open in the OS's default 3D slicer/viewer"
+                    onClick={() => printStep(a)}
+                    disabled={printingFile === a.filename}
+                  >
+                    {printingFile === a.filename ? "…" : "🖨"}
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         )}

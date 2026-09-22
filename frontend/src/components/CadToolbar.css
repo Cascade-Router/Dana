@@ -54,6 +54,37 @@
   font-size: 12px;
 }
 
+.cad-toolbar__export-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cad-toolbar__export-row .cad-toolbar__export-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.cad-toolbar__print-btn {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: #ddd;
+  font-size: 13px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.cad-toolbar__print-btn:hover {
+  background: #262626;
+}
+
+.cad-toolbar__print-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .cad-toolbar__export-item {
   display: flex;
   align-items: center;
