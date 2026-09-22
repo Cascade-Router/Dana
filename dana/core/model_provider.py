@@ -24,6 +24,14 @@ ProviderKind = Literal["local", "cloud", "auto"]
 _NON_OPENAI_SCHEMA_PROVIDERS = frozenset({"gemini", "google", "anthropic"})
 
 _DEFAULT_LOCAL_MODEL = "qwen2.5-coder:7b"
+# Separate default from _DEFAULT_LOCAL_MODEL on purpose: that one is a
+# text/tool-calling model (e.g. Qwen2.5-Coder), and Ollama's own OpenAI-
+# compat surface rejects a multimodal request outright with an HTTP 400
+# when the resolved model isn't a VLM ("Multimodal data provided, but model
+# does not support multimodal requests.") — confirmed live against
+# qwen2.5-coder:14b. complete_vision's "ollama" routing needs its own model
+# name so a local text-model choice never silently breaks every vision tool.
+_DEFAULT_LOCAL_VISION_MODEL = "llava:7b"
 _COMPLEXITY_REJECT = "REJECT: Task too complex for local model"
 
 # Native Gemini generateContent (REST) — a DIFFERENT calling convention than
@@ -200,6 +208,20 @@ def local_model_name() -> str:
         (os.environ.get("DANA_LOCAL_MODEL") or "").strip()
         or (os.environ.get("OLLAMA_MODEL") or "").strip()
         or _DEFAULT_LOCAL_MODEL
+    )
+
+
+def local_vision_model_name() -> str:
+    """The local Ollama model ``complete_vision``'s ``"ollama"`` branch
+    resolves to — deliberately independent of ``local_model_name()``, whose
+    ``DANA_LOCAL_MODEL`` is a text/tool-calling model with no multimodal
+    support of its own. See ``_DEFAULT_LOCAL_VISION_MODEL``'s comment for
+    why routing a vision call through that model 400s outright."""
+    ensure_dotenv_loaded()
+    return (
+        (os.environ.get("DANA_LOCAL_VISION_MODEL") or "").strip()
+        or (os.environ.get("OLLAMA_VISION_MODEL") or "").strip()
+        or _DEFAULT_LOCAL_VISION_MODEL
     )
 
 
@@ -828,6 +850,13 @@ class ModelProvider:
                 "(uses a non-OpenAI image payload schema)"
             )
         key, base, model, extra_headers, fallback_models = self._resolve_openai_endpoint(resolved_provider)
+        if resolved_provider == "ollama":
+            # _resolve_openai_endpoint's "ollama" branch resolves `model` to
+            # DANA_OPENAI_TOOLS_MODEL/self.local_model — a text/tool-calling
+            # model that Ollama's own OpenAI-compat surface rejects outright
+            # for a multimodal request. Override with the dedicated vision
+            # model instead; key/base/headers/fallback_models are unaffected.
+            model = local_vision_model_name()
         messages = build_multimodal_messages(prompt, image_b64=image_b64, mime_type=mime_type)
         with llm_lock if resolved_provider == "ollama" else contextlib.nullcontext():
             raw = complete_openai_with_tools(
@@ -917,5 +946,6 @@ __all__ = (
     "get_default_provider",
     "is_complexity_reject",
     "local_model_name",
+    "local_vision_model_name",
     "tool_calling_provider",
 )

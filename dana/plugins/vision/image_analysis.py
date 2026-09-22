@@ -19,6 +19,30 @@ from dana.plugins.os.file_system import PathEscapeError, resolve_sandboxed_path
 # suffix -> MIME type; also doubles as the allowlist of supported image types.
 _ALLOWED_SUFFIXES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
+# Forces the VLM into a fixed markdown schema instead of a free-text
+# caption, so a downstream create_plan call has something deterministic to
+# parse into primitives/mates rather than prose. Deliberately markdown, not
+# JSON — the four sections are meant to be read by the LLM's own next ReAct
+# turn (as an observation string), not machine-parsed here.
+_CSG_BLUEPRINT_PROMPT = (
+    "You are a mechanical engineer reverse-engineering a reference image into a "
+    "buildable CAD blueprint. Respond with ONLY markdown in exactly this schema, "
+    "no other prose:\n\n"
+    "## Overall Bounding Box\n"
+    "Approximate overall dimensions (X x Y x Z) in mm.\n\n"
+    "## Primary Primitives\n"
+    "A numbered list of the base shapes needed (Box, Cylinder, Cone, Sphere), each "
+    "with a short name and estimated dimensions in mm (e.g. '1. Cylinder1: "
+    "radius=10mm, height=40mm').\n\n"
+    "## Spatial Relationships\n"
+    "A bullet list of the explicit semantic topology between primitives (e.g. "
+    "'Cylinder1 is mated to the +X face of Box1, centered').\n\n"
+    "## Kinematic Joints\n"
+    "A bullet list of any rotational or sliding axes implied by the geometry "
+    "(axis, type, and which two primitives it connects), or 'None' if the object "
+    "is a single rigid body."
+)
+
 
 def _candidate_providers() -> list[str]:
     """Local-first order — the same policy dana.tools.cad_vision.
@@ -93,4 +117,56 @@ def analyze_workspace_image(
     return {"ok": False, "error": "all VLM providers failed", "attempts": attempts}
 
 
-__all__ = ("analyze_workspace_image",)
+def analyze_reference_design(file_path: str, *, api_keys: dict[str, str] | None = None) -> dict[str, Any]:
+    """Reads a sandboxed reference image and asks the VLM to reverse it into a
+    fixed-schema CAD blueprint (bounding box / primitives / spatial mates /
+    joints) via ``_CSG_BLUEPRINT_PROMPT``, instead of ``analyze_workspace_image``'s
+    open-ended ``query`` — the point here is a deterministic markdown shape the
+    next ReAct turn's ``create_plan`` call can read primitives and mates off of,
+    not a caption. Shares every plumbing/safety detail with
+    ``analyze_workspace_image`` (sandboxed path resolution, suffix allowlist,
+    local-first VLM fallback, BYOK ``api_keys`` threading) — see that function's
+    docstring for why each of those exists; read-only, never raises.
+    """
+    try:
+        target = resolve_sandboxed_path(file_path)
+    except PathEscapeError as exc:
+        return {"ok": False, "error": str(exc)}
+
+    suffix = target.suffix.lower()
+    if suffix not in _ALLOWED_SUFFIXES:
+        return {
+            "ok": False,
+            "error": f"only {sorted(_ALLOWED_SUFFIXES)} images are supported, got: {file_path!r}",
+        }
+    if not target.exists():
+        return {"ok": False, "error": f"image does not exist: {file_path!r}"}
+    if not target.is_file():
+        return {"ok": False, "error": f"path is not a file: {file_path!r}"}
+
+    try:
+        raw_bytes = target.read_bytes()
+    except OSError as exc:
+        return {"ok": False, "error": f"could not read image: {exc}"}
+
+    image_b64 = base64.b64encode(raw_bytes).decode("ascii")
+    mime_type = _ALLOWED_SUFFIXES[suffix]
+
+    provider_client = ModelProvider(api_keys=api_keys)
+    attempts: list[str] = []
+    for candidate in _candidate_providers():
+        try:
+            blueprint = provider_client.complete_vision(
+                _CSG_BLUEPRINT_PROMPT, image_b64, mime_type=mime_type, provider=candidate
+            )
+        except Exception as exc:  # noqa: BLE001 — try the next candidate provider
+            attempts.append(f"{candidate}: {exc}")
+            continue
+        if blueprint.strip():
+            return {"ok": True, "path": file_path, "blueprint": blueprint.strip()}
+        attempts.append(f"{candidate}: empty response")
+
+    return {"ok": False, "error": "all VLM providers failed", "attempts": attempts}
+
+
+__all__ = ("analyze_workspace_image", "analyze_reference_design")

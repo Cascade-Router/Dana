@@ -65,6 +65,7 @@ from dana.plugins.planning.task_board import get_active_plan as _tb_get_active_p
 from dana.plugins.planning.task_board import insert_task as _tb_insert_task
 from dana.plugins.planning.task_board import mark_task_completed as _tb_mark_task_completed
 from dana.plugins.plugin_manager import discover_plugin_dirs, load_all_plugins
+from dana.plugins.vision.image_analysis import analyze_reference_design as _vision_analyze_reference_design
 from dana.plugins.vision.image_analysis import analyze_workspace_image as _vision_analyze_workspace_image
 from dana.plugins.web.research import read_webpage as _web_read_webpage
 from dana.plugins.web.research import search_web as _web_search_web
@@ -1730,6 +1731,16 @@ def _tool_analyze_workspace_image(
     return _vision_analyze_workspace_image(
         str(args.get("file_path") or ""), str(args.get("query") or ""), api_keys=api_keys
     )
+
+
+# Visual-to-CSG compiler — same sandboxed-image plumbing as
+# analyze_workspace_image above (including the BYOK api_keys threading via
+# _TOOLS_NEEDING_API_KEYS below), but a fixed blueprint prompt instead of an
+# open-ended query. See dana.plugins.vision.image_analysis's own docstring.
+def _tool_analyze_reference_design(
+    args: dict[str, Any], _engine: Any, _cp: Any, *, api_keys: dict[str, str] | None = None
+) -> dict[str, Any]:
+    return _vision_analyze_reference_design(str(args.get("file_path") or ""), api_keys=api_keys)
 
 
 # Desktop Omni-Vision (dana.plugins.os.desktop_vision) — also needs the
@@ -4970,6 +4981,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "search_web": _tool_search_web,
     "read_webpage": _tool_read_webpage,
     "analyze_workspace_image": _tool_analyze_workspace_image,
+    "analyze_reference_design": _tool_analyze_reference_design,
     "analyze_desktop_screen": _tool_analyze_desktop_screen,
     "query_engineering_standard": _tool_query_engineering_standard,
     "take_canvas_screenshot": _tool_take_canvas_screenshot,
@@ -5528,7 +5540,7 @@ _WEB_TOOLS_TOOL_IDS = frozenset({"search_web", "read_webpage"})
 
 # VLM analysis of a sandboxed image file — read-only inspection, declares
 # "read_only": true in tools.json.
-_VISION_TOOLS_TOOL_IDS = frozenset({"analyze_workspace_image"})
+_VISION_TOOLS_TOOL_IDS = frozenset({"analyze_workspace_image", "analyze_reference_design"})
 
 # Capability domain name -> the tool ids it unlocks on top of _CORE_TOOL_IDS.
 # Two independent things can add a name to a session's active set (merged in
@@ -6281,6 +6293,11 @@ exists, pass it as `test_command` (e.g. "pytest tests/test_foo.py") so the \
 coding engine runs and self-repairs it in this one call.
   4. Only fall back to a standalone `run_verification_command` if no \
 `test_command` existed, or the change still needs confirming.
+- When asked to model, build, or CAD something from an uploaded image or \
+picture, immediately call `load_capability(domain="vision_tools")`, then \
+`analyze_reference_design` on that image file — never `take_canvas_screenshot` \
+or `analyze_workspace_image`, which don't produce the CSG blueprint needed \
+here. Feed the returned blueprint straight into `create_plan`.
 - If step 4's `run_verification_command` errors, do NOT stop — call \
 `execute_code_task` again with the exact traceback in `task_description` \
 (same `test_command`), then re-verify. Repeat until it passes. Stop only on \
@@ -8787,7 +8804,7 @@ def build_tool_result_message(tool_call_id: str, result: "ToolResult") -> dict[s
 # api_keys to reach ModelProvider the same way build_visual_inspection_result
 # already gets one for the take_canvas_screenshot suspend path. Kept as an
 # explicit, narrow allowlist rather than widening every handler's signature.
-_TOOLS_NEEDING_API_KEYS = frozenset({"analyze_workspace_image", "analyze_desktop_screen"})
+_TOOLS_NEEDING_API_KEYS = frozenset({"analyze_workspace_image", "analyze_reference_design", "analyze_desktop_screen"})
 
 # Dynamic Workspace Mounting — the os_tools file/process septet, which need
 # the session's currently-registered external mounts (dana.api.workspace's

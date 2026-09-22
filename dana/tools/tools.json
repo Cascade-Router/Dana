@@ -3570,6 +3570,19 @@
       ]
     },
     {
+      "id": "analyze_reference_design",
+      "read_only": true,
+      "description_en": "Analyzes a user-uploaded reference image already saved in Dana's sandboxed agent workspace and extracts a strict Constructive Solid Geometry (CSG) blueprint: overall bounding box, primary primitives (Box/Cylinder/Cone/Sphere with estimated dimensions), spatial mating relationships between them, and any kinematic joints. ALWAYS run this first when a user asks to CAD an object from a picture, then feed the returned blueprint directly into create_plan. Requires the 'vision_tools' capability domain to be loaded first via load_capability. Only .png/.jpg/.jpeg images are supported. Read-only.",
+      "parameters": [
+        {
+          "name": "file_path",
+          "type": "string",
+          "required": true,
+          "description_en": "Path to the uploaded reference image, relative to the sandbox root."
+        }
+      ]
+    },
+    {
       "id": "read_system_architecture",
       "read_only": true,
       "description_en": "Reads Dana's own architecture documentation (docs/architecture.md) plus a summary of every registered tool's schema (id, description, parameters) — use this to understand your own capabilities, explain to the user what you can do, or look up a tool's exact parameter names before calling it. Summarize for the user rather than dumping the raw markdown verbatim. Read-only.",
