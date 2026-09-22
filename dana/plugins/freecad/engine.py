@@ -4386,6 +4386,119 @@ doc.saveAs({out_path!r})
 print("{marker} path=" + {out_path!r})
 """
 
+_HELIX_SCRIPT = """\
+import FreeCAD as App
+
+doc = App.newDocument("DanaModel")
+
+path = doc.addObject("Part::Helix", "Path")
+path.Pitch = {pitch}
+path.Height = {height}
+path.Radius = {coil_radius}
+path.Angle = 0.0
+
+profile = doc.addObject("Part::Circle", "Profile")
+profile.Radius = {pipe_radius}
+profile.Placement = App.Placement(App.Vector({coil_radius}, 0.0, 0.0), App.Rotation(App.Vector(1, 0, 0), 90))
+
+doc.recompute()
+
+obj = doc.addObject("Part::Sweep", {name!r})
+obj.Sections = [profile]
+obj.Spine = (path, [])
+obj.Solid = True
+obj.Frenet = True
+doc.recompute()
+obj.Placement = App.Placement(App.Vector({px}, {py}, {pz}), App.Rotation({angle_offset}, 0.0, 0.0))
+doc.recompute()
+doc.saveAs({out_path!r})
+""" + _BBOX_PRINT + """\
+print("{marker} path=" + {out_path!r})
+"""
+
+def create_helix(
+    coil_radius: float,
+    pitch: float,
+    height: float,
+    pipe_radius: float,
+    name: str = "Helix",
+    placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    angle_offset: float = 0.0,
+) -> str:
+    """Sweeps a circular cross-section (``pipe_radius`` mm) along a
+    cylindrical ``Part::Helix`` path (``coil_radius``/``pitch``/``height``
+    mm) into a solid ``Part::Sweep`` coil — wound coils, springs, helical
+    stands. ``Frenet = True`` (same as ``create_pipe``'s own arc case)
+    reorients the profile to the path's own computed frame at every point,
+    so the profile's initial placement only needs to sit at the helix's
+    actual start point (``coil_radius``, 0, 0) with a non-degenerate
+    orientation, not a perfectly-tangent one.
+
+    Same own-document-per-call precedent as ``create_pipe`` — not yet
+    migrated to the shared session document (see the FreeCAD session
+    document migration note: create_box/cylinder/insert_standard_part/
+    apply_boolean/modify_parameter share ONE Session_Active.FCStd; this
+    tool doesn't yet).
+
+    ``angle_offset`` degrees is a rigid rotation about the GLOBAL Z axis
+    applied to the finished coil — NOT FreeCAD's own Part::Helix ``Angle``
+    property (which tapers a helix into a cone; left at 0.0/cylindrical
+    here, unrelated to this parameter) — so several coils can be fanned
+    evenly around one shared hub without overlapping.
+    """
+    try:
+        coil_radius_f = float(coil_radius)
+        pitch_f = float(pitch)
+        height_f = float(height)
+        pipe_radius_f = float(pipe_radius)
+        angle_offset_f = float(angle_offset)
+    except (TypeError, ValueError):
+        return _error("create_helix: coil_radius/pitch/height/pipe_radius/angle_offset must be numbers")
+    if coil_radius_f <= 0 or pitch_f <= 0 or height_f <= 0 or pipe_radius_f <= 0:
+        return _error("create_helix: coil_radius, pitch, height, and pipe_radius must all be positive numbers")
+    if pipe_radius_f >= coil_radius_f:
+        return _error("create_helix: pipe_radius must be smaller than coil_radius")
+    placement = (float(placement[0]), float(placement[1]), float(placement[2]))
+
+    dims = {
+        "coil_radius": coil_radius_f,
+        "pitch": pitch_f,
+        "height": height_f,
+        "pipe_radius": pipe_radius_f,
+        "angle_offset": angle_offset_f,
+    }
+    if is_dry_run_enabled():
+        return _dry_run_result(
+            "create_helix", name=name, type="Part::Sweep", dimensions=dims, placement=list(placement)
+        )
+
+    out_path = _output_path(name, ext="FCStd")
+    script = _HELIX_SCRIPT.format(
+        coil_radius=coil_radius_f,
+        pitch=pitch_f,
+        height=height_f,
+        pipe_radius=pipe_radius_f,
+        name=name,
+        px=placement[0],
+        py=placement[1],
+        pz=placement[2],
+        angle_offset=angle_offset_f,
+        out_path=str(out_path),
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script)
+    if not result["ok"]:
+        return _error(f"create_helix failed: {result['error']}")
+    return _ok(
+        name=name,
+        type="Part::Sweep",
+        bounding_box=result.get("bounding_box"),
+        dimensions=dims,
+        placement=list(placement),
+        path=str(out_path),
+        gui_shown=_auto_show(out_path),
+    )
+
 def create_pipe(
     pipe_radius: float,
     path_type: str,
@@ -4458,8 +4571,24 @@ def create_pipe(
 
 def export_mesh_stl(source_path: str, name: str | None = None, target_object: str | None = None) -> str:
     """Tessellate ``source_path`` (a ``.FCStd`` document) into a standalone
-    ``.stl`` mesh file — the hand-off format for ``gr.Model3D`` viewers
-    that can't load native FreeCAD documents.
+    ``.glb`` (GLTF Binary) mesh file — the hand-off format for the viewer,
+    matching ``dana.platform.mock``'s own ``_mesh_output_path`` default
+    (name kept as ``export_mesh_stl`` for every existing caller/tool_id;
+    only the actual output format changed, same "legacy name, new
+    behavior" precedent that function's own docstring already documents).
+
+    FreeCAD's ``Mesh`` module has no glTF writer, so this drives FreeCADCmd
+    to tessellate a throwaway intermediate ``.stl`` first, then converts
+    that to ``.glb`` in THIS process via ``trimesh`` (already a hard
+    dependency — see ``dana.platform.mock``'s identical use). Both the
+    intermediate ``.stl`` and the ``.glb`` conversion's own output are
+    written under distinctive ``__tmp_``/``__glbtmp_`` per-call names
+    (``dana.api.cad._is_throwaway_temp_file`` already filters these out of
+    every artifact listing) and the final ``.glb`` is produced by one
+    atomic ``Path.replace()`` — Torn-Write: a concurrent reader (the
+    download route, or the auto-mesh-export hook's own immediate re-read)
+    can only ever observe either the complete previous file at this name
+    or the complete new one, never a partially-written one.
 
     ``target_object``, when given, tessellates ONLY that resolved object
     (Multi-Stage Object Resolution — see ``get_bounding_box``'s matching
@@ -4476,10 +4605,13 @@ def export_mesh_stl(source_path: str, name: str | None = None, target_object: st
         return _error(f"export_mesh_stl: source_path not found: {source_path}")
     if is_dry_run_enabled():
         return _dry_run_result("export_mesh_stl", source_path=str(source))
-    out_path = _output_path(name or source.stem, ext="stl")
+
+    resolved_name = _safe_name(name or source.stem)
+    unique = uuid.uuid4().hex[:8]
+    tmp_stl_path = _output_path(f"{resolved_name}__tmp_{unique}", ext="stl")
     script = _EXPORT_STL_SCRIPT.format(
         source_path=str(source),
-        out_path=str(out_path),
+        out_path=str(tmp_stl_path),
         marker=_OK_MARKER,
         lookup=_object_lookup_snippet(target_object=target_object) if target_object else "",
         export_targets="[obj]" if target_object else "list(doc.Objects)",
@@ -4487,7 +4619,22 @@ def export_mesh_stl(source_path: str, name: str | None = None, target_object: st
     result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"export_mesh_stl failed: {result['error']}")
-    return _ok(op="export_mesh_stl", source_path=str(source), path=str(out_path))
+
+    glb_path = _output_path(resolved_name, ext="glb")
+    tmp_glb_path = _output_path(f"{resolved_name}__glbtmp_{unique}", ext="glb")
+    try:
+        import trimesh
+
+        mesh = trimesh.load(str(tmp_stl_path), force="mesh")
+        mesh.export(str(tmp_glb_path))
+        tmp_glb_path.replace(glb_path)
+    except Exception as exc:  # noqa: BLE001 — surface as a normal tool failure, not a crash
+        return _error(f"export_mesh_stl: STL->GLB conversion failed: {exc}")
+    finally:
+        tmp_stl_path.unlink(missing_ok=True)
+        tmp_glb_path.unlink(missing_ok=True)  # no-op once replace() above succeeds; cleans up on failure
+
+    return _ok(op="export_mesh_stl", source_path=str(source), path=str(glb_path))
 
 _EXPORT_FORMAT_EXT: dict[str, str] = {"stl": "stl", "step": "step"}
 
@@ -4645,6 +4792,7 @@ __all__ = (
     "create_box",
     "create_cylinder",
     "create_extruded_polyline",
+    "create_helix",
     "create_pipe",
     "create_pyramid",
     "create_sketch_extrude",
