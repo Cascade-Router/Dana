@@ -2893,7 +2893,29 @@ import os
 assembly = resolve_object(doc, {assembly_name!r})
 if assembly is None:
     raise RuntimeError("Object not found: " + {assembly_name!r})
-_members = list(getattr(assembly, "Group", []) or [])
+
+# Consumed-Operand Filter: a Boolean feature (Part::Cut/MultiFuse/
+# MultiCommon) keeps its Base/Tool/Shapes inputs as REAL, live parametric
+# links -- FreeCAD's own scope-consistency rules require them to stay in
+# the same GeoFeatureGroup as the feature that references them (removing
+# them from the assembly breaks the recompute graph outright -- confirmed
+# live: doing so collapsed the WHOLE Group to empty instead of cleanly
+# dropping just that one member). They are therefore still real Group
+# members here, not independent parts any more -- excluding them from
+# export keeps a source solid that's now purely a dependency of its own
+# boolean result from generating a second, phantom, perfectly-overlapping
+# <link> alongside it.
+_consumed_operands = set()
+for _obj in doc.Objects:
+    for _attr in ("Base", "Tool"):
+        _ref = getattr(_obj, _attr, None)
+        if _ref is not None and hasattr(_ref, "Name"):
+            _consumed_operands.add(_ref.Name)
+    for _ref in (getattr(_obj, "Shapes", None) or []):
+        if hasattr(_ref, "Name"):
+            _consumed_operands.add(_ref.Name)
+
+_members = [m for m in (getattr(assembly, "Group", []) or []) if m.Name not in _consumed_operands]
 if not _members:
     raise RuntimeError("assembly '" + {assembly_name!r} + "' has no parts — add some with add_parts_to_assembly first")
 
@@ -3012,9 +3034,29 @@ import FreeCAD as App
 assembly = resolve_object(doc, {assembly_name!r})
 if assembly is None:
     raise RuntimeError("Object not found: " + {assembly_name!r})
+
+# Consumed-Operand Filter: same reasoning as export_assembly_to_urdf's own
+# copy of this filter (kept independent rather than shared, since each is
+# its own separately-rendered FreeCADCmd script string, not shared Python)
+# -- a Boolean feature's Base/Tool/Shapes inputs stay real Group members
+# (FreeCAD's scope-consistency rules require it), but they no longer
+# represent independent geometry, so a box and the exact cut derived from
+# it (or the tool that cut it) would otherwise always "collide" with each
+# other by definition.
+_consumed_operands = set()
+for _obj in doc.Objects:
+    for _attr in ("Base", "Tool"):
+        _ref = getattr(_obj, _attr, None)
+        if _ref is not None and hasattr(_ref, "Name"):
+            _consumed_operands.add(_ref.Name)
+    for _ref in (getattr(_obj, "Shapes", None) or []):
+        if hasattr(_ref, "Name"):
+            _consumed_operands.add(_ref.Name)
+
 _members = [
     m for m in getattr(assembly, "Group", [])
     if getattr(m, "Shape", None) is not None and not m.Shape.isNull()
+    and m.Name not in _consumed_operands
 ]
 
 _collisions = []
