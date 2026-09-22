@@ -2936,15 +2936,35 @@ for _m in _members:
     # MatrixOfInertia is ALWAYS computed about the shape's own center of mass
     # (translation-invariant) and its A11.. entries map directly to the
     # standard ixx/iyy/izz/ixy/ixz/iyz tensor with no extra sign flip needed.
-    _com = _local_shape.CenterOfMass
-    _moi = _local_shape.MatrixOfInertia
+    #
+    # A boolean-chain result (Part::Cut/MultiFuse/MultiCommon) reports its
+    # own .Shape as a Part::Compound wrapping the real solid -- CenterOfMass/
+    # MatrixOfInertia aren't defined on a bare Compound in this FreeCAD
+    # build (confirmed live: "'Part.Compound' object has no attribute
+    # 'CenterOfMass'", every export of a boolean-derived member failing
+    # outright) -- same limitation this module's other mass-property script
+    # already unwraps (see its own "shape.ShapeType == 'Compound' and
+    # shape.Solids" guard elsewhere in this file); mirrored here rather than
+    # shared, since each is its own independently-rendered FreeCADCmd script
+    # string, not shared Python. Only the first solid is used when compound
+    # -- a genuinely multi-solid compound (several disjoint bodies grouped
+    # together) would need per-solid mass aggregation this doesn't attempt,
+    # same single-solid assumption the existing unwrap already accepts.
+    # Volume is read off the same unwrapped shape too, so mass/CoM/inertia/
+    # volume all agree on which solid they describe instead of volume
+    # silently including sub-shapes CenterOfMass/MatrixOfInertia ignore.
+    _mass_shape = _local_shape
+    if _mass_shape.ShapeType == 'Compound' and _mass_shape.Solids:
+        _mass_shape = _mass_shape.Solids[0]
+    _com = _mass_shape.CenterOfMass
+    _moi = _mass_shape.MatrixOfInertia
     _parts.append(
         {{
             "name": _m.Name,
             "mesh_file": "meshes/" + _m.Name + ".stl",
             "origin_xyz": [_rel.Base.x, _rel.Base.y, _rel.Base.z],
             "origin_rpy": [math.radians(_roll), math.radians(_pitch), math.radians(_yaw)],
-            "volume": _local_shape.Volume,
+            "volume": _mass_shape.Volume,
             "center_of_mass": [_com.x, _com.y, _com.z],
             "inertia": {{
                 "ixx": _moi.A11, "ixy": _moi.A12, "ixz": _moi.A13,
