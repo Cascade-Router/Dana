@@ -3331,20 +3331,36 @@ _BOOLEAN_FEATURE_TYPE: dict[str, str] = {
 
 _DEFAULT_BOOLEAN_NAME: dict[str, str] = {"cut": "Cut", "union": "Fusion", "intersect": "Common"}
 
-def apply_boolean(operation: str, base_object: str, tool_object: str, name: str | None = None) -> str:
-    """Combine two objects already in the shared ``Session_Active.FCStd``
+def apply_boolean(
+    operation: str,
+    base_object: str = "",
+    tool_object: str = "",
+    name: str | None = None,
+    objects: list[str] | None = None,
+) -> str:
+    """Combine two-or-more objects already in the shared ``Session_Active.FCStd``
     document with a Boolean operation, looked up by NAME — not path, since
     every session-scoped creation tool (``create_box``/``create_cylinder``/
     ``insert_standard_part``) now shares that one document, so a path alone
     can no longer tell two objects apart the way it could when each lived in
     its own file.
 
-    ``"cut"`` builds a ``Part::Cut`` (subtracts the tool from the base);
-    ``"union"`` builds a ``Part::MultiFuse`` (fuses both into one solid);
-    ``"intersect"`` builds a ``Part::MultiCommon`` (keeps only their
-    overlapping volume). ``base_object``/``tool_object`` must already exist
-    in the session document — built by a session-scoped creation tool, or a
-    prior ``apply_boolean`` call's own result name.
+    ``"cut"`` builds a ``Part::Cut`` (subtracts the tool from the base) and
+    only ever takes exactly two names, via ``base_object``/``tool_object``.
+    ``"union"``/``"intersect"`` build an N-ary ``Part::MultiFuse``/
+    ``Part::MultiCommon`` (fuse everything into one solid / keep only the
+    shared overlap) and accept ``objects`` (2+ names) instead — the caller
+    (``dana.core.react_dispatch._tool_perform_freecad_boolean``) always uses
+    this form for non-cut operations, even for exactly 2 objects. Every name
+    across ``base_object``/``tool_object``/``objects`` must already exist in
+    the session document — built by a session-scoped creation tool, or a
+    prior ``apply_boolean`` call's own result name. Forwarded verbatim to
+    ``ir._boolean_from_args``, which already merges all three fields (and
+    whose Jinja2 template already renders the N-ary ``MultiFuse``/
+    ``MultiCommon`` case) — this wrapper's own signature was the one piece
+    of that pipeline never updated to accept ``objects`` at all, so any
+    non-cut call reaching here always raised ``TypeError: apply_boolean()
+    got an unexpected keyword argument 'objects'`` before this fix.
     """
     op = (operation or "").strip().lower()
     if op not in _BOOLEAN_FEATURE_TYPE:
@@ -3361,7 +3377,7 @@ def apply_boolean(operation: str, base_object: str, tool_object: str, name: str 
         )
     result, steps, session_path = _execute_ir_tool(
         "perform_freecad_boolean", name=resolved_name, operation=op, feature_type=feature_type,
-        base_object=base_object, tool_object=tool_object,
+        base_object=base_object, tool_object=tool_object, objects=objects,
     )
     if not result["ok"]:
         return _error(f"apply_boolean failed: {result['error']}")
