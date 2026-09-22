@@ -112,6 +112,7 @@ def _render_dxf_to_pdf(dxf_path: str, name: str, page_size_mm: tuple[float, floa
     import matplotlib.pyplot as plt
     from ezdxf.addons.drawing import RenderContext, Frontend
     from ezdxf.addons.drawing import matplotlib as ezdxf_matplotlib
+    from ezdxf.addons.drawing.config import BackgroundPolicy, ColorPolicy, Configuration
 
     doc = ezdxf.readfile(dxf_path)
     width_mm, height_mm = page_size_mm
@@ -122,7 +123,18 @@ def _render_dxf_to_pdf(dxf_path: str, name: str, page_size_mm: tuple[float, floa
         ax.set_ylim(0, height_mm)
         ax.set_aspect("equal")
         ax.axis("off")
-        Frontend(RenderContext(doc), ezdxf_matplotlib.MatplotlibBackend(ax)).draw_layout(
+        # Default ColorPolicy.COLOR keeps TechDraw's native layer color (ACI
+        # 7, "white" under the dark-background convention DXF viewers
+        # assume) drawn onto matplotlib's default white figure — an
+        # invisible white-on-white PDF page. Confirmed live: an unpatched
+        # render of a real box's Front view produced a page with zero
+        # non-white pixels. Forcing black-on-white makes the page's own
+        # background explicit too, rather than relying on whatever the
+        # matplotlib backend defaults to.
+        render_config = Configuration(
+            background_policy=BackgroundPolicy.WHITE, color_policy=ColorPolicy.BLACK
+        )
+        Frontend(RenderContext(doc), ezdxf_matplotlib.MatplotlibBackend(ax), config=render_config).draw_layout(
             doc.modelspace(), finalize=True
         )
         _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
