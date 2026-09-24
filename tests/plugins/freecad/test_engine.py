@@ -152,9 +152,8 @@ def test_boolean_cut_step_hides_base_and_tool():
 
 def test_boolean_fuse_common_step_hides_all_shapes():
     script = _render_boolean_step(operation="union", feature_type="Part::MultiFuse")
-    assert "_base_1.Visibility = False" in script
-    assert "_tool_1.Visibility = False" in script
-    assert "obj.Shapes = [_base_1, _tool_1]" in script
+    assert "obj.Shapes = _shapes_1" in script
+    assert "_s.Visibility = False" in script
 
 
 # --------------------------------------------------------------------------
