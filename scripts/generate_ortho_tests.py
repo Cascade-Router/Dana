@@ -200,6 +200,32 @@ for view_name, direction, xdirection, dxf_path in {view_specs!r}:
 
     TechDraw.writeDXFPage(page, dxf_path)
     print("{marker} view=" + view_name + " dxf=" + dxf_path)
+
+    # Overall Width/Height callouts per view, mapped from the 3D bounding
+    # box -- NOT injected as TechDraw::DrawViewAnnotation objects. Confirmed
+    # live: writeDXFPage DOES include annotation text as a real DXF TEXT
+    # entity with the correct declared height (verified by reading the DXF
+    # back with ezdxf), but ezdxf's own matplotlib rasterizer (this script's
+    # _rasterize_dxf_to_png) renders that TEXT wildly oversized regardless
+    # of its declared height -- confirmed on a minimal probe (a 5.0mm-tall
+    # label dwarfing a 10mm test cube rendered at accurate 1:1 scale right
+    # next to it). Printing the plain numbers here and drawing them directly
+    # in the matplotlib rasterization step instead sidesteps that renderer
+    # bug entirely, with full control over the actual rendered font size.
+    bbox = final_obj.Shape.BoundBox
+    dx, dy, dz = bbox.XLength, bbox.YLength, bbox.ZLength
+    if direction == (0.0, -1.0, 0.0):    # Front view: looking down -Y
+        dim_w, dim_h = dx, dz
+    elif direction == (0.0, 0.0, -1.0):  # Top view: looking down -Z
+        dim_w, dim_h = dx, dy
+    elif direction == (1.0, 0.0, 0.0):   # Right/side view: looking down +X
+        dim_w, dim_h = dy, dz
+    else:
+        dim_w, dim_h = dx, dy
+    print(
+        "{marker} dims view=" + view_name
+        + " width=" + "%.2f" % dim_w + " height=" + "%.2f" % dim_h
+    )
 """
 
 # Reuses dana.plugins.freecad.techdraw_export's own vetted direction/
@@ -265,6 +291,103 @@ def _rasterize_dxf_to_png(dxf_path: Path, out_path: Path) -> None:
         plt.close(fig)
 
 
+_DIM_LABEL_FONT_PX = 32
+_DIM_LABEL_MARGIN_PX = 14
+
+
+def _stamp_dimension_labels(png_path: Path, dim_w: float, dim_h: float) -> None:
+    """Draws Overall Width/Height callouts directly onto the already-
+    rasterized PNG via Pillow, in PIXEL space, rather than trying to place
+    them inside the matplotlib/DXF data-coordinate system _rasterize_dxf_to_png
+    uses for the geometry itself.
+
+    That was tried first and abandoned: ax.set_aspect("equal") interacting
+    with ezdxf's own draw_layout(finalize=True) autoscale silently
+    re-adjusts the axes' data limits at savefig() time (confirmed live via
+    matplotlib's own "Ignoring fixed x limits to fulfill fixed data aspect
+    with adjustable data limits" warning) -- text placed in that same data
+    space landed off-canvas even though the geometry itself rendered
+    correctly. Pixel space has no such ambiguity: whatever the final PNG
+    looks like IS the coordinate system, so this finds the actual rendered
+    ink's bounding box (via inverting to find non-white pixels) and anchors
+    labels relative to THAT, which works regardless of whatever internal
+    scale/crop the DXF rendering step applied.
+
+    Both labels drawn HORIZONTALLY (0deg), stacked on two lines below the
+    geometry -- the height label used to be rotated 90deg and placed to the
+    LEFT of the drawing, which had two confirmed-live problems: (1) EasyOCR
+    struggles with rotated text (it misread the rotated height label
+    specifically, while the horizontal width label on the same image read
+    back clean), and (2) a left-of-geometry placement clips clean off the
+    canvas edge whenever the drawing's own silhouette already starts near
+    x=0 (also confirmed live, on the bracket "right" view).
+
+    The page canvas this function receives is NOT a fixed, generously-
+    margined size -- confirmed live these 5 synthetic views range from
+    800x1000 to 1600x960px, because ax.set_aspect("equal")'s adjustable-
+    datalim interaction with ezdxf's own autoscale (see
+    _rasterize_dxf_to_png's own docstring) crops tightly around whatever
+    geometry is present, per view. A first attempt at stacking two label
+    lines directly below the ink bbox clipped the second line clean off the
+    bottom edge on several views because there simply wasn't 2 lines' worth
+    of margin below the geometry to begin with. Rather than guess at
+    available margin, this pads the canvas with a guaranteed-white strip
+    tall enough for both lines FIRST, then draws into that strip -- correct
+    regardless of how tight the original crop is.
+    """
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+    img = Image.open(png_path).convert("RGB")
+    ink_bbox = ImageOps.invert(img.convert("L")).getbbox()
+    if ink_bbox is None:  # a blank page -- nothing to anchor labels to
+        return
+    left, _top, right, bottom = ink_bbox
+
+    line_height = _DIM_LABEL_FONT_PX + _DIM_LABEL_MARGIN_PX
+    pad_height = _DIM_LABEL_MARGIN_PX + 2 * line_height
+    padded = Image.new("RGB", (img.width, img.height + pad_height), "white")
+    padded.paste(img, (0, 0))
+
+    draw = ImageDraw.Draw(padded)
+    font = ImageFont.load_default(size=_DIM_LABEL_FONT_PX)
+    center_x = (left + right) // 2
+
+    # Bare numbers, not "W: 60.0"/"H: 50.0" -- a prefix risks EasyOCR
+    # detecting it as one glued-together text blob with the number ("W:
+    # 60.0"), which _repair_and_filter's exact-match dimension pattern
+    # would then reject outright. Which line is width vs. height is
+    # already conveyed by stacking order (width above height, matching the
+    # order dims are always parsed/passed) and by the OCR view label this
+    # feeds into (dana.plugins.vision.ocr_grounding), not by text on the
+    # image itself.
+    width_text = f"{dim_w:.1f}"
+    draw.text((center_x, bottom + _DIM_LABEL_MARGIN_PX), width_text, fill="black", font=font, anchor="ma")
+
+    height_text = f"{dim_h:.1f}"
+    draw.text((center_x, bottom + _DIM_LABEL_MARGIN_PX + line_height), height_text, fill="black", font=font, anchor="ma")
+
+    padded.save(png_path)
+
+
+def _parse_dims_line(stdout: str, view_name: str) -> tuple[float, float] | None:
+    """Extracts (width, height) from this view's own "{_OK_MARKER} dims
+    view=<name> width=<w> height=<h>" stdout line (see _PART_SCRIPT_TEMPLATE)
+    -- plain string parsing, matching the existing marker-line convention
+    _run_part already uses below to find each view's dxf_path.
+    """
+    prefix = f"{_OK_MARKER} dims view={view_name} width="
+    for line in stdout.splitlines():
+        if not line.startswith(prefix):
+            continue
+        rest = line[len(prefix) :]
+        width_str, _, height_str = rest.partition(" height=")
+        try:
+            return float(width_str), float(height_str)
+        except ValueError:
+            return None
+    return None
+
+
 def _run_part(freecadcmd: str, part: dict[str, Any]) -> list[str]:
     """Builds `part`'s geometry and exports every requested view to a DXF via
     ONE FreeCADCmd subprocess call, then rasterizes each DXF to its target
@@ -307,6 +430,9 @@ def _run_part(freecadcmd: str, part: dict[str, Any]) -> list[str]:
                 continue
             out_path = _WORKSPACE / out_name
             _rasterize_dxf_to_png(dxf_path, out_path)
+            dims = _parse_dims_line(proc.stdout, name)
+            if dims is not None:
+                _stamp_dimension_labels(out_path, *dims)
             print(f"[gen] wrote {out_path} ({out_path.stat().st_size} bytes)")
             generated.append(out_name)
     except subprocess.TimeoutExpired:
