@@ -15,6 +15,11 @@
 fastapi==0.135.1
 uvicorn[standard]==0.42.0
 websockets==15.0.1
+# Telemetry — dana/core/telemetry.py's log_error() reports to Sentry only
+# when SENTRY_DSN/TELEMETRY_DSN is set; otherwise a no-op, local logging
+# only. FastAPI/Starlette request instrumentation auto-enables since both
+# are already installed above.
+sentry-sdk>=2.18.0
 transformers==5.13.0
 accelerate==1.14.0
 einops==0.8.2
@@ -22,6 +27,16 @@ timm==1.0.28
 ultralytics==8.4.91
 opencv-python-headless>=4.8.0
 Pillow>=10.2.0
+# dana/plugins/vision/ocr_grounding.py — deterministic dimension-text
+# reading for analyze_reference_design. Safe for ZeroGPU despite this
+# file's own torch policy above: easyocr's OWN declared requirement is a
+# bare, unpinned "torch" plus "torchvision>=0.5" (verified via
+# importlib.metadata.requires("easyocr") and confirmed with `pip install
+# easyocr --dry-run`, which reports every torch-derived package as
+# "already satisfied" — nothing gets installed/upgraded). It also already
+# requires opencv-python-headless (not opencv-python), same as pinned
+# above, so no libgl1/system GL packages.txt entry is needed either.
+easyocr>=1.7.0
 # gradio is installed by the Hugging Face Space SDK (see README.md sdk_version).
 # Do not pin it here — duplicate pins collide with the Space container build.
 numpy>=1.26.0
@@ -49,6 +64,10 @@ playwright==1.62.0
 cryptography==49.0.0
 keyring==25.7.0
 python-dotenv==1.2.2
+# Dynamic LLM Router — routing_config.yaml (dana/core/routing_config.py).
+# Optional at runtime (its absence is a supported no-op), but declared here
+# explicitly since it was previously only an incidental transitive dep.
+PyYAML>=6.0
 pystray==0.19.5
 customtkinter==6.0.0
 psutil==7.2.2

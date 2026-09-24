@@ -103,14 +103,16 @@ def _get_reader():
     a no-op at best on a CPU-only install and a needless surprise if a
     future CUDA install changes that silently.
 
-    Returns None if easyocr isn't importable — deliberately NOT a hard
-    dependency in requirements.txt: easyocr pulls in torch/torchvision,
-    and that file has an explicit standing policy of never pinning torch
-    there so the Hugging Face ZeroGPU Space build keeps using its own
-    preinstalled, GPU-matched PyTorch. Any environment without easyocr
-    installed (that Space, until/unless it's added there deliberately)
-    just gets no OCR grounding rather than an ImportError crashing
-    analyze_reference_design entirely.
+    ``easyocr`` IS a normal requirements.txt dependency (verified live it
+    never touches torch/torchvision there — its own declared requirement
+    is a bare, unpinned ``torch`` plus ``torchvision>=0.5``, confirmed via
+    ``pip install easyocr --dry-run`` reporting every torch-derived
+    package as already satisfied). This ``ImportError`` guard is defensive
+    depth, not the primary mechanism keeping it optional — a venv that
+    hasn't run a fresh ``pip install -r requirements.txt`` yet, or any
+    other environment missing it for whatever reason, still gets no OCR
+    grounding rather than an ImportError crashing analyze_reference_design
+    entirely.
     """
     global _reader
     if _reader is None:
