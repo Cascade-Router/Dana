@@ -242,6 +242,14 @@ def test_api_keys_are_threaded_into_model_provider_constructor(
 def test_all_providers_failing_reports_clean_error_with_attempts(
     _sandbox: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Explicit, not ambient: this test's premise is "ollama is the ONLY
+    # candidate and it fails" -- relying on cloud fallback happening to be
+    # off in whatever .env the test runner's machine has would make this
+    # fragile to that machine's own local config (confirmed live: this
+    # machine's own .env sets DANA_ALLOW_CLOUD_FALLBACK=1 for real local
+    # dev use, which silently turned this into a 2-candidate case where the
+    # second one succeeds in the mock, flipping the assertion).
+    monkeypatch.setattr(image_analysis, "cloud_fallback_enabled", lambda: False)
     _write_png(_sandbox, "chart.png")
     _mock_provider(monkeypatch, fail_providers=("ollama",))
 

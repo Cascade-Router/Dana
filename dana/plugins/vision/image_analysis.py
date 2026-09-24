@@ -14,12 +14,13 @@ import base64
 import io
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
 from PIL import Image
 
-from dana.core.model_provider import ModelProvider, cloud_fallback_enabled, cloud_provider_name
+from dana.core.model_provider import ModelProvider, cloud_fallback_enabled, cloud_provider_name, ensure_dotenv_loaded
 from dana.plugins.os.file_system import PathEscapeError, resolve_sandboxed_path
 from dana.plugins.vision.ocr_grounding import extract_blueprint_dimensions
 
@@ -146,9 +147,17 @@ def _candidate_providers() -> list[str]:
     cad_vision.py's own candidate-list helper is private to its blueprint-
     reading flow, so it's not imported from here.
     """
+    ensure_dotenv_loaded()
     providers = ["ollama"]
     if cloud_fallback_enabled():
-        cloud = cloud_provider_name()
+        # DANA_CLOUD_VISION_PROVIDER lets this tool's cloud fallback target
+        # a DIFFERENT provider than the main ReAct loop's own
+        # DANA_CLOUD_PROVIDER -- reusing that global setting unconditionally
+        # would mean pointing analyze_reference_design at e.g. OpenRouter
+        # also silently repoints the whole text-completion cloud fallback
+        # there too, a much bigger blast radius than intended. Falls back
+        # to cloud_provider_name() (unchanged prior behavior) when unset.
+        cloud = (os.environ.get("DANA_CLOUD_VISION_PROVIDER") or "").strip().lower() or cloud_provider_name()
         providers.append("openai" if cloud in {"gemini", "google", "anthropic"} else cloud)
     return providers
 

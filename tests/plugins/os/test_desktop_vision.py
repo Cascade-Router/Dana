@@ -177,6 +177,12 @@ def test_api_keys_are_threaded_into_model_provider_constructor(monkeypatch: pyte
 
 
 def test_all_providers_failing_reports_clean_error_with_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Explicit, not ambient -- see dana.plugins.vision.image_analysis's own
+    # sibling test/fix for this exact pattern: this machine's own .env sets
+    # DANA_ALLOW_CLOUD_FALLBACK=1 for real local dev use, which silently
+    # turns "ollama is the only candidate and it fails" into a 2-candidate
+    # case where the second one succeeds in the mock.
+    monkeypatch.setattr(desktop_vision, "cloud_fallback_enabled", lambda: False)
     _mock_mss(monkeypatch)
     _mock_provider(monkeypatch, fail_providers=("ollama",))
 

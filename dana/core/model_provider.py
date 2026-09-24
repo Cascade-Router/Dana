@@ -38,6 +38,15 @@ _DEFAULT_LOCAL_MODEL = "qwen2.5-coder:14b"
 # qwen2.5-coder:14b. complete_vision's "ollama" routing needs its own model
 # name so a local text-model choice never silently breaks every vision tool.
 _DEFAULT_LOCAL_VISION_MODEL = "llava:7b"
+# Same reasoning as _DEFAULT_LOCAL_VISION_MODEL above, one level up: each
+# cloud provider's own general-purpose model env var (DANA_OPENROUTER_MODEL,
+# DANA_GEMINI_MODEL, ...) is chosen for text/tool-calling and has no
+# guarantee of vision support -- confirmed live this project's own
+# DANA_OPENROUTER_MODEL is configured to a list of text-only free-tier
+# models (nemotron/nex). A vision-capable, cheap, widely-available default;
+# override with DANA_CLOUD_VISION_MODEL for whatever the account actually
+# has access to/prefers.
+_DEFAULT_CLOUD_VISION_MODEL = "openai/gpt-4o-mini"
 _COMPLEXITY_REJECT = "REJECT: Task too complex for local model"
 
 # Native Gemini generateContent (REST) — a DIFFERENT calling convention than
@@ -250,6 +259,18 @@ def local_vision_model_name() -> str:
         or (os.environ.get("OLLAMA_VISION_MODEL") or "").strip()
         or _DEFAULT_LOCAL_VISION_MODEL
     )
+
+
+def cloud_vision_model_name() -> str:
+    """The cloud model ``complete_vision``'s non-``"ollama"`` branches
+    resolve to — the cloud-side counterpart to ``local_vision_model_name()``
+    above, same reasoning: whichever cloud provider is resolved, its own
+    general-purpose model env var was picked for text/tool-calling, not
+    verified vision-capable. See ``_DEFAULT_CLOUD_VISION_MODEL``'s comment
+    for why routing a vision call through that model risks silently
+    ignoring the image entirely instead of an outright error."""
+    ensure_dotenv_loaded()
+    return ((os.environ.get("DANA_CLOUD_VISION_MODEL") or "").strip()) or _DEFAULT_CLOUD_VISION_MODEL
 
 
 def cloud_provider_name() -> str:
@@ -1286,11 +1307,15 @@ class ModelProvider:
         a single string.
 
         ``provider="ollama"`` (the default when cloud fallback is off) hits
-        the local Ollama VLM (e.g. Qwen2.5-VL) over its OpenAI-compatible
-        surface at zero cost/egress; any other resolved provider goes to the
-        matching cloud OpenAI-wire endpoint (GPT-4o-class on OpenAI/Groq).
-        Raises ``NotImplementedError`` for Gemini/Anthropic, whose image
-        payload shapes are not OpenAI-compatible.
+        the local Ollama VLM over its OpenAI-compatible surface at zero
+        cost/egress, using ``local_vision_model_name()`` (NOT whatever local
+        text/tool-calling model is configured). Any other resolved provider
+        goes to the matching cloud OpenAI-wire endpoint (OpenAI, OpenRouter,
+        Groq, ...) using ``cloud_vision_model_name()`` for the same reason —
+        neither vision override reuses that provider's own general-purpose
+        model config, which has no guarantee of vision support. Raises
+        ``NotImplementedError`` for Gemini/Anthropic, whose image payload
+        shapes are not OpenAI-compatible.
         """
         resolved_provider = (provider or cloud_provider_name()).strip().lower()
         if resolved_provider in _NON_OPENAI_SCHEMA_PROVIDERS:
@@ -1306,6 +1331,19 @@ class ModelProvider:
             # for a multimodal request. Override with the dedicated vision
             # model instead; key/base/headers/fallback_models are unaffected.
             model = local_vision_model_name()
+        else:
+            # Same problem, cloud side: _resolve_openai_endpoint's `model`
+            # (and `fallback_models`, for openrouter) come from each
+            # provider's own general-purpose text/tool-calling model env var
+            # — confirmed live this project's own DANA_OPENROUTER_MODEL is a
+            # list of text-only free-tier models, which would silently
+            # ignore the image (or error) instead of actually analyzing it.
+            # fallback_models is cleared rather than reused for the same
+            # reason: those models were never verified vision-capable
+            # either, so a mid-request fallback to one would be exactly the
+            # same silent failure this override exists to prevent.
+            model = cloud_vision_model_name()
+            fallback_models = []
         images_b64 = image_b64 if isinstance(image_b64, list) else [image_b64]
         mime_types = mime_type if isinstance(mime_type, list) else [mime_type] * len(images_b64)
         if len(mime_types) != len(images_b64):
@@ -1395,6 +1433,7 @@ __all__ = (
     "cloud_fallback_enabled",
     "cloud_primary_enabled",
     "complexity_reject_marker",
+    "cloud_vision_model_name",
     "force_local",
     "get_default_provider",
     "is_complexity_reject",
