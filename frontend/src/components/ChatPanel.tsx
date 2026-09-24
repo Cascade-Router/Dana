@@ -76,6 +76,7 @@ const TOOL_ACTIVITY_LABELS: Record<string, { icon: string; label: string }> = {
   list_directory: { icon: "📁", label: "Listing files" },
   update_core_memory: { icon: "🧠", label: "Updating memory" },
   analyze_workspace_image: { icon: "🖼️", label: "Analyzing an image" },
+  analyze_reference_design: { icon: "📐", label: "Reconciling multi-view reference design" },
   take_canvas_screenshot: { icon: "📸", label: "Capturing the viewport" },
   load_capability: { icon: "🔓", label: "Loading a capability" },
   system_state: { icon: "⚙️", label: "Checking system status" },
@@ -259,12 +260,22 @@ type Props = {
   messages: ChatMessage[];
   liveActivity: AgentActivity[];
   turnActive: boolean;
+  isThinking: boolean;
   onSend: (text: string, attachments?: string[], includeDesktopContext?: boolean) => void;
   onAbort: () => void;
   onHitlRespond: (requestId: string, approved: boolean, parameters?: Record<string, unknown>) => void;
 };
 
-export function ChatPanel({ connection, messages, liveActivity, turnActive, onSend, onAbort, onHitlRespond }: Props) {
+export function ChatPanel({
+  connection,
+  messages,
+  liveActivity,
+  turnActive,
+  isThinking,
+  onSend,
+  onAbort,
+  onHitlRespond,
+}: Props) {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
@@ -349,6 +360,14 @@ export function ChatPanel({ connection, messages, liveActivity, turnActive, onSe
             </div>
           )
         )}
+        {isThinking && (
+          <div className="chat-panel__bubble chat-panel__bubble--assistant chat-panel__bubble--activity-live">
+            <div className="chat-panel__thinking" role="status">
+              <span className="chat-panel__thinking-spinner" aria-hidden="true" />
+              Agent thinking…
+            </div>
+          </div>
+        )}
         {liveActivity.length > 0 && (
           <div className="chat-panel__bubble chat-panel__bubble--assistant chat-panel__bubble--activity-live">
             <AgentActivityFeed activity={liveActivity} live />
@@ -356,13 +375,15 @@ export function ChatPanel({ connection, messages, liveActivity, turnActive, onSe
         )}
       </div>
 
-      <div className="chat-panel__quick-prompts">
-        {QUICK_PROMPTS.map((p) => (
-          <button key={p} type="button" onClick={() => onSend(p, undefined, desktopContextEnabled)}>
-            {p}
-          </button>
-        ))}
-      </div>
+      {messages.length === 0 && (
+        <div className="chat-panel__quick-prompts">
+          {QUICK_PROMPTS.map((p) => (
+            <button key={p} type="button" onClick={() => onSend(p, undefined, desktopContextEnabled)}>
+              {p}
+            </button>
+          ))}
+        </div>
+      )}
 
       {attachments.length > 0 && (
         <div className="chat-panel__attachment-preview">

@@ -66,3 +66,16 @@
   color: #9ca3af;
   font-variant-numeric: tabular-nums;
 }
+
+.viewer3d__part-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.viewer3d__part-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -1,7 +1,9 @@
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Component, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Canvas, useFrame, useLoader, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Grid, OrbitControls } from "@react-three/drei";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import URDFLoader, { type URDFRobot } from "urdf-loader";
 import * as THREE from "three";
 import type { CameraTarget, CanvasSelection } from "../lib/useChatSocket";
@@ -9,8 +11,80 @@ import { apiFetch, IS_GRADIO_MODE, resolveApiUrl } from "../lib/apiBase";
 import { fetchGradioArtifacts } from "../lib/gradioChatClient";
 import "./Viewer3D.css";
 
+// Extension-Not-At-The-End fix: both patterns used to anchor the extension
+// to the very END of the string (`(?:[?#].*)?$`) — correct for the live
+// `/api/mesh/{token}.glb` push, but WRONG for MeshHistoryPicker's artifact
+// download URL, `/api/cad/artifacts/{filename}/download?session_id=...`
+// (dana/api/cad.py) — there the extension sits in the MIDDLE of the path,
+// as part of `{filename}`, followed by `/download` and a query string, not
+// at the end. Every artifact selected from history therefore matched
+// NEITHER isUrdfUrl NOR isGlbUrl, fell through to the StlMesh branch below,
+// and had its real GLB bytes fed to STLLoader — reading FreeCAD's own
+// binary GLB header as if it were a binary STL triangle count produces
+// exactly the "Invalid typed array length: <garbage>" crash this was
+// chasing. Now matches the extension followed by `/`, `?`, `#`, OR end of
+// string, so it's recognized whether it's the last thing in the URL or
+// just the last thing in ITS OWN path segment.
 function isUrdfUrl(url: string): boolean {
-  return /\.urdf(?:[?#].*)?$/i.test(url);
+  return /\.urdf(?:[/?#]|$)/i.test(url);
+}
+
+// GLTF Binary — the live-preview bandwidth format switch (dana.plugins.
+// freecad.engine.export_mesh_stl / dana.platform.mock now write .glb, not
+// .stl, for every CAD tool call's viewport preview — see that function's
+// own docstring). Checked separately from isUrdfUrl above so an OLDER
+// .stl mesh_url (an already-generated session/history artifact, or
+// export_model's own unrelated "download as STL" file) still renders via
+// StlMesh below exactly as before — nothing about that path changed.
+function isGlbUrl(url: string): boolean {
+  return /\.(?:glb|gltf)(?:[/?#]|$)/i.test(url);
+}
+
+// Default Shading Pass: an STL (and any GLB converted FROM one — see
+// dana.plugins.freecad.engine's STL->GLB trimesh fallback) has NO shared
+// vertex indices — every triangle owns 3 independent vertex copies. Calling
+// computeVertexNormals() straight off the loader can therefore only ever
+// average a vertex's normal with the other 2 corners of its OWN triangle,
+// which is indistinguishable from flat per-face shading no matter how good
+// the lighting/material already is (this viewport already uses a real
+// MeshStandardMaterial + ambient/directional lights — the flatness isn't a
+// lighting problem). mergeVertices() welds coincident positions into shared
+// indices first, so an edge two adjacent real-world triangles actually
+// share is shared in the buffer too, letting computeVertexNormals() blend
+// across it into genuine smooth per-vertex normals — the actual fix for
+// curved CAD surfaces (fillets, cylinders, swept profiles) looking faceted
+// and hard to read as 3D. Unrelated to FreeCAD's own DisplayMode/draw-style
+// GUI properties, which this viewport never reads at all — geometry reaches
+// here as a flat mesh file, not a live FreeCAD document.
+//
+// Disposes the pre-merge geometry: mergeVertices returns a NEW
+// BufferGeometry rather than mutating in place, and the original is never
+// attached to a <mesh> (so react-three-fiber's own unmount-disposal walk
+// never sees it) — same "no cache hit ever happens, unique URL per
+// generated mesh" reasoning StlMesh's own useLoader.clear() cleanup below
+// already relies on, just applied one step earlier here.
+function smoothShaded(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+  // mergeVertices only treats two vertex COPIES as duplicates if ALL of
+  // their attributes match within tolerance, not position alone. STLLoader
+  // already bakes in a flat per-triangle `normal` attribute straight from
+  // the STL file's own facet normals — two positions that are genuinely
+  // the same point in space, on the shared edge between two adjacent
+  // facets, still carry two DIFFERENT normals (each triangle's own) at
+  // that point, so mergeVertices refuses to merge them. Confirmed live: a
+  // coarse 8-sided test prism reduced from 96 to only 50 vertices (the
+  // flat top/bottom caps merged fine, since every triangle on one cap
+  // already shares the SAME normal) while the curved/faceted side walls —
+  // exactly what needed smoothing — silently stayed fully unmerged, and
+  // the render was pixel-identical to no fix at all. Deleting the stale
+  // normal attribute first makes the merge decision position-only, so a
+  // genuinely shared edge is actually recognized as shared; the fresh
+  // computeVertexNormals() call below then has real topology to average
+  // across instead of recomputing the same flat values back.
+  geometry.deleteAttribute("normal");
+  const merged = mergeVertices(geometry);
+  merged.computeVertexNormals();
+  geometry.dispose();
+  return merged;
 }
 
 const _SPACE_URL = import.meta.env.VITE_HF_SPACE_URL as string;
@@ -48,9 +122,8 @@ function loadUrdfMesh(
   new STLLoader(manager).load(
     artifact.url,
     (geometry) => {
-      geometry.computeVertexNormals();
       const material = new THREE.MeshStandardMaterial({ color: "#4f8ff7", metalness: 0.15, roughness: 0.55 });
-      onLoad(new THREE.Mesh(geometry, material));
+      onLoad(new THREE.Mesh(smoothShaded(geometry), material));
     },
     undefined,
     () => onLoad(null, new Error(`failed to load URDF mesh: ${filename} (${artifact.url})`))
@@ -152,11 +225,18 @@ function StlMesh({ url, onSelect }: { url: string; onSelect: (selection: CanvasS
   // Gradio's CustomCORSMiddleware), not by anything set here. Kept anyway,
   // set explicitly rather than left to Three.js's default, so the intent
   // isn't silently dependent on an unannounced upstream default.
-  const geometry = useLoader(STLLoader, url, (loader) => {
+  const rawGeometry = useLoader(STLLoader, url, (loader) => {
     loader.setCrossOrigin("anonymous");
   });
-  geometry.computeVertexNormals();
-  geometry.center();
+  // Memoized on rawGeometry (useLoader's own stable, cached-by-url result)
+  // — smoothShaded disposes its input, so recomputing it on every re-render
+  // (e.g. a click updating markerPosition below) would try to re-merge an
+  // already-disposed geometry instead of doing real work once per mesh.
+  const geometry = useMemo(() => {
+    const shaded = smoothShaded(rawGeometry);
+    shaded.center();
+    return shaded;
+  }, [rawGeometry]);
 
   // useLoader's own cache (keyed by [Loader, url]) lives OUTSIDE this
   // component's lifetime, so it isn't touched by react-three-fiber's usual
@@ -216,6 +296,149 @@ function StlMesh({ url, onSelect }: { url: string; onSelect: (selection: CanvasS
       )}
     </>
   );
+}
+
+// One entry per named mesh node inside a loaded GLB's scene graph — a
+// FreeCAD assembly export (multiple boxes/cylinders/booleans left as
+// separate top-level objects, e.g. via export_model rather than a single
+// fused solid) round-trips as one glTF node per source object, each
+// keeping that object's own FreeCAD Name. `object` is a direct, live
+// reference into gltf.scene (NOT a copy) — toggling `.visible` on it is
+// exactly how three.js/r3f already decides whether to draw a node, so no
+// extra render-time branching is needed in GlbMesh itself.
+type GlbPart = { id: string; label: string; object: THREE.Object3D; visible: boolean };
+
+// GLB counterpart to StlMesh above — same click-to-select/marker contract,
+// different loader since a GLTFLoader result is a full scene graph (nodes,
+// meshes, materials already attached) rather than STLLoader's bare
+// BufferGeometry, so this renders it via <primitive>, three.js/R3F's own
+// standard pattern for an already-built object graph (matches how
+// Viewer3D's own urdfRobot is rendered below), instead of StlMesh's
+// single manually-built <mesh>.
+//
+// Rotation: deliberately NONE here, unlike StlMesh's -90° X rotation.
+// STL carries no coordinate-system convention (FreeCAD's native Z-up needs
+// that correction for Three.js's Y-up), but glTF's own spec MANDATES Y-up
+// — a conformant exporter (FreeCAD's importGLTF, or Mesh.export's own
+// glTF path — see dana.plugins.freecad.engine's _EXPORT_MESH_PREVIEW_SCRIPT)
+// should already emit correctly-oriented geometry, so reapplying STL's
+// rotation here would double-rotate it. Unverified against a live FreeCAD
+// glTF export in this environment — if a real model renders on its side,
+// this is the line to revisit.
+function GlbMesh({
+  url,
+  onSelect,
+  onPartsChange,
+}: {
+  url: string;
+  onSelect: (selection: CanvasSelection) => void;
+  onPartsChange: (parts: GlbPart[]) => void;
+}) {
+  const gltf = useLoader(GLTFLoader, url);
+  const [markerPosition, setMarkerPosition] = useState<THREE.Vector3 | null>(null);
+
+  // Same cache-eviction reasoning as StlMesh's own useLoader.clear() below
+  // — every generated mesh gets a brand-new, never-repeated opaque URL, so
+  // a cache hit never happens anyway; this just drops the now-stale entry.
+  useEffect(() => {
+    return () => {
+      useLoader.clear(GLTFLoader, url);
+    };
+  }, [url]);
+
+  // A raw FreeCAD glTF export carries no material worth trusting for a
+  // consistent in-app look — override every mesh in the scene to the same
+  // blue StlMesh/loadUrdfMesh already use, so a GLB and an STL result look
+  // identical in the viewport. Collects the same traversal's named mesh
+  // nodes into the parts list the parent's visibility panel renders — one
+  // pass, since both need to walk every mesh in the scene anyway. Cleared
+  // on unmount/URL change so a stale part list never outlives the scene
+  // it was toggling (the parent panel just disappears along with it, same
+  // as jointDefs does for a URDF).
+  useEffect(() => {
+    const parts: GlbPart[] = [];
+    const usedIds = new Set<string>();
+    gltf.scene.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.geometry = smoothShaded(mesh.geometry);
+      mesh.material = new THREE.MeshStandardMaterial({ color: "#4f8ff7", metalness: 0.15, roughness: 0.55 });
+
+      const label = child.name || `Part ${parts.length + 1}`;
+      let id = child.name || `part-${parts.length}`;
+      while (usedIds.has(id)) id = `${id}#`;
+      usedIds.add(id);
+      parts.push({ id, label, object: child, visible: child.visible });
+    });
+    onPartsChange(parts);
+    return () => onPartsChange([]);
+  }, [gltf.scene, onPartsChange]);
+
+  const handleClick = (event: ThreeEvent<MouseEvent>) => {
+    event.stopPropagation();
+    const mesh = event.object as THREE.Mesh;
+    const face = event.face;
+    const geometry = mesh.geometry as THREE.BufferGeometry | undefined;
+    if (!geometry?.attributes.position || !face) return;
+
+    const position = geometry.attributes.position;
+    const a = new THREE.Vector3().fromBufferAttribute(position, face.a);
+    const b = new THREE.Vector3().fromBufferAttribute(position, face.b);
+    const c = new THREE.Vector3().fromBufferAttribute(position, face.c);
+    const localCentroid = a.add(b).add(c).divideScalar(3);
+    const worldCentroid = mesh.localToWorld(localCentroid.clone());
+    const worldNormal = face.normal.clone().transformDirection(mesh.matrixWorld).normalize();
+
+    setMarkerPosition(worldCentroid);
+    onSelect({
+      meshId: "current_mesh",
+      centroid: [worldCentroid.x, worldCentroid.y, worldCentroid.z],
+      normal: [worldNormal.x, worldNormal.y, worldNormal.z],
+    });
+  };
+
+  return (
+    <>
+      <primitive object={gltf.scene} onClick={handleClick} />
+      {markerPosition && (
+        <mesh position={markerPosition}>
+          <sphereGeometry args={[1.6, 20, 20]} />
+          <meshBasicMaterial color="#ffb020" />
+        </mesh>
+      )}
+    </>
+  );
+}
+
+// Neither StlMesh nor GlbMesh had any error boundary — a malformed/
+// truncated mesh (a failed glTF export producing a corrupt .glb, a
+// STLLoader parse error) throws out of useLoader's suspended render and,
+// uncaught, crashes past the <Canvas> entirely instead of just failing to
+// show one mesh. Class component because React error boundaries require
+// componentDidCatch/getDerivedStateFromError, which only exist on classes
+// — this works the same inside r3f's custom reconciler as it does in plain
+// DOM React, since error-boundary lifecycle is a React tree concept, not a
+// renderer-specific one. Keyed by meshUrl at the call site (like StlMesh/
+// GlbMesh's own key) so a new mesh always gets a fresh, non-tripped
+// boundary rather than staying stuck on a previous URL's failure.
+class MeshErrorBoundary extends Component<
+  { onError: (error: Error) => void; children: ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error("[Viewer3D] mesh failed to load/render:", error);
+    this.props.onError(error);
+  }
+
+  render() {
+    return this.state.hasError ? null : this.props.children;
+  }
 }
 
 function CameraRig({ cameraTarget }: { cameraTarget: CameraTarget | null }) {
@@ -285,6 +508,14 @@ export function Viewer3D({ meshUrl, cameraTarget, onSelect }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const glRef = useRef<THREE.WebGLRenderer | null>(null);
   const [contextLost, setContextLost] = useState(false);
+  const [meshError, setMeshError] = useState<string | null>(null);
+
+  // A new meshUrl (or a cleared one) always gets a clean slate — otherwise
+  // a failure on one mesh would keep showing its error message forever,
+  // even after a later mesh loads successfully.
+  useEffect(() => {
+    setMeshError(null);
+  }, [meshUrl]);
 
   // Explicit safety-net teardown on THIS component's own unmount, on top of
   // react-three-fiber's automatic one (see the lifecycle notes above) —
@@ -307,6 +538,28 @@ export function Viewer3D({ meshUrl, cameraTarget, onSelect }: Props) {
   }, []);
 
   const isUrdf = !!meshUrl && isUrdfUrl(meshUrl);
+  const isGlb = !!meshUrl && isGlbUrl(meshUrl);
+
+  // Assembly part-visibility toggle — GlbMesh reports its scene's named
+  // mesh nodes here via onPartsChange; toggling one flips `.visible`
+  // directly on the live THREE.Object3D it holds a reference to (the same
+  // property three.js's own render walk already checks, no extra
+  // conditional rendering needed) and mirrors that into state so the
+  // checkbox reflects it. Cleared whenever meshUrl changes so a stale
+  // part list from a previous GLB never lingers in the panel.
+  const [glbParts, setGlbParts] = useState<GlbPart[]>([]);
+  useEffect(() => {
+    setGlbParts([]);
+  }, [meshUrl]);
+  const toggleGlbPart = useCallback((id: string) => {
+    setGlbParts((prev) =>
+      prev.map((part) => {
+        if (part.id !== id) return part;
+        part.object.visible = !part.object.visible;
+        return { ...part, visible: part.object.visible };
+      })
+    );
+  }, []);
 
   const [urdfRobot, setUrdfRobot] = useState<URDFRobot | null>(null);
   const [jointDefs, setJointDefs] = useState<JointSliderDef[]>([]);
@@ -439,14 +692,26 @@ export function Viewer3D({ meshUrl, cameraTarget, onSelect }: Props) {
         <OrbitControls makeDefault />
         <CameraRig cameraTarget={cameraTarget} />
         <Suspense fallback={null}>
-          {meshUrl && !isUrdf && !contextLost && <StlMesh key={meshUrl} url={meshUrl} onSelect={onSelect} />}
+          {meshUrl && !isUrdf && !isGlb && !contextLost && !meshError && (
+            <MeshErrorBoundary key={meshUrl} onError={(err) => setMeshError(err.message)}>
+              <StlMesh key={meshUrl} url={meshUrl} onSelect={onSelect} />
+            </MeshErrorBoundary>
+          )}
+          {meshUrl && isGlb && !contextLost && !meshError && (
+            <MeshErrorBoundary key={meshUrl} onError={(err) => setMeshError(err.message)}>
+              <GlbMesh key={meshUrl} url={meshUrl} onSelect={onSelect} onPartsChange={setGlbParts} />
+            </MeshErrorBoundary>
+          )}
         </Suspense>
         {urdfRobot && !contextLost && (
           <primitive key={urdfRobot.uuid} object={urdfRobot} rotation={[-Math.PI / 2, 0, 0]} />
         )}
       </Canvas>
       {contextLost && <div className="viewer3d__placeholder">Recovering 3D view…</div>}
-      {!contextLost && !meshUrl && (
+      {!contextLost && meshError && (
+        <div className="viewer3d__placeholder">Failed to render mesh: {meshError}</div>
+      )}
+      {!contextLost && !meshError && !meshUrl && (
         <div className="viewer3d__placeholder">No geometry yet — ask Dana to build something.</div>
       )}
       {!contextLost && jointDefs.length > 0 && (
@@ -466,6 +731,23 @@ export function Viewer3D({ meshUrl, cameraTarget, onSelect }: Props) {
                 onChange={(event) => handleJointChange(joint.name, parseFloat(event.target.value))}
               />
               <span className="viewer3d__joint-value">{(jointValues[joint.name] ?? 0).toFixed(2)}</span>
+            </label>
+          ))}
+        </div>
+      )}
+      {!contextLost && isGlb && glbParts.length > 1 && (
+        <div className="viewer3d__joint-panel">
+          <div className="viewer3d__joint-panel-title">Parts</div>
+          {glbParts.map((part) => (
+            <label key={part.id} className="viewer3d__part-row">
+              <input
+                type="checkbox"
+                checked={part.visible}
+                onChange={() => toggleGlbPart(part.id)}
+              />
+              <span className="viewer3d__part-name" title={part.label}>
+                {part.label}
+              </span>
             </label>
           ))}
         </div>
