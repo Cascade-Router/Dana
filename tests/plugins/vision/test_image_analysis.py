@@ -1,11 +1,12 @@
 """Tests for dana.plugins.vision.image_analysis — the real "vision_tools"
 capability domain (dana.core.react_dispatch's _VISION_TOOLS_TOOL_IDS):
-analyze_workspace_image. The LLM/VLM provider is always mocked — these
-tests never touch a real model.
+analyze_workspace_image and analyze_reference_design. The LLM/VLM provider
+is always mocked — these tests never touch a real model.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,37 @@ def _sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root.mkdir(exist_ok=True)
     monkeypatch.setattr(file_system, "_SANDBOX_ROOT", root)
     return root
+
+
+# A clean, unambiguous 10x20x30 box, spread across the standard 3-view
+# triple with every number distinct -- analyze_reference_design's bounding
+# box is now computed FROM this data (_compute_deterministic_bbox), not
+# from the mocked VLM response, so any test that expects ok: True needs a
+# real, non-degenerate OCR mock reaching it, same as production would.
+#   FRONT ∩ TOP   = {10.0} -> x=10.0
+#   FRONT ∩ RIGHT = {30.0} -> z=30.0
+#   TOP   ∩ RIGHT = {20.0} -> y=20.0
+_DEFAULT_OCR_MOCK = {"FRONT": ["10.0", "30.0"], "TOP": ["10.0", "20.0"], "RIGHT": ["20.0", "30.0"]}
+_DEFAULT_OCR_BBOX = {"x": 10.0, "y": 20.0, "z": 30.0}
+
+
+@pytest.fixture(autouse=True)
+def _mock_ocr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never let analyze_reference_design's tests hit a real
+    easyocr.Reader() -- constructing one loads/downloads real detection +
+    recognition models (confirmed live: slow, and network-dependent on a
+    fresh machine/CI runner), which every VLM provider call in this file is
+    already mocked specifically to avoid.
+
+    Defaults to _DEFAULT_OCR_MOCK (real per-view dimensions) rather than {}
+    -- the bounding box now comes entirely from this data, so a test that
+    doesn't care about OCR specifically still needs SOME valid triple to
+    reach ok: True, same as a real drawing with legible dimensions would.
+    Tests that specifically exercise OCR behavior (threading, fallback,
+    empty-view handling) override this again via their own
+    monkeypatch.setattr(...).
+    """
+    monkeypatch.setattr(image_analysis, "extract_blueprint_dimensions", lambda file_paths: dict(_DEFAULT_OCR_MOCK))
 
 
 class _FakeModelProvider:
@@ -69,6 +101,45 @@ def _mock_provider(
 
 def _write_png(sandbox: Path, name: str) -> None:
     (sandbox / name).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+
+class _FakeSequentialProvider:
+    """Like _FakeModelProvider, but returns one canned response per call IN
+    ORDER rather than the same description every time. analyze_reference_design
+    makes two DIFFERENT complete_vision calls (pass 1's primitives prompt,
+    then pass 2's relationships/joints prompt) within a single invocation,
+    each expecting its own distinct JSON schema back — a single fixed
+    description can't stand in for both.
+    """
+
+    instances: list["_FakeSequentialProvider"] = []
+
+    def __init__(self, responses: list[str], **kwargs: Any) -> None:
+        self.constructor_kwargs = kwargs
+        self._responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+        _FakeSequentialProvider.instances.append(self)
+
+    def complete_vision(self, prompt: str, image_b64: str, *, mime_type: str, provider: str) -> str:
+        self.calls.append({"prompt": prompt, "mime_type": mime_type, "provider": provider})
+        if not self._responses:
+            raise RuntimeError("_FakeSequentialProvider ran out of canned responses")
+        return self._responses.pop(0)
+
+
+def _mock_sequential_provider(monkeypatch: pytest.MonkeyPatch, *, responses: list[str]) -> None:
+    """Patches image_analysis.ModelProvider (and forces cloud fallback off,
+    so _candidate_providers() is deterministically just ["ollama"] and each
+    pass makes exactly one complete_vision call) the same way _mock_provider
+    does for the single-response case above.
+    """
+    _FakeSequentialProvider.instances = []
+    monkeypatch.setattr(image_analysis, "cloud_fallback_enabled", lambda: False)
+    monkeypatch.setattr(
+        image_analysis,
+        "ModelProvider",
+        lambda **ctor_kwargs: _FakeSequentialProvider(responses=list(responses), **ctor_kwargs),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -186,6 +257,255 @@ def test_candidate_providers_defaults_to_ollama_only_when_cloud_fallback_disable
 ) -> None:
     monkeypatch.setattr(image_analysis, "cloud_fallback_enabled", lambda: False)
     assert image_analysis._candidate_providers() == ["ollama"]
+
+
+# --------------------------------------------------------------------------
+# analyze_reference_design — two-pass CSG extraction + numerical-integrity gate
+# --------------------------------------------------------------------------
+
+_PASS_1_OK = json.dumps(
+    {"primitives": [{"id": "p1", "type": "box", "dimensions": {"length": 100.0, "width": 50.0, "height": 25.0}}]}
+)
+_PASS_2_OK = json.dumps({"relationships": [], "joints": []})
+
+
+def test_analyze_reference_design_two_pass_success(_sandbox: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_png(_sandbox, "front.png")
+    _mock_sequential_provider(monkeypatch, responses=[_PASS_1_OK, _PASS_2_OK])
+
+    result = image_analysis.analyze_reference_design(["front.png"])
+
+    assert result["ok"] is True
+    # Bounding box comes from OCR (_DEFAULT_OCR_MOCK via _mock_ocr), not from
+    # the mocked pass 1 response -- see _compute_deterministic_bbox.
+    assert result["blueprint"]["bounding_box"] == _DEFAULT_OCR_BBOX
+    assert len(result["blueprint"]["primitives"]) == 1
+    assert result["blueprint"]["relationships"] == []
+    assert result["blueprint"]["joints"] == []
+    # Two distinct calls (one per pass), same single-image payload both times.
+    assert len(_FakeSequentialProvider.instances[0].calls) == 2
+
+
+def test_analyze_reference_design_degenerate_bounding_box_rejected(
+    _sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bounding box is computed from OCR, not asked of the VLM at all
+    (see _CSG_PASS1_PROMPT's own comment on why) -- so what makes it
+    degenerate now is OCR finding nothing usable, not a hallucinated
+    pass-1 field. Overrides the autouse _mock_ocr default specifically to
+    exercise that path.
+    """
+    monkeypatch.setattr(image_analysis, "extract_blueprint_dimensions", lambda file_paths: {})
+    _write_png(_sandbox, "front.png")
+    _mock_sequential_provider(monkeypatch, responses=[_PASS_1_OK, _PASS_2_OK])
+
+    result = image_analysis.analyze_reference_design(["front.png"])
+
+    assert result["ok"] is False
+    assert "Degenerate bounding box" in result["error"]
+    # The (rejected) blueprint is still surfaced for debugging, not swallowed.
+    assert result["blueprint"]["bounding_box"] == {"x": 0.0, "y": 0.0, "z": 0.0}
+
+
+def test_analyze_reference_design_degenerate_primitive_dimensions_rejected(
+    _sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pass_1_degenerate = json.dumps(
+        {"primitives": [{"id": "p1", "type": "box", "dimensions": {"length": 0.0, "width": 0.0, "height": 0.0}}]}
+    )
+    _write_png(_sandbox, "front.png")
+    _mock_sequential_provider(monkeypatch, responses=[pass_1_degenerate, _PASS_2_OK])
+
+    result = image_analysis.analyze_reference_design(["front.png"])
+
+    assert result["ok"] is False
+    assert "Degenerate primitive dimensions" in result["error"]
+    assert "p1" in result["error"]
+
+
+def test_analyze_reference_design_no_primitives_rejected(_sandbox: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pass_1_empty = json.dumps({"primitives": []})
+    _write_png(_sandbox, "front.png")
+    _mock_sequential_provider(monkeypatch, responses=[pass_1_empty, _PASS_2_OK])
+
+    result = image_analysis.analyze_reference_design(["front.png"])
+
+    assert result["ok"] is False
+    assert result["error"] == "No primitives extracted"
+
+
+def test_analyze_reference_design_dangling_relationship_reference_rejected(
+    _sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pass_2_dangling = json.dumps(
+        {"relationships": [{"parent_id": "p1", "child_id": "p99", "attachment_type": "face_to_face"}], "joints": []}
+    )
+    _write_png(_sandbox, "front.png")
+    _mock_sequential_provider(monkeypatch, responses=[_PASS_1_OK, pass_2_dangling])
+
+    result = image_analysis.analyze_reference_design(["front.png"])
+
+    assert result["ok"] is False
+    assert "Dangling relationship reference" in result["error"]
+
+
+def test_analyze_reference_design_dangling_joint_reference_rejected(
+    _sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pass_2_dangling = json.dumps(
+        {"relationships": [], "joints": [{"parent_id": "p1", "child_id": "p99", "type": "fixed"}]}
+    )
+    _write_png(_sandbox, "front.png")
+    _mock_sequential_provider(monkeypatch, responses=[_PASS_1_OK, pass_2_dangling])
+
+    result = image_analysis.analyze_reference_design(["front.png"])
+
+    assert result["ok"] is False
+    assert "Dangling joint reference" in result["error"]
+
+
+def test_analyze_reference_design_pass_1_json_decode_failure(
+    _sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_png(_sandbox, "front.png")
+    _mock_sequential_provider(monkeypatch, responses=["this is not json"])
+
+    result = image_analysis.analyze_reference_design(["front.png"])
+
+    assert result["ok"] is False
+    assert "pass 1" in result["error"]
+    assert any("JSON decode failed" in attempt for attempt in result["attempts"])
+
+
+def test_analyze_reference_design_pass_2_json_decode_failure(
+    _sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_png(_sandbox, "front.png")
+    _mock_sequential_provider(monkeypatch, responses=[_PASS_1_OK, "still not json"])
+
+    result = image_analysis.analyze_reference_design(["front.png"])
+
+    assert result["ok"] is False
+    assert "pass 2" in result["error"]
+    assert result["primitives"] == json.loads(_PASS_1_OK)
+
+
+def test_analyze_reference_design_strips_markdown_code_fence(
+    _sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fenced_pass_1 = "```json\n" + _PASS_1_OK + "\n```"
+    fenced_pass_2 = "```\n" + _PASS_2_OK + "\n```"
+    _write_png(_sandbox, "front.png")
+    _mock_sequential_provider(monkeypatch, responses=[fenced_pass_1, fenced_pass_2])
+
+    result = image_analysis.analyze_reference_design(["front.png"])
+
+    assert result["ok"] is True
+    assert result["blueprint"]["bounding_box"] == _DEFAULT_OCR_BBOX
+
+
+def test_analyze_reference_design_threads_ocr_dimensions_into_pass_1_prompt(
+    _sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_png(_sandbox, "front.png")
+    monkeypatch.setattr(
+        image_analysis, "extract_blueprint_dimensions", lambda file_paths: {"FRONT": ["60.0", "50.0"]}
+    )
+    _mock_sequential_provider(monkeypatch, responses=[_PASS_1_OK, _PASS_2_OK])
+
+    result = image_analysis.analyze_reference_design(["front.png"])
+
+    assert result["ok"] is True
+    pass_1_prompt = _FakeSequentialProvider.instances[0].calls[0]["prompt"]
+    assert "HARD DIMENSIONAL CONSTRAINTS" in pass_1_prompt
+    assert "FRONT VIEW" in pass_1_prompt
+    assert "60.0" in pass_1_prompt
+    assert "50.0" in pass_1_prompt
+
+
+def test_analyze_reference_design_falls_back_when_no_ocr_dimensions_found(
+    _sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no OCR data at all, pass 1's prompt correctly falls back to the
+    original guidance text -- but the run itself now correctly ends in
+    ok: False too, not True: the bounding box is computed FROM that same
+    OCR data (_compute_deterministic_bbox), so no OCR data unavoidably
+    means a degenerate {0,0,0} box. This is a deliberate consequence of no
+    longer trusting the VLM's own bounding-box guess at all, not a bug --
+    a drawing with no legible printed dimensions genuinely can't produce a
+    numerically-grounded blueprint under this design.
+    """
+    monkeypatch.setattr(image_analysis, "extract_blueprint_dimensions", lambda file_paths: {})
+    _write_png(_sandbox, "front.png")
+    _mock_sequential_provider(monkeypatch, responses=[_PASS_1_OK, _PASS_2_OK])
+
+    result = image_analysis.analyze_reference_design(["front.png"])
+
+    assert result["ok"] is False
+    assert "Degenerate bounding box" in result["error"]
+    pass_1_prompt = _FakeSequentialProvider.instances[0].calls[0]["prompt"]
+    assert "HARD DIMENSIONAL CONSTRAINTS" not in pass_1_prompt
+    assert "do not attempt to guess exact millimeter tolerances" in pass_1_prompt.lower()
+
+
+def test_analyze_reference_design_ignores_view_with_no_dimensions_found(
+    _sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A view whose OCR list came back empty (e.g. no legible text on that
+    one file) must not produce an empty "- VIEW dimensions: " line -- that
+    would tell the VLM a view has zero-length dimensions, which is exactly
+    the kind of degenerate-looking hint _validate_numerical_integrity
+    exists to catch further downstream, not something worth injecting into
+    the prompt in the first place.
+    """
+    _write_png(_sandbox, "front.png")
+    monkeypatch.setattr(
+        image_analysis,
+        "extract_blueprint_dimensions",
+        lambda file_paths: {"FRONT": ["60.0"], "TOP": []},
+    )
+    _mock_sequential_provider(monkeypatch, responses=[_PASS_1_OK, _PASS_2_OK])
+
+    image_analysis.analyze_reference_design(["front.png"])
+
+    pass_1_prompt = _FakeSequentialProvider.instances[0].calls[0]["prompt"]
+    assert "FRONT VIEW" in pass_1_prompt
+    assert "TOP VIEW" not in pass_1_prompt
+
+
+def test_analyze_reference_design_multi_view_uses_stitched_composite(
+    _sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """3 file_paths must go through _stitch_images (real Pillow decoding is
+    exercised separately/not here — this only proves analyze_reference_design
+    dispatches to it and reuses its single composite for BOTH passes,
+    instead of passing 3 separate image_url blocks the way the pre-fix code
+    did (see this module's own _stitch_images docstring for why that broke).
+    """
+    _write_png(_sandbox, "front.png")
+    _write_png(_sandbox, "top.png")
+    _write_png(_sandbox, "right.png")
+    monkeypatch.setattr(image_analysis, "_stitch_images", lambda paths: "STITCHED_COMPOSITE_B64")
+    _mock_sequential_provider(monkeypatch, responses=[_PASS_1_OK, _PASS_2_OK])
+
+    result = image_analysis.analyze_reference_design(["front.png", "top.png", "right.png"])
+
+    assert result["ok"] is True
+    calls = _FakeSequentialProvider.instances[0].calls
+    assert len(calls) == 2
+    assert all(c["mime_type"] == "image/png" for c in calls)
+
+
+def test_analyze_reference_design_rejects_missing_file() -> None:
+    result = image_analysis.analyze_reference_design(["missing.png"])
+    assert result["ok"] is False
+    assert "does not exist" in result["error"]
+
+
+def test_analyze_reference_design_rejects_empty_file_paths() -> None:
+    result = image_analysis.analyze_reference_design([])
+    assert result["ok"] is False
+    assert "at least one file_path is required" in result["error"]
 
 
 # --------------------------------------------------------------------------
