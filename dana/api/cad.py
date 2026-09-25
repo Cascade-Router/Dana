@@ -40,7 +40,7 @@ router = APIRouter(prefix="/api/cad", tags=["cad"])
 _FREECAD_OUTPUT_DIR = DANA_WORKSPACE / "freecad_output"
 _FREECAD_EXPORT_DIR = DANA_WORKSPACE / "exports"
 
-_ARTIFACT_EXTENSIONS = frozenset({".step", ".stp", ".stl", ".fcstd", ".urdf", ".glb", ".obj"})
+_ARTIFACT_EXTENSIONS = frozenset({".step", ".stp", ".stl", ".fcstd", ".urdf", ".glb", ".obj", ".svg"})
 
 # Throwaway-intermediate marker: dana.plugins.freecad.engine.export_mesh_stl
 # writes its per-call temp files (``{name}__tmp_{unique}.glb/.stl``,
@@ -86,6 +86,10 @@ _MEDIA_TYPES = {
     # generate_3d_from_image's own output formats (dana.tools.image_to_3d).
     ".glb": "model/gltf-binary",
     ".obj": "model/obj",
+    # dana.plugins.freecad.techdraw_export.generate_2d_blueprint's SVG
+    # sibling output to its .pdf (not added here — out of scope for this
+    # change; the PDF path has its own pre-existing gap in both dicts).
+    ".svg": "image/svg+xml",
 }
 
 

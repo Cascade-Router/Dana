@@ -153,6 +153,44 @@ def _render_dxf_to_pdf(dxf_path: str, name: str, page_size_mm: tuple[float, floa
     return out_path
 
 
+def _render_dxf_to_svg(dxf_path: str, name: str, page_size_mm: tuple[float, float]) -> Path:
+    """Renders a TechDraw-exported DXF page to SVG — same pure-Python,
+    no-FreeCAD step as ``_render_dxf_to_pdf`` above (headless SVG export via
+    FreeCAD's own ``TechDrawGui.exportPageAsSvg`` needs a live Qt
+    ``FreeCADGui``, exactly the dependency this module's whole PDF pipeline
+    was already built to avoid — see this module's own docstring), just
+    ``ezdxf``'s own ``SVGBackend`` in place of its matplotlib one. A fresh
+    ``Frontend``/``RenderContext`` pass, not a reuse of ``_render_dxf_to_pdf``'s
+    — ``Frontend.draw_layout`` drives exactly one backend per call, by
+    ezdxf's own API shape, so each output format needs its own render pass
+    over the same DXF.
+    """
+    import ezdxf
+    from ezdxf.addons.drawing import Frontend, RenderContext, layout
+    from ezdxf.addons.drawing.config import BackgroundPolicy, ColorPolicy, Configuration
+    from ezdxf.addons.drawing.svg import SVGBackend
+
+    doc = ezdxf.readfile(dxf_path)
+    width_mm, height_mm = page_size_mm
+    backend = SVGBackend()
+    # Same black-on-white forcing as _render_dxf_to_pdf — TechDraw's native
+    # layer color (ACI 7, "white" under the dark-background convention DXF
+    # viewers assume) would otherwise render invisible white-on-white here
+    # too.
+    render_config = Configuration(background_policy=BackgroundPolicy.WHITE, color_policy=ColorPolicy.BLACK)
+    Frontend(RenderContext(doc), backend, config=render_config).draw_layout(doc.modelspace(), finalize=True)
+    page = layout.Page(width_mm, height_mm, units=layout.Units.mm)
+    svg_text = backend.get_string(page)
+
+    _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = _EXPORT_DIR / f"{_safe_name(name)}.svg"
+    # Same stale-file guard as _render_dxf_to_pdf's own out_path — see that
+    # function's comment for the exact failure this prevents.
+    out_path.unlink(missing_ok=True)
+    out_path.write_text(svg_text, encoding="utf-8")
+    return out_path
+
+
 def generate_2d_blueprint(
     source_path: str,
     views: Sequence[str] | None = None,
@@ -237,13 +275,20 @@ def generate_2d_blueprint(
             pdf_path = _render_dxf_to_pdf(dxf_path, resolved_name, _PAGE_SIZES_MM[size_key])
         except Exception as exc:  # noqa: BLE001 — surface as a normal tool failure, not a crash
             return _error(f"generate_2d_blueprint: DXF->PDF conversion failed: {exc}")
+
+        try:
+            svg_path = _render_dxf_to_svg(dxf_path, resolved_name, _PAGE_SIZES_MM[size_key])
+        except Exception as exc:  # noqa: BLE001 — surface as a normal tool failure, not a crash
+            return _error(f"generate_2d_blueprint: DXF->SVG conversion failed: {exc}")
     finally:
         try:
             os.unlink(dxf_path)
         except OSError:
             pass
 
-    return _ok(name=resolved_name, views=requested, page_size=size_key, path=str(pdf_path))
+    return _ok(
+        name=resolved_name, views=requested, page_size=size_key, path=str(pdf_path), svg_path=str(svg_path)
+    )
 
 
 __all__ = ("generate_2d_blueprint",)
