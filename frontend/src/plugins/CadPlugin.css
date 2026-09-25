@@ -25,3 +25,52 @@
   min-width: 0;
   min-height: 0;
 }
+
+.cad-plugin__viewport > .blueprint-viewer {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Viewer3D is ALWAYS mounted (see CadPlugin.tsx's own comment on why) --
+   this hides it visually rather than unmounting it, so the WebGL context
+   survives switching to the 2D tab and back. */
+.cad-plugin__viewport--2d > .viewer3d {
+  display: none;
+}
+
+.cad-plugin__viewport--3d > .blueprint-viewer {
+  display: none;
+}
+
+.cad-plugin__mode-toggle {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 2;
+  display: flex;
+  gap: 2px;
+  background: rgba(17, 17, 17, 0.82);
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.cad-plugin__mode-btn {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: #9ca3af;
+  font-size: 0.78rem;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.cad-plugin__mode-btn:hover {
+  color: #e5e7eb;
+}
+
+.cad-plugin__mode-btn--active {
+  background: #2a2a2a;
+  color: #e5e7eb;
+}

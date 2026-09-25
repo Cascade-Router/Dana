@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { BlueprintViewer } from "../components/BlueprintViewer";
 import { CadToolbar } from "../components/CadToolbar";
 import { TopologyTab } from "../components/DAGMonitor";
 import { InspectorDock, type InspectorTab } from "../components/InspectorDock";
@@ -9,6 +10,8 @@ import { Viewer3D } from "../components/Viewer3D";
 import { useCadArtifacts } from "../lib/useCadArtifacts";
 import type { PluginComponentProps } from "./types";
 import "./CadPlugin.css";
+
+type ViewportMode = "3d" | "2d";
 
 // Default export so this can be React.lazy()-imported — the R3F canvas,
 // three.js and @xyflow/react bundles only load once the CAD plugin is
@@ -76,6 +79,12 @@ export default function CadPlugin({
   }, [meshUrl]);
   const displayedMeshUrl = pinnedMeshUrl ?? meshUrl;
 
+  // 3D Assembly / 2D Blueprint toggle. Viewer3D itself is NEVER conditionally
+  // mounted based on this (see the comment on it below) — only which one is
+  // visible (via a modifier class in CadPlugin.css) and whether the
+  // 3D-only MeshHistoryPicker overlay renders at all change.
+  const [viewportMode, setViewportMode] = useState<ViewportMode>("3d");
+
   return (
     <div className="cad-plugin">
       <CadToolbar
@@ -84,22 +93,42 @@ export default function CadPlugin({
         artifacts={artifacts}
         onRefreshArtifacts={refreshArtifacts}
       />
-      <div className="cad-plugin__viewport">
+      <div className={`cad-plugin__viewport cad-plugin__viewport--${viewportMode}`}>
+        <div className="cad-plugin__mode-toggle">
+          <button
+            type="button"
+            className={viewportMode === "3d" ? "cad-plugin__mode-btn cad-plugin__mode-btn--active" : "cad-plugin__mode-btn"}
+            onClick={() => setViewportMode("3d")}
+          >
+            3D Assembly
+          </button>
+          <button
+            type="button"
+            className={viewportMode === "2d" ? "cad-plugin__mode-btn cad-plugin__mode-btn--active" : "cad-plugin__mode-btn"}
+            onClick={() => setViewportMode("2d")}
+          >
+            2D Blueprint
+          </button>
+        </div>
         {/* Viewer3D — and the <Canvas>/WebGLRenderer inside it — is always
-            rendered here, never gated behind meshUrl or an artifact list's
-            length. A conditional mount would tear down and recreate the
-            renderer on every intermediate ReAct step where the mesh
-            payload is transiently null/[], exhausting the browser's WebGL
-            context budget (see Viewer3D's own lifecycle notes). */}
+            rendered here, never gated behind meshUrl, an artifact list's
+            length, OR the 2D/3D toggle above. A conditional mount would tear
+            down and recreate the renderer every time (see Viewer3D's own
+            lifecycle notes) — CadPlugin.css hides it with plain CSS
+            (cad-plugin__viewport--2d > .viewer3d) instead, so the WebGL
+            context survives switching to the 2D tab and back. */}
         <Viewer3D meshUrl={displayedMeshUrl} cameraTarget={cameraTarget} onSelect={onSelect} />
-        <MeshHistoryPicker
-          artifacts={artifacts}
-          sessionId={sessionId}
-          liveUrl={meshUrl}
-          activeUrl={displayedMeshUrl}
-          onSelectArtifact={setPinnedMeshUrl}
-          onFollowLive={() => setPinnedMeshUrl(null)}
-        />
+        <BlueprintViewer artifacts={artifacts} sessionId={sessionId} />
+        {viewportMode === "3d" && (
+          <MeshHistoryPicker
+            artifacts={artifacts}
+            sessionId={sessionId}
+            liveUrl={meshUrl}
+            activeUrl={displayedMeshUrl}
+            onSelectArtifact={setPinnedMeshUrl}
+            onFollowLive={() => setPinnedMeshUrl(null)}
+          />
+        )}
         <InspectorDock tabs={tabs} defaultTabId="topology" />
       </div>
     </div>
