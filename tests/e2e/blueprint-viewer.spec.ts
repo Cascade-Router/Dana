@@ -127,3 +127,56 @@ test("2D Blueprint tab shows a placeholder, not a crash, when no blueprint has b
   await expect(page.locator(".blueprint-viewer__placeholder")).toBeVisible();
   expect(consoleErrors, `unexpected console errors: ${JSON.stringify(consoleErrors, null, 2)}`).toEqual([]);
 });
+
+test("a 404'd blueprint download shows the Blueprint Unavailable state, not a bare broken-image icon", async ({
+  page,
+}) => {
+  // No consoleErrors assertion here (unlike the two tests above) — a 404'd
+  // <img src> legitimately logs a browser-level "Failed to load resource"
+  // console entry; that's expected/benign network noise for exactly the
+  // case this test exercises, not a regression signal. pageerror (an
+  // actual UNCAUGHT exception) is still watched for.
+  const pageErrors: string[] = [];
+  page.on("pageerror", (err) => pageErrors.push(err.message));
+
+  // Artifact is LISTED (so BlueprintViewer takes the "has an artifact"
+  // branch, not the "no blueprint yet" placeholder)...
+  await page.route(/\/api\/cad\/artifacts(\?[^/]*)?$/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        artifacts: [
+          {
+            filename: FIXTURE_FILENAME,
+            format: "svg",
+            size_bytes: FIXTURE_SVG.length,
+            modified_at: Date.now() / 1000,
+            source: "generated",
+          },
+        ],
+      }),
+    })
+  );
+  // ...but its download 404s — dana/api/cad.py's _resolve_artifact can
+  // legitimately do this (the registry still names a file whose temp copy
+  // was already cleaned up).
+  await page.route(/\/api\/cad\/artifacts\/[^/]+\/download(\?[^/]*)?$/, (route) =>
+    route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ detail: "not found" }) })
+  );
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /CAD/ }).click();
+  await page.locator(".viewer3d canvas").waitFor({ state: "visible", timeout: 15_000 });
+  await page.getByRole("button", { name: "2D Blueprint" }).click();
+
+  const placeholder = page.locator(".blueprint-viewer__placeholder");
+  await placeholder.waitFor({ state: "visible", timeout: 10_000 });
+  await expect(placeholder).toHaveText(/Blueprint unavailable/);
+  // The bare <img> broken-image icon this onError handler exists to
+  // replace must be gone, not just accompanied by a text placeholder.
+  await expect(page.locator(".blueprint-viewer__image")).toHaveCount(0);
+
+  expect(pageErrors, `unexpected uncaught page errors: ${JSON.stringify(pageErrors, null, 2)}`).toEqual([]);
+});

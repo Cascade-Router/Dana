@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { TransformComponent, TransformWrapper } from "react-zoom-pan-pinch";
 import { resolveArtifactUrl, type CadArtifact } from "../lib/useCadArtifacts";
 import "./BlueprintViewer.css";
@@ -22,8 +22,22 @@ type Props = {
 // add one later if browsing older blueprints turns out to matter.
 export function BlueprintViewer({ artifacts, sessionId }: Props) {
   const svgArtifact = useMemo(() => artifacts.find((a) => a.format === "svg"), [artifacts]);
+  const url = svgArtifact ? resolveArtifactUrl(svgArtifact, sessionId) : null;
 
-  if (!svgArtifact) {
+  // The artifact being LISTED doesn't guarantee its download still works —
+  // dana/api/cad.py's _resolve_artifact can legitimately 404 (the registry
+  // still names a file whose temp copy was already cleaned up), and a plain
+  // <img> with no onError handler just shows the browser's own broken-image
+  // icon with zero explanation on that failure. Reset whenever the URL
+  // changes (a new/different artifact deserves a fresh load attempt, same
+  // as Viewer3D's own meshError reset on a new meshUrl), not left sticky
+  // across artifacts.
+  const [loadFailed, setLoadFailed] = useState(false);
+  useEffect(() => {
+    setLoadFailed(false);
+  }, [url]);
+
+  if (!svgArtifact || !url) {
     return (
       <div className="blueprint-viewer__placeholder">
         No 2D blueprint yet — ask Dana to generate one.
@@ -31,7 +45,13 @@ export function BlueprintViewer({ artifacts, sessionId }: Props) {
     );
   }
 
-  const url = resolveArtifactUrl(svgArtifact, sessionId);
+  if (loadFailed) {
+    return (
+      <div className="blueprint-viewer__placeholder">
+        Blueprint unavailable — the file may have been removed or failed to load.
+      </div>
+    );
+  }
 
   return (
     <div className="blueprint-viewer">
@@ -43,7 +63,12 @@ export function BlueprintViewer({ artifacts, sessionId }: Props) {
           wrapperStyle={{ width: "100%", height: "100%" }}
           contentStyle={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}
         >
-          <img src={url} alt="2D CAD blueprint" className="blueprint-viewer__image" />
+          <img
+            src={url}
+            alt="2D CAD blueprint"
+            className="blueprint-viewer__image"
+            onError={() => setLoadFailed(true)}
+          />
         </TransformComponent>
       </TransformWrapper>
     </div>
