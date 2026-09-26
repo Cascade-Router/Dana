@@ -481,6 +481,35 @@ def test_analyze_reference_design_ignores_view_with_no_dimensions_found(
     assert "TOP VIEW" not in pass_1_prompt
 
 
+def test_analyze_reference_design_reports_ocr_view_collision_as_clean_failure(
+    _sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """extract_blueprint_dimensions raises ValueError on a cross-file view
+    label collision (see ocr_grounding.py) -- analyze_reference_design must
+    catch it and return {"ok": False, "error": ...} like every other
+    failure path here, not let it escape and crash the ReAct dispatch. This
+    module's own docstring promises "read-only, never raises" same as
+    analyze_workspace_image.
+    """
+    _write_png(_sandbox, "front_wide.png")
+    _write_png(_sandbox, "front_closeup.png")
+
+    def raise_collision(file_paths: list[str]) -> dict[str, list[str]]:
+        raise ValueError("Multiple reference images resolved to the same view 'FRONT'")
+
+    monkeypatch.setattr(image_analysis, "extract_blueprint_dimensions", raise_collision)
+    # _stitch_images runs (and would choke on _write_png's fake, non-decodable
+    # PNG bytes) BEFORE the OCR step this test actually cares about -- mocked
+    # out for the same reason test_analyze_reference_design_multi_view_uses_
+    # stitched_composite already does.
+    monkeypatch.setattr(image_analysis, "_stitch_images", lambda paths: "STITCHED_COMPOSITE_B64")
+
+    result = image_analysis.analyze_reference_design(["front_wide.png", "front_closeup.png"])
+
+    assert result["ok"] is False
+    assert "FRONT" in result["error"]
+
+
 def test_analyze_reference_design_multi_view_uses_stitched_composite(
     _sandbox: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

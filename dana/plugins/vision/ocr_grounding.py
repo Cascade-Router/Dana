@@ -139,12 +139,24 @@ def extract_blueprint_dimensions(file_paths: list[str]) -> dict[str, list[str]]:
     introduce, and OCR has no need for the views to be combined into one
     image the way the VLM call does.
 
-    Best-effort and never raises: a missing/unreadable/out-of-sandbox path
-    just gets an empty list at its own view key, not a fatal error — this
-    is a supplementary grounding signal for analyze_reference_design's
-    prompt, not a required input, so one bad path must never block the two
-    VLM passes it feeds into. Returns {} immediately if easyocr isn't
-    installed in this environment (see _get_reader) rather than raising.
+    Best-effort per-file, but NOT for a cross-file collision: a missing/
+    unreadable/out-of-sandbox path or an OCR engine exception just gets an
+    empty list at its own view key, not a fatal error — this is a
+    supplementary grounding signal for analyze_reference_design's prompt,
+    not a required input, so one bad path must never block the two VLM
+    passes it feeds into. Returns {} immediately if easyocr isn't installed
+    in this environment (see _get_reader) rather than raising.
+
+    Raises ValueError if two file_paths resolve to the SAME inferred view
+    (e.g. "front_wide.jpg" and "front_closeup.jpg" both matching the
+    "front" keyword) — confirmed live that a plain dict write here would
+    otherwise silently drop one file's dimensions with no error, feeding a
+    quietly-incomplete view straight into _compute_deterministic_bbox's
+    FRONT/TOP/RIGHT intersection logic. A collision means the caller's
+    view-per-file assumption itself is violated, which no per-file
+    fallback can paper over — analyze_reference_design's own caller
+    catches this and reports it as a normal tool failure (see that
+    module), not a crash.
     """
     reader = _get_reader()
     if reader is None:
@@ -152,6 +164,12 @@ def extract_blueprint_dimensions(file_paths: list[str]) -> dict[str, list[str]]:
     view_dimensions: dict[str, list[str]] = {}
     for index, file_path in enumerate(file_paths):
         view_name = _infer_view_label(Path(file_path), index)
+        if view_name in view_dimensions:
+            raise ValueError(
+                f"Multiple reference images resolved to the same view {view_name!r} "
+                f"in {file_paths!r} — rename one to disambiguate (e.g. give it a "
+                f"distinct view keyword) rather than silently dropping its dimensions."
+            )
         try:
             target = resolve_sandboxed_path(file_path)
         except PathEscapeError:

@@ -139,6 +139,23 @@ def test_extract_blueprint_dimensions_returns_empty_dict_when_reader_unavailable
     assert ocr_grounding.extract_blueprint_dimensions(["anything.png"]) == {}
 
 
+def test_extract_blueprint_dimensions_raises_on_view_label_collision(
+    _sandbox: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two uploads that both match the same _VIEW_KEYWORDS token (a real
+    risk with arbitrary user-chosen filenames, e.g. "front_wide.jpg" and
+    "front_closeup.jpg") must never silently overwrite one file's
+    dimensions with the other's in the returned dict -- confirmed live
+    that a plain dict write did exactly that before this guard existed.
+    """
+    _write_png(_sandbox, "front_wide.png")
+    _write_png(_sandbox, "front_closeup.png")
+    _mock_reader(monkeypatch, texts=["60.0"])
+
+    with pytest.raises(ValueError, match="FRONT"):
+        ocr_grounding.extract_blueprint_dimensions(["front_wide.png", "front_closeup.png"])
+
+
 def test_extract_blueprint_dimensions_missing_file_gets_empty_list_not_a_crash(
     _sandbox: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

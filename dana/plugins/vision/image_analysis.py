@@ -530,12 +530,18 @@ def analyze_reference_design(
 
     # Deterministic OCR floor under pass 1 -- reads the ORIGINAL per-view
     # files (not the composite built above), since full-resolution
-    # originals give EasyOCR the best chance at legible text. Best-effort:
-    # never raises, returns {} if easyocr isn't installed or the drawing
-    # has no printed text at all (see ocr_grounding.py's own docstring).
-    # Computed once and reused for both the pass-1 prompt context AND the
-    # bounding box below -- the same OCR numbers ground both.
-    dimensions_by_view = extract_blueprint_dimensions(file_paths)
+    # originals give EasyOCR the best chance at legible text. Best-effort
+    # per file (returns {} if easyocr isn't installed or a drawing has no
+    # printed text at all) but raises ValueError on a cross-file view-label
+    # collision (see ocr_grounding.py's own docstring) -- caught here rather
+    # than left to propagate, since this whole function is documented
+    # read-only/never-raises just like analyze_workspace_image. Computed
+    # once and reused for both the pass-1 prompt context AND the bounding
+    # box below -- the same OCR numbers ground both.
+    try:
+        dimensions_by_view = extract_blueprint_dimensions(file_paths)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     prompt_1 = _CSG_PASS1_PROMPT.replace("{ocr_context}", _build_ocr_context(dimensions_by_view))
 
     provider_client = ModelProvider(api_keys=api_keys)
