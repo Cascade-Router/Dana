@@ -1,46 +1,38 @@
 name: Sync to Hugging Face Spaces
 
+# Deploys only after Build (import smoke test + frontend build) passes on a
+# push to main — previously this ran in parallel with Build on every push,
+# so a broken commit shipped regardless (2026-09-24 Space RUNTIME_ERROR).
 on:
-  push:
-    branches: [ main ]
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
   deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
+          # workflow_run checks out the default branch tip by default; pin to
+          # the exact commit Build verified.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
 
       - name: Stage Gradio Space payload (app.py + dana/)
-        run: |
-          set -e
-          rm -rf _hf_deploy_stage
-          mkdir -p _hf_deploy_stage
-          cp app.py _hf_deploy_stage/app.py
-          cp packages.txt _hf_deploy_stage/packages.txt
-          # deploy/requirements-space.txt doesn't exist (was never
-          # committed even though this step referenced it) — root
-          # requirements.txt is the proven-correct file already used for
-          # this exact codebase locally, so point at that instead of
-          # fabricating a hand-trimmed subset that risks silently omitting
-          # something app.py's own import chain actually needs at boot.
-          # It installs more than a minimal Space container strictly needs
-          # (the desktop/audio/Windows-only stack), which is real but
-          # separate follow-up work: trimming it requires verifying
-          # app.py's full transitive import graph, not guessing.
-          cp requirements.txt _hf_deploy_stage/requirements.txt
-          cp deploy/space_README.md _hf_deploy_stage/README.md
-
-          cp -r dana _hf_deploy_stage/dana
-          find _hf_deploy_stage/dana -name "__pycache__" -type d -prune -exec rm -rf {} +
+        run: bash deploy/stage_space.sh _hf_deploy_stage
 
       - name: Deploy staged payload to Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_SPACE_NAME: ${{ secrets.HF_SPACE_NAME }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         working-directory: _hf_deploy_stage
         run: |
           set -e
@@ -48,5 +40,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -q -m "Deploy Dana Gradio Space (app.py + dana/) from ${{ github.sha }}"
+          git commit -q -m "Deploy Dana Gradio Space (app.py + dana/) from ${DEPLOY_SHA}"
           git push -f "https://oauth2:$HF_TOKEN@huggingface.co/spaces/$HF_SPACE_NAME" HEAD:main

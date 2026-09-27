@@ -48,3 +48,65 @@ jobs:
           assert callable(startup.startup_status)
           print("import_ok")
           PY
+
+  # Boots app.py from the exact staged payload deploy_hf.yml ships, with the
+  # Space's own Gradio version — catches committed code importing files that
+  # were never committed (the 2026-09-24 Space RUNTIME_ERROR), which the
+  # import check above can't see since it never touches dana.core.
+  space-smoke:
+    name: HF Space import smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Matches the Space runtime's default (space_README.md sets no python_version).
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Stage Space payload
+        run: bash deploy/stage_space.sh _hf_smoke_stage
+
+      - name: Install Space dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # CPU wheels here only — requirements.txt deliberately leaves torch
+          # unpinned for ZeroGPU, and PyPI's default CUDA build is several GB.
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          GRADIO_VERSION="$(sed -nE 's/^sdk_version: *//p' deploy/space_README.md)"
+          pip install -r requirements.txt "gradio==${GRADIO_VERSION}"
+
+      - name: Import app.py the way the Space does
+        working-directory: _hf_smoke_stage
+        env:
+          DANA_OS_DRY_RUN: "1"
+          DANA_HEADLESS: "true"
+        run: python -c "import app; print('space_import_ok')"
+
+  # Same `tsc && vite build` Vercel runs — catches a component committed
+  # without the caller change it depends on (the 2026-09-24 Vercel failure).
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install and build
+        run: |
+          npm ci
+          npm run build
