@@ -14,6 +14,7 @@ segment past normalization.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -168,6 +169,7 @@ def test_get_file_rejects_deeply_nested_encoded_traversal(client: TestClient, _s
     assert "outside the sandbox" in resp.json()["detail"]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="drive-letter paths are only absolute on Windows; elsewhere 'C:/...' is a harmless relative name")
 def test_get_file_rejects_windows_absolute_path(client: TestClient, _sandbox: Path) -> None:
     resp = client.get("/api/workspace/file/C:%2fWindows%2fSystem32")
     assert resp.status_code == 400

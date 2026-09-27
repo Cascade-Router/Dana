@@ -6,7 +6,10 @@ treat a blank/black PrintWindow result as a failure rather than trusting it.
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from dana.tools import os_control
 
@@ -17,11 +20,13 @@ def test_capture_via_printwindow_rejects_non_positive_dimensions() -> None:
     assert os_control._capture_window_via_printwindow(123, -5, 100) is None
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="patches ctypes.windll (Windows only)")
 def test_capture_via_printwindow_returns_none_when_print_window_reports_failure() -> None:
     with patch("ctypes.windll.user32.PrintWindow", return_value=0):
         assert os_control._capture_window_via_printwindow(123, 100, 100) is None
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="patches win32gui/win32ui (Windows GDI)")
 def test_capture_via_printwindow_rejects_a_blank_result() -> None:
     """A PrintWindow call that "succeeds" (non-zero return) but paints
     nothing typically comes back as a single flat color — this must be

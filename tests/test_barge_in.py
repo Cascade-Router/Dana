@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 import time
 
+import pytest
+
 import numpy as np
 
 from dana.audio import tts_manager, tts_worker
@@ -20,6 +22,7 @@ def test_flush_speech_queue() -> None:
     print("[PASS] flush_speech_queue")
 
 
+@pytest.mark.requires_audio_output
 def test_play_pcm_respects_interrupt_event() -> None:
     shared_state.tts_interrupt_event.clear()
     # ~1s of silence @ 16 kHz — interrupt after 80ms.

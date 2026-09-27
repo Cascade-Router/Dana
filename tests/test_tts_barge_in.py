@@ -6,6 +6,8 @@ import threading
 import time
 from unittest.mock import MagicMock
 
+import pytest
+
 import numpy as np
 
 from dana.audio import tts_manager, tts_worker
@@ -112,6 +114,7 @@ def test_active_stream_abort_on_interrupt() -> None:
     print("[PASS] interrupt aborts registered OutputStream")
 
 
+@pytest.mark.requires_audio_output
 def test_play_pcm_respects_barge_in_quickly() -> None:
     """Simulate long PCM; interrupt from another thread mid-playback."""
     tts_worker._bind_tts_barge_controller()

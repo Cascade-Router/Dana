@@ -32,6 +32,28 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "asyncio: async test body (executed via asyncio.wait_for)",
     )
+    config.addinivalue_line(
+        "markers",
+        "requires_audio_output: needs a real audio output device; skipped when sounddevice finds none (e.g. CI)",
+    )
+
+
+def _has_audio_output_device() -> bool:
+    try:
+        import sounddevice as sd
+
+        sd.query_devices(kind="output")
+    except Exception:  # noqa: BLE001 — no PortAudio, no devices, or no default output
+        return False
+    return True
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    # Without an output device, sd.OutputStream fails immediately and playback
+    # returns before any simulated barge-in can fire, so these tests can't
+    # measure what they're meant to.
+    if item.get_closest_marker("requires_audio_output") and not _has_audio_output_device():
+        pytest.skip("no audio output device available")
 
 
 @pytest.fixture(autouse=True)

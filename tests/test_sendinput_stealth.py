@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import inspect
+import sys
+
+import pytest
 
 import dana.tools.os_control as osc
 
@@ -34,6 +37,7 @@ def test_dry_run_keystrokes(monkeypatch) -> None:
     print("[PASS] dry_run stealth path")
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="type_text_sendinput returns ok=False off Windows by design")
 def test_type_text_sendinput_mocked(monkeypatch) -> None:
     taps: list[tuple[int, bool]] = []
 
