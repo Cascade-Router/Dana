@@ -107,7 +107,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          # Not 3.12: openwakeword==0.6.0 needs tflite-runtime on Linux, which
+          # ships wheels only up to cp311. Not 3.10 (the Space's version):
+          # dana/telemetry.py uses datetime.UTC (3.11+).
+          python-version: "3.11"
           cache: pip
           cache-dependency-path: |
             requirements.txt
