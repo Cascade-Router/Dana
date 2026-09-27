@@ -134,7 +134,26 @@ jobs:
         env:
           DANA_OS_DRY_RUN: "1"
           DANA_HEADLESS: "true"
-        run: xvfb-run -a python -m pytest -m "not live_ollama" --strict-markers --timeout=300 -rfE
+        run: xvfb-run -a python -m pytest -m "not live_ollama" --strict-markers --timeout=300 -rfE --junitxml=pytest-report.xml
+
+      - name: Annotate test failures
+        # Surfaces each failing test as a GitHub annotation (visible on the
+        # run summary and PRs without digging through the raw log).
+        if: failure()
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          report = Path("pytest-report.xml")
+          if not report.exists():
+              raise SystemExit(0)
+          for case in ET.parse(report).iter("testcase"):
+              for problem in list(case.iter("failure")) + list(case.iter("error")):
+                  test_id = f"{case.get('classname')}::{case.get('name')}"
+                  detail = (problem.get("message") or problem.text or "").strip().splitlines()
+                  message = " | ".join(detail[:6])[:900].replace("%", "%25").replace("\r", "").replace("\n", " ")
+                  print(f"::error title={test_id}::{message}")
+          PY
 
   # Same `tsc && vite build` Vercel runs — catches a component committed
   # without the caller change it depends on (the 2026-09-24 Vercel failure).
