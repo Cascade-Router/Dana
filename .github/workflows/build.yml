@@ -30,6 +30,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
           pip install "Pillow>=10,<13"
+          # dana.tools.schema (imported by dana.tools/__init__) validates tool
+          # args with pydantic; it arrives transitively via fastapi in
+          # requirements.txt, which this lightweight job doesn't install.
+          pip install "pydantic>=2,<3"
 
       - name: Clean import checks
         shell: bash
@@ -78,7 +82,9 @@ jobs:
           # unpinned for ZeroGPU, and PyPI's default CUDA build is several GB.
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           GRADIO_VERSION="$(sed -nE 's/^sdk_version: *//p' deploy/space_README.md)"
-          pip install -r requirements.txt "gradio==${GRADIO_VERSION}"
+          # `spaces` (ZeroGPU decorators, imported by app.py) is preinstalled
+          # on HF Spaces but not on PyPI-only runners.
+          pip install -r requirements.txt "gradio==${GRADIO_VERSION}" spaces
 
       - name: Import app.py the way the Space does
         working-directory: _hf_smoke_stage
