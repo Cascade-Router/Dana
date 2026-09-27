@@ -1,0 +1,93 @@
+.config-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+
+.config-viewer__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.config-viewer__panel {
+  position: absolute;
+  top: 48px;
+  right: 16px;
+  width: 340px;
+  max-height: min(70vh, 420px);
+  display: flex;
+  flex-direction: column;
+  background: #1c1c1c;
+  border: 1px solid #2f2f2f;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.config-viewer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.config-viewer__header h2 {
+  font-size: 14px;
+  margin: 0;
+  font-weight: 600;
+}
+
+.config-viewer__close {
+  background: none;
+  border: none;
+  color: #aaa;
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.config-viewer__body {
+  overflow-y: auto;
+  padding: 8px 14px 14px;
+}
+
+.config-viewer__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #262626;
+  cursor: help;
+}
+
+.config-viewer__row:last-child {
+  border-bottom: none;
+}
+
+.config-viewer__label {
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #9adf9a;
+}
+
+.config-viewer__value {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: #eee;
+  font-weight: 600;
+}
+
+.config-viewer__error {
+  color: #f87171;
+  font-size: 12.5px;
+  padding: 10px 0;
+}
+
+.config-viewer__empty {
+  color: #888;
+  font-size: 12.5px;
+  padding: 10px 0;
+}

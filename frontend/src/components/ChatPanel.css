@@ -123,6 +123,42 @@
 
 .chat-panel__activity-row--error {
   background: #241010;
+  /* Flash briefly on arrival so a gate-blocked/hallucination-caught dispatch
+     (Plan Gate, FSM out-of-order, Evidence-Based grounding, ...) catches the
+     eye instead of just quietly sitting in the feed the same as any other
+     row — the user should notice WHY the agent is about to replan. Runs
+     once (not infinite) so an error that scrolls out of view doesn't keep
+     drawing attention from off-screen. */
+  animation: chat-panel-error-flash 1.2s ease-out 1;
+}
+
+@keyframes chat-panel-error-flash {
+  0%,
+  30% {
+    background: #7f1d1d;
+  }
+  100% {
+    background: #241010;
+  }
+}
+
+.chat-panel__thinking {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  opacity: 0.75;
+  font-style: italic;
+}
+
+.chat-panel__thinking-spinner {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid #3a3a3a;
+  border-top-color: #a78bfa;
+  animation: chat-panel-spin 0.7s linear infinite;
 }
 
 .chat-panel__activity-icon {

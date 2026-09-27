@@ -374,10 +374,84 @@ def compress_tool_output_history(
     return pruned
 
 
+# Trajectory Compaction (Markov State), local-model path only — a step
+# beyond compress_tool_output_history's own "compress old tool results but
+# never remove a message" contract. Confirmed live (dana_runtime.log): a
+# multi-step CAD build's own trajectory (assistant tool-call announcements
+# — never touched by any pruning above, only tool RESULTS are — plus the
+# tool schema's own fixed per-turn cost) grew linearly and tripped the
+# Two-Layer Context Management cloud handoff at turn 11, well before any
+# single tool result was large enough for compress_tool_output_history's
+# own byte-level compression to matter. The local model does not need turn
+# 1-8's verbatim reasoning to decide turn 11's next step; it needs to know
+# what exists RIGHT NOW (dana.core.react_dispatch's own _object_registry
+# overlay, injected alongside this at the same call site, is the
+# compensating substitute for what this removes).
+_DEFAULT_KEEP_RECENT_PAIRS = 2
+
+
+def compact_trajectory_to_recent_pairs(
+    messages: list[dict[str, Any]], *, keep_recent_pairs: int = _DEFAULT_KEEP_RECENT_PAIRS
+) -> list[dict[str, Any]]:
+    """Returns a NEW ``messages`` list with every ``(assistant, tool)`` pair
+    OLDER than the most recent ``keep_recent_pairs`` DROPPED ENTIRELY — not
+    truncated, not compressed, removed — so token cost stays flat (``O(1)``
+    in ``keep_recent_pairs``) across a 30-iteration ReAct chain instead of
+    growing with it. Unlike every pruning function above, this DOES change
+    message count.
+
+    Safe to drop by strict adjacency, never splitting a pair or touching
+    the wrong message: this ReAct loop dispatches exactly one tool call per
+    LLM turn (see ``dana.core.react_dispatch.build_assistant_tool_call_message``
+    — always exactly one ``tool_calls`` entry), and every assistant message
+    that carries one is ALWAYS immediately followed, in this exact list,
+    by its own matching ``tool``-role result (``build_tool_result_message``)
+    — no pruning step above this one ever reorders or removes a message, so
+    that adjacency is a real invariant, not an assumption. Locating a
+    ``tool``-role message therefore locates its pair partner too: the
+    message at ``index - 1``.
+
+    Keeps, unconditionally: a leading ``system`` message (index 0, if
+    present) and the FIRST ``user`` message after it — the same two anchors
+    ``dana.api.server._first_user_text`` already treats as this turn's
+    "original ask." Everything between the last kept anchor and the start
+    of the kept trailing window (INCLUDING any standalone ``system``
+    message interleaved there — e.g. an "unacknowledged failure" nudge
+    ``dana.api.server._run_react_loop`` appends mid-chain) is dropped along
+    with whichever pair it was annotating; a recent one that lands inside
+    the kept window is left in place untouched.
+
+    A no-op (returns ``messages`` as a new list, unchanged content) once
+    there aren't more than ``keep_recent_pairs`` tool results yet — nothing
+    old enough to drop.
+    """
+    if not messages:
+        return list(messages)
+    anchor_end = 1 if messages[0].get("role") == "system" else 0
+    user_idx = next(
+        (i for i in range(anchor_end, len(messages)) if messages[i].get("role") == "user"), None
+    )
+    if user_idx is not None:
+        anchor_end = user_idx + 1
+
+    tail = messages[anchor_end:]
+    tool_positions = [i for i, m in enumerate(tail) if m.get("role") == "tool"]
+    if len(tool_positions) <= max(0, keep_recent_pairs):
+        return list(messages)
+
+    cutoff_tool_pos = tool_positions[-keep_recent_pairs] if keep_recent_pairs > 0 else len(tail)
+    # The assistant message that requested this tool call is always the
+    # immediately preceding entry in `tail` -- see this function's own
+    # docstring on why that adjacency is a real invariant here, not a guess.
+    keep_from = max(0, cutoff_tool_pos - 1)
+    return messages[:anchor_end] + tail[keep_from:]
+
+
 __all__ = (
     "OMITTED_IMAGE_PLACEHOLDER",
     "prune_message_history",
     "prune_tool_output_history",
     "compress_tool_output_history",
     "compress_tool_result_payload",
+    "compact_trajectory_to_recent_pairs",
 )

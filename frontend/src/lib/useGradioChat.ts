@@ -129,7 +129,7 @@ export function useGradioChat(
     // token/model accounting there at all) — stays permanently empty, same
     // convention as driverState/cameraTarget above; CostBar's own
     // `!activeModel && segments.length === 0` check renders nothing for it.
-    costState: { activeModel: null, sessionTotalUsd: 0, byModel: {} },
+    costState: { activeModel: null, activeProvider: null, sessionTotalUsd: 0, byModel: {} },
     // No Task Planner telemetry from app.py's bare Gradio "chat" endpoint
     // either — same permanently-empty convention as costState above.
     planState: { objective: "", tasks: [], currentTaskId: null },
@@ -142,6 +142,11 @@ export function useGradioChat(
     voiceState: { state: "idle" as const, transcript: "" },
     liveActivity: [],
     turnActive,
+    // Gradio mode has no dag_node_start/dag_node_complete streaming (see
+    // this hook's own polling-based design) — nothing to drive a live
+    // "thinking" indicator from, so this is always false rather than
+    // faking a signal this transport can't actually provide.
+    isThinking: false,
     sessionId: null,
     // Always true here: app.py's _GradioSocket already auto-approves every
     // hitl_approval_required unconditionally server-side (see its own

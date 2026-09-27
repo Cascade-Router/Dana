@@ -8,7 +8,7 @@ import { API_WS_BASE, resolveApiUrl, resolveMeshUrl } from "./apiBase";
 type PlanTask = {
   id: number;
   description: string;
-  status: "pending" | "active" | "completed";
+  status: "pending" | "active" | "completed" | "cancelled";
 };
 
 type PlanWire = { objective: string; tasks: PlanTask[]; current_task_id: number | null };
@@ -138,6 +138,7 @@ export type ServerEvent =
   | {
       type: "usage_update";
       model: string;
+      provider: string | null;
       tokens: { prompt: number; completion: number };
       cost_usd: number | null;
       session_total_usd: number;
@@ -150,14 +151,23 @@ export type ServerEvent =
 // just the MOST RECENT model seen this session, not necessarily the one
 // with the largest slice of `byModel` (a session that switches models
 // keeps every model's own accumulated cost in `byModel`, so CostBar can
-// still render a fair proportional segment for each).
+// still render a fair proportional segment for each). `activeProvider`
+// (ModelProvider.last_provider) is the same "most recent" convention,
+// used by CostBar to detect a live cloud->local Ollama fallback (TTFT
+// spikes to 10s of seconds — see that component's own Local Mode badge).
 export type CostState = {
   activeModel: string | null;
+  activeProvider: string | null;
   sessionTotalUsd: number;
   byModel: Record<string, number>;
 };
 
-const INITIAL_COST_STATE: CostState = { activeModel: null, sessionTotalUsd: 0, byModel: {} };
+const INITIAL_COST_STATE: CostState = {
+  activeModel: null,
+  activeProvider: null,
+  sessionTotalUsd: 0,
+  byModel: {},
+};
 
 // Camel-cased convenience shape PlanChecklist actually renders — see
 // PlanWire above for the raw wire shape this is built from (both "ready"'s
@@ -310,6 +320,16 @@ export function useChatSocket(
   // like a voice turn) until its final "assistant_message" lands — exactly
   // the window ChatPanel's "Stop Generating" button should be visible for.
   const [turnActive, setTurnActive] = useState(false);
+  // Live "Thinking" Indicator: dag_node_start/dag_node_complete for
+  // node_type "agent" — the LLM's own reasoning step, one per ReAct
+  // iteration, distinct from tool_dispatch_start/end (a TOOL actually
+  // being dispatched). These two events already existed on the wire (see
+  // the ServerEvent union's own comment — "No frontend consumer currently
+  // reads this event") but nothing rendered them until now: the Agent
+  // Activity feed only ever showed a gap between one tool result landing
+  // and the next tool call starting, with no signal that the model was
+  // still working during that gap versus stalled/disconnected.
+  const [isThinking, setIsThinking] = useState(false);
   // Settings toggle: mirrors dana/api/server.py's session["auto_approve"].
   // Local UI state only (the server never echoes it back) — reset to false
   // below on every (re)connect since each new websocket connection gets a
@@ -361,6 +381,7 @@ export function useChatSocket(
       setLiveActivity([]);
       liveActivityRef.current = [];
       setTurnActive(false);
+      setIsThinking(false);
       // Terminal History isolation: `log` (server_log/tool_dispatch_start/
       // tool_dispatch_end/etc. WS events) is genuinely per-session data — without swapping it
       // out here it kept accumulating across a chat switch, so the Terminal
@@ -455,7 +476,28 @@ export function useChatSocket(
           liveActivityRef.current = [];
           setLiveActivity([]);
           setTurnActive(false);
+          setIsThinking(false);
           setMessages((prev) => [...prev, { role: "assistant", content: data.content, imageUrl, activity }]);
+          break;
+        }
+        case "dag_node_start": {
+          // Live "Thinking" Indicator — only the agent's own reasoning
+          // node; a tool/vision node here would just duplicate what
+          // tool_dispatch_start already shows more specifically below.
+          if (data.node_type === "agent") {
+            setTurnActive(true);
+            setIsThinking(true);
+          }
+          break;
+        }
+        case "dag_node_complete": {
+          // Counterpart to dag_node_start above — the reasoning step
+          // resolved (into a tool call, or a final answer either way,
+          // both arrive as their own separate events right after this
+          // one), so the "thinking" indicator's job is done regardless of
+          // data.status (an "error" here still means the reasoning step
+          // itself finished, it just didn't produce anything usable).
+          setIsThinking(false);
           break;
         }
         case "tool_dispatch_start": {
@@ -463,6 +505,7 @@ export function useChatSocket(
           // same Agent Activity entry, sourced from this one event's own
           // tool_name/args_summary fields instead of a separate message.
           setTurnActive(true);
+          setIsThinking(false); // a tool call is a MORE specific signal than "thinking" — supersede it
           const entry: AgentActivity = {
             id: `${data.tool_name}-${liveActivityRef.current.length}-${Math.random().toString(36).slice(2)}`,
             toolName: data.tool_name,
@@ -509,6 +552,7 @@ export function useChatSocket(
         case "usage_update":
           setCostState({
             activeModel: data.model,
+            activeProvider: data.provider,
             sessionTotalUsd: data.session_total_usd,
             byModel: data.by_model,
           });
@@ -703,6 +747,7 @@ export function useChatSocket(
     voiceState,
     liveActivity,
     turnActive,
+    isThinking,
     sessionId,
     autoApprove,
     sendMessage,

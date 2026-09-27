@@ -90,6 +90,22 @@ TTS_MODELS_DIR: Path = PROJECT_ROOT / "tts_models"
 
 SETTINGS_PATH: Path = PROJECT_ROOT / "settings.json"
 
+# Dynamic LLM Router fleet config (dana.core.routing_config) — optional; its
+# absence is a supported, zero-behavior-change state (dana.core.model_provider
+# falls back to its existing .env-toggle resolution). Never created
+# automatically — a user opts in by copying routing_config.yaml.example.
+ROUTING_CONFIG_PATH: Path = PROJECT_ROOT / "routing_config.yaml"
+
+# Model Registry catalog (dana.core.model_registry) — provider/model specs,
+# pricing, rate limits. Git-tracked; refreshed by scripts/sync_model_catalog.py.
+MODELS_REGISTRY_PATH: Path = PROJECT_ROOT / "dana" / "data" / "models_registry.json"
+
+# User's saved fallback-chain order + per-model enable/disable toggles from
+# the Model Registry control panel. Kept separate from ROUTING_CONFIG_PATH's
+# hand-authored YAML (with its rich provenance comments) so a UI-driven save
+# never clobbers those; absence is a supported "use catalog defaults" state.
+MODEL_PREFERENCES_PATH: Path = PROJECT_ROOT / "dana" / "data" / "model_preferences.json"
+
 VAULT_PATH: Path = PROJECT_ROOT / "dana_memory.enc"
 
 ARCHITECTURE_MD: Path = PROJECT_ROOT / "ARCHITECTURE.md"

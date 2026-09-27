@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+
 
 @dataclass(frozen=True)
 class ToolItemPropertySpec:
@@ -81,6 +83,15 @@ class ToolCall:
     source_lang: str = "en"  # en | fa | mixed
     raw_text: str = ""
     confidence: float = 1.0
+    # Opaque provider-specific wire metadata that must round-trip verbatim
+    # onto the SAME function call when this turn's assistant message is
+    # replayed in a later request — e.g. Gemini's OpenAI-compat endpoint
+    # attaches {"google": {"thought_signature": "..."}} to each tool_calls[N]
+    # entry and 400s on the next turn if it isn't echoed back exactly where
+    # it was received. None for every provider that doesn't use this
+    # (OpenAI, Groq, local Ollama) — see openai_tool_calls_to_ir below and
+    # dana.core.react_dispatch.build_assistant_tool_call_message.
+    provider_extra: dict[str, Any] | None = None
 
 
 def _as_tuple_map(raw: dict[str, Any]) -> dict[str, tuple[str, ...]]:
@@ -195,6 +206,14 @@ def to_openai_function_schema(spec: ToolSpec) -> dict[str, Any]:
                 "type": "object",
                 "properties": properties,
                 "required": required,
+                # Silent Parameter Dropping fix: a provider whose own
+                # function-calling implementation enforces JSON Schema
+                # (e.g. OpenAI strict mode) now rejects an invented/
+                # hallucinated extra parameter before Dana ever sees the
+                # call at all — dana.tools.schema.validate_tool_arguments
+                # is the second, ALWAYS-enforced layer of this same rule
+                # for every provider that doesn't validate this itself.
+                "additionalProperties": False,
             },
         },
     }
@@ -212,6 +231,114 @@ def openai_tools_schema(
             continue
         out.append(to_openai_function_schema(spec))
     return out
+
+
+# Silent Parameter Dropping fix: to_openai_function_schema (above) already
+# tells the LLM/provider each tool's real properties/required/enum, but
+# nothing anywhere in this pipeline ever enforced it — a call carrying a key
+# that ISN'T one of those properties (an invented/hallucinated parameter,
+# e.g. an early build of create_freecad_helix's own angle_offset before its
+# schema entry existed) used to just sit unread in `args`, since every
+# `_tool_*` handler in dana.core.react_dispatch only ever reads the SPECIFIC
+# keys it knows about via `args.get(...)` — never raising on anything else.
+# The two functions below are the enforcement half of that same schema:
+# `tool_argument_model` mirrors a ToolSpec into a real pydantic model with
+# `extra="forbid"`, and `validate_tool_arguments` is what
+# dana.core.react_dispatch.dispatch_tool_call calls, for every registered
+# tool, before its handler ever runs.
+_JSON_TYPE_TO_PY: dict[str, type] = {
+    "string": str,
+    "number": float,
+    "integer": int,
+    "boolean": bool,
+}
+
+_ARGUMENT_MODEL_CACHE: dict[str, type[BaseModel]] = {}
+
+
+# extra="forbid" is this whole feature's actual point; coerce_numbers_to_str
+# is a deliberate, narrow escape hatch alongside it — several existing
+# "string"-typed params (e.g. modify_freecad_parameter's new_value, which
+# also accepts a "[x, y, z]" vector string, so it can't just be declared
+# "number") are routinely sent as a bare JSON number by a real LLM/test
+# caller, and every hand-written `_tool_*` handler already does its own
+# `str(args.get(...))` coercion on read — rejecting that same value one
+# layer earlier, here, would be a stricter-than-intended false positive,
+# not a real "invented parameter" catch. A dict/list is NEVER coerced into
+# a scalar string field regardless (confirmed: still raises), so a
+# genuinely wrong-SHAPED value is still caught.
+_MODEL_CONFIG = ConfigDict(extra="forbid", coerce_numbers_to_str=True)
+
+
+def _item_annotation(param: ToolParameterSpec) -> Any:
+    """The element type for one ``type == "array"`` parameter.
+
+    Deliberately ``Any`` for ``items_type == "object"`` (e.g. ``create_plan``'s
+    own ``tasks``) rather than a nested ``extra="forbid"`` model of
+    ``item_properties`` — confirmed live that ``_tool_create_plan`` itself
+    documents and accepts a BARE STRING per task ("a bare string is still
+    accepted ... treated as a task with no declared expected_tools") as a
+    deliberate alternative to the full ``{"description", "expected_tools"}``
+    object shape, so a strict nested model would reject that already-
+    supported, already-tested calling convention as if it were the exact
+    "invented parameter" problem this whole module exists to catch. This
+    keeps enforcement where the reported problem actually is — a bogus
+    TOP-LEVEL parameter name, or the wrong JSON type for one that's a plain
+    scalar — without guessing at how permissive a specific tool's own
+    nested-array business logic is allowed to be.
+    """
+    return _JSON_TYPE_TO_PY.get(param.items_type, Any)
+
+
+def tool_argument_model(spec: ToolSpec) -> type[BaseModel]:
+    """A pydantic model for ``spec``'s own declared parameters, with
+    ``extra="forbid"``. Every field is Optional here REGARDLESS of the
+    tool's own ``required`` flag — this model's only job is catching a
+    parameter the LLM invented that isn't declared at all (or the wrong
+    JSON *shape* for one that is); a genuinely MISSING required field
+    still falls through to that tool's own hand-written ``_tool_*``
+    handler, which already raises its own clearer, tool-specific "X is
+    required" message, and an ``enum``-declared param's VALUE (e.g.
+    ``operation: "bogus"``) is deliberately left to that same handler too
+    — it already rejects an unknown enum value with a friendlier,
+    tool-specific message than a generic pydantic one would, and that
+    value was never the thing silently vanishing; only an entirely
+    undeclared key was. Cached per tool_id: tools.json (and any
+    manifest.json-derived ToolSpec) is static for the life of the process,
+    so this is built at most once per tool ever dispatched.
+    """
+    cached = _ARGUMENT_MODEL_CACHE.get(spec.id)
+    if cached is not None:
+        return cached
+    fields: dict[str, Any] = {}
+    for param in spec.parameters:
+        py_type = list[_item_annotation(param)] if param.type == "array" else _JSON_TYPE_TO_PY.get(param.type, Any)
+        fields[param.name] = (py_type | None, None)
+    model = create_model(f"_{spec.id}_args", __config__=_MODEL_CONFIG, **fields)
+    _ARGUMENT_MODEL_CACHE[spec.id] = model
+    return model
+
+
+def validate_tool_arguments(spec: ToolSpec, arguments: dict[str, Any]) -> str | None:
+    """``None`` when ``arguments`` matches ``spec``'s own schema; otherwise
+    a plain-English message — worded for the Honest Error Handler to hand
+    straight back to the LLM as this call's own failure reason, so it
+    rewrites its NEXT call using only real, declared properties instead of
+    an extra key silently vanishing with no error at all — naming exactly
+    which key(s) don't belong or which are the wrong type.
+    """
+    try:
+        tool_argument_model(spec).model_validate(arguments)
+    except ValidationError as exc:
+        problems: list[str] = []
+        for err in exc.errors():
+            loc = ".".join(str(p) for p in err["loc"]) or "(top level)"
+            if err["type"] == "extra_forbidden":
+                problems.append(f"unexpected parameter '{loc}' is not part of {spec.id}'s schema")
+            else:
+                problems.append(f"'{loc}': {err['msg']}")
+        return f"{spec.id} received invalid arguments — " + "; ".join(problems)
+    return None
 
 
 def openai_tool_calls_to_ir(
@@ -243,6 +370,11 @@ def openai_tool_calls_to_ir(
                     args = parsed
             except (json.JSONDecodeError, ValueError):
                 args = {}
+        # Gemini's OpenAI-compat endpoint (only) rides its thought_signature
+        # here — see ToolCall.provider_extra's own docstring. Absent for
+        # OpenAI/Groq/Ollama responses, so this is a no-op for them.
+        raw_extra = raw.get("extra_content")
+        provider_extra = raw_extra if isinstance(raw_extra, dict) else None
         calls.append(
             ToolCall(
                 tool_id=name,
@@ -250,6 +382,7 @@ def openai_tool_calls_to_ir(
                 source_lang=source_lang,
                 raw_text=raw_text,
                 confidence=1.0,
+                provider_extra=provider_extra,
             )
         )
     return calls

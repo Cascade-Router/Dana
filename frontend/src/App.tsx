@@ -1,7 +1,9 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { Brain, ClipboardList, Key, Lock, Zap } from "lucide-react";
+import { Brain, ClipboardList, Key, Lock, Settings, Sparkles, Zap } from "lucide-react";
 import { ChatPanel } from "./components/ChatPanel";
+import { ConfigViewer } from "./components/ConfigViewer";
 import { CostBar } from "./components/CostBar";
+import { ModelRegistryPanel } from "./components/ModelRegistryPanel";
 import { PlanChecklist } from "./components/PlanChecklist";
 import { ChatSidebar } from "./components/ChatSidebar";
 import { EnvViewerWidget } from "./components/EnvViewerWidget";
@@ -28,6 +30,8 @@ function AppShell() {
   const { entries } = useSecrets();
   const [secretsOpen, setSecretsOpen] = useState(false);
   const [envViewerOpen, setEnvViewerOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
+  const [modelsOpen, setModelsOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false);
 
@@ -116,6 +120,7 @@ function AppShell() {
     topologyGraph,
     liveActivity,
     turnActive,
+    isThinking,
     sessionId,
     autoApprove,
     sendMessage,
@@ -294,6 +299,22 @@ function AppShell() {
         <button
           type="button"
           className="app__icon-btn"
+          title="Active Configuration"
+          onClick={() => setConfigOpen(true)}
+        >
+          <Settings size={16} strokeWidth={2} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="app__icon-btn"
+          title="Model Registry & Preferences"
+          onClick={() => setModelsOpen(true)}
+        >
+          <Sparkles size={16} strokeWidth={2} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          className="app__icon-btn"
           title="Core Memory"
           onClick={() => setMemoryOpen(true)}
         >
@@ -314,6 +335,7 @@ function AppShell() {
                 messages={messages}
                 liveActivity={liveActivity}
                 turnActive={turnActive}
+                isThinking={isThinking}
                 onSend={sendMessage}
                 onAbort={abortTurn}
                 onHitlRespond={respondHitl}
@@ -349,6 +371,8 @@ function AppShell() {
       )}
       {!isCadActive && planOpen && <PlanChecklist plan={planState} onClose={() => setPlanOpen(false)} />}
       {memoryOpen && <MemoryViewer memory={memoryState} onClose={() => setMemoryOpen(false)} />}
+      {configOpen && <ConfigViewer onClose={() => setConfigOpen(false)} />}
+      {modelsOpen && <ModelRegistryPanel onClose={() => setModelsOpen(false)} />}
       {!isCadActive && <TerminalDrawer log={log} />}
     </div>
   );

@@ -21,6 +21,7 @@ for _sub in ("scripts", "scripts/diagnostics"):
         sys.path.insert(0, _p)
 
 import dana.api.sessions as _sessions_module  # noqa: E402 — needs the sys.path bootstrap above first
+import dana.audio.multi_voice_tts as _multi_voice_tts_module  # noqa: E402
 import dana.core.react_dispatch as _react_dispatch_module  # noqa: E402
 import dana.plugins.os.file_system as _file_system_module  # noqa: E402
 import dana.plugins.planning.task_board as _task_board_module  # noqa: E402
@@ -66,6 +67,92 @@ def _isolate_os_tools_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.fixture(autouse=True)
+def _mock_tts_hardware_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Global safety net: dana.audio.multi_voice_tts._synthesize_pyttsx3 is a
+    real, synchronous call into Windows SAPI via the pyttsx3/COM bridge —
+    hardware/OS-integration code with no business running in a test suite
+    regardless of whether it happens to be fast or slow on any given
+    machine. EVERY test that drives a real /ws/chat turn ending in a
+    plain-text assistant reply hits this path (the "dana" receptionist
+    voice falls through to it whenever Piper isn't available in this
+    environment) — not just tests/audio's own dedicated TTS tests — so
+    this is a global, autouse fixture, not a per-file one.
+
+    Correction on an earlier live-debugging session's conclusion: this
+    call was originally suspected to be THE cause of a hang in
+    tests/api/test_chat_attachments.py. Isolated properly afterward (by
+    replacing dana.api.server._speak_reply — the caller of this whole TTS
+    pipeline — with a no-op and confirming the hang PERSISTED): the actual
+    cause was unrelated (see _disable_context_distillation below). This
+    mock is kept anyway on its own merits — a hardware/COM call is exactly
+    the kind of thing a test suite should never depend on being fast, or
+    even present, on every machine that runs it — but it is a defensive
+    good practice here, not the fix for that specific incident.
+
+    Writes the SAME silence-placeholder WAV synthesize_speech's own
+    fallback path already writes on a genuine pyttsx3 failure
+    (_write_silence_wav) — a real, valid (if silent) WAV file, never empty/
+    malformed bytes — so any downstream code that reads the returned Path
+    back still sees a well-formed file. Returns True (matching
+    _synthesize_pyttsx3's own real return type), so synthesize_speech's
+    success branch runs, not its own "wrote silence placeholder" failure-
+    fallback branch — the TTS *logic* actually fires and is exercised, only
+    the hardware call itself is short-circuited.
+    """
+
+    def _fake_synthesize_pyttsx3(text: str, dest: Path, *, prefer_male: bool, rate: int = 165) -> bool:
+        _multi_voice_tts_module._write_silence_wav(dest, duration_s=0.05)
+        return True
+
+    monkeypatch.setattr(_multi_voice_tts_module, "_synthesize_pyttsx3", _fake_synthesize_pyttsx3)
+
+    # Piper is tried FIRST for the "dana" receptionist voice (synthesize_
+    # speech's own branch order) — confirmed live this environment has a
+    # real ONNX model on disk (tts_models/en_US-hfc_female-medium.onnx), so
+    # every "dana" voice turn was running REAL neural TTS inference before
+    # ever reaching the pyttsx3 mock above, real CPU cost multiplying across
+    # every plain-text assistant turn in a test run. Short-circuited the
+    # same way: pretend unavailable so synthesize_speech falls through to
+    # the (now mocked) pyttsx3 path immediately, same as a real environment
+    # with no Piper model installed.
+    monkeypatch.setattr(_multi_voice_tts_module, "_synthesize_piper", lambda text, dest: False)
+
+
+@pytest.fixture(autouse=True)
+def _disable_context_distillation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Global safety net — THE actual fix for the tests/api/test_chat_
+    attachments.py hang the TTS mock above was originally (incorrectly)
+    suspected to be.
+
+    dana.api.server._finish_turn calls dana.core.context_distiller.
+    schedule_distillation after EVERY completed turn, which does
+    ``asyncio.create_task(distill_turn(...))`` — genuinely fire-and-forget,
+    never awaited by its caller. distill_turn itself is well-behaved in
+    isolation (asyncio.to_thread + asyncio.wait_for(timeout=20s)), but
+    that 20s bound is on the ASYNCIO SIDE only: the underlying blocking
+    HTTP call to a local Ollama endpoint (ModelProvider(...).complete, via
+    to_thread) keeps occupying its OS thread for however long THAT call
+    actually takes to fail against a local Ollama daemon that doesn't
+    exist in a test/CI environment — asyncio.wait_for gives up waiting,
+    but cannot forcibly kill a thread already blocked in a synchronous
+    call. Confirmed live: isolated the hang by replacing dana.api.server.
+    _speak_reply (the TTS entry point) with a no-op — the hang PERSISTED,
+    ruling TTS out; setting DANA_CONTEXT_DISTILL=0 for the same run made
+    the whole file pass. Each completed turn silently leaked one
+    permanently-blocked worker out of asyncio.to_thread's shared, FIXED-
+    SIZE default executor; the 2nd or 3rd turn in a test file was enough
+    to exhaust it, so a LATER, entirely unrelated to_thread call (FreeCAD
+    subprocess execution, this file's own TTS mock, anything) queued
+    forever waiting for a worker that would never free up.
+
+    monkeypatch.setenv (not a manual os.environ write) — reverted
+    automatically after each test, and distillation_enabled() re-reads
+    the env var fresh on every call, so no import-order dependency here.
+    """
+    monkeypatch.setenv("DANA_CONTEXT_DISTILL", "0")
+
+
+@pytest.fixture(autouse=True)
 def _reset_user_skills_registry():
     """Global safety net: Autonomous Skill Acquisition's registry
     (dana.core.react_dispatch's TOOL_HANDLERS / _USER_SKILL_TOOL_IDS /
@@ -91,20 +178,21 @@ def _reset_user_skills_registry():
 @pytest.fixture(autouse=True)
 def _reset_task_board_plan():
     """Global safety net, same rationale as ``_reset_user_skills_registry``
-    above: Task Planner / Executive Function's ``_ACTIVE_PLAN``
-    (dana.plugins.planning.task_board) is process-wide, mutable, global
-    state — a plan created by ANY test (e.g. one driving a real /ws/chat
-    turn that calls ``create_plan``) would otherwise leak into every later
-    test in the WHOLE suite via this shared module-level dict.
-    Teardown-only: the plan is already empty at process start and after
+    above: Task Planner / Executive Function's ``_PLANS_BY_SESSION``
+    (dana.plugins.planning.task_board) is process-wide, mutable, module-
+    level state — a plan created by ANY test (e.g. one driving a real
+    /ws/chat turn that calls ``create_plan``) would otherwise leak into
+    every later test in the WHOLE suite via this shared dict, regardless
+    of which session_id that test happened to use (task_board is now
+    session-scoped, not a single global plan, but this fixture's own job —
+    leave every test a clean slate — doesn't change: it just needs to
+    clear every session's entry, not one fixed set of fields).
+    Teardown-only: the dict is already empty at process start and after
     any earlier test's own cleanup here, so there's nothing to reset going
     in.
     """
     yield
-    plan = _task_board_module._ACTIVE_PLAN
-    plan["objective"] = ""
-    plan["tasks"] = []
-    plan["current_task_id"] = None
+    _task_board_module._PLANS_BY_SESSION.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -126,6 +214,34 @@ def _reset_plan_gate_state():
     """
     yield
     _react_dispatch_module._PLAN_STATE_REGISTRY.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_measurement_gate_state():
+    """Global safety net, same rationale as ``_reset_plan_gate_state``
+    above: the Position-Before-Measurement Gate's
+    ``_BOUNDING_BOX_MEASURED_BY_SESSION`` (dana.core.react_dispatch) is
+    process-wide, mutable, module-level state, session-scoped but keyed by
+    whatever session_id happens to be ambient at the time — a measurement
+    recorded by ANY test would otherwise leak into every later test in the
+    WHOLE suite that reuses the same session_id. Teardown-only: the dict is
+    empty at process start and after any earlier test's own cleanup here.
+    """
+    yield
+    _react_dispatch_module._BOUNDING_BOX_MEASURED_BY_SESSION.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_truncation_nudge_state():
+    """Global safety net, same rationale as ``_reset_measurement_gate_state``
+    above: the Truncation Recovery Nudge's ``_OUTPUT_TRUNCATED_BY_SESSION``
+    (dana.core.react_dispatch) is process-wide, mutable, module-level state,
+    session-scoped but keyed by whatever session_id happens to be ambient at
+    the time. Teardown-only: the dict is empty at process start and after
+    any earlier test's own cleanup here.
+    """
+    yield
+    _react_dispatch_module._OUTPUT_TRUNCATED_BY_SESSION.clear()
 
 
 def _cancel_pending_after_events(root: tkinter.Misc) -> None:
