@@ -17,6 +17,13 @@ from dana.api import server as server_module
 from dana.platform.mock import MockControlPlane, MockFreeCADEngine
 from dana.tools.schema import ToolCall
 
+# TestClient's ws.receive_json() has no timeout of its own: if the server never
+# sends the awaited event (e.g. a ReAct turn crashing before tool_dispatch_start,
+# as a missing dana.perf.log_metric once did), the test blocks forever. Fail
+# instead. pytest-timeout's signal method (Linux CI) fails just the test; on
+# Windows it falls back to the thread method, which aborts the whole run.
+pytestmark = pytest.mark.timeout(30)
+
 
 class _FakeProvider:
     def __init__(self, tool_calls: list[ToolCall]) -> None:

@@ -93,6 +93,46 @@ jobs:
           DANA_HEADLESS: "true"
         run: python -c "import app; print('space_import_ok')"
 
+  # Full pytest suite — a blocking check (Sync to Hugging Face only runs after
+  # Build succeeds). Known failures are marked xfail in the tests themselves;
+  # `live_ollama` tests need a real Ollama server and are deselected here.
+  tests:
+    name: Pytest (full suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install system libraries
+        # xvfb: conftest/UI tests create Tk roots, which need a display.
+        # libportaudio2: sounddevice loads it at import time.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb libportaudio2
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          GRADIO_VERSION="$(sed -nE 's/^sdk_version: *//p' deploy/space_README.md)"
+          pip install -r requirements.txt -r requirements-dev.txt "gradio==${GRADIO_VERSION}" spaces
+
+      - name: Run pytest
+        env:
+          DANA_OS_DRY_RUN: "1"
+          DANA_HEADLESS: "true"
+        run: xvfb-run -a python -m pytest -m "not live_ollama" --strict-markers --timeout=300 -rfE
+
   # Same `tsc && vite build` Vercel runs — catches a component committed
   # without the caller change it depends on (the 2026-09-24 Vercel failure).
   frontend:
