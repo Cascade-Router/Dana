@@ -64,3 +64,27 @@ def log_perf(event: str, ms: float, **fields: Any) -> None:
         _ensure_logger().info(" ".join(parts))
     except Exception:  # noqa: BLE001
         pass
+
+
+def log_metric(event: str, **fields: Any) -> None:
+    """Sibling of ``log_perf`` for a plain (non-millisecond) measurement —
+    a token-count estimate, a byte count, ... ``log_perf`` always suffixes
+    its ONE numeric value with a literal ``"ms"``, which would mislabel
+    anything that isn't a duration; this appends a bare ``event`` line with
+    every field rendered the exact same ``key=value`` way, into the same
+    ``dana_performance.log`` file, via the same logger/handler.
+    """
+    parts = [event]
+    for key, value in fields.items():
+        if value is None:
+            continue
+        text = str(value).replace("\n", " ").strip()
+        if not text:
+            continue
+        if len(text) > 120:
+            text = text[:117] + "..."
+        parts.append(f"{key}={text}")
+    try:
+        _ensure_logger().info(" ".join(parts))
+    except Exception:  # noqa: BLE001
+        pass
