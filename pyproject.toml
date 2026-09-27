@@ -38,9 +38,15 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "scripts", "scripts/diagnostics"]
-addopts = "-q"
+# tests/smoke/ holds standalone, manually-run network smoke scripts (real
+# provider API calls, real keys needed) — matching "test_*.py" naming so
+# pytest would otherwise import (and thus execute the top-level code of)
+# every one of them during plain collection. Excluded, not just skipped,
+# so a bare `pytest` run never fires a real, possibly billed API call.
+addopts = "-q --ignore=tests/smoke"
 markers = [
   "e2e: live end-to-end OS/vision/browser manipulation tests",
+  "live_ollama: needs a reachable Ollama server at OLLAMA_URL; deselected in CI",
 ]
 
 [tool.mypy]
