@@ -231,10 +231,6 @@ def test_complete_with_tool_calls_raises_with_all_errors_when_every_entry_fails(
         ModelProvider().complete_with_tool_calls([{"role": "user", "content": "hi"}], tools=[])
 
 
-# Deselected in CI: provider="ollama" goes through complete_ollama_native_with_tools,
-# not the complete_openai_with_tools patched below, so this makes a real request
-# to OLLAMA_URL (and fails without a server that has the model).
-@pytest.mark.live_ollama
 def test_complete_with_tool_calls_explicit_provider_bypasses_the_router(
     monkeypatch: pytest.MonkeyPatch, fake_fleet: None
 ) -> None:
@@ -242,11 +238,13 @@ def test_complete_with_tool_calls_explicit_provider_bypasses_the_router(
     routing decision — the router must not override it."""
     calls: list[str] = []
 
-    def fake_complete(messages, *, api_key, base_url, model, **kw):
+    def fake_complete(messages, *, base_url, model, **kw):
         calls.append(model)
         return _canned_ok()
 
-    monkeypatch.setattr(model_provider_module, "complete_openai_with_tools", fake_complete)
+    # provider="ollama" goes through Ollama's native /api/chat bridge, not the
+    # OpenAI-compatible one the router tests above patch.
+    monkeypatch.setattr(model_provider_module, "complete_ollama_native_with_tools", fake_complete)
     monkeypatch.setenv("DANA_OPENAI_TOOLS_MODEL", "forced-ollama-model")
     result = ModelProvider().complete_with_tool_calls(
         [{"role": "user", "content": "hi"}], tools=[], provider="ollama"
