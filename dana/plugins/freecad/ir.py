@@ -488,24 +488,26 @@ register_ir_kind(
 
 
 def _boolean_from_args(
-    *, name: str, operation: str, feature_type: str, base_object: str, tool_object: str,
-    var: str = "obj", index: int = 1,
+    *, name: str, operation: str, feature_type: str, base_object: str = "", tool_object: str = "",
+    objects: list[str] | None = None, var: str = "obj", index: int = 1,
 ) -> dict[str, Any]:
     return {
         "kind": "boolean", "var": var, "name": name, "operation": operation, "feature_type": feature_type,
-        "base_object": base_object, "tool_object": tool_object,
+        "base_object": base_object, "tool_object": tool_object, "objects": list(objects) if objects else None,
         "index": index, "tool_id": "perform_freecad_boolean",
     }
 
 
 def _boolean_from_record(rec: Any, index: int) -> dict[str, Any]:
     name = str(rec.result.get("name", "Bool"))
+    raw_objects = rec.arguments.get("objects")
     return {
         "kind": "boolean", "var": safe_var_name(name, index), "name": name,
         "operation": str(rec.result.get("operation", "cut")),
         "feature_type": str(rec.result.get("type", "Part::Cut")),
         "base_object": str(rec.arguments.get("base_object", "")),
         "tool_object": str(rec.arguments.get("tool_object", "")),
+        "objects": [str(o) for o in raw_objects] if isinstance(raw_objects, list) and raw_objects else None,
         "index": index, "tool_id": "perform_freecad_boolean",
     }
 

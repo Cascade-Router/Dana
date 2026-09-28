@@ -193,6 +193,21 @@ def _build_pipe(rec: CadCallRecord, index: int) -> dict[str, Any]:
     }
 
 
+def _build_helix(rec: CadCallRecord, index: int) -> dict[str, Any]:
+    dims = rec.result.get("dimensions") or {}
+    name = str(rec.result.get("name", "Helix"))
+    return {
+        "kind": "helix",
+        "var": _safe_var_name(name, index),
+        "name": name,
+        "coil_radius": float(dims.get("coil_radius", 0.0)),
+        "pitch": float(dims.get("pitch", 0.0)),
+        "height": float(dims.get("height", 0.0)),
+        "pipe_radius": float(dims.get("pipe_radius", 0.0)),
+        "placement": _placement(rec.result),
+    }
+
+
 def _build_boolean(rec: CadCallRecord, index: int) -> dict[str, Any]:
     name = str(rec.result.get("name", "Bool"))
     return {
@@ -332,6 +347,7 @@ _STEP_BUILDERS: dict[str, Callable[[CadCallRecord, int], dict[str, Any]]] = {
     "create_freecad_polygon": _build_polygon,
     "create_freecad_extrusion": _build_extrusion,
     "create_freecad_pipe": _build_pipe,
+    "create_freecad_helix": _build_helix,
     "perform_freecad_boolean": _build_boolean,
     "perform_freecad_edge_operation": _build_edge_operation,
     "modify_freecad_parameter": _build_modify_parameter,

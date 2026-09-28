@@ -1,0 +1,126 @@
+# Dynamic LLM Router — DANA's LLM fleet, config-driven instead of .env
+# toggles. Copy this file to routing_config.yaml (project root, alongside
+# .env) to opt in — its absence is the default, fully-supported state:
+# dana.core.model_provider falls back to its existing .env-toggle
+# resolution (DANA_CLOUD_PROVIDER etc.) completely unchanged.
+#
+# API keys are NEVER stored here — api_key_env just names which existing
+# .env variable to read (same indirection dana/api/system.py already uses
+# for its env allowlist). Edited by hand; no Python required.
+
+version: 1
+
+defaults:
+  # A fleet entry is only picked if its context_window * this margin fits
+  # the turn's estimated size — keeps every choice comfortably clear of a
+  # model's real ceiling rather than picking right at the edge.
+  context_window_safety_margin: 0.85
+  # Always the last entry tried, regardless of whether it "fits" by size —
+  # the terminal fallback when every entry above it fails or is over
+  # budget. Must match a fleet entry's id below.
+  terminal_fallback: ollama_local
+  # false = fully local: dana.core.llm_router.resolve_chain returns ONLY
+  # ollama_local (no cloud entry, ever, not even as a fallback), and
+  # dana.core.react_dispatch's Planning-Phase Cloud Lock forces Turn 0
+  # (create_plan, no plan yet) onto Ollama instead of off it. Accepted
+  # tradeoff, not an oversight: this reintroduces the create_plan/geometry
+  # schema-adherence risk those two mechanisms exist to prevent (confirmed
+  # live against a 7B local model; never re-verified against the current
+  # qwen2.5-coder:14b default). Flip back to true (or delete this line —
+  # true is the default) to restore cloud-preferred routing.
+  allow_cloud: true
+
+fleet:
+  # Reordered 2026-09-17: the two free lanes below used to be priority 1/2
+  # (tried first) but proved too unreliable for a real multi-step CAD
+  # tool-calling session to depend on — confirmed live across several
+  # end-to-end rover-build runs: openrouter_free_nemotron120b rambled
+  # through its own chain-of-thought without ever emitting a tool call
+  # until it hit its 4096-token output cap, hallucinated wrong parameter
+  # names for add_parts_to_assembly (assembly/parts instead of
+  # assembly_name/part_names), and looped through search_tool_catalog/
+  # load_specific_tool dozens of times without making progress. Demoted to
+  # fallbacks (still fine for lighter, non-geometry turns) in favor of
+  # deepseek_direct, which completed a full rover build (chassis + 4
+  # wheels + assembly + apply_assembly_constraint mating + kinematic
+  # joints) cleanly in one run with none of the above.
+
+  # Paid direct API — no shared rate limits, verified live (2026-09-17)
+  # against a full multi-step CAD tool-calling session (rover chassis +
+  # wheels + assembly + apply_assembly_constraint + kinematic joints,
+  # completed end-to-end with no rambling or hallucinated arguments).
+  - id: deepseek_direct
+    provider: deepseek
+    model: deepseek-chat
+    api_key_env: DEEPSEEK_API_KEY
+    context_window: 64000
+    cost_per_1m_prompt: 0.28
+    cost_per_1m_completion: 0.42
+    priority: 1
+
+  # Paid, far larger context window — picked when a turn is too big for
+  # deepseek_direct's 64k window. Its thought_signature multi-turn
+  # requirement is handled transparently by ToolCall.provider_extra; no
+  # config needed here for that. Not yet independently confirmed live
+  # against a full multi-step tool-calling session the way deepseek_direct
+  # was above, so kept second rather than first until it has been.
+  - id: gemini_flash
+    provider: gemini_openai
+    model: gemini-3.7-flash
+    api_key_env: GEMINI_API_KEY
+    context_window: 1000000
+    cost_per_1m_prompt: 0.075
+    cost_per_1m_completion: 0.30
+    priority: 2
+
+  # Free tier, now a fallback rather than the default first pick — see the
+  # reordering note above. Rate-limited (~20 req/min, ~200 req/day on
+  # OpenRouter's shared free pool) but zero cost, still fine for lighter,
+  # non-geometry turns. Verified live against OpenRouter's actual
+  # /api/v1/models catalog and a real tool-calling request (2026-09-08) —
+  # this list rotates often (providers add/pull/reprice free models on
+  # their own schedule, unannounced), so re-verify rather than trust this
+  # comment if calls start 404ing again: the PREVIOUS entry here
+  # (meta-llama/llama-3.3-70b-instruct:free) was live and working when this
+  # file was first written, and had already been pulled from OpenRouter's
+  # free catalog by the time this was checked again — same day.
+  - id: openrouter_free_nemotron120b
+    provider: openrouter
+    model: nvidia/nemotron-3-super-120b-a12b:free
+    api_key_env: OPENROUTER_API_KEY
+    context_window: 262144
+    cost_per_1m_prompt: 0.0
+    cost_per_1m_completion: 0.0
+    priority: 3
+
+  # Second free lane, same "fallback, not default" demotion as above.
+  # Verified live against Groq's own /v1/models metadata and a real
+  # tool-calling request (2026-09-08) — supported_features includes
+  # "tools". The PREVIOUS entries here (llama-3.3-70b-versatile, then
+  # deepseek-r1-distill-llama-70b) both came back "does not exist" / "has
+  # been decommissioned" live — Groq retires free-tier models on its own
+  # schedule too, so re-verify before trusting this slug long-term. No
+  # live-verified free-tier TPM figure for this specific model as of this
+  # writing (the ~6,000 TPM figure previously here was for the
+  # now-decommissioned llama-3.3-70b/deepseek-r1-distill entries
+  # specifically — carrying it forward onto a different model would be a
+  # guess, not a verified number).
+  - id: groq_free_gptoss120b
+    provider: groq
+    model: openai/gpt-oss-120b
+    api_key_env: GROQ_API_KEY
+    context_window: 131072
+    cost_per_1m_prompt: 0.0
+    cost_per_1m_completion: 0.0
+    priority: 4
+
+  # Last resort — slow, VRAM-bound, but always available with no API key
+  # and no rate limit. priority is high on purpose so it's only reached
+  # once everything above has failed or doesn't fit.
+  - id: ollama_local
+    provider: ollama
+    model: qwen2.5-coder:14b
+    context_window: 8192
+    cost_per_1m_prompt: 0.0
+    cost_per_1m_completion: 0.0
+    priority: 99

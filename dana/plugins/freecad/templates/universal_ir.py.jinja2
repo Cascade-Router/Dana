@@ -262,22 +262,45 @@ if {{ step.var }}.Shape.isNull() or _bbox_collapsed_{{ step.index }} or {{ step.
     )
 
 {% elif step.kind == "modify_parameter" %}
-_target_obj_{{ step.index }} = doc.getObject({{ step.target_object|pyrepr }})
-if _target_obj_{{ step.index }} is None:
+{# Bound to {{ step.var }} itself (not a fixed _target_obj_N name, unlike
+   most other blocks here) because this is the one place `final_var`'s own
+   `steps[-1]["var"]` fallback (see ir.render_ir_script/_execute_ir_tool)
+   can point at THIS step: a real-time single-step modify_parameter call is
+   often the last (only) step in its own script, so whatever `step.var`
+   resolves to (the real-time default "obj", or a composite/replay's own
+   safe_var_name) must be an actual bound name here, not just a label the
+   footer's `_final_obj = {{ final_var }}` can't find (confirmed live: with
+   the old fixed _target_obj_N name, a real-time modify_parameter("Placement",
+   ...) call crashed every time with "name 'obj' is not defined" — the
+   footer had no way to reach the object this block actually resolved). #}
+{{ step.var }} = doc.getObject({{ step.target_object|pyrepr }})
+if {{ step.var }} is None:
     raise RuntimeError("no object named " + {{ step.target_object|pyrepr }} + " in the session document")
-setattr(_target_obj_{{ step.index }}, {{ step.parameter_name|pyrepr }}, {{ step.new_value|pyrepr }})
+setattr({{ step.var }}, {{ step.parameter_name|pyrepr }}, {{ step.new_value|pyrepr }})
 doc.recompute()
 
 {% elif step.kind == "modify_placement" %}
-_target_obj_{{ step.index }} = doc.getObject({{ step.target_object|pyrepr }})
-if _target_obj_{{ step.index }} is None:
+{{ step.var }} = doc.getObject({{ step.target_object|pyrepr }})
+if {{ step.var }} is None:
     raise RuntimeError("no object named " + {{ step.target_object|pyrepr }} + " in the session document")
+if getattr({{ step.var }}, "DanaAnchored", False):
+    raise RuntimeError(
+        "'" + {{ step.var }}.Name + "' is anchored (anchor_assembly_root) and cannot be moved/rotated "
+        "by modify_freecad_parameter -- it is this assembly's fixed reference frame."
+    )
+if getattr({{ step.var }}, "DanaConstrained", False):
+    raise RuntimeError(
+        "'" + {{ step.var }}.Name + "' is locked by an active assembly constraint "
+        "(apply_assembly_constraint) and cannot be moved/rotated by modify_freecad_parameter -- "
+        "re-call apply_assembly_constraint against the correct face/edge instead of overriding "
+        "its Placement directly."
+    )
 {% if step.rotation %}
 _rotation_{{ step.index }} = App.Rotation({{ step.rotation[0]|pyrepr }}, {{ step.rotation[1]|pyrepr }}, {{ step.rotation[2]|pyrepr }})
 {% else %}
-_rotation_{{ step.index }} = _target_obj_{{ step.index }}.Placement.Rotation
+_rotation_{{ step.index }} = {{ step.var }}.Placement.Rotation
 {% endif %}
-_target_obj_{{ step.index }}.Placement = App.Placement(
+{{ step.var }}.Placement = App.Placement(
     App.Vector({{ step.x|pyrepr }}, {{ step.y|pyrepr }}, {{ step.z|pyrepr }}), _rotation_{{ step.index }}
 )
 doc.recompute()

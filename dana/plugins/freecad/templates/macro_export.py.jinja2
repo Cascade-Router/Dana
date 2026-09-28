@@ -139,13 +139,52 @@ doc.recompute()
 {% endif %}
 doc.recompute()
 
+{% elif step.kind == "helix" %}
+helix_path_{{ step.index }} = doc.addObject("Part::Helix", {{ (step.name ~ "_HelixPath")|pyrepr }})
+helix_path_{{ step.index }}.Pitch = {{ step.pitch|pyrepr }}
+helix_path_{{ step.index }}.Height = {{ step.height|pyrepr }}
+helix_path_{{ step.index }}.Radius = {{ step.coil_radius|pyrepr }}
+helix_path_{{ step.index }}.Angle = 0.0
+doc.recompute()
+spine_edge_{{ step.index }} = helix_path_{{ step.index }}.Shape.Edges[0]
+start_point_{{ step.index }} = spine_edge_{{ step.index }}.valueAt(spine_edge_{{ step.index }}.FirstParameter)
+start_tangent_{{ step.index }} = spine_edge_{{ step.index }}.tangentAt(spine_edge_{{ step.index }}.FirstParameter)
+profile_{{ step.index }} = doc.addObject("Part::Circle", {{ (step.name ~ "_HelixProfile")|pyrepr }})
+profile_{{ step.index }}.Radius = {{ step.pipe_radius|pyrepr }}
+default_normal_{{ step.index }} = App.Vector(0, 0, 1)
+rotation_axis_{{ step.index }} = default_normal_{{ step.index }}.cross(start_tangent_{{ step.index }})
+if rotation_axis_{{ step.index }}.Length < 1e-9:
+    profile_{{ step.index }}.Placement = App.Placement(start_point_{{ step.index }}, App.Rotation())
+else:
+    angle_deg_{{ step.index }} = math.degrees(default_normal_{{ step.index }}.getAngle(start_tangent_{{ step.index }}))
+    profile_{{ step.index }}.Placement = App.Placement(start_point_{{ step.index }}, App.Rotation(rotation_axis_{{ step.index }}, angle_deg_{{ step.index }}))
+doc.recompute()
+{{ step.var }} = doc.addObject("Part::Sweep", {{ step.name|pyrepr }})
+{{ step.var }}.Sections = [profile_{{ step.index }}]
+{{ step.var }}.Spine = (helix_path_{{ step.index }}, [])
+{{ step.var }}.Solid = True
+{{ step.var }}.Frenet = True
+{% if step.placement != (0.0, 0.0, 0.0) %}
+{{ step.var }}.Placement = App.Placement(App.Vector{{ step.placement|pyrepr }}, App.Rotation())
+{% endif %}
+doc.recompute()
+
 {% elif step.kind == "boolean" %}
 {{ step.var }} = doc.addObject({{ step.feature_type|pyrepr }}, {{ step.name|pyrepr }})
 {% if step.operation == "cut" %}
 {{ step.var }}.Base = doc.getObject({{ step.base_object|pyrepr }})
 {{ step.var }}.Tool = doc.getObject({{ step.tool_object|pyrepr }})
 {% else %}
-{{ step.var }}.Shapes = [doc.getObject({{ step.base_object|pyrepr }}), doc.getObject({{ step.tool_object|pyrepr }})]
+{% set combined_names = [] %}
+{% for _n in [step.base_object, step.tool_object] + (step.objects or []) %}
+{% if _n and _n not in combined_names %}
+{% set _ = combined_names.append(_n) %}
+{% endif %}
+{% endfor %}
+{# Silent Data Loss fix: merges base_object/tool_object/objects into one
+   deduplicated list instead of treating them as mutually exclusive — see
+   the matching comment in templates/universal_ir.py.jinja2. #}
+{{ step.var }}.Shapes = [doc.getObject(_n) for _n in {{ combined_names|pyrepr }}]
 {% endif %}
 doc.recompute()
 
