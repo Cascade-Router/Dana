@@ -523,7 +523,6 @@ def test_apply_assembly_constraint_script_renders_with_semantic_normal_target():
     compile(script, "<generated>", "exec")
 
 
-@pytest.mark.xfail(reason="Known failure: DanaConstrained guard lives in uncommitted template/ir.py/py_export.py changes", strict=False)
 def test_modify_placement_template_refuses_dana_constrained_part():
     # modify_freecad_parameter's Placement branch (rendered via the Universal
     # CAD IR's "modify_placement" kind) must carry the same DanaConstrained

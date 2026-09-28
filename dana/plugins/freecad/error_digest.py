@@ -61,7 +61,16 @@ _SIGNATURES: tuple[_ErrorSignature, ...] = (
         "before retrying, or inspect_spatial_properties on the inputs to confirm they're valid solids.",
     ),
     _ErrorSignature(
-        re.compile(r"(BRep|TopoDS|TopoShape|OCC)", re.I),
+        # \bOCC\b (not bare OCC): a plain case-insensitive "OCC" substring
+        # match false-positived on ordinary English words containing that
+        # letter sequence — confirmed live, create_freecad_polar_pattern/
+        # create_freecad_linear_pattern's own clean "occurrences must be at
+        # least 2" validation message (Phase 3) was getting silently
+        # overwritten by this generic kernel-failure text, since "OCC" is
+        # literally the first three letters of "occurrences". BRep/TopoDS/
+        # TopoShape are already sufficiently distinctive CamelCase tokens
+        # with no such collision risk, so only OCC needed the word boundary.
+        re.compile(r"(BRep|TopoDS|TopoShape|\bOCC\b)", re.I),
         "A FreeCAD/OpenCASCADE kernel operation failed on the given geometry.",
         "Re-check the operand dimensions/placement for this operation — it may be geometrically "
         "infeasible as specified. Try smaller/simpler parameters.",

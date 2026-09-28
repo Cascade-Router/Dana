@@ -218,6 +218,7 @@ def _build_boolean(rec: CadCallRecord, index: int) -> dict[str, Any]:
         "operation": str(rec.result.get("operation", "cut")),
         "base_object": str(rec.arguments.get("base_object", "")),
         "tool_object": str(rec.arguments.get("tool_object", "")),
+        "objects": [str(o) for o in raw] if isinstance(raw := rec.arguments.get("objects"), list) and raw else None,
     }
 
 

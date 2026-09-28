@@ -142,7 +142,7 @@
     {
       "id": "execute_freecad_script",
       "function": "execute_freecad_script",
-      "description_en": "Run an arbitrary Python script inside FreeCAD via subprocess FreeCADCmd (the FreeCAD/Part/Sketcher APIs are available) — for geometry or operations the create_freecad_* primitives don't cover. Unlike those, success is judged only by the subprocess exit code (no marker check), since the script defines its own notion of success. Prefer create_freecad_box/create_freecad_cylinder/create_freecad_extrusion when they cover the need.",
+      "description_en": "Run an arbitrary Python script inside FreeCAD via subprocess FreeCADCmd (the FreeCAD/Part/Sketcher APIs are available) — for geometry or operations the create_freecad_* primitives don't cover. Unlike those, success is judged only by the subprocess exit code (no marker check), since the script defines its own notion of success. Prefer create_freecad_box/create_freecad_cylinder/create_freecad_extrusion when they cover the need. WARNING: Do NOT use this tool for standard CAD generation, booleans, or multi-step modeling. You MUST use the granular tools (e.g., create_freecad_cylinder, perform_freecad_boolean) to maintain the Topological Lineage DAG. This tool is strictly for mathematical calculations or non-topological queries.",
       "parameters": [
         {
           "name": "python_script_str",
