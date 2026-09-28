@@ -48,6 +48,10 @@ _SENSITIVE_VARS = frozenset(
         # "openrouter" branch — the Settings modal's Cloud Provider Manager
         # needs this alongside OpenAI/Gemini to cover all three of its
         # provider choices.
+        "DEEPSEEK_API_KEY",  # read by dana.core.model_provider's "deepseek" branch and by
+        # routing_config.yaml's deepseek_direct fleet entry — was missing here,
+        # a real gap (the Model Registry control panel's active/inactive
+        # detection for DeepSeek relies on this same allowlist).
         "HF_TOKEN_ALTEREGO",
         "HF_TOKEN_DEEPRESEARCH",
         "PUSHOVER_TOKEN",

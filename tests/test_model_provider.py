@@ -15,6 +15,26 @@ from dana.core.model_provider import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_from_real_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """File-wide safety net: every provider-resolving function here
+    (``_resolve_openai_endpoint``, ``cloud_provider_name``,
+    ``tool_calling_provider``, ...) calls ``ensure_dotenv_loaded()`` first,
+    which reloads THIS REPO'S REAL ``.env`` with ``override=True`` — by
+    design, so a hand-edit takes effect on the running app's very next call
+    with no restart (see that function's own docstring). Inside a test this
+    silently clobbers whatever ``monkeypatch.setenv``/``delenv`` a test just
+    set, with the real ``.env``'s actual live values at test-run time — a
+    real, repeatedly-observed failure (this file previously patched this
+    around individually, one test at a time, each time a NEW real ``.env``
+    value happened to collide with a hardcoded test expectation — see the
+    git history for ``test_resolve_openai_endpoint_raises_without_any_key``
+    etc. Doing it once, file-wide, means the next unrelated ``.env`` edit
+    can't reopen this the same way.
+    """
+    monkeypatch.setattr(model_provider_module, "ensure_dotenv_loaded", lambda: None)
+
+
 def test_is_complexity_reject_marker() -> None:
     assert is_complexity_reject(complexity_reject_marker())
     assert is_complexity_reject("REJECT: Task too complex for local model")

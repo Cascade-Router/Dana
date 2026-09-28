@@ -44,7 +44,7 @@ _MAX_SUMMARY_CHARS = 1200
 _DISTILL_MODEL_ENV = "DANA_DISTILL_MODEL"
 # Same default the rest of the local-agent stack already assumes is present
 # (dana.core.model_provider._DEFAULT_LOCAL_MODEL) — no new model pull required.
-_DEFAULT_DISTILL_MODEL = "qwen2.5-coder:7b"
+_DEFAULT_DISTILL_MODEL = "qwen2.5-coder:14b"
 # Hard ceiling on the WHOLE distillation attempt (lock wait + HTTP call) —
 # same rationale/order of magnitude as dana.core.react_dispatch's own
 # _LOCAL_TOOL_CALL_TIMEOUT_SEC for the primary ReAct turn: a stalling or

@@ -93,6 +93,86 @@ def test_read_core_memory_drops_non_string_values() -> None:
 
 
 # --------------------------------------------------------------------------
+# _MAX_MEMORY_CHARS eviction (oldest-written section first)
+# --------------------------------------------------------------------------
+
+# ~600 chars per section: three fit under the 2000-char cap, four don't.
+_BIG = "x" * 600
+
+
+def _on_disk(path: Path) -> dict:
+    import json
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(data, dict) and all(isinstance(v, str) for v in data.values())
+    return data
+
+
+def test_write_over_cap_drops_oldest_section_from_disk(_memory_file: Path) -> None:
+    # Written in reverse-alphabetical order, so oldest-first and alphabetical
+    # eviction would drop different sections.
+    for section in ("zeta", "gamma", "beta"):
+        core_memory.write_core_memory(section, _BIG)
+    result = core_memory.write_core_memory("alpha", _BIG)
+
+    assert result["ok"] is True
+    assert list(result["memory"]) == ["gamma", "beta", "alpha"]
+    data = _on_disk(_memory_file)
+    assert list(data) == ["gamma", "beta", "alpha"]
+    assert core_memory._rendered_size(data) <= core_memory._MAX_MEMORY_CHARS
+
+
+def test_rewriting_a_section_refreshes_its_recency(_memory_file: Path) -> None:
+    for section in ("zeta", "gamma", "beta"):
+        core_memory.write_core_memory(section, _BIG)
+    core_memory.write_core_memory("zeta", _BIG)  # zeta is now the newest
+    core_memory.write_core_memory("alpha", _BIG)
+
+    assert list(_on_disk(_memory_file)) == ["beta", "zeta", "alpha"]
+
+
+def test_write_order_survives_a_reload(_memory_file: Path) -> None:
+    for section in ("zeta", "gamma"):
+        core_memory.write_core_memory(section, _BIG)
+    # A restart re-reads the file; the order on disk is the only record of
+    # write recency, so it must come back unchanged (not sorted).
+    assert list(core_memory.read_core_memory()) == ["zeta", "gamma"]
+    core_memory.write_core_memory("beta", _BIG)
+    core_memory.write_core_memory("alpha", _BIG)
+
+    assert list(_on_disk(_memory_file)) == ["gamma", "beta", "alpha"]
+
+
+def test_single_oversize_section_is_kept_not_evicted_to_empty(_memory_file: Path) -> None:
+    core_memory.write_core_memory("old", "short note")
+    result = core_memory.write_core_memory("huge", "y" * (core_memory._MAX_MEMORY_CHARS + 500))
+
+    assert result["content"] == "y" * (core_memory._MAX_MEMORY_CHARS + 500)
+    assert list(_on_disk(_memory_file)) == ["huge"]
+
+
+def test_replace_core_memory_evicts_oldest_when_over_cap(_memory_file: Path) -> None:
+    result = core_memory.replace_core_memory({"zeta": _BIG, "gamma": _BIG, "beta": _BIG, "alpha": _BIG})
+
+    assert result["ok"] is True
+    assert list(_on_disk(_memory_file)) == ["gamma", "beta", "alpha"]
+
+
+def test_format_recaps_an_oversize_file_without_rewriting_it(_memory_file: Path) -> None:
+    import json
+
+    # A file written before the cap existed, or hand-edited on disk.
+    original = {"zeta": _BIG, "gamma": _BIG, "beta": _BIG, "alpha": _BIG}
+    _memory_file.parent.mkdir(parents=True)
+    _memory_file.write_text(json.dumps(original), encoding="utf-8")
+
+    rendered = core_memory.format_core_memory_for_prompt()
+    assert "- zeta:" not in rendered
+    assert all(f"- {s}:" in rendered for s in ("gamma", "beta", "alpha"))
+    assert _on_disk(_memory_file) == original
+
+
+# --------------------------------------------------------------------------
 # format_core_memory_for_prompt
 # --------------------------------------------------------------------------
 

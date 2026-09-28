@@ -35,6 +35,18 @@ from dana.paths import AGENT_WORKSPACE_DIR
 # instead of the real one.
 CORE_MEMORY_PATH: Path = AGENT_WORKSPACE_DIR / "data" / "core_memory.json"
 
+# Hard ceiling on the "## Persistent Core Memory" block's RENDERED size —
+# unlike dana.core.context_distiller's working_memory (a per-process
+# summary that resets on restart), this file persists forever and is
+# re-read into every session's system prompt (State Overlay, always
+# present, see format_core_memory_for_prompt/build_system_prompt), so an
+# agent that keeps calling update_core_memory over weeks/months has
+# nothing else bounding how large this block grows. Same order-of-
+# magnitude cap as _MAX_SUMMARY_CHARS (1200) in context_distiller for the
+# same reason: a small, constant State Overlay line item, not sized to
+# hold everything ever written.
+_MAX_MEMORY_CHARS = 2000
+
 
 def read_core_memory() -> dict[str, str]:
     """Returns the current core-memory dict, or ``{}`` if the file doesn't
@@ -67,10 +79,44 @@ def _write_memory_file(memory: dict[str, str]) -> str | None:
     """
     try:
         CORE_MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CORE_MEMORY_PATH.write_text(json.dumps(memory, indent=2, sort_keys=True), encoding="utf-8")
+        # NOT sort_keys=True: dict insertion order is this module's only
+        # record of write recency (see _evict_oldest_until_fits) — a
+        # round-trip through json.dumps/json.loads must preserve it exactly,
+        # or FIFO eviction silently degrades into alphabetical eviction the
+        # very first time a session restarts and re-reads this file.
+        CORE_MEMORY_PATH.write_text(json.dumps(memory, indent=2), encoding="utf-8")
     except OSError as exc:
         return f"could not write core memory: {exc}"
     return None
+
+
+def _rendered_size(memory: dict[str, str]) -> int:
+    """Character length of the exact block ``format_core_memory_for_prompt``
+    renders for ``memory`` (its section/content lines, not the "##..."
+    header) — what actually enters every turn's system prompt, which is
+    not the same size as the on-disk JSON's own indentation/braces."""
+    if not memory:
+        return 0
+    return len("\n".join(f"- {section}: {content}" for section, content in memory.items()))
+
+
+def _evict_oldest_until_fits(memory: dict[str, str], max_chars: int = _MAX_MEMORY_CHARS) -> dict[str, str]:
+    """FIFO eviction: drops the LEAST recently written section(s) first —
+    dict insertion order doubles as write recency, since every write path
+    below re-inserts an updated section at the end (see ``write_core_
+    memory``) — until the rendered block fits ``max_chars``.
+
+    Never evicts down to zero sections even if the single most-recently-
+    written one alone exceeds the budget: a turn with no memory shown at
+    all is worse than one slightly over budget, the same trade-off
+    ``dana.core.react_dispatch._cap_schemas_by_token_budget`` already makes
+    for the tool-schema budget's own ``must_keep`` set.
+    """
+    memory = dict(memory)
+    while len(memory) > 1 and _rendered_size(memory) > max_chars:
+        oldest = next(iter(memory))
+        del memory[oldest]
+    return memory
 
 
 def write_core_memory(section: str, content: str) -> dict[str, Any]:
@@ -89,11 +135,18 @@ def write_core_memory(section: str, content: str) -> dict[str, Any]:
     if not section:
         return {"ok": False, "error": "section must not be empty"}
     memory = read_core_memory()
+    # Pop-then-reassign (not a plain `memory[section] = ...`) so an UPDATE
+    # to an existing section also moves it to the end — dict insertion
+    # order is this module's write-recency record (see
+    # _evict_oldest_until_fits), and a section the agent just touched is
+    # by definition the most recent one, whether it's brand new or not.
+    memory.pop(section, None)
     memory[section] = str(content or "")
+    memory = _evict_oldest_until_fits(memory)
     error = _write_memory_file(memory)
     if error:
         return {"ok": False, "error": error}
-    return {"ok": True, "section": section, "content": memory[section], "memory": memory}
+    return {"ok": True, "section": section, "content": memory.get(section, ""), "memory": memory}
 
 
 def replace_core_memory(memory: dict[str, Any]) -> dict[str, Any]:
@@ -113,6 +166,7 @@ def replace_core_memory(memory: dict[str, Any]) -> dict[str, Any]:
     ``read_core_memory`` itself would then reject.
     """
     clean = {str(k): str(v) for k, v in (memory or {}).items() if isinstance(k, str)}
+    clean = _evict_oldest_until_fits(clean)
     error = _write_memory_file(clean)
     if error:
         return {"ok": False, "error": error}
@@ -129,6 +183,12 @@ def format_core_memory_for_prompt(memory: dict[str, str] | None = None) -> str:
     memory = read_core_memory() if memory is None else memory
     if not memory:
         return ""
+    # Defensive re-cap at render time too, not just at write time: a file
+    # written before this cap existed, or hand-edited directly on disk,
+    # must never blow the State Overlay budget just because it slipped
+    # past write_core_memory/replace_core_memory. A no-op for any file
+    # those two already wrote.
+    memory = _evict_oldest_until_fits(memory)
     lines = ["## Persistent Core Memory"]
     lines.extend(f"- {section}: {content}" for section, content in sorted(memory.items()))
     return "\n".join(lines)

@@ -398,6 +398,19 @@ def enable_runtime_file_logging() -> str:
         if not isinstance(sys.stderr, _RuntimeLogTee):
             sys.stderr = _RuntimeLogTee(sys.stderr)  # type: ignore[assignment]
         _runtime_log_tee_installed = True
+        # dana.core.telemetry's own StreamHandler bound to the PRE-tee
+        # sys.stderr at its own import time (always before this function
+        # runs) -- without this, every [dana.orchestration] TOOL_CALL/
+        # TOOL_RESULT/ERROR line silently never reaches dana_runtime.log at
+        # all (confirmed live). Rebind it now that sys.stderr above is
+        # actually the tee. Lazy import (see rebind_stream_handler's own
+        # docstring for why this can't be a module-top-level import here).
+        try:
+            from dana.core import telemetry as _telemetry
+
+            _telemetry.rebind_stream_handler()
+        except Exception:
+            pass
         append_runtime_log(
             f"\n===== Dana runtime session {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n"
         )

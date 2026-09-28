@@ -1,8 +1,7 @@
 """Permanent general tool: append async improvement tickets to the patch ledger.
 
-USE THIS TOOL EXCLUSIVELY FOR ALL SYSTEM MODIFICATIONS, BUG FIXES,
-ARCHITECTURAL TICKETS, AND SELF-IMPROVEMENT REQUESTS. This is the only
-authorized tool for logging code changes.
+For system modifications, bug fixes, architectural tickets, and
+self-improvement requests that need a human-reviewed code change.
 
 Writes structured tickets for the human to execute in Cursor.
 Does **not** mutate Dana's live core memory or apply patches in-process.
@@ -79,16 +78,7 @@ def _context_is_sufficiently_specific(context: str) -> bool:
 
 
 class DraftCursorPromptArgs(BaseModel):
-    """Strict argument schema for ``draft_cursor_prompt`` (LLM + runtime).
-
-    TECHNICAL PRODUCT MANAGER RULE: When the user gives a high-level or casual
-    voice command for a code change, you must act as a Technical Product Manager.
-    Translate their vague request into a highly detailed technical prompt for the
-    Cursor IDE. If the user does not provide file paths, use your reasoning to
-    outline clear architectural goals, logic steps, and acceptance criteria in the
-    ``context`` argument. Do not ask the user for more details—expand their intent
-    into a usable developer ticket.
-    """
+    """Strict argument schema for ``draft_cursor_prompt`` (LLM + runtime)."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -96,21 +86,17 @@ class DraftCursorPromptArgs(BaseModel):
         ...,
         min_length=1,
         description=(
-            "Summarize the goal in ONE sentence. MUST NOT be a copy-paste of "
-            "the user's prompt — rewrite as a concise technical objective."
+            "One-sentence summary of the goal. Should not be a copy-paste of "
+            "the user's prompt — a concise technical objective."
         ),
     )
     context: str = Field(
         ...,
         min_length=1,
         description=(
-            "TECHNICAL PRODUCT MANAGER RULE: When the user gives a high-level or "
-            "casual voice command for a code change, you must act as a Technical "
-            "Product Manager. Translate their vague request into a highly detailed "
-            "technical prompt for the Cursor IDE. If the user does not provide file "
-            "paths, use your reasoning to outline clear architectural goals, logic "
-            "steps, and acceptance criteria in the context argument. Do not ask the "
-            "user for more details—expand their intent into a usable developer ticket."
+            "Detailed ticket body: architectural goals, logic steps, and "
+            "acceptance criteria for the requested code change. Include "
+            "target file paths/symbols when known."
         ),
     )
 
@@ -215,17 +201,14 @@ def draft_cursor_prompt(
     context: str = "",
     **kwargs: object,
 ) -> str:
-    """USE THIS TOOL EXCLUSIVELY FOR ALL SYSTEM MODIFICATIONS, BUG FIXES, ARCHITECTURAL TICKETS, AND SELF-IMPROVEMENT REQUESTS. This is the only authorized tool for logging code changes.
-
-    Appends a PENDING ticket to ``docs/patch_ledger.md``.
-
-    TECHNICAL PRODUCT MANAGER RULE: When the user gives a high-level or casual
-    voice command for a code change, expand intent into a detailed Cursor ticket
-    (architectural goals, logic steps, acceptance criteria) in ``context``.
+    """Appends a PENDING ticket to ``docs/patch_ledger.md`` for a human to
+    review and apply in Cursor. For system modifications, bug fixes,
+    architectural tickets, and self-improvement requests.
 
     Args:
-        objective: One-sentence technical goal. MUST NOT copy-paste the user prompt.
-        context: Expanded developer ticket body (>50 chars). File paths optional.
+        objective: One-sentence technical goal, not a copy-paste of the user prompt.
+        context: Expanded developer ticket body (>50 chars): architectural
+            goals, logic steps, acceptance criteria. File paths optional.
 
     Returns:
         A short status string for Dana TTS / MoA. Never raises into the
