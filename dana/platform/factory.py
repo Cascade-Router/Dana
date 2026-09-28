@@ -39,6 +39,23 @@ def get_control_plane() -> BaseControlPlane:
 
 def get_cad_engine() -> BaseCADEngine:
     if IS_HF_SPACE:
+        # packages.txt installs the `freecad` apt package on this Space's
+        # container (see app.py's own _convert_step_to_mesh docstring) —
+        # detect_freecadcmd()'s PATH lookup (dana.plugins.freecad.engine) is
+        # OS-agnostic, and RealFreeCADEngine's actual geometry calls only
+        # ever shell out to that binary (no Win32-only imports at module
+        # scope; the Windows-only bits live in Win32ControlPlane, untouched
+        # here), so this is safe to try before falling back to the mock —
+        # real parametric geometry the moment freecadcmd is actually on
+        # PATH, honest mock output otherwise (e.g. the apt package hasn't
+        # landed yet, or failed to install).
+        from dana.plugins.freecad.engine import detect_freecadcmd
+
+        if detect_freecadcmd():
+            from dana.platform.win32 import RealFreeCADEngine
+
+            return RealFreeCADEngine()
+
         from dana.platform.mock import MockFreeCADEngine
 
         return MockFreeCADEngine()

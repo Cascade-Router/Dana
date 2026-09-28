@@ -52,8 +52,10 @@ export function connectGradioClient(spaceUrl: string): Promise<Client> {
 // finishes, rather than one at a time as each tool actually runs).
 export type GradioChatReply = {
   text: string;
-  /** Absolute, fetchable URL to the turn's generated .stl, or null if this
-   * turn didn't produce one. Gradio's own file-serving endpoint — verified
+  /** Absolute, fetchable URL to the turn's generated mesh (.glb by default
+   * now — the live-preview bandwidth format switch; still .stl for an
+   * export_model download or an older artifact), or null if this turn
+   * didn't produce one. Gradio's own file-serving endpoint — verified
    * directly (curled it) to actually serve real STL bytes locally. A local
    * dev instance shows no Access-Control-Allow-Origin header on a cross-
    * origin request, but that's specific to `CustomCORSMiddleware` treating

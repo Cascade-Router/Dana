@@ -176,20 +176,45 @@ def test_safe_tool_streams_dag_events_then_loops_to_final_text(
         assert assistant["content"] == "The system is healthy and ready."
 
 
-def test_no_tool_call_yields_plain_fallback_message(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    _mock_llm(monkeypatch, [])
+def _drain_turn(ws: Any, limit: int = 200) -> list[dict[str, Any]]:
+    """Every event up to and including this turn's ``assistant_message``."""
+    events = []
+    for _ in range(limit):
+        events.append(ws.receive_json())
+        if events[-1].get("type") == "assistant_message":
+            return events
+    raise AssertionError("never received an 'assistant_message' message")
+
+
+def test_empty_replies_are_retried_then_capped(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    # An empty completion (no text, no tool calls) is a broken generation,
+    # not a reasoned non-answer: the loop nudges and retries, but only
+    # _MAX_EMPTY_COMPLETION_RETRIES times in a row before giving up. More
+    # queued empties than the loop can ever consume, so the model stays
+    # silent for the whole turn.
+    _mock_llm(monkeypatch, *([[]] * 20))
     with client.websocket_connect("/ws/chat") as ws:
         ws.receive_json()  # ready
         ws.send_json({"text": "thanks!"})
+        events = _drain_turn(ws)
 
-        parse_complete = _drain_until(ws, "dag_node_complete")
-        # A tool-less final turn is a normal (successful) loop termination
-        # now, not a parse failure — the old single-shot design had no
-        # other reason to return final text besides "couldn't parse".
-        assert parse_complete["status"] == "success"
+    parses = [e for e in events if e.get("type") == "dag_node_start" and str(e.get("node_id", "")).startswith("parse-")]
+    assert len(parses) == server_module._MAX_EMPTY_COMPLETION_RETRIES + 1
+    parse_results = [
+        e for e in events if e.get("type") == "dag_node_complete" and str(e.get("node_id", "")).startswith("parse-")
+    ]
+    assert parse_results and all(e["status"] == "error" for e in parse_results)
+    assert "stopped retrying" in events[-1]["content"]
 
-        assistant = _drain_until(ws, "assistant_message")
-        assert "tool call" in assistant["content"] or "action" in assistant["content"]
+
+def test_empty_reply_recovers_when_model_answers_on_retry(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_llm(monkeypatch, [], [], "You're welcome!")
+    with client.websocket_connect("/ws/chat") as ws:
+        ws.receive_json()  # ready
+        ws.send_json({"text": "thanks!"})
+        events = _drain_turn(ws)
+
+    assert events[-1]["content"] == "You're welcome!"
 
 
 @pytest.mark.xfail(reason="Known failure: error reply no longer carries the 'cloud HTTP 502' detail the test expects", strict=False)

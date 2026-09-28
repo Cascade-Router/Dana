@@ -26,11 +26,12 @@ pytestmark = pytest.mark.timeout(30)
 
 
 class _FakeProvider:
-    def __init__(self, tool_calls: list[ToolCall]) -> None:
+    def __init__(self, tool_calls: list[ToolCall], content: str = "") -> None:
         self._tool_calls = tool_calls
+        self._content = content
 
     def complete_with_tool_calls(self, messages: Any, *, tools: Any, provider: Any = None, **kwargs: Any) -> dict:
-        return {"content": "", "tool_calls": self._tool_calls, "provider": "test"}
+        return {"content": self._content, "tool_calls": self._tool_calls, "provider": "test"}
 
 
 class FakeVoiceService:
@@ -143,7 +144,9 @@ def test_final_turn_triggers_tts_and_speaking_state(
     as "speaking", and hand the client a fetchable /api/audio/ URL."""
     import dana.core.react_dispatch as react_dispatch
 
-    monkeypatch.setattr(react_dispatch, "ModelProvider", lambda **_kwargs: _FakeProvider([]))
+    monkeypatch.setattr(
+        react_dispatch, "ModelProvider", lambda **_kwargs: _FakeProvider([], content="Hello! How can I help?")
+    )
 
     fake_wav = tmp_path / "reply.wav"
     fake_wav.write_bytes(b"RIFF0000WAVEfmt ")
@@ -175,7 +178,9 @@ def test_voice_control_listen_and_cancel_reach_the_service(
 ) -> None:
     import dana.core.react_dispatch as react_dispatch
 
-    monkeypatch.setattr(react_dispatch, "ModelProvider", lambda **_kwargs: _FakeProvider([]))
+    monkeypatch.setattr(
+        react_dispatch, "ModelProvider", lambda **_kwargs: _FakeProvider([], content="Hello! How can I help?")
+    )
     fake_wav = tmp_path / "reply.wav"
     fake_wav.write_bytes(b"RIFF0000WAVEfmt ")
     monkeypatch.setattr("dana.audio.multi_voice_tts.synthesize_speech", lambda text, **kwargs: fake_wav)

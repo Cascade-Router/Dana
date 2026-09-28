@@ -18,13 +18,35 @@ from dana.platform.mock import MockControlPlane, MockFreeCADEngine
 from dana.platform.win32 import RealFreeCADEngine, Win32ControlPlane
 
 
+def _set_freecadcmd(monkeypatch: pytest.MonkeyPatch, path: str | None) -> None:
+    """get_cad_engine's HF Space branch picks RealFreeCADEngine whenever
+    detect_freecadcmd() finds a binary, so pin it: otherwise these tests
+    pass in CI (no FreeCAD) but fail on any machine with FreeCAD installed.
+    Patched on the module object itself (factory imports it inside the
+    function): a dotted-string target is resolved attribute by attribute and
+    doesn't reach the sys.modules entry once dana.platform.win32 is imported."""
+    engine = importlib.import_module("dana.plugins.freecad.engine")
+    monkeypatch.setattr(engine, "detect_freecadcmd", lambda *_a, **_k: path)
+
+
 def test_get_control_plane_resolves_mock_when_hf_space(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(factory, "IS_HF_SPACE", True)
     monkeypatch.setattr(factory, "IS_WINDOWS", True)
     monkeypatch.setattr(factory, "IS_MAC", False)
+    _set_freecadcmd(monkeypatch, None)
 
     assert isinstance(factory.get_control_plane(), MockControlPlane)
     assert isinstance(factory.get_cad_engine(), MockFreeCADEngine)
+
+
+def test_hf_space_uses_real_freecad_engine_when_freecadcmd_is_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(factory, "IS_HF_SPACE", True)
+    _set_freecadcmd(monkeypatch, "/usr/bin/freecadcmd")
+
+    assert isinstance(factory.get_control_plane(), MockControlPlane)
+    assert isinstance(factory.get_cad_engine(), RealFreeCADEngine)
 
 
 def test_get_control_plane_resolves_mock_on_non_windows_non_mac(
@@ -67,6 +89,7 @@ def test_hf_space_takes_priority_over_windows_and_mac(monkeypatch: pytest.Monkey
     monkeypatch.setattr(factory, "IS_HF_SPACE", True)
     monkeypatch.setattr(factory, "IS_WINDOWS", True)
     monkeypatch.setattr(factory, "IS_MAC", True)
+    _set_freecadcmd(monkeypatch, None)
 
     assert isinstance(factory.get_control_plane(), MockControlPlane)
     assert isinstance(factory.get_cad_engine(), MockFreeCADEngine)

@@ -175,6 +175,27 @@ def _disable_context_distillation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _force_auto_approve_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Global safety net: a developer's local ``.env`` setting
+    ``DANA_AUTO_APPROVE=true`` (dana.api.server._default_auto_approve) would
+    otherwise seed every test's /ws/chat session as auto-approved, so any
+    test expecting a ``hitl_approval_required`` prompt fails locally while
+    passing in CI (no ``.env`` there).
+
+    Patches the seed function itself, not just the env var:
+    dana.core.model_provider.ensure_dotenv_loaded re-reads ``.env`` with
+    ``override=True`` on many calls mid-test, which would silently put a
+    plain ``monkeypatch.setenv`` back to ``true``. Only patched when a test
+    module already imported dana.api.server, so tests that never touch the
+    server don't pay for importing it.
+    """
+    monkeypatch.setenv("DANA_AUTO_APPROVE", "0")
+    server = sys.modules.get("dana.api.server")
+    if server is not None:
+        monkeypatch.setattr(server, "_default_auto_approve", lambda: False)
+
+
+@pytest.fixture(autouse=True)
 def _reset_user_skills_registry():
     """Global safety net: Autonomous Skill Acquisition's registry
     (dana.core.react_dispatch's TOOL_HANDLERS / _USER_SKILL_TOOL_IDS /

@@ -3,16 +3,16 @@ import { resolveArtifactUrl, type CadArtifact } from "../lib/useCadArtifacts";
 import "./MeshHistoryPicker.css";
 
 // Only formats Viewer3D can actually render survive into this list.
-// StlMesh (Viewer3D.tsx) always parses through three.js's STLLoader
-// regardless of extension — it has no GLTFLoader/OBJLoader branch at all —
-// so a "step"/"glb"/"obj" artifact (export_freecad_model's STEP sibling,
-// generate_3d_from_image's mesh) would silently fail to parse if picked
-// here. ".urdf" is the one other extension Viewer3D actually branches on
-// (isUrdfUrl -> URDFLoader). Fixing StlMesh to dispatch on format is a
-// separate, larger change than this history picker; excluding the
-// unrenderable formats here keeps every entry in this list guaranteed to
+// StlMesh (Viewer3D.tsx) parses through three.js's STLLoader, GlbMesh
+// through GLTFLoader (added for the live-preview bandwidth format switch
+// — export_mesh_stl now writes .glb by default, see that function's own
+// docstring) — between them, "stl"/"glb"/"gltf" all render correctly.
+// ".urdf" is the other extension Viewer3D branches on (isUrdfUrl ->
+// URDFLoader). "step"/"obj" have no loader branch at all yet
+// (export_freecad_model's STEP sibling, a still-.obj generate_3d_from_image
+// result) — excluded here so every entry in this list is guaranteed to
 // actually show something when clicked.
-const _VIEWABLE_FORMATS = new Set(["stl", "urdf"]);
+const _VIEWABLE_FORMATS = new Set(["stl", "glb", "gltf", "urdf"]);
 
 type Props = {
   artifacts: CadArtifact[];

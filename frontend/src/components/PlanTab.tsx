@@ -29,7 +29,13 @@ export function PlanTab({ plan }: Props) {
         {tasks.map((task) => (
           <li key={task.id} className={`plan-checklist__item plan-checklist__item--${task.status}`}>
             <span className="plan-checklist__marker" aria-hidden="true">
-              {task.status === "completed" ? "✓" : task.status === "active" ? "▶" : "○"}
+              {task.status === "completed"
+                ? "✓"
+                : task.status === "active"
+                  ? "▶"
+                  : task.status === "cancelled"
+                    ? "✕"
+                    : "○"}
             </span>
             <span className="plan-checklist__text">{task.description}</span>
           </li>

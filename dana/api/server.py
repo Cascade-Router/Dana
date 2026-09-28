@@ -25,6 +25,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -59,13 +60,24 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from dana.api import artifacts_registry  # noqa: E402
 from dana.api.cad import router as _cad_router  # noqa: E402
+from dana.api.models import router as _models_router  # noqa: E402
 from dana.api.sessions import derive_title, is_valid_session_id, load_session, new_session_id, save_session  # noqa: E402
 from dana.api.sessions import router as _sessions_router  # noqa: E402
 from dana.api.system import router as _system_router  # noqa: E402
 from dana.api.workspace import load_mounted_directories  # noqa: E402
 from dana.api.workspace import router as _workspace_router  # noqa: E402
+from dana.config import LLM_MAX_OUTPUT_TOKENS  # noqa: E402
+from dana.config import MAX_REACT_ITERATIONS as _MAX_REACT_ITERATIONS  # noqa: E402
+from dana import logging as conversation_logger  # noqa: E402
 from dana.core import telemetry  # noqa: E402
-from dana.core.model_provider import local_model_name, tool_calling_provider  # noqa: E402
+from dana.core.model_provider import (  # noqa: E402
+    estimate_message_tokens,
+    local_model_name,
+    ollama_num_ctx,
+    resolve_cloud_tool_provider,
+    tool_calling_provider,
+    unload_ollama_model,
+)
 from dana.plugins.planning.task_board import create_plan as _tb_create_plan  # noqa: E402
 from dana.plugins.planning.task_board import get_active_plan as _tb_get_active_plan  # noqa: E402
 from dana.core.react_dispatch import (  # noqa: E402
@@ -75,6 +87,7 @@ from dana.core.react_dispatch import (  # noqa: E402
     build_tool_result_message,
     build_user_message,
     build_visual_inspection_result,
+    compact_resolved_introspection,
     describe_tool_call,
     dispatch_tool_call,
     domains_for_tool_id,
@@ -86,6 +99,7 @@ from dana.core.react_dispatch import (  # noqa: E402
     next_react_turn,
     plugin_registry_view,
 )
+from dana.core.react_dispatch import _TOOL_TOKEN_BUDGET as _TOOL_SCHEMA_TOKEN_BUDGET  # noqa: E402
 from dana.core.context_distiller import schedule_distillation  # noqa: E402
 from dana.paths import CAPTURES_DIR  # noqa: E402
 from dana.session_context import set_session_id  # noqa: E402
@@ -228,6 +242,39 @@ _voice_service: VoiceService | None = None
 _event_loop: asyncio.AbstractEventLoop | None = None
 
 
+def _flush_local_ollama_model() -> None:
+    """Idle-Flush: fire-and-forget request to reclaim the local model's
+    RAM/VRAM (dana.core.model_provider.unload_ollama_model) instead of
+    waiting out Ollama's own 5-minute keep_alive.
+
+    Deliberately NOT called from _finish_turn or any ReAct-loop terminal
+    branch (final answer, error, max-iterations, HITL cancel, abort) —
+    EVERY user turn ends at exactly one of those, so hooking there would
+    unload the model after every single reply, not just when the app goes
+    idle. This app's normal usage is many turns close together in the same
+    session (a multi-step CAD build is the common case, not the
+    exception); forcing a full model reload — tens of seconds for a 14B
+    model — before the very next message would regress ordinary
+    back-and-forth conversation for savings Ollama's own keep_alive
+    already provides for free over that same short gap. The two call
+    sites below (this websocket connection was the LAST one open, and
+    process shutdown) are the actual "sitting idle after finishing its
+    work" signal: no further turn is coming until a new connection
+    arrives, which is exactly when reload latency is an acceptable,
+    one-time cost instead of a tax on every message.
+
+    Runs in a background thread, not ``asyncio.create_task`` — this is
+    called from ``ws_chat``'s own ``finally`` (after the connection is
+    already gone) and from ``_lifespan``'s shutdown ``finally`` (where the
+    event loop may itself be tearing down), neither of which should have
+    to wait on, or risk being kept alive by, a pending network call.
+    """
+    try:
+        threading.Thread(target=unload_ollama_model, args=(local_model_name(),), daemon=True).start()
+    except Exception:  # noqa: BLE001 — best-effort cleanup, never worth failing shutdown/teardown over
+        pass
+
+
 # Session-Specific Terminal History: caps one session's persisted log the
 # same way the frontend's own live buffer already is (useChatSocket.ts's
 # MAX_LOG_LINES) — mirrored server-side too so an on-disk session file
@@ -338,6 +385,16 @@ def _on_voice_state(state: VoiceState, transcript: str) -> None:
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     global _voice_service, _event_loop
+    # Conversation Logger: dana.logging.log_conversation()/reset_conversation_log()
+    # predate this headless FastAPI backend (they're from the retired
+    # CustomTkinter run.py UI) and were never wired into it during the
+    # migration — logs/dana_conversation.log wrote its session header once,
+    # here, but then recorded zero turns forever after, since nothing ever
+    # called log_conversation() again. This starts a fresh conversation log
+    # for THIS process (truncated per its own docstring), and
+    # _process_user_text/_finish_turn/_run_react_loop below now actually
+    # append to it.
+    conversation_logger.enable_runtime_file_logging()
     _event_loop = asyncio.get_running_loop()
     _voice_service = VoiceService(on_state=_on_voice_state)
     _voice_service.start()
@@ -352,6 +409,11 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         sys.stdout, sys.stderr = original_stdout, original_stderr
         if _voice_service is not None:
             _voice_service.stop()
+        # Idle Flush (graceful exit) — see _flush_local_ollama_model's own
+        # docstring for why this, and the last-session-disconnect case in
+        # ws_chat below, are the two points this is actually safe to fire
+        # from.
+        _flush_local_ollama_model()
 
 
 app = FastAPI(title="Dana API", lifespan=_lifespan)
@@ -367,6 +429,7 @@ app.include_router(_workspace_router)
 app.include_router(_sessions_router)
 app.include_router(_system_router)
 app.include_router(_cad_router)
+app.include_router(_models_router)
 
 
 def _register_mesh(path: str) -> str:
@@ -399,17 +462,50 @@ def plugins() -> dict[str, Any]:
     return {"ok": True, **plugin_registry_view()}
 
 
+@app.get("/api/config")
+def get_config() -> dict[str, Any]:
+    """Read-only view of dana.config's runtime constants, for the
+    frontend's Config viewer (App.tsx's "⚙️ Config" button). Deliberately
+    narrow: only the two documented, non-secret tuning knobs dana.config
+    exposes today — never API keys, Sentry DSNs, or anything else read
+    from os.environ/session["api_keys"] directly.
+    """
+    return {
+        "ok": True,
+        "max_react_iterations": _MAX_REACT_ITERATIONS,
+        "llm_max_output_tokens": LLM_MAX_OUTPUT_TOKENS,
+    }
+
+
 CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/api/vision", StaticFiles(directory=str(CAPTURES_DIR)), name="vision")
 
 
-@app.get("/api/mesh/{token}.stl")
-def get_mesh(token: str) -> FileResponse:
+def _resolve_registered_mesh(token: str) -> Path:
+    """Shared existence/non-empty check for every ``/api/mesh/{token}.*``
+    route below — a missing token, a path no longer on disk, OR a 0-byte
+    file (a registration that raced ahead of a still-in-progress write —
+    should no longer be reachable now that export_mesh_stl's own atomic
+    ``Path.replace()`` only registers a path once the file is complete, but
+    cheap enough to guard here too) all raise the SAME plain 404. This
+    matters specifically because a 500 here would otherwise hand the
+    frontend's GLTFLoader/fetch a JSON error BODY at a URL it expects raw
+    binary content from — parsing that as a binary GLB is exactly the kind
+    of nonsense-length crash a loader throws on malformed input, not a
+    diagnosable "mesh not found." A clean 404 lets Viewer3D's own
+    MeshErrorBoundary handle it as an ordinary failed fetch instead.
+    """
     path = _MESH_REGISTRY.get(token)
-    if path is None or not path.is_file():
+    if path is None or not path.is_file() or path.stat().st_size == 0:
         from fastapi import HTTPException
 
         raise HTTPException(status_code=404, detail="mesh not found")
+    return path
+
+
+@app.get("/api/mesh/{token}.stl")
+def get_mesh(token: str) -> FileResponse:
+    path = _resolve_registered_mesh(token)
     return FileResponse(path, media_type="model/stl", filename=f"{token}.stl")
 
 
@@ -419,11 +515,7 @@ def get_mesh_glb(token: str) -> FileResponse:
     ``generate_3d_from_image`` result that came back as a ``.glb`` rather
     than a ``.stl`` — see that route's own reasoning for why the extension
     is baked into the path rather than a single ``{ext}`` route param."""
-    path = _MESH_REGISTRY.get(token)
-    if path is None or not path.is_file():
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=404, detail="mesh not found")
+    path = _resolve_registered_mesh(token)
     return FileResponse(path, media_type="model/gltf-binary", filename=f"{token}.glb")
 
 
@@ -431,11 +523,7 @@ def get_mesh_glb(token: str) -> FileResponse:
 def get_mesh_obj(token: str) -> FileResponse:
     """Same as ``get_mesh_glb`` above, for a ``generate_3d_from_image``
     result that came back as a ``.obj`` instead."""
-    path = _MESH_REGISTRY.get(token)
-    if path is None or not path.is_file():
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=404, detail="mesh not found")
+    path = _resolve_registered_mesh(token)
     return FileResponse(path, media_type="model/obj", filename=f"{token}.obj")
 
 
@@ -476,6 +564,11 @@ _CAD_CREATE_TOOLS = frozenset(
         "create_freecad_pyramid",
         "create_freecad_star_prism",
         "create_freecad_polygon",
+        "create_freecad_helix",  # a coil sweep is a real, viewport-visible solid like
+        # every other create_* primitive above — omitted here was a bug, not a deliberate
+        # exclusion (unlike the read-only tools in the comment below): a session that
+        # only ever calls create_freecad_helix (e.g. building several coils before any
+        # boolean step) never pushed a mesh_url at all until this was added.
         "perform_freecad_boolean",
         "perform_freecad_edge_operation",
         "modify_freecad_parameter",
@@ -483,10 +576,40 @@ _CAD_CREATE_TOOLS = frozenset(
         "align_freecad_objects",
         "create_assembly_mate",
         "create_freecad_sketch_extrude",
+        "create_freecad_pad",  # PartDesign::Pad — a real, viewport-visible solid extruded
+        # from a create_freecad_sketch profile, same "push a mesh the instant it exists"
+        # treatment as every other create_* primitive above.
+        "create_freecad_pocket",  # PartDesign::Pocket — cuts into the active Body's
+        # existing solid; also produces/updates a real viewport-visible solid, so it
+        # needs the same mesh_url push as create_freecad_pad above.
+        "create_freecad_polar_pattern",  # PartDesign::PolarPattern — arrays an existing
+        # Pad/Pocket into a new, real, viewport-visible solid; same mesh_url push as
+        # every other create_*/perform_freecad_* primitive above.
+        "create_freecad_linear_pattern",  # PartDesign::LinearPattern — same reasoning
+        # as create_freecad_polar_pattern above, just along a straight axis instead of
+        # around one.
+        "create_freecad_sweep",  # PartDesign::AdditivePipe — a real, viewport-visible
+        # solid swept from two existing sketches; same mesh_url push as every other
+        # create_*/perform_freecad_* primitive above.
+        "create_freecad_loft",  # PartDesign::AdditiveLoft — same reasoning as
+        # create_freecad_sweep above, blended through 2+ cross-section sketches instead
+        # of swept along a path.
+        "create_freecad_assembly",  # App::Part — an empty container right after
+        # creation, but still worth an immediate mesh_url push (an empty/zero-triangle
+        # preview) so the DAG Monitor/viewport reflect its existence right away; once
+        # add_parts_to_assembly populates it, the NEXT geometry-producing call on one of
+        # its own parts re-pushes the combined tree. add_parts_to_assembly/
+        # position_assembly_part are deliberately absent here — see this module's
+        # own _RESTRICTED_GEOMETRY_TOOLS-adjacent reasoning in react_dispatch.py for why
+        # they're excluded from geometry-creation bookkeeping generally.
         "create_freecad_feature_on_face",
         "batch_pattern_array",
         "insert_standard_part",
         "import_and_solidify_mesh",
+        # create_freecad_sketch (Phase 1) is intentionally absent: a bare
+        # Sketcher::SketchObject is a 2D wire/profile, not a solid — there's
+        # nothing meaningful for export_mesh_stl to tessellate until it's
+        # actually padded/pocketed into one of the two entries above.
         # get_freecad_bounding_box, inspect_spatial_properties,
         # analyze_bounding_box_collisions, export_freecad_model, and
         # take_canvas_screenshot are intentionally absent: those reads have
@@ -621,6 +744,14 @@ async def _broadcast_usage_update(
         {
             "type": "usage_update",
             "model": model,
+            # Local Mode indicator (frontend CostBar): ModelProvider.
+            # last_provider — "cloud:<provider>" normally, or
+            # "ollama-fallback (was <provider>)" the instant a cloud call
+            # failed and this turn actually ran against local Ollama
+            # instead (see complete_with_tool_calls's own docstring). The
+            # one field that tells the frontend WHY this turn was slow,
+            # not just which model answered.
+            "provider": usage_info.get("provider"),
             "tokens": {
                 "prompt": usage_info.get("prompt_tokens", 0),
                 "completion": usage_info.get("completion_tokens", 0),
@@ -724,11 +855,17 @@ async def _speak_reply(websocket: WebSocket, text: str) -> None:
 
 # Safety counter for _run_react_loop — forcefully stops the loop after this
 # many tool-executing iterations within one user turn, so a model stuck
-# re-deciding to call tools (a hallucination loop) can't run forever. Raised
-# from 13 to 30: a complex multi-part CAD assembly (several primitives, a
-# mesh import, multiple booleans, edge ops, verification) can legitimately
-# need more turns than a simple "build one box" scenario ever did.
-_MAX_REACT_ITERATIONS = 30
+# re-deciding to call tools (a hallucination loop) can't run forever. Value
+# itself now lives in dana.config.MAX_REACT_ITERATIONS (imported above as
+# _MAX_REACT_ITERATIONS to keep every existing use site here unchanged) —
+# raised from 13 to 30 by a prior commit: a complex multi-part CAD assembly
+# (several primitives, a mesh import, multiple booleans, edge ops,
+# verification) can legitimately need more turns than a simple "build one
+# box" scenario ever did.
+
+# Consecutive empty LLM replies _run_react_loop retries before ending the
+# turn — see its "Empty Completion Auto-Recovery" branch.
+_MAX_EMPTY_COMPLETION_RETRIES = 3
 
 # Permanently HITL-exempt, every session, no prior approval needed —
 # narrow parametric FreeCAD geometry CRUD (create/modify/boolean/pattern/
@@ -740,6 +877,21 @@ _MAX_REACT_ITERATIONS = 30
 # geometry op, so both stay behind is_mutating_tool's normal HITL gate
 # (session-allowlist-eligible, but never permanently pre-approved) no
 # matter how this set changes.
+def _default_auto_approve() -> bool:
+    """Seeds a brand-new connection's ``session["auto_approve"]`` — see
+    that field's own comment in ``ws_chat`` for what it bypasses (EVERY
+    mutating tool's HITL prompt, no carve-out, arbitrary-script tools
+    included). Opt-in, env-only, off unless explicitly set: this exists
+    for unattended end-to-end test runs (a human isn't there to click
+    Approve), not as a way to change the default for real usage. Set
+    ``DANA_AUTO_APPROVE=1`` in ``.env`` for a local/test run only — the
+    runtime toggle real users see (Settings -> auto-approve,
+    "set_auto_approve" below) is untouched by this and still works
+    per-session exactly as before either way.
+    """
+    return (os.environ.get("DANA_AUTO_APPROVE") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 _HITL_ALWAYS_APPROVED_TOOLS: frozenset[str] = frozenset(
     {
         "create_freecad_box",
@@ -750,6 +902,12 @@ _HITL_ALWAYS_APPROVED_TOOLS: frozenset[str] = frozenset(
         "create_freecad_pipe",
         "create_freecad_sketch_extrude",
         "create_freecad_feature_on_face",
+        "create_freecad_helix",  # narrow parametric geometry CRUD, same as every
+        # other entry here (sweeps a profile along a coil spine) — omitted here was
+        # a bug, not a deliberate gate: it was pausing an otherwise fully-autonomous
+        # multi-coil build for a HITL approval no sibling create_freecad_* tool ever
+        # needs, exactly the "CAD tools shouldn't need a human in the loop" case
+        # this set exists for.
         "perform_freecad_boolean",
         "perform_freecad_edge_operation",
         "modify_freecad_parameter",
@@ -867,6 +1025,87 @@ def _generate_code_diff(call: Any) -> str | None:
     return diff or None
 
 
+def _capped_for_conversation_log(text: str, *, limit: int = 500) -> str:
+    """Caps (and flattens) a tool-result string before it reaches
+    ``dana_conversation.log``. A raw geometry/topology payload or an
+    embedded stack trace (``digest_error``'s own ``raw_error`` field) can
+    run to several KB and span many lines — this log is for a human
+    scanning turn-by-turn call/response pairs, not a full unslimmed replay
+    (``dana.core.telemetry``'s own ``TOOL_RESULT`` event already carries
+    that, if needed). ``extra``, unlike ``log_conversation``'s own ``text``
+    argument, isn't run through ``sanitize_log_message`` at all — this is
+    the one guard against an unbounded dump for it, matching the same
+    length-cap convention this call site's own tool-CALL logging already
+    uses (see ``_run_react_loop``'s ``[tool_call]`` line) just with the
+    longer ~500-char budget a tool's actual result payload warrants.
+    """
+    flat = text.replace("\n", " ").replace("\r", "")
+    if len(flat) <= limit:
+        return flat
+    return f"{flat[:limit]}...<{len(flat)} chars total>"
+
+
+# Substrings of the two corrective nudges _execute_and_continue itself
+# appends right after a FAILED dispatch (see the "role": "system" branches
+# below) — used only to recognize, structurally, that the triple this retry
+# is about to supersede really was a failure-then-nudge, not any other
+# system message that might otherwise happen to sit there.
+_FAILURE_NUDGE_MARKERS = ("SYSTEM OVERRIDE: The last tool call failed", "ABORT this exact approach")
+
+
+def _collapse_resolved_retry(messages: list[dict[str, Any]], tool_id: str) -> None:
+    """Ephemeral Introspection & Compaction, retry half (Phase 2 of the
+    context-footprint plan): a dispatch that just SUCCEEDED, when the three
+    entries immediately before its own already-appended assistant message
+    are exactly [a FAILED assistant call for this SAME tool_id, that failed
+    call's tool-result reply, the corrective nudge _execute_and_continue
+    appends right after a failure], means those three were pure scaffolding
+    for reaching THIS successful call — stripped so a long boolean-chain
+    build doesn't re-send every syntax-error/nudge triple it took to get
+    there.
+
+    Deliberately narrow: only an EXACT, contiguous triple directly beneath
+    the new call is ever removed — never a different tool_id's failure,
+    never a failure further back with something else in between, never more
+    than one triple. A shape that doesn't match exactly is left untouched.
+    Never called for a failed dispatch (see the caller) — a failure's own
+    record must survive, both for the model to actually see what went wrong
+    and for `_run_react_loop`'s repeated-failure counters, which are tracked
+    independently of `messages` and are never affected either way.
+    """
+    if len(messages) < 4:
+        return
+    new_call = messages[-1]
+    nudge, old_result, old_assistant = messages[-2], messages[-3], messages[-4]
+    if nudge.get("role") != "system" or not any(m in str(nudge.get("content", "")) for m in _FAILURE_NUDGE_MARKERS):
+        return
+    if old_result.get("role") != "tool" or old_assistant.get("role") != "assistant":
+        return
+    old_calls = old_assistant.get("tool_calls") or []
+    new_calls = new_call.get("tool_calls") or []
+    if (
+        len(old_calls) != 1
+        or len(new_calls) != 1
+        or (old_calls[0].get("function") or {}).get("name") != tool_id
+        or (new_calls[0].get("function") or {}).get("name") != tool_id
+        or old_result.get("tool_call_id") != old_calls[0].get("id")
+    ):
+        return
+    len_before = len(messages)
+    del messages[-4:-1]
+    # Compaction Proof (Phase 2 ground truth): DEBUG tier, not INFO —
+    # dana.core.telemetry's own module docstring reserves INFO exclusively
+    # for its seven fixed event kinds (REQUEST/PLAN_CREATED/TOOL_CALL/
+    # TOOL_RESULT/TASK_STATE_CHANGE/PROVIDER_HANDOFF/ERROR); this is exactly
+    # the "internal diagnostic a developer investigating a turn wants to
+    # see" DEBUG is for, same tier that module already lists "retries"
+    # under. Set DANA_LOG_LEVEL=DEBUG to see these.
+    telemetry.debug(
+        f"Context compacted (retry collapse): tool_id={tool_id!r} reduced messages array from "
+        f"{len_before} to {len(messages)}"
+    )
+
+
 async def _execute_and_continue(
     websocket: WebSocket,
     session: dict[str, Any],
@@ -947,7 +1186,15 @@ async def _execute_and_continue(
         call_log=session.get("call_log"),
         api_keys=session.get("api_keys"),
         allowed_mounts=load_mounted_directories(),
+        # Zero-Trust Monolith Ban (dispatch_tool_call's own docstring): the
+        # ONLY thing that can authorize execute_freecad_script — THIS
+        # turn's actual original user message, never anything the model
+        # itself declares (a plan, an argument, a prior tool result).
+        raw_user_text=_first_user_text(messages),
     )
+
+    if result.ok:
+        _collapse_resolved_retry(messages, call.tool_id)
 
     if call.tool_id == "load_capability" and result.ok:
         # Autonomous semantic routing: the domain _tool_load_capability just
@@ -998,12 +1245,23 @@ async def _execute_and_continue(
         # because the turns are ticking by; only genuine disuse decays.
         _touch_capability_domains(session, domains_for_tool_id(call.tool_id))
 
-    if call.tool_id in ("create_plan", "mark_task_completed") and result.ok:
+    if (
+        call.tool_id
+        in ("create_plan", "mark_task_completed", "insert_task", "cancel_pending_task", "cancel_active_task")
+        and result.ok
+    ):
         # Closes the loop on Cost Tracking's sibling event: the MODEL just
         # mutated the Task Planner's global plan itself (as opposed to
         # _process_user_text's own structural override, a separate call
         # site) — push it to PlanChecklist right away rather than waiting
         # for this tool's own tool_result (which ChatPanel never renders).
+        # insert_task/cancel_pending_task (Dynamic FSM Replanning) were
+        # missing from this tuple entirely until now — their own plan
+        # mutation landed correctly in both backend stores (task_board +
+        # react_dispatch's FSM mirror), but the frontend was never told, so
+        # PlanChecklist/PlanTab silently went stale the moment either fired.
+        # cancel_active_task (FSM Recovery) joins them for the same reason —
+        # it mutates task_board's plan exactly like its two siblings above.
         await _broadcast_plan_update(websocket, result.payload.get("plan"))
 
     if call.tool_id == "update_core_memory" and result.ok:
@@ -1037,12 +1295,59 @@ async def _execute_and_continue(
         # sibling object (or, pre-fix, the WRONG single object) in that
         # document, not just the one this tool call was about.
         result_name = result.payload.get("name")
-        mesh = engine.export_mesh_stl(result.payload["path"], name=result_name, target_object=result_name)
+        # export_mesh_stl now writes .glb (GLTF Binary), not .stl — the
+        # live-preview bandwidth format switch (smaller payload for
+        # concurrent-user hosting); see that function's own docstring in
+        # dana.plugins.freecad.engine / dana.platform.mock. Its own return
+        # `path` already carries the real extension, so this reads that
+        # rather than re-hardcoding one here.
+        #
+        # Silent Viewport Failure fix: this call previously had NO logging
+        # at all on either outcome — a driver-level exception (e.g. a
+        # tessellation failure on an unusual compound shape) propagated
+        # with nothing recorded anywhere but a bare traceback wherever this
+        # coroutine's own caller happens to catch it, and a graceful
+        # `{"ok": False, ...}` from the FreeCAD script itself was silently
+        # swallowed by the `if mesh.get("ok"):` below having no `else` —
+        # either way, `mesh_url` just stayed `None` and the viewport stayed
+        # blank with zero trace of why. Both outcomes are now logged with
+        # the exact tool_id/target_object this call was for.
+        # Skip Tessellation on Groups: an App::Part (create_freecad_assembly's
+        # own container type) is a pure organizational grouping object with no
+        # Shape of its own — confirmed live (dana_runtime.log, two independent
+        # rover-assembly runs) that export_mesh_stl fails on it EVERY time
+        # ("has no tessellatable geometry"), pure noise on every single
+        # create_freecad_assembly call, never a real failure to investigate.
+        # mesh_url simply stays None here, same as any other best-effort
+        # mesh-preview miss below.
+        is_geometryless_container = result.payload.get("type") == "App::Part"
+        if is_geometryless_container:
+            mesh: dict[str, Any] = {"ok": False, "error": "skipped: App::Part has no tessellatable geometry"}
+        else:
+            try:
+                mesh = engine.export_mesh_stl(result.payload["path"], name=result_name, target_object=result_name)
+            except Exception as exc:  # noqa: BLE001 — best-effort mesh preview; must never fail the whole turn
+                telemetry.log_error(
+                    stage="export_mesh_stl_exception",
+                    tool_id=call.tool_id,
+                    target_object=result_name,
+                    exc_type=type(exc).__name__,
+                    detail=str(exc),
+                )
+                mesh = {"ok": False, "error": str(exc)}
         if mesh.get("ok"):
+            mesh_ext = Path(mesh["path"]).suffix.lstrip(".").lower() or "glb"
             token = _register_mesh(mesh["path"])
-            mesh_url = f"/api/mesh/{token}.stl"
+            mesh_url = f"/api/mesh/{token}.{mesh_ext}"
             artifacts_registry.register_artifact(
-                mesh["path"], format="stl", source="generated", session_id=session["session_id"]
+                mesh["path"], format=mesh_ext, source="generated", session_id=session["session_id"]
+            )
+        elif not is_geometryless_container:
+            telemetry.log_error(
+                stage="export_mesh_stl_failed",
+                tool_id=call.tool_id,
+                target_object=result_name,
+                error=mesh.get("error"),
             )
         # Best-effort STEP sibling — rule 6 of _FREECAD_SYSTEM_PROMPT asks
         # the LLM to keep geometry recomputed for "the mesh pipeline"; this
@@ -1145,6 +1450,28 @@ async def _execute_and_continue(
             )
             token = _register_mesh(path)
             mesh_url = f"/api/mesh/{token}.urdf"
+    elif result.ok and call.tool_id == "execute_freecad_script":
+        # Not in _CAD_CREATE_TOOLS: unlike those tools' payload["path"] (a
+        # .FCStd document that still needs export_mesh_stl to tessellate
+        # it), engine.execute_freecad_script's own auto-result fallback
+        # (see that function's docstring) has ALREADY exported an already-
+        # tessellated .glb by the time this runs — re-running
+        # export_mesh_stl on it would be wrong (wrong input format) and
+        # redundant. "path" is only present at all when that fallback
+        # found something to export (an explicit __result__, or a
+        # non-empty ActiveDocument) — a pure query/calculation script (the
+        # tool's actual documented use) leaves it absent and mesh_url stays
+        # None below, same as if this elif branch didn't exist. Same
+        # "it's already the artifact, just register+serve it" pattern as
+        # generate_urdf_assembly/generate_3d_from_image.
+        path = result.payload.get("path")
+        if isinstance(path, str) and path:
+            mesh_format = Path(path).suffix.lstrip(".").lower() or "glb"
+            artifacts_registry.register_artifact(
+                path, format=mesh_format, source="generated", session_id=session["session_id"]
+            )
+            token = _register_mesh(path)
+            mesh_url = f"/api/mesh/{token}.{mesh_format}"
     elif result.ok and call.tool_id == "generate_3d_from_image":
         # Deliberately NOT in _CAD_CREATE_TOOLS: its payload key is
         # "mesh_path" (not "path"), and the file it names is already a raw
@@ -1169,7 +1496,19 @@ async def _execute_and_continue(
             {"type": "camera_animate", "position": result.payload["position"], "target": result.payload["target"]}
         )
 
-    messages.append(build_tool_result_message(tool_call_id, result))
+    tool_result_message = build_tool_result_message(tool_call_id, result)
+    messages.append(tool_result_message)
+    # Call-and-response pairing: the [tool_call] line _run_react_loop logs
+    # for this same dispatch only carries the REQUEST — this is the other
+    # half, the exact `content` string the LLM's next turn actually reads
+    # back as the tool's observation (success payload, digest_error's
+    # structured failure shape, or a validation rejection), not a
+    # separately-derived summary that could drift from what the model saw.
+    conversation_logger.log_conversation(
+        "Tool",
+        f"[tool_result] {call.tool_id} ok={result.ok}",
+        extra=_capped_for_conversation_log(tool_result_message["content"]),
+    )
 
     current_failure_key = None if result.ok else (call.tool_id, result.message)
     failure_repeat_count = (
@@ -1328,6 +1667,7 @@ async def _finish_turn(websocket: WebSocket, session: dict[str, Any], messages: 
     event = {"type": "assistant_message", "content": content}
     await websocket.send_json(event)
     _log_terminal_event(session, event)
+    conversation_logger.log_conversation("Dana", content)
     user_text = _first_user_text(messages)
     if user_text:
         _persist_turn(session, user_text, content)
@@ -1402,6 +1742,7 @@ async def _run_react_loop(
     loop_count: int,
     last_failure: tuple[str, str, int] | None = None,
     last_call: tuple[str, str, int] | None = None,
+    empty_retries: int = 0,
 ) -> None:
     """The multi-step ReAct loop for one user turn: ask the LLM what to do
     next given the running ``messages`` history, either finish with plain
@@ -1444,6 +1785,40 @@ async def _run_react_loop(
         )
         return
 
+    # Two-Layer Context Management, Layer 2 — Cloud Handoff. Layer 1
+    # (dana.core.model_provider.complete_ollama_native_with_tools) raises
+    # the actual num_ctx Ollama serves at; this is the backstop for a
+    # session whose running history still grows past that raised ceiling.
+    # Checked once per recursive call, before asking the LLM anything this
+    # iteration — cheap character-count estimate, not a real tokenizer
+    # (see estimate_message_tokens's own docstring). Latches for the rest
+    # of THIS session: session["active_provider"] is only ever set here,
+    # never cleared, since a long build's history only grows turn over
+    # turn, never shrinks back under the threshold on its own.
+    #
+    # tool_schema_tokens=_TOOL_SCHEMA_TOKEN_BUDGET: this turn's actual
+    # ``tools=`` payload isn't known yet at this point (next_react_turn,
+    # below, is what computes it) and re-deriving it here just to measure
+    # it would mean paying for the same embedding-ranked narrowing twice
+    # per iteration — the schema's own hard ceiling is a conservative,
+    # never-under stand-in (see estimate_message_tokens's own docstring).
+    # Bug fix: this call previously omitted the tools payload entirely,
+    # silently undercounting the real prompt by up to this many tokens and
+    # delaying the cloud handoff past when it was actually needed.
+    if session.get("active_provider") is None and tool_calling_provider() == "ollama":
+        estimated_tokens = estimate_message_tokens(messages, tool_schema_tokens=_TOOL_SCHEMA_TOKEN_BUDGET)
+        ctx_budget = ollama_num_ctx()
+        if estimated_tokens >= int(ctx_budget * 0.85):
+            handoff_provider = resolve_cloud_tool_provider()
+            session["active_provider"] = handoff_provider
+            telemetry.log_provider_handoff(
+                reason="ollama_context_budget",
+                estimated_tokens=estimated_tokens,
+                num_ctx=ctx_budget,
+                session_id=session.get("session_id"),
+                new_provider=handoff_provider,
+            )
+
     node_id = f"parse-{loop_count}"
     await _dag_start(websocket, node_id, "Parse intent", "agent", {"step": loop_count})
     parse_start = time.perf_counter()
@@ -1462,6 +1837,7 @@ async def _run_react_loop(
         # _execute_and_continue's own set_session_id has fired for a
         # freshly (re)connected session's first turn.
         session_id=session["session_id"],
+        provider_override=session.get("active_provider"),
     )
     parse_ms = int((time.perf_counter() - parse_start) * 1000)
 
@@ -1517,6 +1893,26 @@ async def _run_react_loop(
                 "The model provider is reporting a billing/payment issue, not a transient "
                 "error — please check the account before retrying."
             )
+        elif "does not support provider" in lowered:
+            # Self-heal a bad Context Handoff latch (dana.core.model_provider.
+            # resolve_cloud_tool_provider — see its own docstring for the
+            # live incident this guards against): session["active_provider"]
+            # is only ever SET by that handoff, never cleared, so a provider
+            # this bridge genuinely can't serve (a non-OpenAI tool schema —
+            # confirmed live: DANA_CLOUD_PROVIDER=gemini) would otherwise
+            # wedge EVERY subsequent turn in this session on the exact same
+            # error forever, with the model never even seeing the tool
+            # failure that prompted the handoff in the first place. Clearing
+            # it here lets the very next turn re-resolve a working provider
+            # (tool_calling_provider(), or a fresh handoff now that
+            # resolve_cloud_tool_provider validates against this) instead of
+            # repeating a dead end for the rest of the session.
+            session["active_provider"] = None
+            telemetry.log_error(stage="active_provider_reset_after_unsupported", detail=error_detail)
+            reply = (
+                "The model provider this session had switched to doesn't support tool-calling — "
+                "reverting to the default provider. Please resend your last message to continue."
+            )
         else:
             reply = "I ran into a problem talking to the model — please try again."
         await _finish_turn(websocket, session, messages, reply)
@@ -1532,10 +1928,72 @@ async def _run_react_loop(
                 "trying to generate the final geometry and got stuck."
             )
         elif not content:
-            content = (
-                "I didn't think that needed a tool call — try asking for a specific "
-                "action (e.g. \"refactor foo.py to use snake_case\" or \"build a box 60x40x20\")."
+            # This is NOT "the model reasoned and decided no tool was needed" —
+            # next_react_turn (dana.core.react_dispatch) returns this exact
+            # ReactTurn("final", content="") shape both for a genuine
+            # conversational reply AND for a broken completion (0 completion
+            # tokens, or a tool-call attempt whose JSON failed to parse) —
+            # see that function's own `if not tool_calls:` branch, which only
+            # ever calls telemetry.debug(), never telemetry.log_error(). A
+            # real conversational final answer is never an empty string in
+            # practice, so treat it as the failure it actually is: track it
+            # (-> Sentry, once SENTRY_DSN is configured) and tell the user
+            # what happened instead of implying a reasoned non-answer.
+            telemetry.log_error(
+                stage="empty_final_turn",
+                detail="LLM turn produced no tool call and no text content — 0-token or malformed generation.",
+                loop_count=loop_count,
             )
+            # Empty Completion Auto-Recovery: dana.core.react_dispatch.
+            # next_react_turn already retries a genuinely empty completion
+            # ONCE internally (its own `empty_completion_retried` — see that
+            # function's docstring), capped tight there specifically because
+            # that retry recurses WITHOUT ever passing back through this
+            # function's own loop_count/_MAX_REACT_ITERATIONS ceiling.
+            # Reaching THIS branch means that internal retry ALSO came back
+            # empty. Rather than ending the turn here, bounce back into the
+            # loop exactly like the unacknowledged-failure rejection right
+            # below already does — recursing THROUGH _run_react_loop instead
+            # of within next_react_turn means this retry consumes the same
+            # loop_count budget every other iteration does, so a model that
+            # stays silent for the rest of this turn's iteration budget
+            # still terminates cleanly at the existing ceiling check on top
+            # of this function, rather than looping forever.
+            #
+            # Capped separately at _MAX_EMPTY_COMPLETION_RETRIES consecutive
+            # empty replies, well below _MAX_REACT_ITERATIONS: a model that's
+            # silent once is usually silent every time, and on a paid cloud
+            # provider each retry is a real, billed request (two, counting
+            # next_react_turn's own internal retry).
+            await _dag_complete(websocket, node_id, "error", {"final": True, "empty_completion": True}, parse_ms)
+            if empty_retries >= _MAX_EMPTY_COMPLETION_RETRIES:
+                await _finish_turn(
+                    websocket,
+                    session,
+                    messages,
+                    "The model returned an empty response several times in a row, so I stopped "
+                    "retrying. Please try again, or rephrase the request as a specific action.",
+                )
+                return
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Your last response was empty. You must call a tool to advance the "
+                        "current active task. Please execute the required geometry tools."
+                    ),
+                }
+            )
+            await _run_react_loop(
+                websocket,
+                session,
+                messages,
+                loop_count + 1,
+                last_failure=last_failure,
+                last_call=last_call,
+                empty_retries=empty_retries + 1,
+            )
+            return
 
         if last_failure is not None and not _acknowledges_failure(content):
             # Verification gate against hallucinated success: the LAST tool
@@ -1583,6 +2041,22 @@ async def _run_react_loop(
     # turn.kind == "tool_call"
     await _dag_complete(websocket, node_id, "success", {"tool_id": turn.call.tool_id}, parse_ms)
     call = turn.call
+    # Ephemeral Introspection Compaction (Phase 2 of the context-footprint
+    # plan): the model just chose a substantive action, so any earlier
+    # search_tool_catalog/read_system_architecture/... result already did
+    # its one job of informing that choice — collapse it in place before
+    # this turn's own new tool-call message is appended below.
+    compact_resolved_introspection(messages, call.tool_id)
+    # log_conversation's own `extra` isn't sanitized/length-capped (unlike
+    # `text` — see dana.logging.log_conversation) — a raw dump risk for a
+    # tool like execute_freecad_script whose own arguments ARE a full
+    # source string. Truncated here at the call site rather than changing
+    # log_conversation's tested behavior; mirrors telemetry.py's own
+    # _MAX_INLINE_STR convention (300 chars) for the same reason.
+    args_repr = repr(call.arguments)
+    if len(args_repr) > 300:
+        args_repr = f"{args_repr[:300]}...<{len(args_repr)} chars total>"
+    conversation_logger.log_conversation("Dana", f"[tool_call] {call.tool_id}", extra=f"arguments={args_repr}")
     assistant_message, tool_call_id = build_assistant_tool_call_message(call)
     messages.append(assistant_message)
 
@@ -1739,7 +2213,17 @@ async def _resolve_visual_capture(websocket: WebSocket, session: dict[str, Any],
     await _send_tool_dispatch_end(websocket, session, dispatch_node_id, call, trimmed_result, None)
 
     messages = state["messages"]
-    messages.append(build_tool_result_message(state["tool_call_id"], result))
+    tool_result_message = build_tool_result_message(state["tool_call_id"], result)
+    messages.append(tool_result_message)
+    # Same call-and-response pairing as _execute_and_continue's own
+    # tool_result logging — this is the SEPARATE take_canvas_screenshot
+    # suspend/resume path, which never goes through that function at all,
+    # so it needs its own copy of the same hook.
+    conversation_logger.log_conversation(
+        "Tool",
+        f"[tool_result] {result.tool_id} ok={result.ok}",
+        extra=_capped_for_conversation_log(tool_result_message["content"]),
+    )
     await _run_react_loop(websocket, session, messages, state["loop_count"] + 1)
 
 
@@ -1785,6 +2269,32 @@ _MULTI_STEP_SPLIT_RE = re.compile(
 )
 
 
+# Pre-Seed Domain Capabilities (Phase 1 of the context-footprint plan): a
+# request that's obviously CAD work gets "freecad_essential" stamped as
+# already-unlocked BEFORE the very first next_react_turn call, via the same
+# _touch_capability_domains decay-clock mechanism the agent's own successful
+# load_capability call and the frontend's "cad" tab activation already use
+# (see _effective_capabilities/_PLUGIN_ID_TO_CAPABILITY above) — this is not
+# a new capability-routing path, just a third way to arrive at a state that
+# already exists. Saves the several turns a model otherwise spends on
+# search_tool_catalog/load_capability(domain="freecad"/"freecad_essential")
+# before its first real geometry call, for the extremely common case where
+# the very first message already names a CAD operation. A false positive
+# just unlocks 9 already-small, narrowing-exempt tool schemas one turn early
+# for a non-CAD request — cheap, and it decays away in
+# _CAPABILITY_DECAY_TURNS turns like any other unlocked domain if unused; a
+# false negative leaves the agent's own load_capability call as the only
+# path, exactly the status quo before this existed.
+_CAD_KEYWORDS = ("sketch", "pad", "pocket", "sweep", "assembly", "mount")
+
+
+def _looks_cad_related(user_text: str) -> bool:
+    """Cheap keyword heuristic, not NLP — same spirit as _looks_multi_step
+    right below."""
+    lowered = (user_text or "").lower()
+    return any(keyword in lowered for keyword in _CAD_KEYWORDS)
+
+
 def _looks_multi_step(user_text: str) -> bool:
     """Cheap keyword heuristic, not NLP. A false positive just pre-creates a
     harmless single-task plan (get_active_plan-gated, see the call site
@@ -1826,6 +2336,19 @@ async def _process_user_text(
     content array the LLM actually sees. ``None``/absent for a voice-relayed
     transcript, which never carries an attachment of its own.
     """
+    # Session-Scoped Plan State fix: the ambient session_context contextvar
+    # (dana.session_context) used to be set ONLY inside _execute_and_continue,
+    # right before this turn's FIRST tool dispatch — meaning any code that
+    # reads the "current session" (task_board.get_active_plan/create_plan's
+    # own ambient default, build_system_prompt) BEFORE that point, on a
+    # session's very first turn, saw whatever the contextvar's own literal
+    # default was, not this real session's id. Two brand-new sessions'
+    # first turns would then collide on that SAME default slot — confirmed
+    # live as task_board's own "Cannot overwrite an active plan" cross-
+    # session bleed. Set here, as literally the first thing a turn does,
+    # so every call downstream (this function's own auto-seed heuristic
+    # below included) already sees the right session from the start.
+    set_session_id(session["session_id"])
     if session.get("react_state") is not None or session.get("visual_state") is not None:
         await websocket.send_json(
             {
@@ -1835,6 +2358,7 @@ async def _process_user_text(
         )
         return
     telemetry.log_request(session_id=session.get("session_id"), text=user_text)
+    conversation_logger.log_conversation("User", user_text, extra=f"session={session.get('session_id')}")
     # Terminal History: the frontend already renders the user's own chat
     # bubble locally the instant it's sent (useChatSocket.ts's sendMessage
     # updates `messages` directly, not via a websocket round-trip) — this
@@ -1855,12 +2379,28 @@ async def _process_user_text(
     # comment above).
     session["turn_counter"] = session.get("turn_counter", 0) + 1
 
+    # Pre-Seed Domain Capabilities (see _looks_cad_related above) — before
+    # _effective_capabilities is read for this turn's system prompt/tool
+    # schema (both below), so a CAD-keyword turn opens with
+    # "freecad_essential" already unlocked instead of spending this turn's
+    # own next_react_turn call discovering that for itself.
+    if _looks_cad_related(user_text):
+        _touch_capability_domains(session, frozenset({"freecad_essential"}))
+
     # Structural planner forcing (see _looks_multi_step above) — only ever
     # auto-creates a plan into a genuinely IDLE planner slot; a plan already
-    # active from an earlier turn in this same session is never clobbered
-    # by a later turn's heuristic guess.
-    if _looks_multi_step(user_text) and not _tb_get_active_plan().get("tasks"):
-        plan_result = _tb_create_plan(objective=user_text, tasks=_split_into_steps(user_text))
+    # active from an earlier turn in THIS SAME session is never clobbered
+    # by a later turn's heuristic guess (task_board is session-scoped — see
+    # its own module docstring — so an unrelated session's plan can never
+    # be read/overwritten here either). Explicit session_id (not the
+    # ambient default set_session_id just established above) purely for
+    # this code's own clarity, since the real value is already a plain
+    # local variable right here.
+    this_session_id = session["session_id"]
+    if _looks_multi_step(user_text) and not _tb_get_active_plan(session_id=this_session_id).get("tasks"):
+        plan_result = _tb_create_plan(
+            objective=user_text, tasks=_split_into_steps(user_text), auto_seeded=True, session_id=this_session_id
+        )
         if plan_result.get("ok"):
             await _broadcast_plan_update(websocket, plan_result.get("plan"))
 
@@ -1905,12 +2445,15 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
             "session_id": resolved_session_id,
             "driver_state": driver_state(),
             "plugins": plugin_registry_view(),
-            # PlanChecklist's initial seed: the Task Planner is a single
-            # GLOBAL plan (dana.plugins.planning.task_board), not per-session
-            # — a reconnect/page-refresh mid-plan must see it immediately
-            # here, not wait for the next create_plan/mark_task_completed
-            # mutation's own "plan_update" broadcast (_broadcast_plan_update).
-            "active_plan": _tb_get_active_plan(),
+            # PlanChecklist's initial seed: THIS session's own plan
+            # (dana.plugins.planning.task_board, session-scoped — see that
+            # module's own docstring) — a reconnect/page-refresh mid-plan
+            # must see it immediately here, not wait for the next
+            # create_plan/mark_task_completed mutation's own "plan_update"
+            # broadcast (_broadcast_plan_update). Explicit session_id, not
+            # the ambient default: this runs on WS connect, before this
+            # session's first tool dispatch has ever called set_session_id.
+            "active_plan": _tb_get_active_plan(session_id=resolved_session_id),
             # MemoryViewer's initial seed: Core Memory is a single GLOBAL
             # store (dana.plugins.memory.core_memory), not per-session —
             # a reconnect/page-refresh must see the current state immediately
@@ -2028,8 +2571,13 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
         # approval unless the user explicitly opted in for THIS session. Applies
         # to every mutating tool with no carve-out — including arbitrary-script
         # tools that are otherwise never in _HITL_ALWAYS_APPROVED_TOOLS — so a
-        # turn can execute destructive actions unattended once enabled.
-        "auto_approve": False,
+        # turn can execute destructive actions unattended once enabled. Seeded
+        # from DANA_AUTO_APPROVE (see _default_auto_approve's own docstring)
+        # ONLY so unattended end-to-end test runs don't need a human to click
+        # Approve — every real connection still starts False unless that env
+        # var is explicitly set, and the runtime Settings toggle still works
+        # exactly as before regardless.
+        "auto_approve": _default_auto_approve(),
     }
     _active_sessions[websocket] = session
     try:
@@ -2152,6 +2700,13 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
         pass
     finally:
         _active_sessions.pop(websocket, None)
+        if not _active_sessions:
+            # Idle Flush — the last open connection (this app may have
+            # several, e.g. multiple Tauri windows) just closed. See
+            # _flush_local_ollama_model's own docstring for why this,
+            # rather than any single turn ending, is the signal this is
+            # safe to act on.
+            _flush_local_ollama_model()
 
 
 # Serve the built React/Tauri web bundle, if present. Mounted last so it

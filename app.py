@@ -26,14 +26,16 @@ functions normally stream events to. Every mocked-CAD/mocked-control-plane
 behavior those functions already have for `IS_HF_SPACE` (dana.platform.
 factory) comes along for free, unchanged — including which mesh format a
 CAD tool call actually produces by default (dana.plugins.freecad's
-export_mesh_stl: always `.stl`). `gr.Model3D` accepts `.stl` natively, so
-this serves that real file directly by default; `_convert_step_to_mesh`
-below additionally converts the turn's "best-effort STEP sibling" artifact
-(dana/api/server.py's automatic `export_model(..., "step", ...)` call) into
-a `.glb` for preview instead, whenever headless FreeCAD is actually
-available — a no-op today (the mock engine never produces a usable
-`.step`), functional once packages.txt's `freecad` apt package is wired in
-as this Space's real driver.
+export_mesh_stl: `.glb` — the WebSocket/hosting-bandwidth format switch,
+smaller than the `.stl` this used to produce for the same geometry).
+`gr.Model3D` accepts `.glb`/`.stl` interchangeably, so this serves that
+real file directly by default regardless of which one a given call ends up
+producing; `_convert_step_to_mesh` below additionally converts the turn's
+"best-effort STEP sibling" artifact (dana/api/server.py's automatic
+`export_model(..., "step", ...)` call) into a `.glb` for preview instead,
+whenever headless FreeCAD is actually available — a no-op today (the mock
+engine never produces a usable `.step`), functional once packages.txt's
+`freecad` apt package is wired in as this Space's real driver.
 
 Sandbox Hardening: `_harden_tool_registry()` below permanently strips
 `execute_terminal_command`/`execute_code_task`/`search_codebase` out of
@@ -200,18 +202,18 @@ def _convert_step_to_mesh(step_path: str, out_format: str = "glb") -> dict[str, 
     (`.glb` by default) for `gr.Model3D` — a two-stage pipeline since
     neither half can do this alone: trimesh (already a hard dependency,
     see requirements.txt) reads mesh formats but not STEP/BREP; FreeCAD
-    reads STEP but this codebase's headless HF Space path is mock-only
-    today (dana/platform/factory.py's IS_HF_SPACE branch still hardcodes
-    MockFreeCADEngine, whose export_model always returns ok=False for
-    "step" — no B-rep writer, by design).
+    reads STEP. dana/platform/factory.py's IS_HF_SPACE branch now tries
+    RealFreeCADEngine first (packages.txt's `freecad` apt package provides
+    `freecadcmd`) and only falls back to MockFreeCADEngine — whose
+    export_model always returns ok=False for "step", no B-rep writer, by
+    design — when that binary isn't actually on PATH.
 
     Contingent on packages.txt's `freecad` apt package actually being
-    installed on this container AND a real FreeCAD-backed engine
-    eventually being wired in as the IS_HF_SPACE driver — returns a clear,
-    honest error rather than crashing when `freecadcmd` isn't on PATH,
-    which is the current default reality (the mock engine never produces a
-    usable `.step` file for this function to even be called on in the
-    first place; see the STEP-artifact check in `_respond` below).
+    installed on this container — returns a clear, honest error rather
+    than crashing when `freecadcmd` isn't on PATH (e.g. the apt package
+    failed to install), in which case the mock engine's export_model never
+    produces a usable `.step` file for this function to even be called on
+    in the first place; see the STEP-artifact check in `_respond` below.
     """
     freecadcmd = shutil.which("freecadcmd") or shutil.which("FreeCADCmd")
     if freecadcmd is None:
@@ -228,11 +230,33 @@ def _convert_step_to_mesh(step_path: str, out_format: str = "glb") -> dict[str, 
         macro_path = Path(tmp) / "step_to_mesh.py"
         macro_path.write_text(_FREECAD_STEP_TO_MESH_MACRO, encoding="utf-8")
         stl_path = Path(tmp) / "converted.stl"
+        # Same HOME/XDG_*_HOME override as dana.plugins.freecad.engine's
+        # _run_freecad_script — this is a second, independent freecadcmd
+        # call site (this Space never routes STEP-preview conversion
+        # through engine.py), so it needs its own copy of the fix rather
+        # than inheriting one. Without it, FreeCADCmd's first-run config
+        # write (~/.FreeCAD, ~/.config/FreeCAD) crashes the process on a
+        # container where the real $HOME is unset or read-only, before it
+        # ever reaches converted.stl.
+        from dana.plugins.freecad.engine import _freecad_subprocess_home
+
+        if sys.platform == "win32":
+            freecad_env = None
+        else:
+            freecad_home = _freecad_subprocess_home()
+            freecad_env = {
+                **os.environ,
+                "HOME": freecad_home,
+                "XDG_CONFIG_HOME": os.path.join(freecad_home, "config"),
+                "XDG_DATA_HOME": os.path.join(freecad_home, "data"),
+                "XDG_CACHE_HOME": os.path.join(freecad_home, "cache"),
+            }
         try:
             proc = subprocess.run(
                 [freecadcmd, str(macro_path), str(source), str(stl_path)],
                 capture_output=True,
                 text=True,
+                env=freecad_env,
                 timeout=90,
             )
         except subprocess.TimeoutExpired:
@@ -445,11 +469,12 @@ async def _respond(message: str, chatbot_history: list, session: dict[str, Any] 
 
     # Prefer a freshly-converted STEP artifact over the plain tessellated
     # STL, if one exists AND headless FreeCAD is actually available (see
-    # _convert_step_to_mesh's own docstring) — on the current mock-only
-    # deployment this is a cheap no-op every turn (shutil.which() finds
-    # nothing, no subprocess ever spawned); it only starts doing real work
-    # once packages.txt's `freecad` apt package is actually wired in as
-    # this Space's driver.
+    # _convert_step_to_mesh's own docstring) — a cheap no-op every turn
+    # when `freecadcmd` isn't on PATH (shutil.which() finds nothing, no
+    # subprocess ever spawned), real work once packages.txt's `freecad`
+    # apt package is actually installed on this container (factory.py's
+    # IS_HF_SPACE branch then also routes the CAD tool calls themselves
+    # through RealFreeCADEngine, not just this STEP-preview path).
     mesh_path = socket.mesh_path
     step_artifacts = [
         a

@@ -20,6 +20,18 @@ function formatUsd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
 
+// Local Mode detection: `activeProvider` (ModelProvider.last_provider) is
+// the one signal checked. Local values are "local" (plain complete()),
+// "cloud:ollama" (local-first tool calling), "router:ollama_local" (the
+// router fleet's local entry) and "ollama-fallback (was <provider>)" (a
+// cloud call that failed over). Deliberately NOT the model name: a
+// cloud-hosted Qwen model (e.g. "qwen/qwen3-coder" via OpenRouter) would
+// false-positive on a "qwen" substring match.
+function isLocalInference(activeProvider: string | null): boolean {
+  const provider = (activeProvider ?? "").toLowerCase();
+  return provider === "local" || provider.includes("ollama");
+}
+
 type Props = {
   cost: CostState;
 };
@@ -32,7 +44,7 @@ type Props = {
 // same pattern every other App.tsx-level display (e.g. the model-provider
 // badge) already follows.
 export function CostBar({ cost }: Props) {
-  const { activeModel, sessionTotalUsd, byModel } = cost;
+  const { activeModel, activeProvider, sessionTotalUsd, byModel } = cost;
 
   const segments = useMemo(() => {
     const entries = Object.entries(byModel).filter(([, value]) => value > 0);
@@ -48,9 +60,21 @@ export function CostBar({ cost }: Props) {
   // since dana.core.pricing has no entry for it — see estimate_cost_usd).
   if (!activeModel && segments.length === 0) return null;
 
+  const localMode = isLocalInference(activeProvider);
+  const isFallback = (activeProvider ?? "").toLowerCase().includes("fallback");
+  const localModeTooltip = isFallback
+    ? `Local Fallback Active — the cloud provider failed, so this turn ran on ${activeModel} locally. Responses can take 10-40+ seconds instead of a few.`
+    : `Running on local inference (${activeModel}). Responses can take significantly longer than cloud models.`;
+
   return (
-    <div className="cost-bar" title="Session LLM cost (OpenRouter pricing estimate)">
-      <span className="cost-bar__model">{activeModel ?? "—"}</span>
+    <div
+      className={`cost-bar ${localMode ? "cost-bar--local" : ""}`}
+      title={localMode ? localModeTooltip : "Session LLM cost (OpenRouter pricing estimate)"}
+    >
+      {localMode && <span className="cost-bar__local-dot" aria-hidden="true" />}
+      <span className={`cost-bar__model ${localMode ? "cost-bar__model--local" : ""}`}>
+        {activeModel ?? "—"}
+      </span>
       <div className="cost-bar__track">
         {segments.length === 0 ? (
           <div className="cost-bar__empty" />

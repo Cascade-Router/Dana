@@ -13,10 +13,10 @@ each call site's own judgment.
 
 Three tiers, in order of what a normal run should show:
 
-  INFO  (default) -- ONLY the six deterministic state events below. Nothing
+  INFO  (default) -- ONLY the seven deterministic state events below. Nothing
           else may log at INFO from the orchestration layer:
             REQUEST, PLAN_CREATED, TOOL_CALL, TOOL_RESULT,
-            TASK_STATE_CHANGE, ERROR
+            TASK_STATE_CHANGE, PROVIDER_HANDOFF, ERROR
           ``TOOL_RESULT`` never carries a raw base64/source-code dump (see
           ``_strip_raw_dumps``) -- only a lean, LLM-result-shaped summary.
   DEBUG -- internal diagnostics a developer actively investigating a turn
@@ -125,10 +125,83 @@ def _configure() -> logging.Logger:
 _configure()
 
 
+# --- Optional Sentry error reporting ----------------------------------------
+# Off by default: local `logging` (above) is the only sink until an operator
+# opts in. Gated on an env var, not on whether `sentry-sdk` is importable,
+# so a plain `pip install -r requirements.txt` environment with no DSN
+# configured never even attempts the import. `SENTRY_DSN` first (the SDK's
+# own conventional name), `TELEMETRY_DSN` as a project-generic alias for a
+# deployment that would rather not hardcode "Sentry" into its env config.
+_SENTRY_ENABLED = False
+
+
+def _configure_sentry() -> None:
+    """Best-effort ``sentry_sdk.init()`` — never allowed to break the
+    process it's meant to be monitoring. A bad DSN, a missing/incompatible
+    ``sentry-sdk`` install, or any other init-time failure just leaves
+    ``_SENTRY_ENABLED`` False and every ``log_error`` call falls back to
+    the plain ``logging`` line it already had.
+    """
+    global _SENTRY_ENABLED
+    dsn = (os.environ.get("SENTRY_DSN") or os.environ.get("TELEMETRY_DSN") or "").strip()
+    if not dsn:
+        return
+    try:
+        import sentry_sdk
+
+        sentry_sdk.init(
+            dsn=dsn,
+            environment=(os.environ.get("DANA_ENV") or "production").strip(),
+            # Error-only reporting for this sprint's "catch day-one crashes"
+            # goal, not APM — 0.0 means no performance-trace volume/cost.
+            # FastAPI/Starlette request instrumentation (dana/api/server.py)
+            # is enabled automatically by sentry-sdk's own auto-detection
+            # once those packages are importable, no explicit integrations=
+            # list needed.
+            traces_sample_rate=0.0,
+        )
+        _SENTRY_ENABLED = True
+    except Exception:  # noqa: BLE001 — telemetry must never break the app it's monitoring
+        _SENTRY_ENABLED = False
+
+
+_configure_sentry()
+
+
 def set_level(level: str) -> None:
     """Explicit override (tests, or a caller that wants to raise verbosity
     mid-process) -- otherwise ``DANA_LOG_LEVEL`` at import time wins."""
     os.environ["DANA_LOG_LEVEL"] = level
+    _configure()
+
+
+def rebind_stream_handler() -> None:
+    """Re-bind this module's ``StreamHandler`` to whatever ``sys.stderr`` is
+    RIGHT NOW, discarding whichever object it was constructed against.
+
+    ``logging.StreamHandler()`` (see ``_configure``) captures ``sys.stderr``
+    BY REFERENCE at construction time -- which happens at THIS module's own
+    import time, always before ``dana.logging.enable_runtime_file_logging``
+    (called from ``dana.api.server``'s startup event) gets a chance to
+    replace ``sys.stderr`` with its own ``_RuntimeLogTee``. Left unfixed,
+    every ``TOOL_CALL``/``TOOL_RESULT``/``ERROR`` line this module ever logs
+    silently goes to the ORIGINAL stderr forever, never reaching
+    ``dana_runtime.log`` -- confirmed live: the exact ``stage=
+    'empty_final_turn'`` line for a real failed turn was unrecoverable from
+    that file, while bare ``print(..., file=sys.stderr)`` calls elsewhere
+    (which look up ``sys.stderr`` fresh every call, e.g. in
+    ``openai_tool_bridge.py``) were captured fine.
+
+    ``dana.logging`` calls this AFTER installing the tee (never before —
+    calling this first would just rebind to the pre-tee stream, same bug),
+    via a function-body-only import: ``dana.logging`` is a low-level module
+    almost everything else in this codebase already depends on, so a
+    module-top-level import of ``dana.core.telemetry`` from it would invert
+    that layering — the same "push a back-edge import into a function body"
+    convention this codebase already uses for every similar case.
+    """
+    for old_handler in list(_logger.handlers):
+        _logger.removeHandler(old_handler)
     _configure()
 
 
@@ -224,8 +297,53 @@ def log_task_state_change(**fields: Any) -> None:
     _logger.info(_render("TASK_STATE_CHANGE", fields))
 
 
+def log_provider_handoff(**fields: Any) -> None:
+    """A session's tool-calling provider changed mid-conversation for a
+    deterministic, expected reason (e.g. Two-Layer Context Management's
+    Cloud Handoff in ``dana.api.server._run_react_loop`` latching a local
+    Ollama session onto cloud once its running history crosses 85% of
+    ``dana.core.model_provider.ollama_num_ctx``) — a state transition, not
+    a failure, so this logs at INFO like the other five non-error events
+    above, never through ``log_error``/Sentry.
+    """
+    _logger.info(_render("PROVIDER_HANDOFF", fields))
+
+
 def log_error(**fields: Any) -> None:
     _logger.error(_render("ERROR", fields))
+    if _SENTRY_ENABLED:
+        _report_to_sentry(fields)
+
+
+def _report_to_sentry(fields: dict[str, Any]) -> None:
+    """Forward one ERROR event's own fields to Sentry as tags/extras.
+
+    Every call site here already funnels through ``log_error(**fields)``
+    with fields like ``stage``/``tool_id``/``detail``/``iteration`` (see
+    this module's own call sites in ``dana.core.react_dispatch`` /
+    ``dana.api.server``) — none of them currently thread a session_id or
+    the original exception object this deep, so this reports a tagged
+    message (grouped in Sentry by the ``stage`` tag) rather than
+    ``capture_exception`` with a traceback. Best-effort: any failure here
+    (a scope API that changed shape, a network hiccup) is swallowed, same
+    as ``_configure_sentry`` — this must never be a second way for the
+    orchestration loop itself to break.
+    """
+    try:
+        import sentry_sdk
+
+        with sentry_sdk.push_scope() as scope:
+            for key, value in fields.items():
+                scope.set_extra(key, value)
+            stage = fields.get("stage")
+            if stage:
+                scope.set_tag("stage", str(stage))
+            tool_id = fields.get("tool_id")
+            if tool_id:
+                scope.set_tag("tool_id", str(tool_id))
+            sentry_sdk.capture_message(_render("ERROR", fields), level="error")
+    except Exception:  # noqa: BLE001 — see docstring
+        pass
 
 
 __all__ = (
@@ -235,10 +353,12 @@ __all__ = (
     "debug",
     "log_error",
     "log_plan_created",
+    "log_provider_handoff",
     "log_request",
     "log_task_state_change",
     "log_tool_call",
     "log_tool_result",
+    "rebind_stream_handler",
     "set_level",
     "trace",
 )
