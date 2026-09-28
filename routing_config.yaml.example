@@ -1,0 +1,95 @@
+# Dynamic LLM Router — DANA's LLM fleet, config-driven instead of .env
+# toggles. Copy this file to routing_config.yaml (project root, alongside
+# .env) to opt in — its absence is the default, fully-supported state:
+# dana.core.model_provider falls back to its existing .env-toggle
+# resolution (DANA_CLOUD_PROVIDER etc.) completely unchanged.
+#
+# API keys are NEVER stored here — api_key_env just names which existing
+# .env variable to read (same indirection dana/api/system.py already uses
+# for its env allowlist). Edited by hand; no Python required.
+
+version: 1
+
+defaults:
+  # A fleet entry is only picked if its context_window * this margin fits
+  # the turn's estimated size — keeps every choice comfortably clear of a
+  # model's real ceiling rather than picking right at the edge.
+  context_window_safety_margin: 0.85
+  # Always the last entry tried, regardless of whether it "fits" by size —
+  # the terminal fallback when every entry above it fails or is over
+  # budget. Must match a fleet entry's id below.
+  terminal_fallback: ollama_local
+
+fleet:
+  # Free tier, tried first. Rate-limited (~20 req/min, ~200 req/day on
+  # OpenRouter's shared free pool) but zero cost. Verified live against
+  # OpenRouter's actual /api/v1/models catalog and a real tool-calling
+  # request (2026-09-08) — this list rotates often (providers add/pull/
+  # reprice free models on their own schedule, unannounced), so re-verify
+  # rather than trust this comment if calls start 404ing again: the
+  # PREVIOUS entry here (meta-llama/llama-3.3-70b-instruct:free) was live
+  # and working when this file was first written, and had already been
+  # pulled from OpenRouter's free catalog by the time this was checked
+  # again — same day.
+  - id: openrouter_free_nemotron120b
+    provider: openrouter
+    model: nvidia/nemotron-3-super-120b-a12b:free
+    api_key_env: OPENROUTER_API_KEY
+    context_window: 262144
+    cost_per_1m_prompt: 0.0
+    cost_per_1m_completion: 0.0
+    priority: 1
+
+  # Second free lane. Verified live against Groq's own /v1/models metadata
+  # and a real tool-calling request (2026-09-08) — supported_features
+  # includes "tools". The PREVIOUS entries here (llama-3.3-70b-versatile,
+  # then deepseek-r1-distill-llama-70b) both came back "does not exist" /
+  # "has been decommissioned" live — Groq retires free-tier models on its
+  # own schedule too, so re-verify before trusting this slug long-term.
+  # No live-verified free-tier TPM figure for this specific model as of
+  # this writing (the ~6,000 TPM figure previously here was for the
+  # now-decommissioned llama-3.3-70b/deepseek-r1-distill entries
+  # specifically — carrying it forward onto a different model would be a
+  # guess, not a verified number).
+  - id: groq_free_gptoss120b
+    provider: groq
+    model: openai/gpt-oss-120b
+    api_key_env: GROQ_API_KEY
+    context_window: 131072
+    cost_per_1m_prompt: 0.0
+    cost_per_1m_completion: 0.0
+    priority: 2
+
+  # Paid, but far larger context window — picked when a turn is too big
+  # for either free lane above. Its thought_signature multi-turn
+  # requirement is handled transparently by ToolCall.provider_extra; no
+  # config needed here for that.
+  - id: gemini_flash
+    provider: gemini_openai
+    model: gemini-3.7-flash
+    api_key_env: GEMINI_API_KEY
+    context_window: 1000000
+    cost_per_1m_prompt: 0.075
+    cost_per_1m_completion: 0.30
+    priority: 3
+
+  # Paid direct API — not free, but no shared rate limits either.
+  - id: deepseek_direct
+    provider: deepseek
+    model: deepseek-chat
+    api_key_env: DEEPSEEK_API_KEY
+    context_window: 64000
+    cost_per_1m_prompt: 0.28
+    cost_per_1m_completion: 0.42
+    priority: 4
+
+  # Last resort — slow, VRAM-bound, but always available with no API key
+  # and no rate limit. priority is high on purpose so it's only reached
+  # once everything above has failed or doesn't fit.
+  - id: ollama_local
+    provider: ollama
+    model: qwen2.5-coder:14b
+    context_window: 8192
+    cost_per_1m_prompt: 0.0
+    cost_per_1m_completion: 0.0
+    priority: 99

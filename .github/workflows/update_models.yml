@@ -1,0 +1,39 @@
+name: Update Model Catalog
+
+on:
+  schedule:
+    # 03:00 UTC on the 1st of every month.
+    - cron: "0 3 1 * *"
+  workflow_dispatch: {}
+
+jobs:
+  sync-catalog:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync model catalog
+        run: python scripts/sync_model_catalog.py
+
+      - name: Open PR if the catalog changed
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore(models): sync model catalog"
+          title: "chore(models): monthly model catalog sync"
+          body: |
+            Automated run of `scripts/sync_model_catalog.py` — refreshes
+            `dana/data/models_registry.json` against OpenRouter's public
+            `/api/v1/models` catalog (deprecations, context-window and
+            pricing changes). Review the diff before merging.
+          branch: automated/model-catalog-sync
+          delete-branch: true
+          add-paths: dana/data/models_registry.json
