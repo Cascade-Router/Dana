@@ -175,6 +175,32 @@ def _disable_context_distillation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_dotenv_reload_mid_test(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Global safety net: dana.core.model_provider.ensure_dotenv_loaded
+    re-reads the developer's real ``.env`` with ``override=True`` on many
+    calls (by design, so hand-edits apply without a restart). Mid-test that
+    silently undoes a test's own ``monkeypatch.setenv``/``delenv`` — e.g.
+    test_cad_mutation_auto_injects_screenshot_and_visual_verification sets
+    DANA_HEADLESS=false and a later reload put the local ``true`` back. Local
+    runs failed while CI (no ``.env``) passed.
+
+    Values ``.env`` put in os.environ at import time are left alone, so a
+    local ``DANA_HEADLESS=true`` still keeps the FreeCAD GUI from launching
+    during a test run. ``DANA_CLOUD_PRIMARY`` is cleared because it changes
+    which provider and tool schema a turn resolves, which tests assume is
+    the default local path; a test that needs it sets it itself.
+    image_analysis imports ensure_dotenv_loaded by name, so it's patched too.
+    """
+    import dana.core.model_provider as model_provider
+
+    monkeypatch.setattr(model_provider, "ensure_dotenv_loaded", lambda: None)
+    image_analysis = sys.modules.get("dana.plugins.vision.image_analysis")
+    if image_analysis is not None:
+        monkeypatch.setattr(image_analysis, "ensure_dotenv_loaded", lambda: None)
+    monkeypatch.delenv("DANA_CLOUD_PRIMARY", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _force_auto_approve_off(monkeypatch: pytest.MonkeyPatch) -> None:
     """Global safety net: a developer's local ``.env`` setting
     ``DANA_AUTO_APPROVE=true`` (dana.api.server._default_auto_approve) would
