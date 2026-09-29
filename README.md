@@ -1,217 +1,139 @@
----
-title: Dānā
-emoji: 🤖
-colorFrom: green
-colorTo: blue
-sdk: gradio
-sdk_version: 5.49.1
-app_file: app.py
-pinned: false
-license: agpl-3.0
----
+# Dānā — an agentic CAD engineer that turns sketches into FreeCAD models
 
-# Dānā: Open-Source Cybernetic Multi-Agent Control Plane
+[![Build](https://github.com/Cascade-Router/Dana/actions/workflows/build.yml/badge.svg)](https://github.com/Cascade-Router/Dana/actions/workflows/build.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![OS: Windows 10/11](https://img.shields.io/badge/OS-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
-[![Hugging Face Space](https://img.shields.io/badge/%F0%9F%A4%97%20Space-AMIXXM%2FDana-yellow)](https://huggingface.co/spaces/AMIXXM/Dana)
-[![White Paper](https://img.shields.io/badge/docs-White%20Paper-0B7285)](docs/WHITE_PAPER.md)
+Dānā is an open-source, multi-step LLM agent that designs mechanical parts. You describe a part, or hand it a drawing. It plans the build, drives a real FreeCAD kernel through ~90 typed tools, checks its own geometry, and exports a standalone FreeCAD macro that rebuilds the part without the agent.
 
-**Bridge local LLMs (Ollama / `qwen2.5-coder:7b`), hybrid Win32 UIA + Florence-2 vision, and Mixture-of-Agents reasoning into a deterministic, low-latency voice operating system — with a CustomTkinter Live Trace UI locally and a Gradio headless bridge on Hugging Face Spaces.**
+It began as a commercial product and is now published as an engineering portfolio piece. The README focuses on the four engineering problems that took the most work, with links to the code that solves each one.
 
-Dānā is a **production-hardened**, offline-first agentic control plane for the desktop: wake-word perception, strict mode-isolated cognition, transactional shadow workspaces, filesystem-jailed tool execution, and thread-safe telemetry. It is engineered as infrastructure — not a chatbot shell. Evaluated under adversarial OSWorld-style conditions (`pytest tests/evals/test_osworld_bench.py`).
-
-**Deep dive:** [`docs/WHITE_PAPER.md`](docs/WHITE_PAPER.md) — 5-phase hardening specs, architecture topology, and OSWorld benchmarks.  
-**Current architecture notes:** [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`docs/architecture.md`](docs/architecture.md)
-
-Try the Gradio headless Meta-Broker dashboard on Hugging Face: [AMIXXM/Dana](https://huggingface.co/spaces/AMIXXM/Dana) (`app.py` → `dana/web/headless_bridge.py`).
-
----
-
-## System Requirements
-
-| Resource | Requirement |
-|----------|-------------|
-| **OS** | Windows 10 / 11 (recommended for tray, Startup, and OS automation) |
-| **Python** | 3.10+ (3.11+ recommended) |
-| **GPU** | NVIDIA RTX with **8GB+ VRAM** recommended (Whisper / YOLO / vision) |
-| **CUDA** | **12.6** wheels via `requirements-cuda.txt` (`torch==2.13.0+cu126`); HF ZeroGPU Spaces omit CUDA pins and use the preinstalled runtime |
-| **CPU fallback** | Supported; vision / Whisper are slower (`run.py` warns and continues) |
-| **Storage** | ~15GB+ free for venv, PyTorch CUDA wheels, and local model weights |
-| **Runtime** | [Ollama](https://ollama.com/) with local models (e.g. `qwen2.5-coder:7b`, `llama3.2`) |
-
----
-
-## Quickstart / Local Installation
-
-Copy-paste on Windows (PowerShell):
-
-```powershell
-git clone https://github.com/Cascade-Router/Dana.git
-cd Dana
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r requirements.txt
-pip install -r requirements-cuda.txt
-ollama pull qwen2.5-coder:7b
-python run.py
-# Headless (no Tkinter):
-python run.py --no-gui
-```
-
-macOS / Linux (voice tray features may differ):
-
-```bash
-git clone https://github.com/Cascade-Router/Dana.git
-cd Dana
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install -r requirements-cuda.txt
-ollama pull qwen2.5-coder:7b
-python run.py --no-gui
-```
-
-`run.py` is the local entry point for Dānā. First launch configures mic/speaker into `settings.json` (gitignored). Optional Windows logon autostart:
-
-```bash
-python -m dana.tools.setup_startup install
-```
-
-That writes `scripts/launchers/start_dana.bat` (plus a thin root wrapper), Desktop `Dana.lnk`, and the `DanaAssistant` HKCU Run key (migrating any legacy `Dana*` names). Silent teardown (no console flash): run `scripts/launchers/stop_dana.vbs` (or the root `stop_dana.vbs` / `stop_dana.bat` wrappers).
-
-Open the Live Trace window from the system tray (**Open Settings**). The Settings tab's **Integrations Setup** button walks through getting Pushover and Telegram credentials into `.env` for remote notifications/2-way chat.
-
-Dev / unit tests:
-
-```bash
-pip install -r requirements-dev.txt
-pytest tests/test_router.py tests/test_environment.py tests/web/test_headless_bridge.py
-```
-
-OSWorld adversarial bench (offline, seeded):
-
-```bash
-pytest tests/evals/test_osworld_bench.py
-```
-
-Scores land in [`tests/evals/osworld_bench_summary.json`](tests/evals/osworld_bench_summary.json). Full architectural write-up: [`docs/WHITE_PAPER.md`](docs/WHITE_PAPER.md).
-
----
-
-## Key Features
-
-| Capability | Engineering win |
+| | |
 |---|---|
-| **Isolated Meta-Broker** | Multi-epic plans run in a `multiprocessing.Process` with non-blocking Queue IPC (`dana/graph/meta_broker_process.py`); parent UI/headless drainers never deadlock on a full pipe. |
-| **Inter-epic `manifest.json`** | AST export contract under `.dana_scratch/manifest.json` (`ClassDef` + `FunctionDef`) prepended to the next epic prompt (`dana/graph/artifact_manifest.py`). |
-| **Zero keep-alive + GC** | `DANA_OLLAMA_KEEP_ALIVE=0` unloads models between hops; `gc.collect()` between Meta-Broker epics to reclaim RAM under AST load. |
-| **TTSManager** | Single thread-safe `speech_queue` + daemon Piper consumer (`dana/audio/tts_manager.py`); system notifications never overlap. |
-| **Gradio HF bridge** | Tkinter-free Space UI (`app.py`) submits prompts via `dana/web/headless_bridge.py` and streams telemetry into Status / Task Tracker panels. |
-| **Instant Wake & JIT ML Pipeline** | OpenWakeWord on the critical path; Whisper STT and YOLOv8 load deferred in background / on Vision demand so cold start stays sub-second where it matters. |
-| **LangGraph Orchestration** | FSM hybrid: RapidFuzz **Mailroom** (≥80% ASR match) short-circuits LLM routing; Memory Hydration → Supervisor Router (`hydrate_memory` → `planner`); minimized state with SQLite **Blackboard** off-graph memory. |
-| **Transactional Shadow Workspaces** | File mutations stage under `.dana_scratch/<session_id>/` and `commit` / `rollback` atomically (`dana/exec/shadow_workspace.py`). |
-| **Fatal Error → HITL Tickets** | `FATAL_EXCEPTIONS` bypass Critic retries and draft HITL tickets on the existing corridor (`dana/graph/nodes/critic.py`). |
-| **Hybrid Win32 UIA + Crop & Zoom Florence-2** | UIA-first grounding; coarse Florence fallback; 15% pad + 2× upscale when edge &lt; 30 px in 1000-space (`dana/vision/hybrid_grounding.py`). Set `DANA_DEBUG_VISION=1` to enable ROI debug windows. |
-| **Zero-Copy Buffer & Sub-Graph Retries (N=2)** | Full traces in `raw_state_buffer`; autonomous local retries before supervisor escalate (`dana/graph/buffer.py`, `dana/graph/subgraph_router.py`). |
-| **Memory Compaction** | Spatial coordinate TTL **900s** + exponential decay \(W = W_0 e^{-\lambda\Delta h}\), \(\lambda=0.05\) (`dana/memory/compaction.py`). |
-| **Live Trace UI** | Thread-safe CustomTkinter telemetry; structured JSONL forensics: `logs/dana_telemetry.jsonl`. |
-| **Execution Jail & Single-Instance Lock** | Socket-bound process lock (`127.0.0.1:47473`) plus a filesystem execution jail so concurrent headless E2E runs cannot corrupt `task_queue.json` or `patch_ledger.md`. |
+| **Stack** | Python 3.11 · FastAPI + WebSockets · React/TypeScript (Tauri desktop shell) · FreeCAD (headless `FreeCADCmd`) · Ollama · Jinja2 |
+| **Models** | Cloud: DeepSeek (primary), Gemini, OpenRouter, Groq · Local: `qwen2.5-coder:14b` (tools), `qwen2.5vl:7b` (vision) |
+| **Tests** | 1,000+ pytest cases, blocking in CI, no live model or GPU needed |
 
 ---
 
-## Capabilities
+## 1. Deterministic agentic routing across cloud and local models
 
-| Pillar | What it means |
-|---|---|
-| **Vision Grounding** | Hybrid Win32 UI-Automation + Florence-2 grounding locates on-screen elements by plain-language description (`dana/vision/hybrid_grounding.py`, `dana/graph/nodes/vision.py`) — UIA hit-test first, coarse Florence-2 phrase-grounding fallback, crop + 2× zoom re-ground when the matched box is small. Grounding results are normalized ``[0, 1000]`` boxes, rescaled to real screen pixels before any actuation. |
-| **Win32 Actuation** | Every physical action — mouse, keyboard, scroll, drag-and-drop — is raw `ctypes` `SendInput`; no `pyautogui`/`pynput` anywhere on the input path (`dana/tools/os_control.py`, `mouse_actuator.py`, `keyboard_actuator.py`, `scroll_actuator.py`, `drag_actuator.py`). Every actuator shares one safety pipeline: `DANA_OS_DRY_RUN` dry-run mode, module-wide rate limiting, failsafe bounds checks, and a kill-switch check immediately before physical input. |
-| **Workspace Orchestration** | Window management (`list_active_windows` / `focus_window`, `dana/tools/window_actuator.py`) confirms the right application is in the foreground before Dana acts on it. Clipboard I/O (`read_clipboard` / `write_clipboard`, `dana/tools/clipboard_actuator.py`) plus `press_keyboard_shortcut` (`dana/tools/keyboard_actuator.py`) extract or inject exact text via the OS clipboard — precise where vision OCR would be lossy. |
-| **Remote Telegram / Pushover Access** | `send_notification` (`dana/tools/notifications.py`) pushes phone alerts via Pushover. A Telegram bot (`dana/middleware/telegram_poller.py`) long-polls for messages from one allowlisted chat id and routes them into Dana's normal input pipeline exactly like typed UI input, replying back over the same chat — a 2-way remote channel for when Dana is running unattended in the background. Setup steps for both live in the desktop app's Settings tab (`dana/ui/settings.py`). |
+**Problem.** A multi-step CAD session mixes very different turns. Some make precise geometry calls, where a wrong argument corrupts the model. Others are cheap bookkeeping, such as a catalog lookup. Letting "whatever model is configured" handle every turn wasted money and let small local models slip wrong parameters into the geometry.
+
+**Solution.** Each turn's model chain is a **pure function of config plus turn state**, with no randomness and no LLM-judged routing:
+
+- **Declarative fleet** ([`routing_config.yaml`](routing_config.yaml), parsed by [`dana/core/llm_router.py`](dana/core/llm_router.py)). Each entry is a provider, model, priority, context window and cost. API keys are referenced by env-var name and never stored in the file.
+- **Fit-based selection.** An entry is eligible only if `context_window × safety_margin` fits the turn's estimated token count. Eligible entries are tried in priority order, with a configured terminal fallback (local Qwen) always last.
+- **Turn classification, in a fixed order of precedence:**
+  1. *Full-local override* (`allow_cloud: false`) returns only Ollama entries, with no silent escape to the cloud.
+  2. *Admin/introspection turns* (the last tool call was a catalog or discovery lookup) prefer the local model, which saves cloud quota.
+  3. *Geometry-precision turns* **exclude** local models entirely. Small local models were confirmed live to hallucinate tool-argument names on these calls.
+  4. A *Planning-Phase Cloud Lock* in [`dana/core/react_dispatch.py`](dana/core/react_dispatch.py) pins Turn 0 (`create_plan`) to a cloud model.
+- **Failure accounting.** A failed entry is reported (`report_fleet_entry_failure`) and the chain falls through to the next one. The whole router can be removed: without the YAML file, the legacy `.env` resolution runs unchanged.
+
+In practice, DeepSeek handles planning and geometry, local Qwen handles bookkeeping and full-offline mode, and every routing decision can be reproduced from config.
+
+## 2. Multimodal-to-CAD pipeline: image → JSON blueprint → FreeCAD IR → macro
+
+**Problem.** Vision models are good at recognizing *what* is in a drawing and bad at *how big* it is. A 7B VLM returns JSON that is structurally valid but numerically wrong: all-zero boxes, invented part IDs.
+
+**Solution.** A staged pipeline where every step that touches numbers is deterministic:
+
+1. **OCR dimension floor** ([`dana/plugins/vision/ocr_grounding.py`](dana/plugins/vision/ocr_grounding.py)). EasyOCR reads the printed dimensions from each orthographic view. They are passed to the VLM as hard constraints, and they alone determine the bounding box.
+2. **Two-pass VLM extraction** ([`dana/plugins/vision/image_analysis.py`](dana/plugins/vision/image_analysis.py)). Pass 1 extracts primitives (box, cylinder, sphere and their dimensions). Pass 2 extracts relationships and joints given pass 1's output. Each pass tries a local model first and falls back to the cloud, and a JSON decode failure moves on to the next provider instead of aborting.
+3. **Numerical-integrity gate.** Degenerate dimensions and dangling `parent_id`/`child_id` references fail loudly. A fabricated blueprint never reaches the CAD kernel as `ok: true`.
+4. **Universal CAD IR** ([`dana/plugins/freecad/ir.py`](dana/plugins/freecad/ir.py)). One step-dict schema (`box`, `cylinder`, `boolean`, edge ops, …) is shared by three consumers that used to generate FreeCAD script text separately: live tool execution, session replay, and the composite-skill compiler.
+5. **Macro export** ([`dana/plugins/freecad/py_export.py`](dana/plugins/freecad/py_export.py) + [`templates/macro_export.py.jinja2`](dana/plugins/freecad/templates/macro_export.py.jinja2)). The session's call log, including boolean cut/union/intersect steps, is rendered into one standalone `.py` macro that rebuilds the part in stock FreeCAD.
+6. **Visual self-check** ([`dana/tools/cad_vision.py`](dana/tools/cad_vision.py)). After every mutating CAD call, the viewport is captured headlessly and a VLM reads it back, so the agent checks what it actually built.
+
+No GPU? Set `DANA_VISION_MOCK_FALLBACK=1`. When no vision model is reachable, the pipeline then continues on a clearly flagged placeholder blueprint (`"mocked": true`) instead of stopping. It is off by default because it is fabricated geometry.
+
+## 3. CI/CD with a blocking test pipeline
+
+**Problem.** An earlier deploy broke even though CI was green, because CI only imported a single module. The fix was to make CI run the real code in the same kind of environment it ships to.
+
+**Solution** ([`.github/workflows/build.yml`](.github/workflows/build.yml)):
+
+- **Full pytest suite as a blocking job:** 1,018 tests at the time of the portfolio pivot. It runs on Python 3.11 under `xvfb`, with `--strict-markers` and a per-test timeout. Failures are parsed out of the JUnit XML into GitHub `::error` annotations, so they show on the PR without opening the log.
+- **Space smoke test.** It imports `app.py` from the exact payload `deploy/stage_space.sh` ships, with the pinned Gradio version.
+- **Frontend build.** It runs the same `tsc && vite build` that Vercel runs.
+- **Gated deploy.** The Hugging Face sync runs on `workflow_run` only after Build succeeds.
+- **Headless environment isolation** ([`tests/conftest.py`](tests/conftest.py)). Autouse fixtures sandbox each test's session and OS-tool directories under `tmp_path`, and replace TTS/audio hardware calls with fakes. They block mid-test `.env` reloads (a real leak that once overrode test env vars) and force auto-approve and context distillation off. `DANA_HEADLESS=true` and `DANA_OS_DRY_RUN=1` keep FreeCAD's GUI and physical input out of CI.
+- **No live dependencies.** LLM and VLM providers are patched at the call site, and hardware calls (TTS, audio, OS input) go to fakes or dry-run mode. The suite needs no model server, GPU, or API key.
+
+## 4. Context management: 2,000-character rolling core memory
+
+**Problem.** The agent keeps a persistent "core memory" of user preferences, project constraints and learned workflows. It is injected into *every* system prompt and survives restarts. Nothing limited its size, so over weeks of use it would grow without limit into every turn's context.
+
+**Solution** ([`dana/plugins/memory/core_memory.py`](dana/plugins/memory/core_memory.py)):
+
+- **Disk-backed.** Memory is a flat JSON key→value store under the agent workspace. Corrupt or foreign content reads back as "no memory" instead of crashing a turn.
+- **Rolling FIFO eviction.** Once the *rendered* block exceeds 2,000 characters, the least recently *written* sections are evicted first. Write order is kept on disk on purpose: sorting keys would have silently turned FIFO into alphabetical eviction.
+- **Safety rules.** It never evicts down to zero sections, and it re-applies the cap at render time for files written before the cap existed.
+- **Live view.** Updates are broadcast over WebSocket to the UI's Memory Viewer.
 
 ---
 
-## Architecture at a Glance
+## Architecture
 
 ```text
-Mic / .trigger_ask / input.txt / Gradio (HF Space)
-        │
-        ▼
-┌───────────────────┐     ┌────────────────────┐
-│  MicIngest (16k)  │────▶│  Conversation FSM  │
-│  InputIngest      │     │  Mailroom ≥80%     │
-└───────────────────┘     └─────────┬──────────┘
-                                    │
-              ┌─────────────────────┼─────────────────────┐
-              ▼                     ▼                     ▼
-         Chat Mode            Developer Mode         Meta-Broker
-      (local Ollama)       (MoA + ReAct tools)   (isolated Process)
-              │               Pydantic guards         │
-              │               Handoff schema          ▼
-              │                              Queue IPC telemetry
-              │                              → Task Tracker / Gradio
-              └──────────┬────────────────────────────────┘
-                         ▼
-         Blackboard (SQLite) ← session_id
-         TTSManager.speech_queue → Piper (sequential)
-         JSONL telemetry + gui_telemetry_queue → Live Trace UI
-
-Packages:
-  dana/                 core agent, graph, vision, memory, tools, web
-  dana/web/             Gradio / HF headless bridge (no Tkinter)
-  dana_jason_loop/      Jason supervisor / critic loop
-  dana_security/        AST/subprocess gates + patch_ledger.md
-  legacy/               Archived scratch (not on the critical path)
+ React/Tauri UI ──WebSocket /ws/chat──▶ FastAPI (dana/api/server.py)
+                                             │
+                                  ReAct loop (dana/core/react_dispatch.py)
+                                  plan → tool call → observe → verify
+                                             │
+              ┌──────────────────────────────┼──────────────────────────────┐
+              ▼                              ▼                              ▼
+     LLM router (llm_router.py)     Tool registry (~90 tools)        Core memory (2k, FIFO)
+     DeepSeek / Gemini / OpenRouter  CAD · vision · web · OS · skills  + session call log
+     / Groq  →  local Qwen fallback          │
+                                             ▼
+                          FreeCAD plugin (dana/plugins/freecad/)
+                          Universal IR → FreeCADCmd (headless)
+                          → .FCStd session doc · STEP/STL/URDF · .py macro
 ```
 
-Deep dive: [`docs/WHITE_PAPER.md`](docs/WHITE_PAPER.md) · [`docs/architecture.md`](docs/architecture.md) · Legal/IP: [`docs/LEGAL_AND_IP.md`](docs/LEGAL_AND_IP.md) · License audit: [`docs/LICENSE_AUDIT.md`](docs/LICENSE_AUDIT.md) · OSWorld: [`pytest tests/evals/test_osworld_bench.py`](tests/evals/test_osworld_bench.py) · Telemetry: [`docs/telemetry_and_ui.md`](docs/telemetry_and_ui.md) · Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md) · Security: [`SECURITY.md`](SECURITY.md)
+## Run it locally
 
----
+Requires Python 3.11, [FreeCAD](https://www.freecad.org/downloads.php) 1.0+, [Ollama](https://ollama.com/), and Node 20+ for the UI.
 
-## Documentation / Operator Guide
+```bash
+git clone https://github.com/Cascade-Router/Dana.git && cd Dana
+python -m venv .venv && source .venv/bin/activate     # Windows: .\.venv\Scripts\activate
+pip install -r requirements.txt -r requirements-dev.txt
+cp .env.example .env                                   # OLLAMA_URL defaults to http://localhost:11434
+cp routing_config.yaml.example routing_config.yaml     # optional: enables the deterministic router
 
-- **[User Handbook](docs/user_guide/User%20Handbook.md)** — operating modes, wake/voice commands, and automated system behaviors for day-to-day use of Dānā.
-- **Legal & IP:** [`docs/LEGAL_AND_IP.md`](docs/LEGAL_AND_IP.md) — product branding, Class 009/042 scope, bundled-model posture, and license audit linkage
-- **License audit:** [`docs/LICENSE_AUDIT.md`](docs/LICENSE_AUDIT.md) — third-party package inventory (includes GPL/AGPL flags)
-- **White Paper:** [`docs/WHITE_PAPER.md`](docs/WHITE_PAPER.md) — production-hardened cybernetic control plane, 5-phase hardening specs, OSWorld benchmarks
-- **OSWorld bench:** `pytest tests/evals/test_osworld_bench.py` → [`tests/evals/osworld_bench_summary.json`](tests/evals/osworld_bench_summary.json)
-- Architecture: [`docs/architecture.md`](docs/architecture.md) · [`ARCHITECTURE.md`](ARCHITECTURE.md)
-- Telemetry & UI contract: [`docs/telemetry_and_ui.md`](docs/telemetry_and_ui.md)
-- Contributing: [`CONTRIBUTING.md`](CONTRIBUTING.md)
-- Security: [`SECURITY.md`](SECURITY.md)
+ollama pull qwen2.5-coder:14b                          # local tool-calling fallback
+ollama pull qwen2.5vl:7b                               # local vision (or set DANA_VISION_MOCK_FALLBACK=1)
 
----
+(cd frontend && npm install)
+./launch_dana.sh                                       # Windows: powershell -File launch_dana.ps1
+```
 
-## Runtime Boundaries (Local State)
+With no cloud keys set, Dānā runs fully locally on Ollama. Add `DEEPSEEK_API_KEY` (or another provider's key) to `.env` to enable cloud routing.
 
-Dana treats the repo root as the active workspace. The following are **machine-local** and excluded from Git:
+Run the test suite (no GPU, model server or API key needed):
 
-| Path | Role |
-|------|------|
-| `execution_jail/` | Task queue + filesystem sandbox |
-| `logs/` | Runtime / conversation logs |
-| `vault/` / `dana_memory.enc` | Encrypted profile (legacy filename) |
-| `.dana_scratch/` | Transactional shadow workspace + `manifest.json` contracts |
-| `.dana/` | Local vault / runtime mirrors |
-| `.env`, `settings.json` | Secrets and device IDs |
-| `*.onnx`, `*.pt`, `*.bin` | Model weights |
-| `*.db` / Chroma dirs | Local SQLite + vector stores |
+```bash
+DANA_HEADLESS=true DANA_OS_DRY_RUN=1 python -m pytest
+```
 
-Do not commit these. Contributors: see [CONTRIBUTING.md](CONTRIBUTING.md).
+A two-minute walkthrough of the pipeline is scripted in [`DEMO_SCRIPT.md`](DEMO_SCRIPT.md).
 
----
+## Repository map
 
-## Design Principles
+| Path | What lives there |
+|---|---|
+| `dana/api/` | FastAPI server, WebSocket chat protocol, sessions, model registry |
+| `dana/core/` | ReAct loop, LLM router, model providers, context management |
+| `dana/plugins/freecad/` | FreeCAD engine, universal IR, Jinja2 templates, macro/TechDraw export |
+| `dana/plugins/vision/` | OCR grounding and two-pass blueprint extraction |
+| `dana/plugins/memory/` | Persistent core memory |
+| `frontend/` | React + TypeScript UI (Tauri desktop shell) |
+| `tests/` | pytest suite (mirrors the `dana/` layout) |
+| `docs/` | Architecture notes and design write-ups ([`ARCHITECTURE.md`](ARCHITECTURE.md)) |
 
-1. **Local-first** — cognition stays on-device via Ollama; no cloud dependency on the voice critical path.
-2. **Strict state isolation** — Chat memory never pollutes ReAct/MoA context; Chat mode refuses the tool jail.
-3. **Observable orchestration** — every meaningful stage can emit a Live Trace / Gradio telemetry event without touching Tk from workers.
-4. **Fail-closed concurrency** — a second `run.py` aborts rather than racing the jail.
-5. **Stdlib-first epics** — Meta-Broker codegen prefers the Python standard library unless the prompt explicitly requests third-party packages.
+## License
 
----
-
-## License & Status
-
-Open-source under **AGPL-3.0**. Architecture notes and UI telemetry contracts in `docs/` are the source of truth for external integrators.
+[AGPL-3.0](LICENSE). See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`SECURITY.md`](SECURITY.md).

@@ -17,6 +17,7 @@ import binascii
 import inspect
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -1742,7 +1743,47 @@ def _tool_analyze_reference_design(
 ) -> dict[str, Any]:
     raw_paths = args.get("file_paths")
     file_paths = [str(p) for p in raw_paths] if isinstance(raw_paths, list) else []
-    return _vision_analyze_reference_design(file_paths, api_keys=api_keys)
+    result = _vision_analyze_reference_design(file_paths, api_keys=api_keys)
+    # Only a VLM-unreachable failure (every candidate provider raised or
+    # returned junk — e.g. no local Ollama, or qwen2.5vl:7b never pulled)
+    # carries "attempts"; a bad path or a degenerate blueprint does not, and
+    # must keep failing loudly even with the fallback on.
+    if not result.get("ok") and "attempts" in result and _vision_mock_fallback_enabled():
+        return _mocked_reference_design(file_paths, result)
+    return result
+
+
+# Off by default: a mocked blueprint is fabricated geometry, so the normal
+# path reports the VLM failure honestly. DANA_VISION_MOCK_FALLBACK=1 is for
+# demos/CI on machines with no GPU or vision model — the Multimodal-to-CAD
+# pipeline then still runs end to end on a clearly-flagged placeholder.
+_MOCK_REFERENCE_BLUEPRINT: dict[str, Any] = {
+    "bounding_box": {"x": 60.0, "y": 40.0, "z": 5.0},
+    "primitives": [
+        {"id": "base_plate", "type": "box", "dimensions": {"length": 60.0, "width": 40.0, "height": 5.0}},
+    ],
+    "relationships": [],
+    "joints": [],
+}
+
+
+def _vision_mock_fallback_enabled() -> bool:
+    return (os.environ.get("DANA_VISION_MOCK_FALLBACK") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _mocked_reference_design(file_paths: list[str], failure: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "mocked": True,
+        "paths": file_paths,
+        "blueprint": json.loads(json.dumps(_MOCK_REFERENCE_BLUEPRINT)),
+        "warning": (
+            "No vision model was reachable, so this is a PLACEHOLDER blueprint (a 60x40x5 mm plate), "
+            "not geometry read from the image. Tell the user before building from it."
+        ),
+        "vision_error": failure.get("error"),
+        "attempts": failure.get("attempts"),
+    }
 
 
 # Desktop Omni-Vision (dana.plugins.os.desktop_vision) — also needs the

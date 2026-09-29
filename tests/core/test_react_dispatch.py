@@ -3321,3 +3321,47 @@ def test_tool_apply_assembly_constraint_hard_blocks_uv_tensor() -> None:
     assert result["ok"] is False
     assert "ConstraintError" in result["error"]
     assert "world_fractions" in result["error"]
+
+
+_VLM_UNREACHABLE = {
+    "ok": False,
+    "error": "pass 1 (bounding box/primitives) failed",
+    "attempts": ["ollama: Connection refused", "openrouter: no API key"],
+}
+
+
+def test_analyze_reference_design_reports_vlm_failure_without_mock_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DANA_VISION_MOCK_FALLBACK", raising=False)
+    with patch.object(rd, "_vision_analyze_reference_design", return_value=dict(_VLM_UNREACHABLE)):
+        result = rd._tool_analyze_reference_design({"file_paths": ["front.png"]}, None, None)
+    assert result == _VLM_UNREACHABLE
+
+
+def test_analyze_reference_design_mocks_blueprint_when_vlm_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DANA_VISION_MOCK_FALLBACK", "1")
+    with patch.object(rd, "_vision_analyze_reference_design", return_value=dict(_VLM_UNREACHABLE)):
+        result = rd._tool_analyze_reference_design({"file_paths": ["front.png"]}, None, None)
+    assert result["ok"] is True
+    assert result["mocked"] is True
+    assert result["paths"] == ["front.png"]
+    assert result["blueprint"]["bounding_box"] == {"x": 60.0, "y": 40.0, "z": 5.0}
+    assert result["blueprint"]["primitives"][0]["type"] == "box"
+    assert result["attempts"] == _VLM_UNREACHABLE["attempts"]
+    assert "PLACEHOLDER" in result["warning"]
+    # A caller mutating the returned blueprint must not corrupt the next mock.
+    result["blueprint"]["primitives"].clear()
+    assert rd._MOCK_REFERENCE_BLUEPRINT["primitives"]
+
+
+def test_analyze_reference_design_mock_passes_numerical_integrity_gate() -> None:
+    from dana.plugins.vision.image_analysis import _validate_numerical_integrity
+
+    assert _validate_numerical_integrity(rd._MOCK_REFERENCE_BLUEPRINT) == (True, "")
+
+
+def test_analyze_reference_design_mock_never_masks_non_vlm_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DANA_VISION_MOCK_FALLBACK", "1")
+    bad_path = {"ok": False, "error": "image does not exist: 'front.png'"}
+    with patch.object(rd, "_vision_analyze_reference_design", return_value=dict(bad_path)):
+        result = rd._tool_analyze_reference_design({"file_paths": ["front.png"]}, None, None)
+    assert result == bad_path

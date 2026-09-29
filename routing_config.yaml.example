@@ -85,7 +85,9 @@ fleet:
 
   # Last resort — slow, VRAM-bound, but always available with no API key
   # and no rate limit. priority is high on purpose so it's only reached
-  # once everything above has failed or doesn't fit.
+  # once everything above has failed or doesn't fit. Talks to OLLAMA_URL
+  # from .env (default http://localhost:11434 — a local Ollama, no cloud
+  # GPU host needed); there is no per-entry URL key.
   - id: ollama_local
     provider: ollama
     model: qwen2.5-coder:14b
