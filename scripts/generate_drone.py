@@ -30,13 +30,13 @@ def _short(value: object, limit: int = 160) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-async def run(url: str, filename: str) -> int:
+async def run(url: str, filename: str, prompt: str) -> int:
     started = time.monotonic()
     async with websockets.connect(url, max_size=None, ping_interval=None) as ws:
         ready = json.loads(await ws.recv())
         print(f"[drone] connected, session {ready['session_id']}")
-        print(f"[drone] > {PROMPT}\n")
-        await ws.send(json.dumps({"text": PROMPT}))
+        print(f"[drone] > {prompt}\n")
+        await ws.send(json.dumps({"text": prompt}))
 
         tool_calls = 0
         while True:
@@ -86,9 +86,10 @@ def main() -> int:
     parser.add_argument("--url", default="ws://localhost:8000/ws/chat")
     parser.add_argument("--filename", default="drone_frame")
     parser.add_argument("--timeout", type=float, default=1500.0, help="overall seconds before giving up")
+    parser.add_argument("--prompt", default=PROMPT, help="override the design prompt")
     args = parser.parse_args()
     try:
-        return asyncio.run(asyncio.wait_for(run(args.url, args.filename), timeout=args.timeout))
+        return asyncio.run(asyncio.wait_for(run(args.url, args.filename, args.prompt), timeout=args.timeout))
     except asyncio.TimeoutError:
         print(f"[drone] gave up after {args.timeout:.0f}s")
         return 2

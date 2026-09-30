@@ -70,7 +70,8 @@ def _measure(*names: str) -> dict[str, dict[str, Any]]:
         "    b = s.BoundBox\n"
         "    out[n] = {'type': o.TypeId, 'valid': o.isValid(), 'volume': s.Volume if s.Solids else 0.0,\n"
         "              'bbox': [b.XMin, b.YMin, b.ZMin, b.XMax, b.YMax, b.ZMax],\n"
-        "              'constraints': len(o.Constraints) if hasattr(o, 'Constraints') else None}\n"
+        "              'constraints': len(o.Constraints) if hasattr(o, 'Constraints') else None,\n"
+        "              'tip': o.Tip.Name if getattr(o, 'Tip', None) is not None else None}\n"
         f"print({engine._OK_MARKER!r} + '_MEASURE ' + json.dumps(out))\n"
     )
     result = engine._run_freecad_script(script)
@@ -215,8 +216,25 @@ def test_polar_pattern_repeats_a_pocket_around_z() -> None:
     pocket = _plate_with_hole()
     pattern = _ok(engine.create_polar_pattern(pocket, 4))
     assert pattern["type"] == "PartDesign::PolarPattern"
-    volume = _measure(pattern["name"])[pattern["name"]]["volume"]
-    assert math.isclose(volume, 60 * 60 * 4 - 4 * math.pi * 9 * 4, rel_tol=1e-6)
+    measured = _measure(pattern["name"], "Body")
+    expected = 60 * 60 * 4 - 4 * math.pi * 9 * 4
+    assert math.isclose(measured[pattern["name"]]["volume"], expected, rel_tol=1e-6)
+    # Regression: the pattern must become the Body's Tip, so the part's final
+    # shape actually includes it.
+    assert measured["Body"]["tip"] == pattern["name"]
+    assert math.isclose(measured["Body"]["volume"], expected, rel_tol=1e-6)
+
+
+def test_features_after_a_pattern_build_on_the_patterned_solid() -> None:
+    pocket = _plate_with_hole()
+    pattern = _ok(engine.create_polar_pattern(pocket, 4))["name"]
+    _ok(engine.create_sketch("Boss", "XY", [{"type": "circle", "center": [0, 0], "radius": 4}]))
+    boss = _ok(engine.create_pad("Boss", 10))["name"]
+    measured = _measure(pattern, boss, "Body")
+    assert measured["Body"]["tip"] == boss
+    # 4 mm of the boss overlaps the plate; only the 6 mm above it adds volume.
+    expected = measured[pattern]["volume"] + math.pi * 16 * 6
+    assert math.isclose(measured["Body"]["volume"], expected, rel_tol=1e-6)
 
 
 def test_linear_pattern_repeats_a_pocket_along_y() -> None:

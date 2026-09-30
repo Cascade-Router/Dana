@@ -1552,6 +1552,13 @@ def _sketch_state(sk):
     return {"dof": getattr(sk, "DoF", None), "fully_constrained": bool(getattr(sk, "FullyConstrained", False))}
 
 def _check_feature(doc, feat):
+    # Make the new feature the Body's Tip. FreeCAD advances Tip for Pad/Pocket
+    # on its own but not for PolarPattern/LinearPattern, so a pattern was left
+    # dangling: the next feature built on the pre-pattern solid and the Body's
+    # final shape silently excluded the pattern.
+    body = _body_of(feat)
+    if body is not None and body.Tip is not feat:
+        body.Tip = feat
     doc.recompute()
     if not feat.isValid() or feat.Shape.isNull():
         reason = feat.getStatusString() or "no shape produced"
