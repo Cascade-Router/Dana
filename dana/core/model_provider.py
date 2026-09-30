@@ -982,7 +982,12 @@ class ModelProvider:
                     chain=chain,
                 )
 
-        resolved_provider = (provider or cloud_provider_name()).strip().lower()
+        # No explicit provider and no fleet chain: use the same resolver the
+        # ReAct loop would have picked (local Ollama, or a tool-calling-safe
+        # cloud provider when DANA_CLOUD_PRIMARY is on). Not
+        # cloud_provider_name(): its bare default is "gemini", which the
+        # OpenAI tool-calling bridge rejects just below.
+        resolved_provider = (provider or tool_calling_provider()).strip().lower()
         if resolved_provider in _NON_OPENAI_SCHEMA_PROVIDERS:
             raise NotImplementedError(
                 f"OpenAI tool-calling bridge does not support provider={resolved_provider!r} "

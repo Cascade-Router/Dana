@@ -253,6 +253,48 @@ def test_complete_with_tool_calls_explicit_provider_bypasses_the_router(
     assert not result["provider"].startswith("router:")
 
 
+@pytest.fixture()
+def no_fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No routing_config.yaml and no provider env: the out-of-the-box state."""
+    monkeypatch.setattr(routing_config_module, "ROUTING_CONFIG_PATH", tmp_path / "does_not_exist.yaml")
+    monkeypatch.delenv("DANA_CLOUD_PROVIDER", raising=False)
+    monkeypatch.delenv("DANA_CLOUD_PRIMARY", raising=False)
+
+
+def test_complete_with_tool_calls_without_fleet_or_provider_env_uses_local_ollama(
+    monkeypatch: pytest.MonkeyPatch, no_fleet: None
+) -> None:
+    """Regression: this used to resolve to cloud_provider_name()'s bare
+    "gemini" default and raise NotImplementedError on every ReAct turn."""
+    calls: list[str] = []
+
+    def fake_complete(messages, *, base_url, model, **kw):
+        calls.append(model)
+        return _canned_ok()
+
+    monkeypatch.setattr(model_provider_module, "complete_ollama_native_with_tools", fake_complete)
+    result = ModelProvider().complete_with_tool_calls([{"role": "user", "content": "hi"}], tools=[])
+    assert len(calls) == 1
+    assert result["provider"] == "cloud:ollama"
+
+
+def test_complete_with_tool_calls_without_fleet_but_cloud_primary_uses_openrouter(
+    monkeypatch: pytest.MonkeyPatch, no_fleet: None
+) -> None:
+    monkeypatch.setenv("DANA_CLOUD_PRIMARY", "1")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+    calls: list[str] = []
+
+    def fake_complete(messages, *, api_key, base_url, model, **kw):
+        calls.append(base_url)
+        return _canned_ok()
+
+    monkeypatch.setattr(model_provider_module, "complete_openai_with_tools", fake_complete)
+    result = ModelProvider().complete_with_tool_calls([{"role": "user", "content": "hi"}], tools=[])
+    assert result["provider"] == "cloud:openrouter"
+    assert calls and "openrouter" in calls[0]
+
+
 # --------------------------------------------------------------------------
 # report_fleet_entry_failure — the circuit breaker wired into the Model Registry
 # --------------------------------------------------------------------------
