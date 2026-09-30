@@ -19,6 +19,16 @@ import Part
 import Mesh
 
 doc = App.newDocument({{ document_name|pyrepr }})
+{% if steps|selectattr("kind", "equalto", "partdesign")|list %}
+
+# Sketcher/PartDesign helpers — the same code Dana's engine runs for these
+# steps (dana.plugins.freecad.engine._PARTDESIGN_HELPERS), so the replay
+# builds, names and validates features exactly as the live session did.
+import json
+import Sketcher
+
+{{ partdesign_helpers }}
+{% endif %}
 
 {% for step in steps %}
 # Step {{ step.index }}: {{ step.tool_id }}
@@ -215,6 +225,18 @@ doc.recompute()
 setattr(doc.getObject({{ step.target_object|pyrepr }}), {{ step.parameter_name|pyrepr }}, {{ step.new_value|pyrepr }})
 doc.recompute()
 
+{% elif step.kind == "modify_placement" %}
+{{ step.var }} = doc.getObject({{ step.target_object|pyrepr }})
+{% if step.rotation %}
+_rotation_{{ step.index }} = App.Rotation({{ step.rotation[0]|pyrepr }}, {{ step.rotation[1]|pyrepr }}, {{ step.rotation[2]|pyrepr }})
+{% else %}
+_rotation_{{ step.index }} = {{ step.var }}.Placement.Rotation
+{% endif %}
+{{ step.var }}.Placement = App.Placement(
+    App.Vector({{ step.x|pyrepr }}, {{ step.y|pyrepr }}, {{ step.z|pyrepr }}), _rotation_{{ step.index }}
+)
+doc.recompute()
+
 {% elif step.kind == "align" %}
 doc.getObject({{ step.source_object|pyrepr }}).Placement.Base = App.Vector{{ step.placement|pyrepr }}
 doc.recompute()
@@ -254,6 +276,9 @@ Part.export(export_targets_{{ step.index }}, {{ step.path|pyrepr }})
 {% else %}
 Mesh.export(export_targets_{{ step.index }}, {{ step.path|pyrepr }})
 {% endif %}
+
+{% elif step.kind == "partdesign" %}
+{{ step.code }}{{ step.var }} = obj
 
 {% elif step.kind == "blueprint" %}
 import TechDraw

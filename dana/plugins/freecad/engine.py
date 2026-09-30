@@ -1578,18 +1578,29 @@ def _origin_axis(body, role):
 """
 
 
-def _partdesign_script(body_code: str, **fmt: Any) -> tuple[str, Path]:
-    """Assemble one Sketcher/PartDesign script: imports + shared helpers +
-    session open + ``body_code`` (the only part ``str.format``-ed, with
-    ``marker`` always available) + save + the standard NAME/BBOX print for
-    whatever ``obj`` ``body_code`` bound last."""
+def _partdesign_code(op: str, **fmt: Any) -> str:
+    """The FreeCAD code for one Sketcher/PartDesign operation, formatted with
+    ``fmt``, and nothing else: no imports, no document open/save, no marker
+    prints. Shared by live execution (``_partdesign_script``) and the macro
+    exporter (``partdesign_replay_code``), so a replayed macro runs exactly
+    the code the session ran. ``feature_name`` defaults to the op's usual
+    object name; replay passes the name the live call actually got."""
+    template, _report, default_name = _PARTDESIGN_OPS[op]
+    fmt.setdefault("feature_name", default_name)
+    return template.format(**fmt)
+
+
+def _partdesign_script(op: str, **fmt: Any) -> tuple[str, Path]:
+    """Assemble one live Sketcher/PartDesign script: imports + shared helpers +
+    session open + the op's code + its marker report + save + the standard
+    NAME/BBOX print for the ``obj`` the op bound last."""
     session_path = _session_document_path()
+    report = _PARTDESIGN_OPS[op][1].format(marker=_OK_MARKER, sketch_marker=_SKETCH_STATE_MARKER)
     script = (
-        "import FreeCAD as App\nimport Part\nimport Sketcher\nimport json\nimport math\n\n"
-        + _RESOLVE_OBJECT_SNIPPET
-        + _PARTDESIGN_HELPERS
+        _PARTDESIGN_PREAMBLE
         + _SESSION_OPEN_SNIPPET.format(session_path=str(session_path), session_doc_name=_SESSION_DOCUMENT_NAME)
-        + body_code.format(marker=_OK_MARKER, sketch_marker=_SKETCH_STATE_MARKER, **fmt)
+        + _partdesign_code(op, **fmt)
+        + report
         + _SESSION_SAVE_SNIPPET
         + _SESSION_RESULT_PRINT.format(marker=_OK_MARKER)
     )
@@ -1672,7 +1683,7 @@ def _sketch_geometry_specs(geometry: Sequence[dict[str, Any]]) -> list[tuple[Any
 
 
 _CREATE_SKETCH_BODY = """\
-obj = doc.addObject("Sketcher::SketchObject", {name!r})
+obj = doc.addObject("Sketcher::SketchObject", {feature_name!r})
 _axis, _angle = {rotation!r}
 obj.Placement = App.Placement(App.Vector(0, 0, 0), App.Rotation(App.Vector(*_axis), _angle))
 for _g in {specs!r}:
@@ -1685,7 +1696,6 @@ for _g in {specs!r}:
         obj.addGeometry(Part.ArcOfCircle(_c, math.radians(_g[4]), math.radians(_g[5])), False)
 doc.recompute()
 _check_sketch(obj)
-print("{sketch_marker} " + json.dumps(_sketch_state(obj)))
 """
 
 
@@ -1711,7 +1721,7 @@ def create_sketch(name: str, plane: str, geometry: Sequence[dict[str, Any]]) -> 
     if is_dry_run_enabled():
         return _dry_run_result("create_sketch", name=resolved_name, type="Sketcher::SketchObject", dimensions=dims)
     script, session_path = _partdesign_script(
-        _CREATE_SKETCH_BODY, name=resolved_name, rotation=_SKETCH_PLANE_ROTATIONS[plane_u], specs=specs
+        "create_sketch", feature_name=resolved_name, rotation=_SKETCH_PLANE_ROTATIONS[plane_u], specs=specs
     )
     return _partdesign_result(
         "create_sketch",
@@ -1733,7 +1743,6 @@ _args = {args!r}
 obj.addConstraint(Sketcher.Constraint({constraint_type!r}, *_args))
 doc.recompute()
 _check_sketch(obj)
-print("{sketch_marker} " + json.dumps(_sketch_state(obj)))
 """
 
 
@@ -1759,22 +1768,10 @@ def apply_sketch_constraint(
         indices = [int(i) for i in geometry_indices]
     except (TypeError, ValueError):
         return _error("apply_sketch_constraint: geometry_indices must be a list of integers")
-    expected = _SKETCH_CONSTRAINT_ARITY[constraint_type]
-    if len(indices) != expected:
-        return _error(
-            f"apply_sketch_constraint: '{constraint_type}' requires exactly {expected} geometry_indices, "
-            f"got {len(indices)}"
-        )
-    args: list[Any] = list(indices)
-    geo_ids = indices[0::2] if constraint_type == "Coincident" else indices
-    if constraint_type == "Coincident" and any(p not in (1, 2, 3) for p in indices[1::2]):
-        return _error("apply_sketch_constraint: Coincident posIds must be 1 (start), 2 (end) or 3 (center)")
-    if constraint_type in ("Distance", "Radius"):
-        if value is None:
-            return _error(f"apply_sketch_constraint: '{constraint_type}' requires a numeric value")
-        if float(value) <= 0:
-            return _error(f"apply_sketch_constraint: '{constraint_type}' value must be positive")
-        args.append(float(value))
+    call = _constraint_call(constraint_type, indices, value)
+    if isinstance(call, str):
+        return _error(f"apply_sketch_constraint: {call}")
+    geo_ids, args = call
     dims = {
         "constraint_type": constraint_type,
         "geometry_indices": indices,
@@ -1786,7 +1783,7 @@ def apply_sketch_constraint(
     if missing:
         return missing
     script, session_path = _partdesign_script(
-        _APPLY_SKETCH_CONSTRAINT_BODY,
+        "apply_sketch_constraint",
         sketch_name=sketch,
         geo_ids=geo_ids,
         args=args,
@@ -1805,15 +1802,13 @@ def apply_sketch_constraint(
 _CREATE_PAD_BODY = """\
 _sk = _require_sketch(doc, {sketch_name!r})
 _body = _body_for_sketches(doc, [_sk], True)
-obj = _body.newObject("PartDesign::Pad", "Pad")
+obj = _body.newObject("PartDesign::Pad", {feature_name!r})
 obj.Profile = _sk
 obj.Length = {length!r}
 if {symmetric!r}:
     _set_symmetric(obj)
 obj.Reversed = {reversed_direction!r}
 _check_feature(doc, obj)
-print("{sketch_marker} " + json.dumps(_sketch_state(_sk)))
-print("{marker}_BODY " + _body.Name)
 """
 
 
@@ -1847,7 +1842,7 @@ def create_pad(
     if missing:
         return missing
     script, session_path = _partdesign_script(
-        _CREATE_PAD_BODY,
+        "create_pad",
         sketch_name=sketch,
         length=length_f,
         symmetric=bool(symmetric_to_plane),
@@ -1867,7 +1862,7 @@ if _body is None or _body.Shape.isNull() or not _body.Shape.Solids:
     raise RuntimeError("no active body solid to cut into — create one with create_freecad_pad first")
 _body_for_sketches(doc, [_sk], False)
 _volume_before = _body.Shape.Volume
-obj = _body.newObject("PartDesign::Pocket", "Pocket")
+obj = _body.newObject("PartDesign::Pocket", {feature_name!r})
 obj.Profile = _sk
 if {through_all!r}:
     obj.Type = "ThroughAll"
@@ -1891,9 +1886,6 @@ if _volume_before - obj.Shape.Volume <= 1e-9:
         "Pocket " + obj.Name + " removed no material: sketch " + _sk.Name
         + " does not overlap the solid in either cut direction (check the sketch's position and depth)"
     )
-print("{sketch_marker} " + json.dumps(_sketch_state(_sk)))
-print("{marker}_BODY " + _body.Name)
-print("{marker}_AUTO_REVERSED " + str(_auto_reversed))
 """
 
 
@@ -1928,7 +1920,7 @@ def create_pocket(
     if missing:
         return missing
     script, session_path = _partdesign_script(
-        _CREATE_POCKET_BODY,
+        "create_pocket",
         sketch_name=sketch,
         depth=depth_f,
         through_all=bool(through_all),
@@ -1947,20 +1939,19 @@ def create_pocket(
 
 
 _PATTERN_BODY = """\
-_feat = resolve_object(doc, {feature_name!r})
+_feat = resolve_object(doc, {source_name!r})
 if _feat is None:
-    raise RuntimeError("Object not found: " + {feature_name!r})
+    raise RuntimeError("Object not found: " + {source_name!r})
 _body = _body_of(_feat)
 if _body is None or _feat.TypeId in ("Sketcher::SketchObject", "PartDesign::Body"):
-    raise RuntimeError({feature_name!r} + " is a " + _feat.TypeId + ", not a PartDesign feature (pattern a create_freecad_pad/create_freecad_pocket result)")
-obj = _body.newObject({type_id!r}, {base_name!r})
+    raise RuntimeError({source_name!r} + " is a " + _feat.TypeId + ", not a PartDesign feature (pattern a create_freecad_pad/create_freecad_pocket result)")
+obj = _body.newObject({type_id!r}, {feature_name!r})
 obj.Originals = [_feat]
 setattr(obj, {axis_prop!r}, (_origin_axis(_body, {axis_role!r}), [""]))
 obj.Occurrences = {occurrences!r}
 setattr(obj, {extent_prop!r}, {extent!r})
 obj.Reversed = {reversed_direction!r}
 _check_feature(doc, obj)
-print("{marker}_BODY " + _body.Name)
 """
 
 
@@ -2008,10 +1999,10 @@ def _pattern(
     if missing:
         return missing
     script, session_path = _partdesign_script(
-        _PATTERN_BODY,
-        feature_name=feature,
+        "pattern",
+        source_name=feature,
         type_id=type_id,
-        base_name=base_name,
+        feature_name=base_name,
         axis_prop=axis_prop,
         axis_role=_PATTERN_AXIS_ROLES[axis_u],
         occurrences=occurrences_i,
@@ -2078,12 +2069,11 @@ _CREATE_SWEEP_BODY = """\
 _profile = _require_sketch(doc, {profile!r})
 _path = _require_sketch(doc, {path!r})
 _body = _body_for_sketches(doc, [_profile, _path], True)
-obj = _body.newObject("PartDesign::AdditivePipe", "Sweep")
+obj = _body.newObject("PartDesign::AdditivePipe", {feature_name!r})
 obj.Profile = _profile
 obj.Spine = (_path, ["Edge" + str(i + 1) for i in range(len(_path.Shape.Edges))])
 obj.Mode = {mode!r}
 _check_feature(doc, obj)
-print("{marker}_BODY " + _body.Name)
 """
 
 
@@ -2105,7 +2095,7 @@ def create_sweep(profile_sketch: str, path_sketch: str, frenet: bool = True) -> 
     if missing:
         return missing
     script, session_path = _partdesign_script(
-        _CREATE_SWEEP_BODY, profile=profile, path=path, mode="Frenet" if frenet else "Standard"
+        "create_sweep", profile=profile, path=path, mode="Frenet" if frenet else "Standard"
     )
     result = _run_freecad_script(script)
     return _partdesign_result(
@@ -2117,13 +2107,12 @@ def create_sweep(profile_sketch: str, path_sketch: str, frenet: bool = True) -> 
 _CREATE_LOFT_BODY = """\
 _sections = [_require_sketch(doc, _n) for _n in {names!r}]
 _body = _body_for_sketches(doc, _sections, True)
-obj = _body.newObject("PartDesign::AdditiveLoft", "Loft")
+obj = _body.newObject("PartDesign::AdditiveLoft", {feature_name!r})
 obj.Profile = _sections[0]
 obj.Sections = _sections[1:]
 obj.Ruled = {ruled!r}
 obj.Closed = {closed!r}
 _check_feature(doc, obj)
-print("{marker}_BODY " + _body.Name)
 """
 
 
@@ -2146,7 +2135,7 @@ def create_loft(cross_section_sketches: Sequence[str], ruled: bool = False, clos
     if missing:
         return missing
     script, session_path = _partdesign_script(
-        _CREATE_LOFT_BODY, names=names, ruled=bool(ruled), closed=bool(closed)
+        "create_loft", names=names, ruled=bool(ruled), closed=bool(closed)
     )
     result = _run_freecad_script(script)
     return _partdesign_result(
@@ -2162,6 +2151,157 @@ def _extract_marker_value(result: dict[str, Any], suffix: str) -> str | None:
         return None
     match = re.search(re.escape(_OK_MARKER + suffix) + r" (\S+)", result.get("stdout") or "")
     return match.group(1) if match else None
+
+
+# Live-only marker prints each op appends after its geometry code.
+_REPORT_SKETCH_OBJ = 'print("{sketch_marker} " + json.dumps(_sketch_state(obj)))\n'
+_REPORT_SKETCH_INPUT = 'print("{sketch_marker} " + json.dumps(_sketch_state(_sk)))\n'
+_REPORT_BODY = 'print("{marker}_BODY " + _body.Name)\n'
+_REPORT_AUTO_REVERSED = 'print("{marker}_AUTO_REVERSED " + str(_auto_reversed))\n'
+
+# op -> (geometry code template, live report lines, default object name)
+_PARTDESIGN_OPS: dict[str, tuple[str, str, str]] = {
+    "create_sketch": (_CREATE_SKETCH_BODY, _REPORT_SKETCH_OBJ, "Sketch"),
+    "apply_sketch_constraint": (_APPLY_SKETCH_CONSTRAINT_BODY, _REPORT_SKETCH_OBJ, "Sketch"),
+    "create_pad": (_CREATE_PAD_BODY, _REPORT_SKETCH_INPUT + _REPORT_BODY, "Pad"),
+    "create_pocket": (_CREATE_POCKET_BODY, _REPORT_SKETCH_INPUT + _REPORT_BODY + _REPORT_AUTO_REVERSED, "Pocket"),
+    "pattern": (_PATTERN_BODY, _REPORT_BODY, "Pattern"),
+    "create_sweep": (_CREATE_SWEEP_BODY, _REPORT_BODY, "Sweep"),
+    "create_loft": (_CREATE_LOFT_BODY, _REPORT_BODY, "Loft"),
+}
+
+# Helpers every Sketcher/PartDesign op needs; the macro exporter embeds these
+# once ahead of its first PartDesign step.
+PARTDESIGN_PREAMBLE_HELPERS = _RESOLVE_OBJECT_SNIPPET + _PARTDESIGN_HELPERS
+_PARTDESIGN_PREAMBLE = (
+    "import FreeCAD as App\nimport Part\nimport Sketcher\nimport json\nimport math\n\n" + PARTDESIGN_PREAMBLE_HELPERS
+)
+
+
+def _constraint_call(
+    constraint_type: str, indices: Sequence[int], value: float | None
+) -> tuple[list[int], list[Any]] | str:
+    """(geometry ids to range-check, Sketcher.Constraint args) for one
+    constraint, or an error message. Shared by apply_sketch_constraint and
+    its macro replay."""
+    if constraint_type not in _SKETCH_CONSTRAINT_ARITY:
+        return f"unknown constraint_type '{constraint_type}' — must be one of {sorted(_SKETCH_CONSTRAINT_ARITY)}"
+    expected = _SKETCH_CONSTRAINT_ARITY[constraint_type]
+    if len(indices) != expected:
+        return f"'{constraint_type}' requires exactly {expected} geometry_indices, got {len(indices)}"
+    if constraint_type == "Coincident" and any(p not in (1, 2, 3) for p in indices[1::2]):
+        return "Coincident posIds must be 1 (start), 2 (end) or 3 (center)"
+    args: list[Any] = list(indices)
+    if constraint_type in ("Distance", "Radius"):
+        if value is None:
+            return f"'{constraint_type}' requires a numeric value"
+        if float(value) <= 0:
+            return f"'{constraint_type}' value must be positive"
+        args.append(float(value))
+    geo_ids = list(indices[0::2]) if constraint_type == "Coincident" else list(indices)
+    return geo_ids, args
+
+
+def partdesign_replay_code(tool_id: str, arguments: dict[str, Any], result: dict[str, Any]) -> str | None:
+    """Macro-export translation for the eight Sketcher/PartDesign tools: the
+    same FreeCAD code the live call ran (see ``_partdesign_code``), rebuilt
+    from a call-log record's resolved ``arguments`` and the engine's own
+    ``result``. Objects are recreated under the exact names the live call
+    got (``result["name"]``, e.g. ``Pocket004``), so later steps that
+    reference them by name resolve to the same objects. ``None`` for any
+    other tool_id; raises ValueError for a record it can't reproduce."""
+    if tool_id not in PARTDESIGN_TOOL_IDS:
+        return None
+    dims = result.get("dimensions") or {}
+    name = result.get("name")
+    if not name:
+        raise ValueError(f"{tool_id}: record has no result name to replay")
+    if tool_id == "create_freecad_sketch":
+        plane = str(dims.get("plane") or arguments.get("plane") or "XY").upper()
+        specs = _sketch_geometry_specs(arguments.get("geometry") or [])
+        return _partdesign_code(
+            "create_sketch", feature_name=name, rotation=_SKETCH_PLANE_ROTATIONS[plane], specs=specs
+        )
+    if tool_id == "apply_sketch_constraint":
+        call = _constraint_call(
+            str(dims.get("constraint_type")), [int(i) for i in dims.get("geometry_indices") or []], dims.get("value")
+        )
+        if isinstance(call, str):
+            raise ValueError(f"apply_sketch_constraint: {call}")
+        geo_ids, args = call
+        return _partdesign_code(
+            "apply_sketch_constraint",
+            sketch_name=name,
+            geo_ids=geo_ids,
+            args=args,
+            constraint_type=dims["constraint_type"],
+        )
+    if tool_id == "create_freecad_pad":
+        return _partdesign_code(
+            "create_pad",
+            feature_name=name,
+            sketch_name=str(arguments["sketch_name"]),
+            length=float(dims["length"]),
+            symmetric=bool(dims.get("symmetric_to_plane")),
+            reversed_direction=bool(dims.get("reversed_direction")),
+        )
+    if tool_id == "create_freecad_pocket":
+        return _partdesign_code(
+            "create_pocket",
+            feature_name=name,
+            sketch_name=str(arguments["sketch_name"]),
+            depth=float(dims["depth"]),
+            through_all=bool(dims.get("through_all")),
+            symmetric=bool(dims.get("symmetric_to_plane")),
+            # Already includes an auto-reversed flip (create_pocket records it
+            # into dimensions), so replay cuts the same way without re-probing.
+            reversed_direction=bool(dims.get("reversed_direction")),
+        )
+    if tool_id in ("create_freecad_polar_pattern", "create_freecad_linear_pattern"):
+        polar = tool_id == "create_freecad_polar_pattern"
+        axis_u = str(dims.get("axis" if polar else "direction") or ("Z" if polar else "X")).upper()
+        return _partdesign_code(
+            "pattern",
+            feature_name=name,
+            source_name=str(arguments["feature_name"]),
+            type_id="PartDesign::PolarPattern" if polar else "PartDesign::LinearPattern",
+            axis_prop="Axis" if polar else "Direction",
+            axis_role=_PATTERN_AXIS_ROLES[axis_u],
+            occurrences=int(dims["occurrences"]),
+            extent_prop="Angle" if polar else "Length",
+            extent=float(dims["angle" if polar else "length"]),
+            reversed_direction=bool(dims.get("reversed_direction")),
+        )
+    if tool_id == "create_freecad_sweep":
+        return _partdesign_code(
+            "create_sweep",
+            feature_name=name,
+            profile=str(arguments["profile_sketch"]),
+            path=str(arguments["path_sketch"]),
+            mode="Frenet" if dims.get("frenet", True) else "Standard",
+        )
+    return _partdesign_code(
+        "create_loft",
+        feature_name=name,
+        names=[str(s) for s in arguments["cross_section_sketches"]],
+        ruled=bool(dims.get("ruled")),
+        closed=bool(dims.get("closed")),
+    )
+
+
+# The ReAct-level tool ids partdesign_replay_code translates.
+PARTDESIGN_TOOL_IDS = frozenset(
+    {
+        "create_freecad_sketch",
+        "apply_sketch_constraint",
+        "create_freecad_pad",
+        "create_freecad_pocket",
+        "create_freecad_polar_pattern",
+        "create_freecad_linear_pattern",
+        "create_freecad_sweep",
+        "create_freecad_loft",
+    }
+)
 
 
 _ASSEMBLY_RESULT_PRINT = """\

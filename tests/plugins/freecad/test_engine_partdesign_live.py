@@ -279,3 +279,98 @@ def test_loft_argument_checks() -> None:
     assert "not a single string" in _err(engine.create_loft("Base"))
     assert "at least 2" in _err(engine.create_loft(["Base"]))
     assert "distinct" in _err(engine.create_loft(["Base", "Base"]))
+
+
+# -- macro export parity ------------------------------------------------------------
+#
+# Build a session through the real engine while recording a CadCallLog the way
+# dispatch_tool_call does (ReAct tool_id, resolved arguments, the engine's own
+# result payload), export the macro, run it in a FRESH document, and require
+# the replayed part to match the live one.
+
+from dana.plugins.freecad import py_export  # noqa: E402
+from dana.plugins.freecad.call_log import CadCallLog  # noqa: E402
+
+
+def _run_logged(log: CadCallLog, tool_id: str, arguments: dict[str, Any], raw: str) -> dict[str, Any]:
+    result = _ok(raw)
+    log.record(tool_id, arguments, ok=True, result=result)
+    return result
+
+
+def _replay_measure(log: CadCallLog, *names: str) -> dict[str, dict[str, Any]]:
+    script = py_export.render_macro_script(log) + (
+        "\nimport json as _json\n"
+        "_out = {}\n"
+        f"for _n in {list(names)!r}:\n"
+        "    _o = doc.getObject(_n)\n"
+        "    if _o is None:\n"
+        "        _out[_n] = None\n"
+        "        continue\n"
+        "    _out[_n] = {'volume': _o.Shape.Volume if _o.Shape.Solids else 0.0, 'valid': _o.isValid(),\n"
+        "                'tip': _o.Tip.Name if getattr(_o, 'Tip', None) is not None else None}\n"
+        f"print({engine._OK_MARKER!r} + '_REPLAY ' + _json.dumps(_out))\n"
+    )
+    result = engine._run_freecad_script(script)
+    assert result["ok"], result["error"]
+    match = re.search(re.escape(engine._OK_MARKER + "_REPLAY ") + r"(\{.*\})", result["stdout"])
+    assert match, result["stdout"][-2000:]
+    return json.loads(match.group(1))
+
+
+def test_macro_replays_a_pad_pocket_pattern_session_identically() -> None:
+    log = CadCallLog()
+    _run_logged(log, "create_freecad_sketch", {"name": "Plate", "plane": "XY", "geometry": _rect(-30, -30, 30, 30)},
+                engine.create_sketch("Plate", "XY", _rect(-30, -30, 30, 30)))
+    _run_logged(log, "apply_sketch_constraint",
+                {"sketch_name": "Plate", "constraint_type": "Horizontal", "geometry_indices": [0]},
+                engine.apply_sketch_constraint("Plate", "Horizontal", [0]))
+    _run_logged(log, "create_freecad_pad", {"sketch_name": "Plate", "length": 4}, engine.create_pad("Plate", 4))
+    hole = [{"type": "circle", "center": [15, 0], "radius": 3}]
+    _run_logged(log, "create_freecad_sketch", {"name": "Hole", "plane": "XY", "geometry": hole},
+                engine.create_sketch("Hole", "XY", hole))
+    pocket = _run_logged(log, "create_freecad_pocket", {"sketch_name": "Hole", "depth": 1, "through_all": True},
+                         engine.create_pocket("Hole", 1, through_all=True))
+    assert pocket["auto_reversed"] is True
+    polar = _run_logged(log, "create_freecad_polar_pattern", {"feature_name": pocket["name"], "occurrences": 4},
+                        engine.create_polar_pattern(pocket["name"], 4))
+    boss = [{"type": "circle", "center": [0, 0], "radius": 4}]
+    _run_logged(log, "create_freecad_sketch", {"name": "Boss", "plane": "XY", "geometry": boss},
+                engine.create_sketch("Boss", "XY", boss))
+    last = _run_logged(log, "create_freecad_pad", {"sketch_name": "Boss", "length": 10}, engine.create_pad("Boss", 10))
+
+    live = _measure("Body", polar["name"], last["name"])
+    replay = _replay_measure(log, "Body", polar["name"], last["name"])
+    assert replay["Body"]["tip"] == live["Body"]["tip"] == last["name"]
+    for name in ("Body", polar["name"], last["name"]):
+        assert replay[name]["valid"] is True
+        assert math.isclose(replay[name]["volume"], live[name]["volume"], rel_tol=1e-9), name
+
+
+def test_macro_replays_sweep_and_loft_sessions_identically() -> None:
+    log = CadCallLog()
+    section = [{"type": "circle", "center": [0, 0], "radius": 2}]
+    spine = [{"type": "line", "start": [0, 0], "end": [0, 20]}]
+    _run_logged(log, "create_freecad_sketch", {"name": "Section", "plane": "XY", "geometry": section},
+                engine.create_sketch("Section", "XY", section))
+    _run_logged(log, "create_freecad_sketch", {"name": "Spine", "plane": "XZ", "geometry": spine},
+                engine.create_sketch("Spine", "XZ", spine))
+    sweep = _run_logged(log, "create_freecad_sweep", {"profile_sketch": "Section", "path_sketch": "Spine"},
+                        engine.create_sweep("Section", "Spine"))
+    _run_logged(log, "create_freecad_sketch", {"name": "Base", "plane": "XY", "geometry": _rect(-10, -10, 10, 10)},
+                engine.create_sketch("Base", "XY", _rect(-10, -10, 10, 10)))
+    top = [{"type": "circle", "center": [0, 0], "radius": 5}]
+    _run_logged(log, "create_freecad_sketch", {"name": "Top", "plane": "XY", "geometry": top},
+                engine.create_sketch("Top", "XY", top))
+    _run_logged(log, "modify_freecad_parameter",
+                {"target_object": "Top", "parameter_name": "Placement", "new_value": [0, 0, 30]},
+                engine.modify_parameter("Top", "Placement", [0, 0, 30]))
+    loft = _run_logged(log, "create_freecad_loft", {"cross_section_sketches": ["Base", "Top"]},
+                       engine.create_loft(["Base", "Top"]))
+
+    live = _measure("Body", sweep["name"], loft["name"])
+    replay = _replay_measure(log, "Body", sweep["name"], loft["name"])
+    assert replay["Body"]["tip"] == live["Body"]["tip"] == loft["name"]
+    for name in ("Body", sweep["name"], loft["name"]):
+        assert replay[name]["valid"] is True
+        assert math.isclose(replay[name]["volume"], live[name]["volume"], rel_tol=1e-9), name

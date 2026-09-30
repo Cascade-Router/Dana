@@ -569,6 +569,13 @@ def _modify_parameter_from_args(
 
 def _modify_parameter_from_record(rec: Any, index: int) -> dict[str, Any]:
     target_object = str(rec.arguments.get("target_object", ""))
+    parameter_name = str(rec.result.get("parameter_name", rec.arguments.get("parameter_name", "")))
+    if parameter_name == "Placement":
+        # engine.modify_parameter runs a Placement edit as the vector
+        # "modify_placement" kind (see below); replaying it as the scalar
+        # setattr here produced `obj.Placement = [x, y, z]`, which FreeCAD
+        # rejects, so every exported macro containing a move crashed.
+        return _modify_placement_from_record(rec, index)
     return {
         "kind": "modify_parameter", "var": safe_var_name(target_object, index),
         "target_object": target_object,

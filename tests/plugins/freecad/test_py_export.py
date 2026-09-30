@@ -223,3 +223,131 @@ def test_render_blueprint_creates_page_and_only_the_requested_views():
     assert "'Isometric'" in script
     assert "'Top'" not in script
     assert "'Right'" not in script
+
+
+# -- Sketcher/PartDesign replay --------------------------------------------------
+
+
+def _rect(x0: float, y0: float, x1: float, y1: float) -> list[dict]:
+    c = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    return [{"type": "line", "start": list(c[i]), "end": list(c[(i + 1) % 4])} for i in range(4)]
+
+
+def _partdesign_log() -> CadCallLog:
+    """One of each Sketcher/PartDesign tool, with result payloads shaped like
+    the real engine's (resolved names, coerced dimensions)."""
+    log = CadCallLog()
+    rec = log.record
+    rec("create_freecad_sketch", {"name": "PlateSketch", "plane": "XY", "geometry": _rect(-30, -30, 30, 30)},
+        ok=True, result={"name": "PlateSketch", "dimensions": {"plane": "XY"}})
+    rec("apply_sketch_constraint",
+        {"sketch_name": "PlateSketch", "constraint_type": "Distance", "geometry_indices": [0], "value": 60},
+        ok=True, result={"name": "PlateSketch",
+                         "dimensions": {"constraint_type": "Distance", "geometry_indices": [0], "value": 60.0}})
+    rec("create_freecad_pad", {"sketch_name": "PlateSketch", "length": 4},
+        ok=True, result={"name": "Pad", "dimensions": {"length": 4.0, "symmetric_to_plane": False,
+                                                       "reversed_direction": False}})
+    rec("create_freecad_sketch",
+        {"name": "HoleSketch", "plane": "XY", "geometry": [{"type": "circle", "center": [15, 0], "radius": 3}]},
+        ok=True, result={"name": "HoleSketch", "dimensions": {"plane": "XY"}})
+    # The engine auto-reversed this pocket and recorded the flip in dimensions.
+    rec("create_freecad_pocket", {"sketch_name": "HoleSketch", "depth": 1, "through_all": True},
+        ok=True, result={"name": "Pocket", "auto_reversed": True,
+                         "dimensions": {"depth": 1.0, "through_all": True, "symmetric_to_plane": False,
+                                        "reversed_direction": True}})
+    rec("create_freecad_polar_pattern", {"feature_name": "Pocket", "occurrences": 4},
+        ok=True, result={"name": "PolarPattern", "dimensions": {"occurrences": 4, "angle": 360.0, "axis": "Z",
+                                                                "reversed_direction": False}})
+    rec("create_freecad_linear_pattern", {"feature_name": "Pocket", "occurrences": 3, "length": 20, "direction": "Y"},
+        ok=True, result={"name": "LinearPattern", "dimensions": {"occurrences": 3, "length": 20.0,
+                                                                 "direction": "Y", "reversed_direction": False}})
+    rec("create_freecad_sketch",
+        {"name": "Section", "plane": "XY", "geometry": [{"type": "circle", "center": [0, 0], "radius": 2}]},
+        ok=True, result={"name": "Section", "dimensions": {"plane": "XY"}})
+    rec("create_freecad_sketch",
+        {"name": "Spine", "plane": "XZ", "geometry": [{"type": "line", "start": [0, 0], "end": [0, 20]}]},
+        ok=True, result={"name": "Spine", "dimensions": {"plane": "XZ"}})
+    rec("create_freecad_sweep", {"profile_sketch": "Section", "path_sketch": "Spine"},
+        ok=True, result={"name": "Sweep", "dimensions": {"frenet": True}})
+    rec("create_freecad_sketch", {"name": "LoftBase", "plane": "XY", "geometry": _rect(-5, -5, 5, 5)},
+        ok=True, result={"name": "LoftBase", "dimensions": {"plane": "XY"}})
+    rec("create_freecad_sketch",
+        {"name": "LoftTop", "plane": "XY", "geometry": [{"type": "circle", "center": [0, 0], "radius": 3}]},
+        ok=True, result={"name": "LoftTop001", "dimensions": {"plane": "XY"}})
+    rec("create_freecad_loft", {"cross_section_sketches": ["LoftBase", "LoftTop001"], "ruled": True},
+        ok=True, result={"name": "Loft", "dimensions": {"cross_section_count": 2, "ruled": True, "closed": False}})
+    return log
+
+
+def test_partdesign_replay_is_valid_python_and_skips_none_of_the_tools():
+    script = render_macro_script(_partdesign_log())
+    compile(script, "<generated-macro>", "exec")
+    assert "could not be replayed" not in script
+    assert "not a FreeCAD geometry operation" not in script
+    assert script.count("def _check_feature(") == 1  # helpers emitted exactly once
+    assert "import Sketcher" in script
+
+
+def test_partdesign_replay_uses_recorded_names_and_references():
+    script = render_macro_script(_partdesign_log())
+    # Objects are recreated under the name the live call got, including
+    # FreeCAD's auto-suffixed ones, so later by-name references resolve.
+    assert 'doc.addObject("Sketcher::SketchObject", \'LoftTop001\')' in script
+    assert "_require_sketch(doc, 'PlateSketch')" in script
+    assert 'newObject("PartDesign::Pad", \'Pad\')' in script
+    assert "_require_sketch(doc, 'HoleSketch')" in script
+    assert 'newObject("PartDesign::Pocket", \'Pocket\')' in script
+    assert "_feat = resolve_object(doc, 'Pocket')" in script
+    assert "newObject('PartDesign::PolarPattern', 'PolarPattern')" in script
+    assert "newObject('PartDesign::LinearPattern', 'LinearPattern')" in script
+    assert "[_require_sketch(doc, _n) for _n in ['LoftBase', 'LoftTop001']]" in script
+
+
+def test_partdesign_replay_carries_exact_parameters():
+    script = render_macro_script(_partdesign_log())
+    assert "obj.addConstraint(Sketcher.Constraint('Distance', *_args))" in script
+    assert "_args = [0, 60.0]" in script
+    assert "obj.Length = 4.0" in script
+    assert 'obj.Type = "ThroughAll"' in script
+    # The live pocket's auto-reversed flip is replayed explicitly.
+    assert "obj.Reversed = True" in script
+    assert "_origin_axis(_body, 'Z_Axis')" in script and "obj.Occurrences = 4" in script
+    assert "_origin_axis(_body, 'Y_Axis')" in script and "setattr(obj, 'Length', 20.0)" in script
+    assert "obj.Mode = 'Frenet'" in script
+    assert "obj.Ruled = True" in script
+    # XZ sketch keeps its plane rotation.
+    assert "((1.0, 0.0, 0.0), 90.0)" in script
+
+
+def test_macro_without_partdesign_steps_has_no_partdesign_helpers():
+    script = render_macro_script(_mock_session_log())
+    assert "def _check_feature(" not in script
+    assert "import Sketcher" not in script
+
+
+def test_unreplayable_partdesign_record_is_skipped_with_a_reason():
+    log = CadCallLog()
+    log.record("create_freecad_pad", {"sketch_name": "S", "length": 4}, ok=True, result={})
+    script = render_macro_script(log)
+    compile(script, "<generated-macro>", "exec")
+    assert "create_freecad_pad could not be replayed" in script
+
+
+def test_placement_edits_replay_as_a_real_placement_not_a_setattr():
+    """Regression: modify_freecad_parameter(Placement) replayed as
+    `setattr(obj, "Placement", [x, y, z])`, which FreeCAD rejects, so any
+    exported session that moved an object produced a macro that crashed."""
+    log = CadCallLog()
+    log.record("create_freecad_box", {"name": "Arm"}, ok=True,
+               result={"name": "Arm", "dimensions": {"length": 80.0, "width": 14.0, "height": 4.0}})
+    log.record("modify_freecad_parameter", {"target_object": "Arm", "parameter_name": "Placement",
+                                           "new_value": [5, 6, 7]},
+               ok=True, result={"parameter_name": "Placement", "new_value": [5.0, 6.0, 7.0]})
+    log.record("modify_freecad_parameter", {"target_object": "Arm", "parameter_name": "Placement",
+                                           "new_value": [0, 0, 0], "yaw": 45},
+               ok=True, result={"parameter_name": "Placement", "new_value": [0.0, 0.0, 0.0, 45.0, 0.0, 0.0]})
+    script = render_macro_script(log)
+    compile(script, "<generated-macro>", "exec")
+    assert "setattr(doc.getObject('Arm'), 'Placement'" not in script
+    assert "App.Vector(5.0, 6.0, 7.0)" in script
+    assert "App.Rotation(45.0, 0.0, 0.0)" in script
