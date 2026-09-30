@@ -20,17 +20,24 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Walk upward from `start` looking for the repo root — identified by
-/// having BOTH `stop_dana.vbs` and `start_dana.bat` directly inside it
-/// (the two root launcher wrappers; see start_dana.bat/stop_dana.vbs at
-/// the repo root). Path-independent on purpose: `tauri dev`'s cwd is
-/// `frontend/src-tauri` while a packaged build's `current_exe()` lives
-/// somewhere else entirely, so this has to work from either starting
-/// point without hardcoding a fixed number of `..` hops.
+/// The tracked teardown script under a repo root (joined per component so
+/// the path handed to wscript.exe uses native separators).
+fn stop_script(root: &Path) -> PathBuf {
+    root.join("scripts").join("launchers").join("stop_dana.vbs")
+}
+
+/// Walk upward from `start` looking for the repo root — identified by the
+/// tracked `scripts/launchers/stop_dana.vbs`. (It used to require the root
+/// `start_dana.bat` wrapper too, which is gitignored, so on a fresh clone
+/// no root was ever found and closing the window left the backend running.)
+/// Path-independent on purpose: `tauri dev`'s cwd is `frontend/src-tauri`
+/// while a packaged build's `current_exe()` lives somewhere else entirely,
+/// so this has to work from either starting point without hardcoding a
+/// fixed number of `..` hops.
 fn find_repo_root(start: &Path) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();
     for _ in 0..8 {
-        if dir.join("stop_dana.vbs").is_file() && dir.join("start_dana.bat").is_file() {
+        if stop_script(&dir).is_file() {
             return Some(dir);
         }
         match dir.parent() {
@@ -44,9 +51,9 @@ fn find_repo_root(start: &Path) -> Option<PathBuf> {
 /// Hitting the main window's 'X' must kill the Python backend — this
 /// crate never spawned it (see the module comment above), so the only way
 /// to reach it from here is the SAME teardown stop_dana.vbs already
-/// implements (a hidden PowerShell that targets pythonw.exe/python.exe
-/// processes whose command line names launch_api_server.py/`-m dana`,
-/// plus any stray Dana.exe). Shelling out to stop_dana.vbs instead of
+/// implements (a hidden PowerShell that targets repo-bound pythonw.exe
+/// processes, python.exe processes whose command line names
+/// launch_api_server.py/`-m dana`, plus any stray Dana.exe). Shelling out to stop_dana.vbs instead of
 /// re-filtering processes here in Rust keeps exactly ONE place that knows
 /// how to recognize "a Dana process" — scripts/launchers/stop_dana.bat.
 /// wscript.exe runs it with a hidden window (`WshShell.Run ..., 0, False`
@@ -61,7 +68,7 @@ fn teardown_backend() {
     ];
     for candidate in candidates.into_iter().flatten() {
         if let Some(root) = find_repo_root(&candidate) {
-            let vbs = root.join("stop_dana.vbs");
+            let vbs = stop_script(&root);
             match Command::new("wscript.exe").arg("//B").arg(&vbs).spawn() {
                 Ok(_) => eprintln!(
                     "[Dana] main window closed -- teardown dispatched via {}",
@@ -76,7 +83,7 @@ fn teardown_backend() {
         }
     }
     eprintln!(
-        "[Dana] main window closed -- could not locate stop_dana.vbs from cwd or exe dir; \
+        "[Dana] main window closed -- could not locate scripts/launchers/stop_dana.vbs from cwd or exe dir; \
          backend process(es) may still be running"
     );
 }
@@ -98,4 +105,23 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Dana");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_repo_root_from_tauri_dev_cwd_via_tracked_stop_script() {
+        // `cargo test` runs with cwd = frontend/src-tauri, same as `tauri dev`.
+        let cwd = std::env::current_dir().unwrap();
+        let root = find_repo_root(&cwd).expect("repo root not found");
+        assert!(stop_script(&root).is_file());
+        assert!(root.join("scripts").join("launchers").join("launch_api_server.py").is_file());
+    }
+
+    #[test]
+    fn gives_up_outside_the_repo() {
+        assert!(find_repo_root(&std::env::temp_dir()).is_none());
+    }
 }

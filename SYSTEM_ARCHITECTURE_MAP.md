@@ -101,7 +101,7 @@ Paths referenced by old docs that **do not exist**: `run.py`, `dana/core_agent.p
 - **`freecad_essential`** (23): the default when a CAD-looking prompt or the UI's `cad` plugin is active.
 - **`os_tools`** (11), **`web_tools`** (2), **`vision_tools`** (2), **`software_engineering`** (4, coder plugin), and **`user_skills`** (dynamic).
 
-**Tool catalog.** `dana/tools/tools.json` has 128 entries, 127 unique ids, with `read_system_architecture` duplicated. 83 have handlers. **44 are legacy ids with no handler**: desktop actuation, vault, shell/forge, AutoCAD, telemetry, and others. `search_tool_catalog` still returns them, and dispatch then rejects them (~L8441).
+**Tool catalog.** `dana/tools/tools.json` has 83 entries, each with a handler in `TOOL_HANDLERS`. The 44 legacy ids with no handler and the duplicate `read_system_architecture` were removed (§3.1 item 7). `search_tool_catalog` and `load_specific_tool` only offer tools that dispatch can run, so non-dispatchable registry entries (the `dana/tools/general/*.py` hot-loads) stay hidden from the agent.
 
 | Domain | Paths | Purpose |
 |---|---|---|
@@ -174,7 +174,7 @@ Paths referenced by old docs that **do not exist**: `run.py`, `dana/core_agent.p
 
 ### 3.1 Defects found during this audit
 
-Items 1–4 were **resolved on 2026-09-30**. Their original descriptions are kept so the history stays readable. Items 5–7 are still open.
+Items 1–5 and 7 were **resolved on 2026-09-30**. Their original descriptions are kept so the history stays readable. Item 6 is still open.
 
 1. ✅ **Resolved: voice STT (and TTS) never worked in a real launch.** Fixed in `16d72c3`.
    - *Was:* `dana/audio/stt.py` imported `dana.core.shared_state`, whose bare `from spatial_context import …` resolved only through `tests/conftest.py`'s `sys.path` entry. Any `import dana.audio…`, including TTS's `multi_voice_tts`, failed under the launcher, and `VoiceService` swallowed the error.
@@ -188,9 +188,18 @@ Items 1–4 were **resolved on 2026-09-30**. Their original descriptions are kep
 4. ✅ **Resolved: router fallback trap.** Fixed in `e26b98d`.
    - *Was:* with no valid `routing_config.yaml` and `DANA_CLOUD_PROVIDER` unset, `complete_with_tool_calls` resolved to `cloud_provider_name()`'s `"gemini"` default, which the tool-calling bridge rejects with `NotImplementedError`.
    - *Now:* it resolves through `tool_calling_provider()`: local Ollama, or a tool-calling-safe cloud provider when `DANA_CLOUD_PRIMARY` is on. Covered by two tests in `tests/test_llm_router.py`.
-5. **Tauri close leaves the backend running** on a fresh clone. `src-tauri/src/lib.rs` looks for a root `start_dana.bat`, which is gitignored.
+5. ✅ **Resolved: Tauri close left the backend running.** Fixed in the commit that marks this item resolved.
+   - *Was:* two bugs.
+     - `src-tauri/src/lib.rs` identified the repo by the gitignored root `start_dana.bat`, so on a fresh clone the teardown never found the stop script.
+     - `scripts/launchers/stop_dana.bat` matched `python.exe` backends only by `run.py` or `-m dana`, so a backend started as `python.exe scripts/launchers/launch_api_server.py` (for example by `start_dana.py`) survived. Only `pythonw.exe` backends matched, through the broader repo-path filter.
+   - *Now:* `lib.rs` locates the repo by the tracked `scripts/launchers/stop_dana.vbs` and runs it directly, with Rust unit tests for the lookup. `stop_dana.bat` matches `launch_api_server.py`.
+   - Verified: running the stop script killed a live `python.exe` backend. The previous script left it running.
+   - macOS/Linux don't use this path: `launch_dana.sh` and `start_dana.py` already stop the backend when the app exits.
 6. **Website chat client targets endpoints that don't exist.** `website/src/utils/hf_api.ts` POSTs to `/api/predict` and `/run/predict`, but `app.py` exposes only the named endpoints `chat` and `artifacts`.
-7. **44 dead tool ids in `tools.json`** can be found through `search_tool_catalog`, but dispatch rejects them. `execute_vision_analysis` has a handler but belongs to no domain, so the agent can never call it.
+7. ✅ **Resolved: 44 dead tool ids in `tools.json`.** Fixed in the same commit.
+   - *Was:* `search_tool_catalog` offered them and `load_specific_tool` reported them loaded, but dispatch rejected them.
+   - *Now:* they're removed, along with the duplicate `read_system_architecture` entry (the loader already used the later, `read_only` one). Both catalog tools also check `TOOL_HANDLERS`, which is read at call time, so plugin tools and user skills stay discoverable.
+   - Still open: `execute_vision_analysis` has a handler but belongs to no capability domain, so the agent can't call it.
 
 ### 3.2 Present but sidelined (no commits since 2026-09-01)
 

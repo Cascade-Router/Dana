@@ -12,7 +12,7 @@ powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command ^
   "  Where-Object { $_.CommandLine -and ($_.CommandLine -match $esc) }; " ^
   "$py = Get-CimInstance Win32_Process -Filter \"Name = 'python.exe'\" | " ^
   "  Where-Object { $_.CommandLine -and ($_.CommandLine -match $esc) -and ( " ^
-  "    ($_.CommandLine -match 'run\.py') -or ($_.CommandLine -match '(?i)-m\s+dana\b') " ^
+  "    ($_.CommandLine -match 'launch_api_server\.py') -or ($_.CommandLine -match '(?i)-m\s+dana\b') " ^
   "  ) }; " ^
   "$apps = @(); foreach ($n in @('Dana.exe','Dana.exe','dana.exe')) { " ^
   "  $apps += @(Get-CimInstance Win32_Process -Filter (\"Name = '{0}'\" -f $n) | " ^

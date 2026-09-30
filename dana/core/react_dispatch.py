@@ -444,7 +444,7 @@ def _tool_search_tool_catalog(args: dict[str, Any], _engine: Any, _cp: Any) -> d
         required = max(1, math.ceil(len(terms) * _LEXICAL_MATCH_THRESHOLD))
         scored: list[tuple[int, Any]] = []
         for entry in registry.tools.values():
-            if not is_bindable_tool(entry):
+            if not is_bindable_tool(entry) or entry.name not in TOOL_HANDLERS:
                 continue
             haystack = f"{entry.name} {entry.description}".lower()
             matched = sum(1 for term in terms if term in haystack)
@@ -453,7 +453,10 @@ def _tool_search_tool_catalog(args: dict[str, Any], _engine: Any, _cp: Any) -> d
         scored.sort(key=lambda pair: pair[0], reverse=True)
         lexical_hits = [entry for _, entry in scored]
 
-    semantic_hits = registry.retrieve(query, k=10)
+    # Only dispatchable tools: the registry also indexes non-dispatchable
+    # entries (e.g. dana/tools/general/*.py hot-loads), and offering one here
+    # sends the agent to load a tool dispatch_tool_call will then reject.
+    semantic_hits = [entry for entry in registry.retrieve(query, k=10) if entry.name in TOOL_HANDLERS]
 
     seen: set[str] = set()
     merged = []
@@ -497,7 +500,7 @@ def _tool_load_specific_tool(args: dict[str, Any], _engine: Any, _cp: Any) -> di
     tool_id = str(args.get("tool_id") or "").strip()
     if not tool_id:
         return {"ok": False, "error": "tool_id is required"}
-    if get_tool_registry().get(tool_id) is None:
+    if get_tool_registry().get(tool_id) is None or tool_id not in TOOL_HANDLERS:
         # Loop-Breaker: the prior wording here ("call search_tool_catalog
         # first to find a valid one") was itself an invitation to retry —
         # a live run on a complex multi-boolean CAD request hit exactly

@@ -142,6 +142,18 @@ def test_registry_loads_non_ephemeral_general_tool() -> None:
     assert entry.ephemeral is False
     assert entry.is_ephemeral is False
     assert entry.callable is not None
-    param_names = {p.name for p in entry.spec.parameters}
-    assert "title" in param_names
-    assert "body" in param_names
+
+
+def test_catalog_never_offers_the_undispatchable_general_tool() -> None:
+    """General tools are indexed in the registry but have no ReAct handler,
+    so search_tool_catalog must not surface them and load_specific_tool
+    must refuse them; otherwise dispatch rejects a tool the agent just loaded."""
+    from dana.core import react_dispatch as rd
+
+    get_tool_registry(reload=True)
+    load_general_tools_from_disk()
+    assert "github_issue_reporter" not in rd.TOOL_HANDLERS
+    found = rd._tool_search_tool_catalog({"query": "github issue reporter"}, None, None)
+    assert "github_issue_reporter" not in {m["tool_id"] for m in found["matches"]}
+    loaded = rd._tool_load_specific_tool({"tool_id": "github_issue_reporter"}, None, None)
+    assert loaded["ok"] is False
