@@ -7,8 +7,14 @@ fallback, not real microphone or Whisper behavior.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import tempfile
 import time
+from pathlib import Path
 
+import numpy as np
 import pytest
 
 from dana.services.voice_service import VoiceService
@@ -135,3 +141,48 @@ def test_stop_is_idempotent_and_resets_state(monkeypatch: pytest.MonkeyPatch) ->
     service.stop()
     service.stop()
     assert service.state == "idle"
+
+
+def test_transcribe_logs_failures_instead_of_swallowing_them(monkeypatch: pytest.MonkeyPatch) -> None:
+    import dana.audio.stt as stt
+    import dana.services.voice_service as voice_service
+
+    logged: list[str] = []
+    monkeypatch.setattr(voice_service, "log_exception", lambda _t, msg, *, exc=None: logged.append(f"{msg}: {exc}"))
+    monkeypatch.setattr(voice_service, "log", lambda _t, msg, **_kw: logged.append(msg))
+
+    def not_loaded(timeout: float = 0.0):
+        raise RuntimeError("Whisper failed to load")
+
+    monkeypatch.setattr(stt, "ensure_whisper_bundle", not_loaded)
+    assert VoiceService._transcribe(np.zeros(1600, dtype=np.int16)) == ""
+    assert logged == ["transcription failed: Whisper failed to load"]
+
+    def still_loading(timeout: float = 0.0):
+        raise TimeoutError("Whisper background load timed out")
+
+    logged.clear()
+    monkeypatch.setattr(stt, "ensure_whisper_bundle", still_loading)
+    assert VoiceService._transcribe(np.zeros(1600, dtype=np.int16)) == ""
+    assert logged and "still loading" in logged[0]
+
+
+def test_audio_modules_import_without_pytest_path_injection() -> None:
+    """Regression: dana.audio.stt / multi_voice_tts imported the bare module
+    ``spatial_context`` (via shared_state), which only resolved because
+    tests/conftest.py puts scripts/diagnostics on sys.path. Import them the
+    way the launcher does — only the repo root on sys.path — and check the
+    legacy shared_state stack (vault daemon client, Popen patch) stays out."""
+    repo_root = Path(__file__).resolve().parents[2]
+    code = (
+        "import sys\n"
+        "import dana.audio.stt, dana.audio.multi_voice_tts, dana.services.voice_service\n"
+        "assert 'spatial_context' not in sys.modules\n"
+        "assert 'dana.core.shared_state' not in sys.modules\n"
+        "assert 'dana.vault_service' not in sys.modules\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(repo_root)}
+    proc = subprocess.run(
+        [sys.executable, "-c", code], cwd=tempfile.gettempdir(), env=env, capture_output=True, text=True, timeout=240
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]

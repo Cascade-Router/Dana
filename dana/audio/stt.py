@@ -14,7 +14,7 @@ from typing import Any, Optional
 import numpy as np
 
 from dana.audio.dc_blocker import remove_dc_offset
-from dana.core import shared_state as state
+from dana.audio import speech_state as state
 from dana.core.constants import (
     SAMPLE_RATE,
     WAKE_PHRASE_VERIFY,

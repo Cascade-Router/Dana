@@ -298,7 +298,7 @@ def strip_code_blocks_for_tts(text: str) -> str:
 
     """
 
-    from dana.core import shared_state as state
+    from dana.audio import speech_state as state
 
 
 
@@ -332,7 +332,7 @@ def sanitize_text_for_tts(text: str) -> str:
 
     """
 
-    from dana.core import shared_state as state
+    from dana.audio import speech_state as state
 
 
 

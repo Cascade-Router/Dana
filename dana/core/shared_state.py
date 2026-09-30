@@ -37,8 +37,20 @@ import threading
 from typing import Any, Callable, Optional, Union
 
 import numpy as np
-from spatial_context import SPATIAL_AGGREGATOR
 
+from dana.audio.speech_state import (  # noqa: F401 — re-exported: legacy readers use state.<name>
+    ARABIC_SCRIPT_RE,
+    WHISPER_AMBIENT_SILENT,
+    WHISPER_HALLUCINATIONS,
+    _CODE_FENCE_TTS_RE,
+    _CODE_FENCE_TTS_UNCLOSED_RE,
+    _PUNCT_OR_SPACE_ONLY_RE,
+    _TTS_MD_MARKERS_RE,
+    stop_event,
+    whisper_bundle_lock,
+    whisper_ready,
+)
+from dana.core.spatial_context import SPATIAL_AGGREGATOR
 from dana.logging import log_debug
 from dana.audio.tts_manager import get_tts_manager as _get_tts_manager
 from dana.audio.tts_worker import get_tts_worker as _get_tts_worker
@@ -74,9 +86,6 @@ dana_vault: Optional["SecureMemory"] = None  # reassigned
 # High-frequency identity keys prefetched post-unlock (skip ReAct vault tools).
 VAULT_HOT_CACHE: dict[str, str] = {}  # reassigned
 
-# Optional Arabic-script detection (unused for English-only TTS routing).
-ARABIC_SCRIPT_RE = re.compile(r"[؀-ۿ]")
-
 # Short-term spatial memory so flickering detections still answer "where is X?"
 spatial_memory_lock = threading.Lock()
 spatial_memory: dict[str, float] = {}  # label -> last_seen monotonic time
@@ -108,17 +117,6 @@ _mic_ingest_thread: Optional[threading.Thread] = None  # reassigned
 AUDIO_INPUT_DEVICE: Optional[int] = None  # reassigned
 AUDIO_INPUT_RATE: int = 16000  # reassigned  # mirrors core_agent.SAMPLE_RATE
 AUDIO_OUTPUT_DEVICE: Optional[int] = None  # reassigned
-
-# ---------------------------------------------------------------------------
-# Whisper STT
-# ---------------------------------------------------------------------------
-
-# Shared Whisper bundle for wake-phrase verification (set by conversation_worker).
-whisper_bundle_lock = threading.Lock()
-whisper_bundle: Optional[tuple[Any, Any, Any, Any]] = None  # reassigned
-# Set when background Whisper load finishes (success or failure).
-whisper_ready = threading.Event()
-_whisper_load_error: Optional[str] = None  # reassigned
 
 # ---------------------------------------------------------------------------
 # Conversation / UI telemetry
@@ -193,7 +191,6 @@ speech_idle = threading.Event()
 speech_idle.set()
 # One "Let me check" per conversational turn (router + ReAct share this).
 _tool_working_ack_sent = threading.Event()
-stop_event = threading.Event()
 # PortAudio / hardware fault signal: Audio thread -> Main (soft recovery).
 audio_hardware_fault = threading.Event()
 _audio_hardware_fault_lock = threading.Lock()
@@ -210,92 +207,6 @@ MEMORY_SALT = b"dana_secure_salt"
 PBKDF2_ITERATIONS = 390_000
 vault_client = VaultClient()  # reassigned (unlock flow replaces this with a fresh instance)
 
-# ---------------------------------------------------------------------------
-# Whisper hallucination filters (constants)
-# ---------------------------------------------------------------------------
-
-# Common Whisper-tiny hallucinations on silence / static.
-WHISPER_HALLUCINATIONS = {
-    "",
-    ".",
-    ",",
-    "!",
-    "?",
-    "...",
-    "…",
-    "you",
-    "the",
-    "a",
-    "i",
-    "oh",
-    "uh",
-    "um",
-    "hmm",
-    "thanks",
-    "thank you",
-    "thank you.",
-    "thanks for watching",
-    "thanks for watching.",
-    "subscribe",
-    "subscribe.",
-    "bye",
-    "bye.",
-    "goodbye",
-    "goodbye.",
-    "okay",
-    "ok",
-    "yes",
-    "no",
-    "hello",
-    "hi",
-    "hey",
-    "music",
-    "applause",
-    "laughter",
-    "www.youtube.com",
-    "please subscribe",
-    "like and subscribe",
-}
-
-# Ambient-noise artifacts that must be discarded silently (no LLM, no apology TTS).
-WHISPER_AMBIENT_SILENT = frozenset(
-    {
-        "",
-        ".",
-        ",",
-        "!",
-        "?",
-        "...",
-        "…",
-        "thanks",
-        "thank you",
-        "thank you.",
-        "thanks.",
-        "thanks for watching",
-        "thanks for watching.",
-        "thank you for watching",
-        "thank you for watching.",
-        "bye",
-        "bye.",
-        "goodbye",
-        "goodbye.",
-        "subscribe",
-        "subscribe.",
-        "please subscribe",
-        "like and subscribe",
-        "music",
-        "applause",
-        "laughter",
-        "www.youtube.com",
-        "thanks for listening",
-        "thank you for listening",
-    }
-)
-
-_CODE_FENCE_TTS_RE = re.compile(r"```[\w+-]*\n?[\s\S]*?```", re.MULTILINE)
-_CODE_FENCE_TTS_UNCLOSED_RE = re.compile(r"```[\w+-]*\n?[\s\S]*$", re.MULTILINE)
-_TTS_MD_MARKERS_RE = re.compile(r"`+|\*{1,3}|_{2,}")
-_PUNCT_OR_SPACE_ONLY_RE = re.compile(r"^[\s\W_]+$", re.UNICODE)
 
 # ---------------------------------------------------------------------------
 # UI-state / transcript event hooks

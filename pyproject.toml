@@ -56,7 +56,7 @@ warn_unused_ignores = false
 check_untyped_defs = true
 files = [
   "dana",
-  "scripts/diagnostics/spatial_context.py",
+  "dana/core/spatial_context.py",
 ]
 
 [[tool.mypy.overrides]]

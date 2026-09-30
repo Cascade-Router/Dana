@@ -28,6 +28,8 @@ import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 
+from dana.logging import log, log_exception
+
 if TYPE_CHECKING:
     import numpy as np
 
@@ -114,8 +116,12 @@ class VoiceService:
             import sounddevice as sd
 
             devices = sd.query_devices()
-            return any(d.get("max_input_channels", 0) > 0 for d in devices)
-        except Exception:  # noqa: BLE001 — no PortAudio backend / no mic is expected on CI
+            if any(d.get("max_input_channels", 0) > 0 for d in devices):
+                return True
+            log("VoiceService", "no audio input device found; push-to-talk disabled")
+            return False
+        except Exception as exc:  # noqa: BLE001 — no PortAudio backend / no mic is expected on CI
+            log("VoiceService", f"audio backend unavailable ({type(exc).__name__}: {exc}); push-to-talk disabled")
             return False
 
     @staticmethod
@@ -124,15 +130,17 @@ class VoiceService:
             from dana.audio.stt import start_whisper_background_load
 
             start_whisper_background_load(local_files_only=True, device=None)
-        except Exception:  # noqa: BLE001 — torch/transformers missing is a graceful no-op here
-            pass
+        except ImportError as exc:  # torch/transformers missing: voice stays up, transcription won't
+            log("VoiceService", f"Whisper preload unavailable ({exc}); push-to-talk cannot transcribe")
+        except Exception as exc:  # noqa: BLE001
+            log_exception("VoiceService", "Whisper preload failed to start", exc=exc)
 
     def _set_state(self, state: VoiceState, transcript: str = "") -> None:
         self._state = state
         try:
             self._on_state(state, transcript)
-        except Exception:  # noqa: BLE001 — a broken listener must never kill the worker thread
-            pass
+        except Exception as exc:  # noqa: BLE001 — a broken listener must never kill the worker thread
+            log_exception("VoiceService", f"voice state listener failed on {state!r}", exc=exc)
 
     # -- worker loop -------------------------------------------------------
 
@@ -163,7 +171,8 @@ class VoiceService:
                 self._set_state("idle", "")
                 continue
             if audio is None:
-                # Nothing captured (silence, transient device error).
+                # Nothing captured (silence, or a device error _capture_utterance logged).
+                log("VoiceService", "no speech captured; back to idle")
                 self._set_state("idle", "")
                 continue
 
@@ -176,6 +185,7 @@ class VoiceService:
                 # assistant has replied. See the class docstring.
                 self._set_state("processing", transcript)
             else:
+                log("VoiceService", "transcription produced no text; back to idle")
                 self._set_state("idle", "")
 
     def _capture_utterance(self) -> "np.ndarray | None":
@@ -184,11 +194,13 @@ class VoiceService:
             import sounddevice as sd
 
             from dana.audio.devices import resolve_live_input_device
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            log_exception("VoiceService", "audio capture dependencies failed to import", exc=exc)
             return None
         try:
             device, rate = resolve_live_input_device()
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            log("VoiceService", f"input device lookup failed ({exc}); using system default @ 16 kHz")
             device, rate = None, 16000
 
         chunks: list["np.ndarray"] = []
@@ -213,7 +225,8 @@ class VoiceService:
                         chunks.append(frame)
                     if chunks and silence_s >= _SILENCE_HANGOVER_S:
                         break
-        except Exception:  # noqa: BLE001 — device unplugged mid-stream, etc.
+        except Exception as exc:  # noqa: BLE001 — device unplugged mid-stream, etc.
+            log_exception("VoiceService", "audio capture failed mid-stream", exc=exc)
             return None
 
         if not chunks:
@@ -227,7 +240,11 @@ class VoiceService:
 
             processor, model, device, dtype = ensure_whisper_bundle(timeout=0.5)
             return transcribe_audio(audio, processor, model, device, dtype).strip()
-        except Exception:  # noqa: BLE001 — model not ready/loaded yet, or transcription failed
+        except TimeoutError:
+            log("VoiceService", "Whisper is still loading; utterance dropped, try again shortly")
+            return ""
+        except Exception as exc:  # noqa: BLE001 — model failed to load, or transcription failed
+            log_exception("VoiceService", "transcription failed", exc=exc)
             return ""
 
 
