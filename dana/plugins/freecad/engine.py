@@ -1461,6 +1461,702 @@ def create_sketch_extrude(
         gui_shown=_auto_show(session_path),
     )
 
+# ---------------------------------------------------------------------------
+# Sketcher + PartDesign tools (create_sketch ... create_loft)
+#
+# The real-FreeCAD counterparts of dana.platform.mock's versions of these
+# eight tools, which were the only implementations until now: win32.py's
+# RealFreeCADEngine called these names on this module, so every live call
+# failed with AttributeError. Same contract as the mock (argument checks,
+# result keys, "active body" semantics), backed by real Sketcher/PartDesign
+# objects in the shared session document.
+#
+# Error bubbling: every script validates its feature after recompute and
+# raises with FreeCAD's own reason (``getStatusString()``, e.g. "Wire is not
+# closed."), before the save snippet runs — so a failed operation never
+# leaves a broken feature in Session_Active.FCStd, and the ReAct loop gets
+# the real geometry error via _run_freecad_script's failure path.
+# ---------------------------------------------------------------------------
+
+_SKETCH_STATE_MARKER = f"{_OK_MARKER}_SKETCH_STATE"
+
+_SKETCH_STATE_RE = re.compile(re.escape(_SKETCH_STATE_MARKER) + r" (\{.*\})")
+
+# Sketch placement per base plane. Local (u, v) lands on the same global axes
+# _embed_2d uses for create_sketch_extrude: XY -> (x, y), XZ -> (x, z),
+# YZ -> (y, z).
+_SKETCH_PLANE_ROTATIONS = {
+    "XY": ((0.0, 0.0, 1.0), 0.0),
+    "XZ": ((1.0, 0.0, 0.0), 90.0),
+    "YZ": ((1.0, 1.0, 1.0), 120.0),
+}
+
+_SKETCH_CONSTRAINT_ARITY = {"Coincident": 4, "Horizontal": 1, "Vertical": 1, "Distance": 1, "Radius": 1}
+
+_PATTERN_AXIS_ROLES = {"X": "X_Axis", "Y": "Y_Axis", "Z": "Z_Axis"}
+
+# Plain (never str.format-ed) helpers shared by every script below.
+_PARTDESIGN_HELPERS = """\
+def _body_of(o):
+    parent = o.getParentGeoFeatureGroup()
+    if parent is not None and parent.TypeId == "PartDesign::Body":
+        return parent
+    return None
+
+def _active_body(doc, create):
+    bodies = [o for o in doc.Objects if o.TypeId == "PartDesign::Body"]
+    if bodies:
+        return bodies[-1]
+    if not create:
+        return None
+    return doc.addObject("PartDesign::Body", "Body")
+
+def _require_sketch(doc, name):
+    sk = resolve_object(doc, name)
+    if sk is None:
+        raise RuntimeError("Object not found: " + name)
+    if sk.TypeId != "Sketcher::SketchObject":
+        raise RuntimeError(name + " is a " + sk.TypeId + ", not a sketch (create one with create_freecad_sketch)")
+    return sk
+
+def _body_for_sketches(doc, sketches, create):
+    owned = [b for b in (_body_of(s) for s in sketches) if b is not None]
+    if len(set(b.Name for b in owned)) > 1:
+        raise RuntimeError("sketches belong to different PartDesign bodies: " + ", ".join(b.Name for b in owned))
+    body = owned[0] if owned else _active_body(doc, create)
+    if body is None:
+        return None
+    for s in sketches:
+        if _body_of(s) is None:
+            body.addObject(s)
+    return body
+
+def _check_sketch(sk):
+    # getattr defaults: older FreeCAD builds (e.g. the HF Space's apt package)
+    # don't expose every one of these solver properties.
+    code = sk.solve()
+    malformed = list(getattr(sk, "MalformedConstraints", []))
+    conflicting = list(getattr(sk, "ConflictingConstraints", []))
+    redundant = list(getattr(sk, "RedundantConstraints", []))
+    if code < 0 or malformed or conflicting or redundant:
+        raise RuntimeError(
+            "sketch " + sk.Name + " does not solve (solver code " + str(code) + "): malformed=" + str(malformed)
+            + " conflicting=" + str(conflicting) + " redundant=" + str(redundant)
+            + " (constraint indices are 1-based)"
+        )
+
+def _sketch_state(sk):
+    # Re-solve first: DoF/FullyConstrained go stale (read 0/True) once the
+    # sketch has been moved into a Body and recomputed as a feature profile.
+    sk.solve()
+    return {"dof": getattr(sk, "DoF", None), "fully_constrained": bool(getattr(sk, "FullyConstrained", False))}
+
+def _check_feature(doc, feat):
+    doc.recompute()
+    if not feat.isValid() or feat.Shape.isNull():
+        reason = feat.getStatusString() or "no shape produced"
+        raise RuntimeError(feat.TypeId + " " + feat.Name + " failed: " + reason)
+
+def _set_symmetric(feat):
+    if "SideType" in feat.PropertiesList:
+        feat.SideType = "Symmetric"
+    else:
+        feat.Midplane = True
+
+def _origin_axis(body, role):
+    for f in body.Origin.OriginFeatures:
+        if f.Role == role:
+            return f
+    raise RuntimeError("body " + body.Name + " has no origin " + role)
+"""
+
+
+def _partdesign_script(body_code: str, **fmt: Any) -> tuple[str, Path]:
+    """Assemble one Sketcher/PartDesign script: imports + shared helpers +
+    session open + ``body_code`` (the only part ``str.format``-ed, with
+    ``marker`` always available) + save + the standard NAME/BBOX print for
+    whatever ``obj`` ``body_code`` bound last."""
+    session_path = _session_document_path()
+    script = (
+        "import FreeCAD as App\nimport Part\nimport Sketcher\nimport json\nimport math\n\n"
+        + _RESOLVE_OBJECT_SNIPPET
+        + _PARTDESIGN_HELPERS
+        + _SESSION_OPEN_SNIPPET.format(session_path=str(session_path), session_doc_name=_SESSION_DOCUMENT_NAME)
+        + body_code.format(marker=_OK_MARKER, sketch_marker=_SKETCH_STATE_MARKER, **fmt)
+        + _SESSION_SAVE_SNIPPET
+        + _SESSION_RESULT_PRINT.format(marker=_OK_MARKER)
+    )
+    return script, session_path
+
+
+def _sketch_state_from(stdout: str) -> dict[str, Any]:
+    match = _SKETCH_STATE_RE.search(stdout or "")
+    if not match:
+        return {}
+    try:
+        return json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _partdesign_result(op: str, result: dict[str, Any], session_path: Path, **payload: Any) -> str:
+    if not result["ok"]:
+        return _error(f"{op} failed: {result['error']}")
+    state = _sketch_state_from(result.get("stdout") or "")
+    if state:
+        payload["sketch_dof"] = state.get("dof")
+        payload["sketch_fully_constrained"] = state.get("fully_constrained")
+        if state.get("fully_constrained") is False:
+            payload["warning"] = (
+                f"sketch is not fully constrained (DoF={state.get('dof')}); the result follows its raw, "
+                "unlocked coordinates"
+            )
+    requested_name = payload.pop("name", None)
+    return _ok(
+        name=result.get("resolved_name") or requested_name,
+        bounding_box=result.get("bounding_box"),
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
+        **payload,
+    )
+
+
+def _require_session_document(op: str) -> str | None:
+    if not _session_document_path().is_file():
+        return _error(f"{op}: no session document yet — create a sketch with create_freecad_sketch first")
+    return None
+
+
+def _sketch_geometry_specs(geometry: Sequence[dict[str, Any]]) -> list[tuple[Any, ...]]:
+    """Validate create_sketch's geometry list (same rules and messages as the
+    mock) into plain tuples the FreeCAD script turns into Part geometry:
+    ``("line", x1, y1, x2, y2)``, ``("circle", cx, cy, r)``,
+    ``("arc", cx, cy, r, start_deg, end_deg)``. Raises ValueError."""
+    specs: list[tuple[Any, ...]] = []
+    for i, item in enumerate(geometry):
+        if not isinstance(item, dict):
+            raise ValueError(f"geometry[{i}] must be an object")
+        kind = str(item.get("type", "")).strip().lower()
+        try:
+            if kind == "line":
+                (x1, y1), (x2, y2) = item["start"], item["end"]
+                if (float(x1), float(y1)) == (float(x2), float(y2)):
+                    raise ValueError("line start and end are the same point")
+                specs.append(("line", float(x1), float(y1), float(x2), float(y2)))
+            elif kind in ("circle", "arc"):
+                cx, cy = item["center"]
+                r = float(item["radius"])
+                if r <= 0:
+                    raise ValueError("radius must be positive")
+                if kind == "circle":
+                    specs.append(("circle", float(cx), float(cy), r))
+                else:
+                    a1, a2 = float(item["start_angle"]), float(item["end_angle"])
+                    if a1 == a2:
+                        raise ValueError("arc start_angle and end_angle are equal")
+                    specs.append(("arc", float(cx), float(cy), r, a1, a2))
+            else:
+                raise ValueError(f"unknown type {item.get('type')!r} (expected line, circle or arc)")
+        except (KeyError, TypeError) as exc:
+            raise ValueError(f"malformed geometry[{i}] — missing or invalid field {exc}") from exc
+        except ValueError as exc:
+            raise ValueError(f"geometry[{i}]: {exc}") from exc
+    return specs
+
+
+_CREATE_SKETCH_BODY = """\
+obj = doc.addObject("Sketcher::SketchObject", {name!r})
+_axis, _angle = {rotation!r}
+obj.Placement = App.Placement(App.Vector(0, 0, 0), App.Rotation(App.Vector(*_axis), _angle))
+for _g in {specs!r}:
+    if _g[0] == "line":
+        obj.addGeometry(Part.LineSegment(App.Vector(_g[1], _g[2], 0), App.Vector(_g[3], _g[4], 0)), False)
+    elif _g[0] == "circle":
+        obj.addGeometry(Part.Circle(App.Vector(_g[1], _g[2], 0), App.Vector(0, 0, 1), _g[3]), False)
+    else:
+        _c = Part.Circle(App.Vector(_g[1], _g[2], 0), App.Vector(0, 0, 1), _g[3])
+        obj.addGeometry(Part.ArcOfCircle(_c, math.radians(_g[4]), math.radians(_g[5])), False)
+doc.recompute()
+_check_sketch(obj)
+print("{sketch_marker} " + json.dumps(_sketch_state(obj)))
+"""
+
+
+def create_sketch(name: str, plane: str, geometry: Sequence[dict[str, Any]]) -> str:
+    """Create a real ``Sketcher::SketchObject`` on a base plane (XY/XZ/YZ) in
+    the session document. ``geometry[i]`` becomes the sketch's ``Geometry[i]``
+    (the index ``apply_sketch_constraint`` references). The sketch starts
+    outside any Body; ``create_pad``/``create_pocket``/sweep/loft move it into
+    one when it's used."""
+    resolved_name = (name or "").strip()
+    if not resolved_name:
+        return _error("create_sketch requires a non-empty name")
+    plane_u = (plane or "XY").strip().upper()
+    if plane_u not in _SKETCH_PLANE_ROTATIONS:
+        return _error(f"create_sketch: unknown plane '{plane}' — must be XY, XZ, or YZ")
+    if not geometry:
+        return _error("create_sketch requires a non-empty geometry list")
+    try:
+        specs = _sketch_geometry_specs(geometry)
+    except ValueError as exc:
+        return _error(f"create_sketch: {exc}")
+    dims = {"plane": plane_u, "geometry": [{"index": i, "type": s[0]} for i, s in enumerate(specs)]}
+    if is_dry_run_enabled():
+        return _dry_run_result("create_sketch", name=resolved_name, type="Sketcher::SketchObject", dimensions=dims)
+    script, session_path = _partdesign_script(
+        _CREATE_SKETCH_BODY, name=resolved_name, rotation=_SKETCH_PLANE_ROTATIONS[plane_u], specs=specs
+    )
+    return _partdesign_result(
+        "create_sketch",
+        _run_freecad_script(script),
+        session_path,
+        name=resolved_name,
+        type="Sketcher::SketchObject",
+        dimensions=dims,
+    )
+
+
+_APPLY_SKETCH_CONSTRAINT_BODY = """\
+obj = _require_sketch(doc, {sketch_name!r})
+_n_geo = len(obj.Geometry)
+for _gi in {geo_ids!r}:
+    if _gi < 0 or _gi >= _n_geo:
+        raise RuntimeError("geometry index " + str(_gi) + " is out of range for sketch " + obj.Name + " (" + str(_n_geo) + " geometry elements)")
+_args = {args!r}
+obj.addConstraint(Sketcher.Constraint({constraint_type!r}, *_args))
+doc.recompute()
+_check_sketch(obj)
+print("{sketch_marker} " + json.dumps(_sketch_state(obj)))
+"""
+
+
+def apply_sketch_constraint(
+    sketch_name: str,
+    constraint_type: str,
+    geometry_indices: Sequence[int],
+    value: float | None = None,
+) -> str:
+    """Add one real ``Sketcher::Constraint`` to an existing sketch and re-solve
+    it. Conflicting, redundant or malformed results fail loudly (the session
+    document is left as it was); the remaining DoF comes back in the result so
+    the agent can tell whether the sketch is fully constrained yet."""
+    sketch = (sketch_name or "").strip()
+    if not sketch:
+        return _error("apply_sketch_constraint requires sketch_name")
+    if constraint_type not in _SKETCH_CONSTRAINT_ARITY:
+        return _error(
+            f"apply_sketch_constraint: unknown constraint_type '{constraint_type}' — "
+            f"must be one of {sorted(_SKETCH_CONSTRAINT_ARITY)}"
+        )
+    try:
+        indices = [int(i) for i in geometry_indices]
+    except (TypeError, ValueError):
+        return _error("apply_sketch_constraint: geometry_indices must be a list of integers")
+    expected = _SKETCH_CONSTRAINT_ARITY[constraint_type]
+    if len(indices) != expected:
+        return _error(
+            f"apply_sketch_constraint: '{constraint_type}' requires exactly {expected} geometry_indices, "
+            f"got {len(indices)}"
+        )
+    args: list[Any] = list(indices)
+    geo_ids = indices[0::2] if constraint_type == "Coincident" else indices
+    if constraint_type == "Coincident" and any(p not in (1, 2, 3) for p in indices[1::2]):
+        return _error("apply_sketch_constraint: Coincident posIds must be 1 (start), 2 (end) or 3 (center)")
+    if constraint_type in ("Distance", "Radius"):
+        if value is None:
+            return _error(f"apply_sketch_constraint: '{constraint_type}' requires a numeric value")
+        if float(value) <= 0:
+            return _error(f"apply_sketch_constraint: '{constraint_type}' value must be positive")
+        args.append(float(value))
+    dims = {
+        "constraint_type": constraint_type,
+        "geometry_indices": indices,
+        "value": float(value) if value is not None else None,
+    }
+    if is_dry_run_enabled():
+        return _dry_run_result("apply_sketch_constraint", name=sketch, type="Sketcher::SketchObject", dimensions=dims)
+    missing = _require_session_document("apply_sketch_constraint")
+    if missing:
+        return missing
+    script, session_path = _partdesign_script(
+        _APPLY_SKETCH_CONSTRAINT_BODY,
+        sketch_name=sketch,
+        geo_ids=geo_ids,
+        args=args,
+        constraint_type=constraint_type,
+    )
+    return _partdesign_result(
+        "apply_sketch_constraint",
+        _run_freecad_script(script),
+        session_path,
+        name=sketch,
+        type="Sketcher::SketchObject",
+        dimensions=dims,
+    )
+
+
+_CREATE_PAD_BODY = """\
+_sk = _require_sketch(doc, {sketch_name!r})
+_body = _body_for_sketches(doc, [_sk], True)
+obj = _body.newObject("PartDesign::Pad", "Pad")
+obj.Profile = _sk
+obj.Length = {length!r}
+if {symmetric!r}:
+    _set_symmetric(obj)
+obj.Reversed = {reversed_direction!r}
+_check_feature(doc, obj)
+print("{sketch_marker} " + json.dumps(_sketch_state(_sk)))
+print("{marker}_BODY " + _body.Name)
+"""
+
+
+def create_pad(
+    sketch_name: str,
+    length: float,
+    symmetric_to_plane: bool = False,
+    reversed_direction: bool = False,
+) -> str:
+    """Extrude a sketch into a ``PartDesign::Pad``. A sketch already in a Body
+    stays there; otherwise it joins the session's active (most recent) Body,
+    or a new one — the same single-active-body semantics as the mock, so a
+    later ``create_pocket`` cuts the same solid."""
+    sketch = (sketch_name or "").strip()
+    if not sketch:
+        return _error("create_pad requires sketch_name")
+    try:
+        length_f = float(length)
+    except (TypeError, ValueError):
+        return _error("create_pad: length must be a number")
+    if length_f <= 0:
+        return _error("create_pad: length must be a positive number")
+    dims = {
+        "length": length_f,
+        "symmetric_to_plane": bool(symmetric_to_plane),
+        "reversed_direction": bool(reversed_direction),
+    }
+    if is_dry_run_enabled():
+        return _dry_run_result("create_pad", name="Pad", type="PartDesign::Pad", dimensions=dims)
+    missing = _require_session_document("create_pad")
+    if missing:
+        return missing
+    script, session_path = _partdesign_script(
+        _CREATE_PAD_BODY,
+        sketch_name=sketch,
+        length=length_f,
+        symmetric=bool(symmetric_to_plane),
+        reversed_direction=bool(reversed_direction),
+    )
+    result = _run_freecad_script(script)
+    return _partdesign_result(
+        "create_pad", result, session_path, name="Pad", type="PartDesign::Pad", dimensions=dims,
+        body=_extract_marker_value(result, "_BODY"),
+    )
+
+
+_CREATE_POCKET_BODY = """\
+_sk = _require_sketch(doc, {sketch_name!r})
+_body = _body_of(_sk) or _active_body(doc, False)
+if _body is None or _body.Shape.isNull() or not _body.Shape.Solids:
+    raise RuntimeError("no active body solid to cut into — create one with create_freecad_pad first")
+_body_for_sketches(doc, [_sk], False)
+_volume_before = _body.Shape.Volume
+obj = _body.newObject("PartDesign::Pocket", "Pocket")
+obj.Profile = _sk
+if {through_all!r}:
+    obj.Type = "ThroughAll"
+else:
+    obj.Length = {depth!r}
+if {symmetric!r}:
+    _set_symmetric(obj)
+obj.Reversed = {reversed_direction!r}
+_check_feature(doc, obj)
+# A Pocket cuts opposite its sketch's normal, so a sketch lying on the pad's
+# own base plane (the only planes create_sketch offers) cuts into empty space
+# and "succeeds" having removed nothing. Retry the other way when the caller
+# didn't pick a direction, and fail loudly if neither side touches the solid.
+_auto_reversed = False
+if _volume_before - obj.Shape.Volume <= 1e-9 and not {reversed_direction!r} and not {symmetric!r}:
+    obj.Reversed = True
+    _check_feature(doc, obj)
+    _auto_reversed = True
+if _volume_before - obj.Shape.Volume <= 1e-9:
+    raise RuntimeError(
+        "Pocket " + obj.Name + " removed no material: sketch " + _sk.Name
+        + " does not overlap the solid in either cut direction (check the sketch's position and depth)"
+    )
+print("{sketch_marker} " + json.dumps(_sketch_state(_sk)))
+print("{marker}_BODY " + _body.Name)
+print("{marker}_AUTO_REVERSED " + str(_auto_reversed))
+"""
+
+
+def create_pocket(
+    sketch_name: str,
+    depth: float,
+    through_all: bool = False,
+    symmetric_to_plane: bool = False,
+    reversed_direction: bool = False,
+) -> str:
+    """Cut a sketch profile out of the active Body's solid via a
+    ``PartDesign::Pocket``. Fails if there is no padded solid to cut, or if the
+    pocket misses the solid entirely (FreeCAD's own error comes back)."""
+    sketch = (sketch_name or "").strip()
+    if not sketch:
+        return _error("create_pocket requires sketch_name")
+    try:
+        depth_f = float(depth)
+    except (TypeError, ValueError):
+        return _error("create_pocket: depth must be a number")
+    if depth_f <= 0:
+        return _error("create_pocket: depth must be a positive number")
+    dims = {
+        "depth": depth_f,
+        "through_all": bool(through_all),
+        "symmetric_to_plane": bool(symmetric_to_plane),
+        "reversed_direction": bool(reversed_direction),
+    }
+    if is_dry_run_enabled():
+        return _dry_run_result("create_pocket", name="Pocket", type="PartDesign::Pocket", dimensions=dims)
+    missing = _require_session_document("create_pocket")
+    if missing:
+        return missing
+    script, session_path = _partdesign_script(
+        _CREATE_POCKET_BODY,
+        sketch_name=sketch,
+        depth=depth_f,
+        through_all=bool(through_all),
+        symmetric=bool(symmetric_to_plane),
+        reversed_direction=bool(reversed_direction),
+    )
+    result = _run_freecad_script(script)
+    auto_reversed = _extract_marker_value(result, "_AUTO_REVERSED") == "True"
+    if auto_reversed:
+        dims["reversed_direction"] = True
+    return _partdesign_result(
+        "create_pocket", result, session_path, name="Pocket", type="PartDesign::Pocket", dimensions=dims,
+        body=_extract_marker_value(result, "_BODY"),
+        auto_reversed=auto_reversed,
+    )
+
+
+_PATTERN_BODY = """\
+_feat = resolve_object(doc, {feature_name!r})
+if _feat is None:
+    raise RuntimeError("Object not found: " + {feature_name!r})
+_body = _body_of(_feat)
+if _body is None or _feat.TypeId in ("Sketcher::SketchObject", "PartDesign::Body"):
+    raise RuntimeError({feature_name!r} + " is a " + _feat.TypeId + ", not a PartDesign feature (pattern a create_freecad_pad/create_freecad_pocket result)")
+obj = _body.newObject({type_id!r}, {base_name!r})
+obj.Originals = [_feat]
+setattr(obj, {axis_prop!r}, (_origin_axis(_body, {axis_role!r}), [""]))
+obj.Occurrences = {occurrences!r}
+setattr(obj, {extent_prop!r}, {extent!r})
+obj.Reversed = {reversed_direction!r}
+_check_feature(doc, obj)
+print("{marker}_BODY " + _body.Name)
+"""
+
+
+def _pattern(
+    op: str,
+    *,
+    type_id: str,
+    base_name: str,
+    feature_name: str,
+    occurrences: Any,
+    axis: str,
+    axis_prop: str,
+    extent_prop: str,
+    extent: Any,
+    extent_label: str,
+    reversed_direction: bool,
+) -> str:
+    feature = (feature_name or "").strip()
+    if not feature:
+        return _error(f"{op} requires feature_name")
+    axis_u = (axis or "").strip().upper()
+    if axis_u not in _PATTERN_AXIS_ROLES:
+        return _error(f"{op}: unknown {'axis' if axis_prop == 'Axis' else 'direction'} '{axis}' — must be X, Y, or Z")
+    try:
+        occurrences_i = int(occurrences)
+    except (TypeError, ValueError):
+        return _error(f"{op}: occurrences must be an integer")
+    if occurrences_i < 2:
+        return _error(f"{op}: occurrences must be at least 2")
+    try:
+        extent_f = float(extent)
+    except (TypeError, ValueError):
+        return _error(f"{op}: {extent_label} must be a number")
+    if extent_f <= 0:
+        return _error(f"{op}: {extent_label} must be a positive number")
+    dims = {
+        "occurrences": occurrences_i,
+        extent_label: extent_f,
+        ("axis" if axis_prop == "Axis" else "direction"): axis_u,
+        "reversed_direction": bool(reversed_direction),
+    }
+    if is_dry_run_enabled():
+        return _dry_run_result(op, name=base_name, type=type_id, dimensions=dims)
+    missing = _require_session_document(op)
+    if missing:
+        return missing
+    script, session_path = _partdesign_script(
+        _PATTERN_BODY,
+        feature_name=feature,
+        type_id=type_id,
+        base_name=base_name,
+        axis_prop=axis_prop,
+        axis_role=_PATTERN_AXIS_ROLES[axis_u],
+        occurrences=occurrences_i,
+        extent_prop=extent_prop,
+        extent=extent_f,
+        reversed_direction=bool(reversed_direction),
+    )
+    result = _run_freecad_script(script)
+    return _partdesign_result(
+        op, result, session_path, name=base_name, type=type_id, dimensions=dims,
+        body=_extract_marker_value(result, "_BODY"),
+    )
+
+
+def create_polar_pattern(
+    feature_name: str,
+    occurrences: int,
+    angle: float = 360.0,
+    axis: str = "Z",
+    reversed_direction: bool = False,
+) -> str:
+    """Repeat a Pad/Pocket feature around one of its Body's origin axes via a
+    ``PartDesign::PolarPattern`` (``occurrences`` includes the original)."""
+    return _pattern(
+        "create_polar_pattern",
+        type_id="PartDesign::PolarPattern",
+        base_name="PolarPattern",
+        feature_name=feature_name,
+        occurrences=occurrences,
+        axis=axis,
+        axis_prop="Axis",
+        extent_prop="Angle",
+        extent=angle,
+        extent_label="angle",
+        reversed_direction=reversed_direction,
+    )
+
+
+def create_linear_pattern(
+    feature_name: str,
+    occurrences: int,
+    length: float,
+    direction: str = "X",
+    reversed_direction: bool = False,
+) -> str:
+    """Repeat a Pad/Pocket feature along one of its Body's origin axes via a
+    ``PartDesign::LinearPattern`` (``length`` spans first to last copy)."""
+    return _pattern(
+        "create_linear_pattern",
+        type_id="PartDesign::LinearPattern",
+        base_name="LinearPattern",
+        feature_name=feature_name,
+        occurrences=occurrences,
+        axis=direction,
+        axis_prop="Direction",
+        extent_prop="Length",
+        extent=length,
+        extent_label="length",
+        reversed_direction=reversed_direction,
+    )
+
+
+_CREATE_SWEEP_BODY = """\
+_profile = _require_sketch(doc, {profile!r})
+_path = _require_sketch(doc, {path!r})
+_body = _body_for_sketches(doc, [_profile, _path], True)
+obj = _body.newObject("PartDesign::AdditivePipe", "Sweep")
+obj.Profile = _profile
+obj.Spine = (_path, ["Edge" + str(i + 1) for i in range(len(_path.Shape.Edges))])
+obj.Mode = {mode!r}
+_check_feature(doc, obj)
+print("{marker}_BODY " + _body.Name)
+"""
+
+
+def create_sweep(profile_sketch: str, path_sketch: str, frenet: bool = True) -> str:
+    """Sweep a closed profile sketch along a path sketch into a
+    ``PartDesign::AdditivePipe`` (both sketches join the same Body)."""
+    profile = (profile_sketch or "").strip()
+    path = (path_sketch or "").strip()
+    if not profile:
+        return _error("create_sweep requires profile_sketch")
+    if not path:
+        return _error("create_sweep requires path_sketch")
+    if profile == path:
+        return _error("create_sweep: profile_sketch and path_sketch must be two different sketches")
+    dims = {"frenet": bool(frenet)}
+    if is_dry_run_enabled():
+        return _dry_run_result("create_sweep", name="Sweep", type="PartDesign::AdditivePipe", dimensions=dims)
+    missing = _require_session_document("create_sweep")
+    if missing:
+        return missing
+    script, session_path = _partdesign_script(
+        _CREATE_SWEEP_BODY, profile=profile, path=path, mode="Frenet" if frenet else "Standard"
+    )
+    result = _run_freecad_script(script)
+    return _partdesign_result(
+        "create_sweep", result, session_path, name="Sweep", type="PartDesign::AdditivePipe", dimensions=dims,
+        body=_extract_marker_value(result, "_BODY"),
+    )
+
+
+_CREATE_LOFT_BODY = """\
+_sections = [_require_sketch(doc, _n) for _n in {names!r}]
+_body = _body_for_sketches(doc, _sections, True)
+obj = _body.newObject("PartDesign::AdditiveLoft", "Loft")
+obj.Profile = _sections[0]
+obj.Sections = _sections[1:]
+obj.Ruled = {ruled!r}
+obj.Closed = {closed!r}
+_check_feature(doc, obj)
+print("{marker}_BODY " + _body.Name)
+"""
+
+
+def create_loft(cross_section_sketches: Sequence[str], ruled: bool = False, closed: bool = False) -> str:
+    """Blend a solid through 2+ ordered cross-section sketches via a
+    ``PartDesign::AdditiveLoft``. The sections must not all lie in one plane
+    (move them apart first, e.g. with modify_freecad_parameter's Placement) —
+    FreeCAD rejects a flat loft and that error comes back as-is."""
+    if isinstance(cross_section_sketches, str):
+        return _error("create_loft: cross_section_sketches must be a list of sketch names, not a single string")
+    names = [str(s).strip() for s in cross_section_sketches if str(s).strip()]
+    if len(names) < 2:
+        return _error("create_loft requires at least 2 cross_section_sketches")
+    if len(set(names)) != len(names):
+        return _error("create_loft: cross_section_sketches must all be distinct sketch names")
+    dims = {"cross_section_count": len(names), "ruled": bool(ruled), "closed": bool(closed)}
+    if is_dry_run_enabled():
+        return _dry_run_result("create_loft", name="Loft", type="PartDesign::AdditiveLoft", dimensions=dims)
+    missing = _require_session_document("create_loft")
+    if missing:
+        return missing
+    script, session_path = _partdesign_script(
+        _CREATE_LOFT_BODY, names=names, ruled=bool(ruled), closed=bool(closed)
+    )
+    result = _run_freecad_script(script)
+    return _partdesign_result(
+        "create_loft", result, session_path, name="Loft", type="PartDesign::AdditiveLoft", dimensions=dims,
+        body=_extract_marker_value(result, "_BODY"),
+    )
+
+
+def _extract_marker_value(result: dict[str, Any], suffix: str) -> str | None:
+    """The value printed after ``{_OK_MARKER}{suffix} `` in a successful
+    script's stdout (e.g. the Body a PartDesign feature landed in)."""
+    if not result.get("ok"):
+        return None
+    match = re.search(re.escape(_OK_MARKER + suffix) + r" (\S+)", result.get("stdout") or "")
+    return match.group(1) if match else None
+
+
 _ASSEMBLY_RESULT_PRINT = """\
 print("{marker}_NAME " + obj.Name)
 print("{marker} path=" + _session_path)

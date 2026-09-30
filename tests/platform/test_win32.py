@@ -71,3 +71,20 @@ def test_process_exe_name_is_lowercased() -> None:
 def test_process_exe_name_returns_empty_string_when_process_is_gone() -> None:
     with patch("psutil.Process", side_effect=Exception("no such process")):
         assert _process_exe_name(999999) == ""
+
+
+def test_real_freecad_engine_only_calls_functions_the_engine_defines() -> None:
+    """Regression: RealFreeCADEngine called eight engine functions
+    (create_sketch ... create_loft) that dana.plugins.freecad.engine never
+    defined, so every live call failed with AttributeError. Every other test
+    runs the mock engine, so nothing caught it; this check needs no FreeCAD."""
+    import re
+    from pathlib import Path
+
+    import dana.platform.win32 as win32_module
+    from dana.plugins.freecad import engine
+
+    source = Path(win32_module.__file__).read_text(encoding="utf-8")
+    called = set(re.findall(r"\bengine\.([A-Za-z_]\w*)\(", source))
+    assert {"create_sketch", "create_pad", "create_loft"} <= called
+    assert sorted(name for name in called if not callable(getattr(engine, name, None))) == []
