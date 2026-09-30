@@ -31,7 +31,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"dana/core_agent.py" = ["E402", "F401"]
 "tests/test_e2e_lifecycle.py" = ["E402"]
 "scripts/diagnostics/verify_agentic.py" = ["E402"]
 
@@ -56,9 +55,4 @@ warn_unused_ignores = false
 check_untyped_defs = true
 files = [
   "dana",
-  "dana/core/spatial_context.py",
 ]
-
-[[tool.mypy.overrides]]
-module = "dana.core_agent"
-ignore_errors = true

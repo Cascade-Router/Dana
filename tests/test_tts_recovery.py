@@ -101,9 +101,24 @@ def test_portaudio_fault_signals_main_soft_restart() -> None:
     # Soft recover should clear TTS gates without raising.
     shared_state.tts_busy.set()
     shared_state.speech_idle.clear()
-    tts_worker.soft_recover_audio_hardware(detail)
-    assert shared_state.speech_idle.is_set()
-    assert not shared_state.tts_busy.is_set()
+    try:
+        tts_worker.soft_recover_audio_hardware(detail)
+        assert shared_state.speech_idle.is_set()
+        assert not shared_state.tts_busy.is_set()
+    finally:
+        # soft_recover_audio_hardware (re)starts the real daemon MicIngest
+        # thread. Left running, it kept printing while the interpreter shut
+        # down and crashed pytest's exit ("could not acquire lock for
+        # <stdout> at interpreter shutdown"). Stop and join it here.
+        mic_thread = shared_state._mic_ingest_thread
+        shared_state.stop_event.set()
+        try:
+            if mic_thread is not None:
+                mic_thread.join(timeout=10.0)
+                assert not mic_thread.is_alive(), "MicIngest did not stop within 10s"
+        finally:
+            shared_state.stop_event.clear()
+            shared_state._mic_ingest_thread = None
     print("[PASS] PortAudio fault propagates to Main soft-restart")
 
 

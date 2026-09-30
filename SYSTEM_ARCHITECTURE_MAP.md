@@ -1,6 +1,6 @@
 # DANA system architecture map
 
-A read-only audit of every git-tracked part of the repository at commit `3a17835` (2026-09-29). Each component below is tied to a real file path.
+A read-only audit of every git-tracked part of the repository at commit `3a17835` (2026-09-29), updated 2026-09-30 to mark the §3.1 fixes. Each component below is tied to a real file path.
 
 **How "live" is decided.** A module is **live** if a real `import` chain reaches it from a production entry point, not counting tests or docstrings:
 - `scripts/launchers/launch_api_server.py`, which runs `uvicorn dana.api.server:app`
@@ -129,15 +129,15 @@ Paths referenced by old docs that **do not exist**: `run.py`, `dana/core_agent.p
 | Episodic store | `dana/memory/store.py` | `dana/memory/memory.db` with per-row TTL | Legacy |
 | Chroma codebase RAG | `dana/memory/vault.py`, `vector_sync.py`, `compressor.py` | `.dana/vault/` (missing locally) | Legacy |
 | Encrypted profile vault | `dana/secure_memory.py`, `dana/vault_service.py` (TCP 127.0.0.1:47475), `scripts/reset_vault.py` | `dana_memory.enc`; PBKDF2 with a **static salt** | Legacy |
-| Cross-thread globals | `dana/core/shared_state.py` | Extracted from the deleted `core_agent` | Legacy, and **not importable outside pytest** (see §3.1) |
+| Cross-thread globals | `dana/core/shared_state.py` | Extracted from the deleted `core_agent` | Legacy. Importable since the §3.1 fix (`spatial_context` moved into the package), but no longer on the live STT/TTS path |
 
 ### 2.6 Voice and audio: `dana/audio/`, `dana/services/`
 
 | Piece | Path | Status |
 |---|---|---|
-| Push-to-talk service | `dana/services/voice_service.py`, started in the `server.py` lifespan; driven by `voice_control` / `voice_state` WebSocket messages | Started, but **speech-to-text silently fails** (§3.1) |
-| STT | `dana/audio/stt.py`: transformers `distil-whisper/distil-small.en`, corrected by `dana/tools/stt_corrector.py` + `vocabulary.json` | Broken import chain outside pytest |
-| TTS | `dana/audio/multi_voice_tts.py`: Piper (`DANA_PIPER_VOICE`, from `tts_models/*.onnx`) → pyttsx3 → silence. `server._speak_reply` sends `assistant_audio` after **every** final reply | Live. Piper is skipped locally because `tts_models/` is missing |
+| Push-to-talk service | `dana/services/voice_service.py`, started in the `server.py` lifespan; driven by `voice_control` / `voice_state` WebSocket messages | Live. Failures are logged (§3.1 item 1, resolved) |
+| STT | `dana/audio/stt.py`: transformers `distil-whisper/distil-small.en`, corrected by `dana/tools/stt_corrector.py` + `vocabulary.json` | Live (§3.1 item 1, resolved) |
+| TTS | `dana/audio/multi_voice_tts.py`: Piper (`DANA_PIPER_VOICE`, from `tts_models/*.onnx`) → pyttsx3 → silence. `server._speak_reply` sends `assistant_audio` after **every** final reply | Live since the §3.1 item 1 fix (it shared the broken import). Piper is skipped locally because `tts_models/` is missing |
 | Wake word, continuous mic, VAD, barge-in | `dana/audio/mic_input.py`, `vad_consumer.py` (Silero), `noise_floor.py`, `dc_blocker.py`, `tts_worker.py` (~3,300 lines), `tts_manager.py`; openWakeWord is configured in `dana/core/constants.py` | Legacy. No tracked file imports `openwakeword`; its predict loop lived in the deleted `core_agent.py` |
 | Idle governor | `dana/middleware/idle_monitor.py` | Legacy, never started |
 
@@ -166,33 +166,28 @@ Paths referenced by old docs that **do not exist**: `run.py`, `dana/core_agent.p
 
   Not in CI: Playwright e2e, the Tauri/Cargo build, and the website build (it has its own workflow).
 - **Release.** `release.yml`, on `v*` tags, runs tests, builds `dana-engine-<tag>.tar.gz` plus `latest.json`, and publishes a GitHub release. Its comment references the missing `dana/updater/manifest.py`.
-- **Packaging.** `build_dana.py` / `Dana.spec` (PyInstaller) are **broken** (§3.1).
+- **Packaging.** `build_dana.py` / `Dana.spec` (PyInstaller) build the backend from `scripts/launchers/launch_api_server.py` (§3.1 item 3, resolved).
 
 ---
 
 ## 3. The "ignored" surface area
 
-### 3.1 Broken now, found during this audit
+### 3.1 Defects found during this audit
 
-These are real defects, confirmed by reading code but not by running it:
+Items 1–4 were **resolved on 2026-09-30**. Their original descriptions are kept so the history stays readable. Items 5–7 are still open.
 
-1. **Voice STT never works in a real launch.**
-   - `dana/audio/stt.py:16` imports `dana.core.shared_state`.
-   - `shared_state.py:40` does `from spatial_context import SPATIAL_AGGREGATOR`, a bare module found only at `scripts/diagnostics/spatial_context.py`.
-   - That directory is on `sys.path` only through `tests/conftest.py`. `scripts/launchers/launch_api_server.py` adds only the repo root, and `paths.ensure_project_root_on_syspath()` has no callers.
-   - `VoiceService` swallows the exception, so push-to-talk records and then silently returns to idle. Tests pass because conftest fixes the path.
-2. **`setup_startup` would overwrite the working launcher.**
-   - `dana/tools/setup_startup.py`'s `entry_script()` (L69) returns `run.py`, which was deleted on 2026-08-21.
-   - `write_start_bat()` rewrites the tracked `scripts/launchers/start_dana.bat` to launch it.
-   - Running `scripts/launchers/register_startup.py` would therefore register a broken login item.
-3. **Desktop packaging is dead.**
-   - `build_dana.py` and `Dana.spec` use `run.py` as the entry point.
-   - Their hidden imports name `dana.core_agent` and `dana.ui`, which don't exist.
-   - `pyproject.toml`'s ruff and mypy config also references the missing `dana/core_agent.py`.
-4. **Router fallback trap.** In `model_provider.complete_with_tool_calls` (~L985):
-   - When there's no valid `routing_config.yaml` and `DANA_CLOUD_PROVIDER` is unset, the provider resolves to `"gemini"` via `cloud_provider_name()`.
-   - The tool-calling bridge rejects that provider with `NotImplementedError`.
-   - This contradicts the `_call_llm_once` comment that this path "falls through" to the legacy provider.
+1. ✅ **Resolved: voice STT (and TTS) never worked in a real launch.** Fixed in `16d72c3`.
+   - *Was:* `dana/audio/stt.py` imported `dana.core.shared_state`, whose bare `from spatial_context import …` resolved only through `tests/conftest.py`'s `sys.path` entry. Any `import dana.audio…`, including TTS's `multi_voice_tts`, failed under the launcher, and `VoiceService` swallowed the error.
+   - *Now:* `spatial_context` lives at `dana/core/spatial_context.py`. STT and the TTS text sanitizers use `dana/audio/speech_state.py`, so the server no longer loads the legacy `shared_state` stack. `VoiceService` logs every failure path. `tests/services/test_voice_service.py` imports the audio modules in a subprocess with only the repo root on `PYTHONPATH`.
+2. ✅ **Resolved: `setup_startup` would overwrite the working launcher.** Fixed in `6c690f3`.
+   - *Was:* `entry_script()` returned the deleted `run.py`, and `write_start_bat()` rewrote the tracked `scripts/launchers/start_dana.bat` to launch it.
+   - *Now:* `ensure_start_bat()` registers the tracked launcher without modifying it. macOS/Linux autostart runs `scripts/launchers/launch_api_server.py`. Covered by `tests/tools/test_setup_startup.py`.
+3. ✅ **Resolved: desktop packaging was dead.** Fixed in `6c690f3` and in the commit that updates this map.
+   - *Was:* `build_dana.py` and `Dana.spec` used `run.py` as the entry point with `dana.core_agent` / `dana.ui` hidden imports, and `pyproject.toml`'s ruff and mypy config referenced `dana/core_agent.py`.
+   - *Now:* both build files use `launch_api_server.py`, collect all `dana` and `uvicorn` submodules, and bundle `dana/`'s data files. A build from `Dana.spec` produced a `Dana.exe` that served `/api/health` and loaded both plugin manifests. The `core_agent` entries are gone from `pyproject.toml`.
+4. ✅ **Resolved: router fallback trap.** Fixed in `e26b98d`.
+   - *Was:* with no valid `routing_config.yaml` and `DANA_CLOUD_PROVIDER` unset, `complete_with_tool_calls` resolved to `cloud_provider_name()`'s `"gemini"` default, which the tool-calling bridge rejects with `NotImplementedError`.
+   - *Now:* it resolves through `tool_calling_provider()`: local Ollama, or a tool-calling-safe cloud provider when `DANA_CLOUD_PRIMARY` is on. Covered by two tests in `tests/test_llm_router.py`.
 5. **Tauri close leaves the backend running** on a fresh clone. `src-tauri/src/lib.rs` looks for a root `start_dana.bat`, which is gitignored.
 6. **Website chat client targets endpoints that don't exist.** `website/src/utils/hf_api.ts` POSTs to `/api/predict` and `/run/predict`, but `app.py` exposes only the named endpoints `chat` and `artifacts`.
 7. **44 dead tool ids in `tools.json`** can be found through `search_tool_catalog`, but dispatch rejects them. `execute_vision_analysis` has a handler but belongs to no domain, so the agent can never call it.
@@ -205,7 +200,7 @@ These are real defects, confirmed by reading code but not by running it:
 | OS plugin, web research, coder plugin | `dana/plugins/os/`, `dana/plugins/web/`, `dana/plugins/coder_plugin/`, `plugin_manager.py` | Live and reachable, but untouched since August |
 | Safety middleware | `dana/middleware/` (`kill_switch.py`, `idle_monitor.py`, `json_schema_retry.py`, `scratchpad.py`) | The kill switch is imported but its listener is never started. The other three are orphans. Only `toast_notify.py` is live (FreeCAD update toasts) |
 | Legacy memory stack | `dana/memory/*`, `secure_memory.py`, `vault_service.py`, `shared_state.py`, `scripts/reset_vault.py`, `scripts/ingest.py`, `dana/tools/task_queue.py` | A whole earlier generation (SQLite blackboard, Chroma RAG, encrypted vault, `execution_jail` task queue), replaced by core memory plus the distiller. `task_queue.drain()` raises `NotImplementedError`. **`vault_service.py` monkeypatches `subprocess.Popen` globally when imported** |
-| Legacy voice pipeline | `dana/audio/{mic_input,vad_consumer,noise_floor,tts_worker,tts_manager}.py`, openWakeWord config | Wake word and continuous listening are gone with `core_agent.py`. Only push-to-talk (broken, §3.1) and TTS remain |
+| Legacy voice pipeline | `dana/audio/{mic_input,vad_consumer,noise_floor,tts_worker,tts_manager}.py`, openWakeWord config | Wake word and continuous listening are gone with `core_agent.py`. Only push-to-talk and TTS remain |
 | Legacy MoA / LangGraph stack | `dana/cascade_router.py`, `moa_tool_shim.py`, `llm_client.py`, `llm_schemas.py`, `handoff.py`, `schema.py` (the only langgraph import), `dana/telemetry.py`, `bug_tracker.py`, `settings.py`, `vision_tools.py`, `tracker.py` (YOLO), `dana/prompts/` | Orphaned. They import deleted modules (`dana.agentic`, `dana.management`). The corresponding `requirements.txt` pins (langgraph/langchain, chromadb, sentence-transformers, ultralytics, customtkinter, pystray, pyinstaller) are still installed on every CI run and on the Space |
 | Tool Forge / dynamic tools | `dana/tools/promotion.py`, `dynamic/generated_tools.py`, `custom/`, `security_policy.json`, `roadmap.json`, `sandbox_io.py`, `general/github_issue_reporter.py`, `general/draft_cursor_prompt.py` | Orphaned, or indexed for search but not dispatchable. Replaced by user skills (`skill_loader.py`) |
 | Diagnostics and live scripts | `scripts/diagnostics/*`, `scripts/test_live_actuators.py`, `verify_complex_tasks.py`, `run_logging_refactor_benchmark.py`, `generate_dana_icon.py` | Many import deleted modules (`dana.core.agent_loop`, `dana.graph.*`, `dana.ui.*`, `dana.tools.broker`) and can't run. Still working: `run_e2e_cad.py`, `run_kobayashi_maru.py`, `test_freecad_live.py`, `test_cad_vision_live.py`, `generate_ortho_tests.py` |
