@@ -564,6 +564,27 @@ def test_analyze_workspace_image_registered_in_vision_tools_domain() -> None:
     assert rd._CAPABILITY_TOOL_IDS["vision_tools"] == rd._VISION_TOOLS_TOOL_IDS
 
 
+def test_execute_vision_analysis_is_reachable_through_vision_tools() -> None:
+    """Regression: it had a handler but sat in no domain, so the agent could
+    never see or call it."""
+    import dana.core.react_dispatch as rd
+
+    assert "execute_vision_analysis" in rd._tool_ids_for_plugins(frozenset({"vision_tools"}))
+    assert "execute_vision_analysis" not in rd._tool_ids_for_plugins(frozenset())
+
+
+def test_every_tools_json_entry_is_reachable_from_some_domain() -> None:
+    import json
+    from pathlib import Path
+
+    import dana.core.react_dispatch as rd
+
+    tools_json = Path(rd.__file__).resolve().parents[1] / "tools" / "tools.json"
+    ids = {t["id"] for t in json.loads(tools_json.read_text(encoding="utf-8"))["tools"]}
+    reachable = set(rd._CORE_TOOL_IDS).union(*rd._CAPABILITY_TOOL_IDS.values())
+    assert ids - reachable == set()
+
+
 def test_dispatch_tool_call_threads_api_keys_end_to_end(
     _sandbox: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

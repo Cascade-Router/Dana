@@ -5584,9 +5584,11 @@ _OS_TOOLS_TOOL_IDS = frozenset(
 # "read_only": true in tools.json.
 _WEB_TOOLS_TOOL_IDS = frozenset({"search_web", "read_webpage"})
 
-# VLM analysis of a sandboxed image file — read-only inspection, declares
-# "read_only": true in tools.json.
-_VISION_TOOLS_TOOL_IDS = frozenset({"analyze_workspace_image", "analyze_reference_design"})
+# VLM analysis of a sandboxed image file or of the live CAD viewport
+# (execute_vision_analysis — in no domain at all after the regex dispatcher
+# that used to trigger it was removed, so the agent could never call it).
+# Read-only inspection; all declare "read_only": true in tools.json.
+_VISION_TOOLS_TOOL_IDS = frozenset({"analyze_workspace_image", "analyze_reference_design", "execute_vision_analysis"})
 
 # Capability domain name -> the tool ids it unlocks on top of _CORE_TOOL_IDS.
 # Two independent things can add a name to a session's active set (merged in

@@ -1,7 +1,18 @@
 /**
- * Stage 9.1 — Hugging Face / Gradio REST client for Dānā.
- * Tiny fetch wrapper: timeouts, cold-boot hints, Gradio response unpacking.
+ * Stage 9.1 — Hugging Face Space client for Dānā.
+ *
+ * The Space's app.py is a gr.Blocks app that exposes named endpoints only
+ * (`chat`, `artifacts`), not the legacy `/api/predict` / `/run/predict`
+ * routes, so this goes through @gradio/client exactly like
+ * frontend/src/lib/gradioChatClient.ts: `predict("/chat", { message })`,
+ * with the reply text at `result.data[0]`.
+ *
+ * One Client per Space URL is kept for the page's lifetime: app.py keys the
+ * Dana session on the client's session_hash, so reconnecting per message
+ * would start a fresh agent session every time.
  */
+
+import { Client } from "@gradio/client";
 
 export type HfPredictOk = { ok: true; text: string };
 export type HfPredictErr = {
@@ -22,7 +33,7 @@ export type PredictOptions = {
 
 const DEFAULT_TIMEOUT_MS = 90_000;
 
-/** Public Space / Gradio API root — set in `.env` as PUBLIC_DANA_HF_API. */
+/** Public Space root — set in `.env` as PUBLIC_DANA_HF_API. */
 export function getHfApiBase(): string {
   const hfSpaceUrl =
     import.meta.env.PUBLIC_DANA_HF_API || "https://amixxm-dana.hf.space";
@@ -34,73 +45,45 @@ function warmingMessage(detail?: string): string {
   return `Dānā is warming up…${extra} Please try again in a moment.`;
 }
 
-function friendlyNetworkError(err: unknown): HfPredictErr {
-  const name = err instanceof Error ? err.name : "";
+function friendlyError(err: unknown): HfPredictErr {
   const msg = err instanceof Error ? err.message : String(err || "unknown");
-
-  if (name === "AbortError" || /abort|timeout/i.test(msg)) {
-    return {
-      ok: false,
-      warming: true,
-      message: warmingMessage("cold boot or network timeout"),
-    };
+  if (/abort|timed? ?out/i.test(msg)) {
+    return { ok: false, warming: true, message: warmingMessage("cold boot or network timeout") };
   }
-  if (/failed to fetch|networkerror|load failed|cors/i.test(msg)) {
-    return {
-      ok: false,
-      warming: true,
-      message: warmingMessage("cannot reach Hugging Face Space"),
-    };
+  if (/failed to fetch|networkerror|load failed|cors|could not resolve app config|space.*(sleep|build|start)|502|503|504/i.test(msg)) {
+    return { ok: false, warming: true, message: warmingMessage("cannot reach Hugging Face Space") };
   }
-  return {
-    ok: false,
-    message: `Could not reach Dānā: ${msg.slice(0, 160)}`,
-  };
+  return { ok: false, message: `Could not reach Dānā: ${msg.slice(0, 160)}` };
 }
 
-/** Pull assistant text from Gradio 3/4-ish JSON envelopes. */
-export function unpackGradioPayload(payload: unknown): string {
-  if (payload == null) return "";
-  if (typeof payload === "string") return payload.trim();
+const clients = new Map<string, Promise<Client>>();
 
-  if (Array.isArray(payload)) {
-    for (let i = payload.length - 1; i >= 0; i -= 1) {
-      const part = unpackGradioPayload(payload[i]);
-      if (part) return part;
-    }
-    return "";
+function connect(base: string): Promise<Client> {
+  let pending = clients.get(base);
+  if (!pending) {
+    pending = Client.connect(base).catch((err) => {
+      clients.delete(base); // let the next message retry instead of caching the failure
+      throw err;
+    });
+    clients.set(base, pending);
   }
-
-  if (typeof payload === "object") {
-    const obj = payload as Record<string, unknown>;
-    for (const key of ["data", "output", "generated_text", "text", "response"]) {
-      if (key in obj) {
-        const inner = unpackGradioPayload(obj[key]);
-        if (inner) return inner;
-      }
-    }
-    // Gradio queue event bodies sometimes nest under `value`.
-    if ("value" in obj) {
-      const inner = unpackGradioPayload(obj.value);
-      if (inner) return inner;
-    }
-  }
-  try {
-    return JSON.stringify(payload).slice(0, 2000);
-  } catch {
-    return "";
-  }
+  return pending;
 }
 
-function isColdBootStatus(status: number, bodyText: string): boolean {
-  if (status === 502 || status === 503 || status === 504) return true;
-  return /loading|sleeping|starting|not ready|queue|503|502/i.test(bodyText);
+function withTimeout<T>(work: Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("request timed out")), timeoutMs);
+    const onAbort = () => reject(new Error("request aborted"));
+    if (signal?.aborted) onAbort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    });
+  });
 }
 
-/**
- * POST prompt to Gradio-style `/api/predict` (or `/run/predict` fallback).
- * Body: `{ data: [prompt] }` — matches common Gradio textbox → textbox apps.
- */
+/** Send one prompt to the Space's `chat` endpoint and return the reply text. */
 export async function predictDana(
   prompt: string,
   opts: PredictOptions = {},
@@ -120,80 +103,19 @@ export async function predictDana(
   }
 
   const timeoutMs = Math.max(5_000, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const onOuterAbort = () => controller.abort();
-  if (opts.signal) {
-    if (opts.signal.aborted) controller.abort();
-    else opts.signal.addEventListener("abort", onOuterAbort, { once: true });
-  }
-
-  const endpoints = [`${base}/api/predict`, `${base}/run/predict`];
-  const body = JSON.stringify({ data: [text] });
-
   try {
-    let lastErr: HfPredictErr | null = null;
-    for (const url of endpoints) {
-      let res: Response;
-      try {
-        res = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body,
-          signal: controller.signal,
-        });
-      } catch (err) {
-        lastErr = friendlyNetworkError(err);
-        continue;
-      }
-
-      const raw = await res.text();
-      if (!res.ok) {
-        if (isColdBootStatus(res.status, raw)) {
-          return {
-            ok: false,
-            warming: true,
-            message: warmingMessage(`HTTP ${res.status}`),
-          };
-        }
-        lastErr = {
-          ok: false,
-          message: `Dānā API error (HTTP ${res.status}).`,
-        };
-        // Try next endpoint shape.
-        continue;
-      }
-
-      let parsed: unknown = raw;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        // plain text reply
-      }
-      const reply = unpackGradioPayload(parsed);
-      if (!reply) {
-        return {
-          ok: false,
-          message: "Dānā returned an empty response.",
-        };
-      }
-      return { ok: true, text: reply };
-    }
-    return (
-      lastErr || {
-        ok: false,
-        message: "Dānā API did not respond.",
-      }
+    const result = await withTimeout(
+      connect(base).then((client) => client.predict("/chat", { message: text })),
+      timeoutMs,
+      opts.signal,
     );
-  } catch (err) {
-    return friendlyNetworkError(err);
-  } finally {
-    clearTimeout(timer);
-    if (opts.signal) {
-      opts.signal.removeEventListener("abort", onOuterAbort);
+    const data = (result.data as unknown[] | undefined) ?? [];
+    const reply = typeof data[0] === "string" ? data[0].trim() : "";
+    if (!reply) {
+      return { ok: false, message: "Dānā returned an empty response." };
     }
+    return { ok: true, text: reply };
+  } catch (err) {
+    return friendlyError(err);
   }
 }

@@ -21,7 +21,7 @@ Legacy static site archived under `legacy/`.
 ## Stage 9.1 — Global REST chat
 
 - Floating bar on every page (`GlobalChat.astro`) — teal accents, `[User (Text)]` / `[Dānā]` lines
-- `src/utils/hf_api.ts` → `POST {data:[prompt]}` to `/api/predict` (fallback `/run/predict`)
+- `src/utils/hf_api.ts` → `@gradio/client` `predict("/chat", { message })` against the Space (reply text is `data[0]`); one client per page keeps the Space-side session
 - History in `sessionStorage` (`dana_chat_v1`) survives in-tab navigations
 - Cmd/Ctrl+K opens; Esc collapses; pulsing teal border while waiting
 - Cold boot / timeout → “Dānā is warming up…”

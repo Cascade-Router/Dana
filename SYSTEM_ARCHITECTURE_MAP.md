@@ -99,7 +99,7 @@ Paths referenced by old docs that **do not exist**: `run.py`, `dana/core_agent.p
   - image→3D
   - control-plane window tools
 - **`freecad_essential`** (23): the default when a CAD-looking prompt or the UI's `cad` plugin is active.
-- **`os_tools`** (11), **`web_tools`** (2), **`vision_tools`** (2), **`software_engineering`** (4, coder plugin), and **`user_skills`** (dynamic).
+- **`os_tools`** (11), **`web_tools`** (2), **`vision_tools`** (3, including `execute_vision_analysis` for the live CAD viewport), **`software_engineering`** (4, coder plugin), and **`user_skills`** (dynamic).
 
 **Tool catalog.** `dana/tools/tools.json` has 83 entries, each with a handler in `TOOL_HANDLERS`. The 44 legacy ids with no handler and the duplicate `read_system_architecture` were removed (§3.1 item 7). `search_tool_catalog` and `load_specific_tool` only offer tools that dispatch can run, so non-dispatchable registry entries (the `dana/tools/general/*.py` hot-loads) stay hidden from the agent.
 
@@ -157,7 +157,7 @@ Paths referenced by old docs that **do not exist**: `run.py`, `dana/core_agent.p
 ### 2.8 Hosted demo, website, CI/CD, packaging
 
 - **HF Space.** `app.py` is a Gradio Blocks app that drives the real `server._process_user_text` through a duck-typed `_GradioSocket`, auto-approving HITL. `_harden_tool_registry()` removes shell and coder tools. It's staged by `deploy/stage_space.sh` and deployed by `deploy_hf.yml`, which runs only after `Build` succeeds on main.
-- **Website.** `website/`, Astro. `LiveHfSimulator` iframes the Space. `deploy_website.yml` publishes to GitHub Pages.
+- **Website.** `website/`, Astro. `LiveHfSimulator` iframes the Space, and the global chat bar (`src/utils/hf_api.ts`) calls the Space's `chat` endpoint through `@gradio/client`. `deploy_website.yml` publishes to GitHub Pages.
 - **CI.** `.github/workflows/build.yml` has four jobs:
   - `cross-platform`: import check for `setup_startup` only
   - `space-smoke`: imports `app.py` from the staged payload
@@ -174,7 +174,7 @@ Paths referenced by old docs that **do not exist**: `run.py`, `dana/core_agent.p
 
 ### 3.1 Defects found during this audit
 
-Items 1–5 and 7 were **resolved on 2026-09-30**. Their original descriptions are kept so the history stays readable. Item 6 is still open.
+All seven items were **resolved on 2026-09-30**. Their original descriptions are kept so the history stays readable.
 
 1. ✅ **Resolved: voice STT (and TTS) never worked in a real launch.** Fixed in `16d72c3`.
    - *Was:* `dana/audio/stt.py` imported `dana.core.shared_state`, whose bare `from spatial_context import …` resolved only through `tests/conftest.py`'s `sys.path` entry. Any `import dana.audio…`, including TTS's `multi_voice_tts`, failed under the launcher, and `VoiceService` swallowed the error.
@@ -195,11 +195,17 @@ Items 1–5 and 7 were **resolved on 2026-09-30**. Their original descriptions a
    - *Now:* `lib.rs` locates the repo by the tracked `scripts/launchers/stop_dana.vbs` and runs it directly, with Rust unit tests for the lookup. `stop_dana.bat` matches `launch_api_server.py`.
    - Verified: running the stop script killed a live `python.exe` backend. The previous script left it running.
    - macOS/Linux don't use this path: `launch_dana.sh` and `start_dana.py` already stop the backend when the app exits.
-6. **Website chat client targets endpoints that don't exist.** `website/src/utils/hf_api.ts` POSTs to `/api/predict` and `/run/predict`, but `app.py` exposes only the named endpoints `chat` and `artifacts`.
+6. ✅ **Resolved: website chat client targeted endpoints that don't exist.** Fixed in the commit that marks this item resolved.
+   - *Was:* `website/src/utils/hf_api.ts` POSTed `{data: [prompt]}` to `/api/predict` and `/run/predict`. Both return 404 on the live Space, because `app.py` is a `gr.Blocks` app exposing only the named endpoints `chat` and `artifacts`.
+   - *Now:* the website calls the Space through `@gradio/client`, the same contract `frontend/src/lib/gradioChatClient.ts` uses: `predict("/chat", { message })`, with the reply in `data[0]`. One client per page keeps the Space-side session. No backend route was added.
+   - Verified against the live Space: `view_api()` lists `/chat` with a `message` parameter and a Textbox as its first return value. The website builds. A full chat turn wasn't sent, to avoid spending the Space's LLM credits.
 7. ✅ **Resolved: 44 dead tool ids in `tools.json`.** Fixed in the same commit.
    - *Was:* `search_tool_catalog` offered them and `load_specific_tool` reported them loaded, but dispatch rejected them.
    - *Now:* they're removed, along with the duplicate `read_system_architecture` entry (the loader already used the later, `read_only` one). Both catalog tools also check `TOOL_HANDLERS`, which is read at call time, so plugin tools and user skills stay discoverable.
-   - Still open: `execute_vision_analysis` has a handler but belongs to no capability domain, so the agent can't call it.
+   - Follow-up, also resolved: `execute_vision_analysis` had a handler but belonged to no capability domain, so the agent could never call it. It had been triggered by the regex dispatcher that `e0b69ea` replaced, and was never added to a domain afterwards.
+     - It's now in `vision_tools`, a read-only VLM domain that loads on every provider (`freecad_full` is blocked on Ollama).
+     - `tests/plugins/vision/test_image_analysis.py` also asserts that every `tools.json` id is reachable from core or some domain.
+     - The tool still needs a visible FreeCAD window, so it fails when `DANA_HEADLESS=true`.
 
 ### 3.2 Present but sidelined (no commits since 2026-09-01)
 
