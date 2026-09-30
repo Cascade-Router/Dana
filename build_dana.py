@@ -2,11 +2,14 @@
 
 Entry point choice
 ------------------
-Uses ``run.py`` (project root), not ``dana.daemon`` / ``dana/ui/main``.
+Uses ``scripts/launchers/launch_api_server.py``, the same backend entry the
+launchers run: it starts uvicorn on ``dana.api.server:app`` (127.0.0.1:8000).
+The desktop UI is the separate Tauri app in ``frontend/`` (``npm run tauri build``).
 
-``run.py`` is the desktop launcher: it sets AppUserModelID, workspace, single-
-instance lock, verifies torch, then calls ``dana.core_agent.main()`` which owns
-the CustomTkinter UI. Packaging the daemon ``__main__`` would omit the GUI.
+uvicorn imports the app by string and plugins load from
+``dana/plugins/*/manifest.json`` by file path, so neither is visible to static
+analysis: every ``dana`` submodule is collected explicitly and the package's
+non-Python files (manifests, tools.json, templates, data) ship as data.
 
 Usage
 -----
@@ -41,36 +44,21 @@ def main() -> int:
         )
         raise SystemExit(1) from exc
 
-    entry = ROOT / "run.py"
+    entry = ROOT / "scripts" / "launchers" / "launch_api_server.py"
     if not entry.is_file():
         print(f"[build_dana] ERROR: missing entry script {entry}", file=sys.stderr)
         return 1
 
     # collect-all packages that fail or miss data/binaries under static analysis.
     collect_all_pkgs = (
-        "customtkinter",
-        "chromadb",
-        "sentence_transformers",
         "torch",
         "onnxruntime",
         "sounddevice",
     )
 
-    # Minimal hidden imports so the dana package + OCR path resolve when frozen.
-    hidden_imports = (
-        "pytesseract",
-        "dana",
-        "dana.core_agent",
-        "dana.stdio_boot",
-        "dana.workspace",
-        "dana.ui",
-        "dana.ui.logo",
-        "dana.ui.startup_tray",
-        "dana.tools",
-        "dana.memory",
-        "dana.memory.vault",
-        "pystray",
-    )
+    # Imported only by string / importlib at runtime (see module docstring).
+    collect_submodules_pkgs = ("dana", "uvicorn")
+    hidden_imports = ("dana.api.server",)
 
     args: list[str] = [
         str(entry),
@@ -88,8 +76,19 @@ def main() -> int:
     for pkg in collect_all_pkgs:
         args.append(f"--collect-all={pkg}")
 
+    for pkg in collect_submodules_pkgs:
+        args.append(f"--collect-submodules={pkg}")
+
     for mod in hidden_imports:
         args.append(f"--hidden-import={mod}")
+
+    # Non-Python package files (manifest.json, tools.json, templates, canned UX
+    # .wav). An allowlist, so local runtime files (e.g. dana/memory/memory.db)
+    # never get bundled.
+    for data_file in sorted((ROOT / "dana").rglob("*")):
+        if data_file.is_file() and data_file.suffix in {".json", ".jinja", ".jinja2", ".wav"}:
+            dest = data_file.parent.relative_to(ROOT).as_posix()
+            args.append(f"--add-data={data_file}{os.pathsep}{dest}")
 
     ico = ROOT / "assets" / "dana_logo.ico"
     if not ico.is_file():
@@ -105,15 +104,6 @@ def main() -> int:
     models = ROOT / "assets" / "models"
     if models.is_dir():
         args.append(f"--add-data={models}{os.pathsep}assets/models")
-    ui_assets = ROOT / "dana" / "ui" / "assets"
-    if ui_assets.is_dir():
-        args.append(f"--add-data={ui_assets}{os.pathsep}dana/ui/assets")
-    dana_theme = ROOT / "dana" / "ui" / "dana_theme.json"
-    if dana_theme.is_file():
-        args.append(f"--add-data={dana_theme}{os.pathsep}dana/ui")
-    dana_assets = ROOT / "dana" / "assets"
-    if dana_assets.is_dir():
-        args.append(f"--add-data={dana_assets}{os.pathsep}dana/assets")
     for _stop in ("stop_dana.bat", "stop_dana.vbs", "start_dana.bat"):
         cand = ROOT / "scripts" / "launchers" / _stop
         if not cand.is_file():
@@ -121,7 +111,7 @@ def main() -> int:
         if cand.is_file():
             args.append(f"--add-data={cand}{os.pathsep}.")
 
-    print("[build_dana] Entry: run.py -> dana.core_agent.main (desktop UI)")
+    print("[build_dana] Entry: scripts/launchers/launch_api_server.py -> uvicorn dana.api.server:app")
     print("[build_dana] PyInstaller args:")
     for a in args:
         print(f"  {a}")

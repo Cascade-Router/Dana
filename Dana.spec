@@ -1,26 +1,37 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
+# Mirrors build_dana.py (which regenerates this file on each run). Entry is the
+# backend launcher; the desktop UI is the separate Tauri app in frontend/.
+from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_all, collect_submodules
+
+ROOT = Path(SPECPATH)
 
 datas = []
 binaries = []
-hiddenimports = ['pytesseract', 'dana', 'dana.core_agent', 'dana.stdio_boot', 'dana.workspace', 'dana.ui', 'dana.tools', 'dana.tools.vision', 'dana.memory', 'dana.memory.vault']
-tmp_ret = collect_all('customtkinter')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('chromadb')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('sentence_transformers')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('torch')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('onnxruntime')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('sounddevice')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+hiddenimports = ['dana.api.server']
+for pkg in ('torch', 'onnxruntime', 'sounddevice'):
+    tmp_ret = collect_all(pkg)
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# uvicorn imports the app by string; plugins load from manifest.json by path.
+for pkg in ('dana', 'uvicorn'):
+    hiddenimports += collect_submodules(pkg)
+
+# Non-Python package files (allowlist, so local runtime files never ship).
+for data_file in sorted((ROOT / 'dana').rglob('*')):
+    if data_file.is_file() and data_file.suffix in {'.json', '.jinja', '.jinja2', '.wav'}:
+        datas.append((str(data_file), data_file.parent.relative_to(ROOT).as_posix()))
+if (ROOT / 'assets').is_dir():
+    datas.append((str(ROOT / 'assets'), 'assets'))
+for name in ('stop_dana.bat', 'stop_dana.vbs', 'start_dana.bat'):
+    launcher = ROOT / 'scripts' / 'launchers' / name
+    if launcher.is_file():
+        datas.append((str(launcher), '.'))
 
 
 a = Analysis(
-    ['C:\\Users\\Amix\\Desktop\\DANA\\run.py'],
-    pathex=['C:\\Users\\Amix\\Desktop\\DANA'],
+    [str(ROOT / 'scripts' / 'launchers' / 'launch_api_server.py')],
+    pathex=[str(ROOT)],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -49,7 +60,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:\\Users\\Amix\\Desktop\\DANA\\assets\\dana_logo.ico'],
+    icon=[str(ROOT / 'assets' / 'dana_logo.ico')],
 )
 coll = COLLECT(
     exe,

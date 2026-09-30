@@ -67,7 +67,8 @@ def python_launcher(*, headless: bool = True) -> Path:
 
 
 def entry_script() -> Path:
-    return Path(os.path.abspath(str(project_root() / "run.py")))
+    """The backend entry point (FastAPI/WebSocket server) used for macOS/Linux autostart."""
+    return Path(os.path.abspath(str(project_root() / "scripts" / "launchers" / "launch_api_server.py")))
 
 
 def bat_path() -> Path:
@@ -89,9 +90,9 @@ def packaged_exe_path() -> Path:
 
 
 def shortcut_launch_target() -> Path:
-    """Prefer source ``start_dana.bat`` (pythonw + run.py) over stale ``Dana.exe``."""
+    """Prefer source ``start_dana.bat`` (backend + Tauri app) over stale ``Dana.exe``."""
     # Dev / Desktop shortcuts must track git; packaged dist\\Dana\\Dana.exe lags UI fixes.
-    return Path(os.path.abspath(str(write_start_bat())))
+    return Path(os.path.abspath(str(ensure_start_bat())))
 
 
 def refresh_shell_icon_cache() -> None:
@@ -255,24 +256,17 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def write_start_bat() -> Path:
-    """Create ``scripts/launchers/start_dana.bat``: abs ``cd``, GUI enabled."""
-    root = absolute_workdir()
-    # Prefer pythonw for a windowed GUI launch (no console flash).
-    py = str(python_launcher(headless=False))
-    entry = str(entry_script())
-    # ``start`` detaches so the Run-key / Startup launcher returns immediately.
-    lines = [
-        "@echo off",
-        f'cd /d "{root}"',
-        "REM GUI enabled (CustomTkinter). Use stop_dana.bat / stop_dana.vbs before relaunch.",
-        f'start "Dana" "{py}" "{entry}"',
-        "",
-    ]
+def ensure_start_bat() -> Path:
+    """Return the tracked ``scripts/launchers/start_dana.bat`` without modifying it.
+
+    That script is the maintained Windows launcher (backend + Tauri app), so
+    registration only points at it. The gitignored root ``start_dana.bat``
+    wrapper is still (re)written: the Tauri shell's close handler looks for it
+    next to ``stop_dana.vbs`` to find the repo and stop the backend.
+    """
     path = bat_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines), encoding="utf-8", newline="\r\n")
-    # Thin root wrapper for Desktop shortcuts that still point at repo root.
+    if not path.is_file():
+        raise FileNotFoundError(f"launcher missing: {path} (restore it from git)")
     root_wrap = project_root() / "start_dana.bat"
     root_wrap.write_text(
         "@echo off\r\n"
@@ -307,7 +301,6 @@ def _write_macos_plist() -> Path:
 \t<array>
 \t\t<string>{py}</string>
 \t\t<string>{entry}</string>
-\t\t<string>--no-gui</string>
 \t</array>
 \t<key>WorkingDirectory</key>
 \t<string>{root}</string>
@@ -335,14 +328,14 @@ def _write_linux_desktop() -> Path:
     log_path = UNIX_STARTUP_LOG
     icon = app_icon_path()
     # Desktop Entry Exec → bash -c with stdout/stderr piped to the startup log.
-    inner = f"{shlex.quote(py)} {shlex.quote(entry)} --no-gui > {log_path} 2>&1"
+    inner = f"{shlex.quote(py)} {shlex.quote(entry)} > {log_path} 2>&1"
     exec_cmd = f"/bin/bash -c {shlex.quote(inner)}"
     body = (
         "[Desktop Entry]\n"
         "Type=Application\n"
         "Version=1.0\n"
         "Name=Dana\n"
-        "Comment=Dana local-first voice agent (headless)\n"
+        "Comment=Dana backend (FastAPI server, headless)\n"
         f"Exec={exec_cmd}\n"
         f"Path={root}\n"
         "Terminal=false\n"
@@ -359,7 +352,7 @@ def _write_linux_desktop() -> Path:
 def _enable_windows() -> int:
     import winreg
 
-    bat = write_start_bat()
+    bat = ensure_start_bat()
     command = f'"{bat}"'
     with winreg.OpenKey(
         winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE
