@@ -2708,6 +2708,50 @@ def test_create_plan_allows_atomized_per_object_tasks() -> None:
     assert result["ok"] is True
 
 
+@pytest.mark.parametrize("pattern_tool", ["create_freecad_polar_pattern", "create_freecad_linear_pattern"])
+def test_create_plan_allows_count_words_for_one_multi_feature_pattern_call(pattern_tool: str) -> None:
+    # Regression: the count-word rule rejected "pattern all three features"
+    # even though one pattern call takes all of them (feature_name list), so
+    # the agent split it into one pattern per feature. Like
+    # add_parts_to_assembly, the pattern tools are exempt.
+    set_session_id(f"fsm-batch-pattern-allowed-{pattern_tool}")
+    result = rd._tool_create_plan(
+        {
+            "objective": "quadcopter frame",
+            "tasks": [
+                {"description": "Pad the center plate", "expected_tools": ["create_freecad_pad"]},
+                {
+                    "description": "Pattern all three features (arm, motor pad, shaft hole) four times",
+                    "expected_tools": [pattern_tool],
+                },
+            ],
+        },
+        None,
+        None,
+    )
+    assert result["ok"] is True
+
+
+def test_create_plan_still_rejects_count_words_when_a_per_object_tool_shares_the_task() -> None:
+    # The exemption is per tool: a task that also declares a one-object tool
+    # (here a pocket) still gets the grouping check through that tool.
+    set_session_id("fsm-batch-pattern-mixed-rejected")
+    with pytest.raises(RuntimeError, match="group multiple objects"):
+        rd._tool_create_plan(
+            {
+                "objective": "quadcopter frame",
+                "tasks": [
+                    {
+                        "description": "Pocket four mounting holes, then pattern them",
+                        "expected_tools": ["create_freecad_pocket", "create_freecad_polar_pattern"],
+                    },
+                ],
+            },
+            None,
+            None,
+        )
+
+
 def _seed_two_task_plan(
     session_id: str, tool_for_task_1: frozenset[str], tool_for_task_2: frozenset[str]
 ) -> None:

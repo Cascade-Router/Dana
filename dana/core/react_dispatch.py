@@ -566,6 +566,14 @@ _GEOMETRY_GROUPING_KEYWORDS = re.compile(
 # 1 of 4 needed joints, exported before the caller noticed.
 _PER_OBJECT_GROUPING_SENSITIVE_TOOLS = frozenset({"define_kinematic_joint", "apply_assembly_constraint"})
 
+# create_freecad_* tools that act on SEVERAL objects in ONE call, so a task
+# naming several of them ("pattern the arm, motor pad and shaft hole, four
+# times") is one correct call, not a grouping bug — the same reason
+# add_parts_to_assembly is exempt. The patterns take a feature_name list.
+# Without this, create_plan rejected exactly that task (confirmed live) and
+# the agent fell back to one pattern per feature.
+_BATCH_GEOMETRY_TOOLS = frozenset({"create_freecad_polar_pattern", "create_freecad_linear_pattern"})
+
 # Planner Tool Name Sanitization: a local model's create_plan call is made
 # BEFORE any geometry tool schema is ever offered to it (PLANNING's own
 # hard_restrict_to is create_plan/mark_task_completed only — see
@@ -885,7 +893,8 @@ def _tool_create_plan(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str,
             valid_tools = declared - bad_ids
             expected_tools_by_task.append(valid_tools)
             is_geometry_task = any(
-                tool_id.startswith("create_freecad_") or tool_id in _PER_OBJECT_GROUPING_SENSITIVE_TOOLS
+                (tool_id.startswith("create_freecad_") and tool_id not in _BATCH_GEOMETRY_TOOLS)
+                or tool_id in _PER_OBJECT_GROUPING_SENSITIVE_TOOLS
                 for tool_id in valid_tools
             )
             if is_geometry_task and _GEOMETRY_GROUPING_KEYWORDS.search(description):
