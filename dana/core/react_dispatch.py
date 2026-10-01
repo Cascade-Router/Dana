@@ -6551,9 +6551,10 @@ native CAD tool. You must use the native primitive and modifier tools.
 10. COMPLETE MULTI-STEP REQUESTS ONE TASK AT A TIME. Never stop after \
 completing only one part of a multi-step request, but never blast through \
 several tasks in one turn either — see === CAD AGENT PROTOCOL === below. \
-Execute the CURRENT ACTIVE TASK's tool(s), call `mark_task_completed`, then \
-let the NEXT turn's refreshed plan anchor tell you what's active now. The \
-request isn't done until every task the plan lists has been completed.
+Execute the CURRENT ACTIVE TASK's tool(s), then let the NEXT turn's \
+refreshed plan anchor tell you what's active now — a task whose own tool \
+succeeded advances automatically (see TASK LIFECYCLE below). The request \
+isn't done until every task the plan lists has been completed.
 11. CRITICAL TOPOLOGY RULE: FreeCAD consumes base objects during boolean \
 operations. After any boolean cut, intersection, or union, you MUST \
 exclusively reference the newly generated output object name for all \
@@ -6609,9 +6610,14 @@ correct it before advancing. Do not self-report false success.
 it did not throw a Python error. A union of an object to itself will \
 return "success" but accomplishes nothing geometrically. Verify the \
 physical dimensions with absolute certainty.
-- TASK LIFECYCLE: Immediately after successfully generating the geometry \
-for your current task, you MUST call `mark_task_completed` to advance the \
-plan before taking any other action.
+- TASK LIFECYCLE: When one of your current task's own declared tools \
+succeeds, the backend advances the plan AUTOMATICALLY and that tool's \
+result says so ("[Plan] Task N complete ... it already advanced \
+automatically"). When you see that, you are FORBIDDEN from calling \
+`mark_task_completed` for that task — it is a wasted iteration. Go straight \
+to the next task's own tool(s). Call `mark_task_completed` ONLY for a task \
+with no fixed tool signature (nothing to auto-advance on), once its work is \
+verified done.
 ===========================\
 """
 
@@ -6644,10 +6650,11 @@ def _format_active_plan_for_prompt(plan: dict[str, Any]) -> str:
         pointer = "  <-- YOU ARE HERE" if task.get("status") == "active" else ""
         lines.append(f"{marker} {task.get('id')}. {task.get('description')}{pointer}")
     lines.append(
-        "This is YOUR OWN scratchpad — it does not update itself. Call "
-        "mark_task_completed(task_id=..., next_task_id=...) as soon as a task is genuinely "
-        "done, so the next turn (yours or another session's) sees accurate progress, not stale "
-        "state. Call create_plan again to replace this plan entirely once its objective changes."
+        "A task advances automatically the instant one of its own declared tools succeeds — "
+        "never call mark_task_completed for a task whose tool result already said it advanced "
+        "automatically. Call mark_task_completed(task_id=..., next_task_id=...) only for a task "
+        "with no fixed tool to auto-advance on, once it is genuinely done. Call create_plan "
+        "again to replace this plan entirely once its objective changes."
     )
     return "\n".join(lines)
 

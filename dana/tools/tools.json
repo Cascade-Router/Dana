@@ -776,7 +776,7 @@
           "name": "geometry",
           "type": "array",
           "required": true,
-          "description_en": "Ordered list of raw 2D geometry elements (in the sketch's own local plane coordinates, mm). Every field below is REQUIRED for its type — a circle/arc with no \"center\" is invalid and will be rejected. EXAMPLES (one line each): line -> {\"type\": \"line\", \"start\": [0, 0], \"end\": [10, 0]}. circle -> {\"type\": \"circle\", \"center\": [0, 0], \"radius\": 50}. arc -> {\"type\": \"arc\", \"center\": [0, 0], \"radius\": 20, \"start_angle\": 0, \"end_angle\": 90}. There is no \"rectangle\" type — build one from 4 \"line\" entries forming a closed loop, e.g. a 10x20 rectangle: [{\"type\":\"line\",\"start\":[0,0],\"end\":[10,0]},{\"type\":\"line\",\"start\":[10,0],\"end\":[10,20]},{\"type\":\"line\",\"start\":[10,20],\"end\":[0,20]},{\"type\":\"line\",\"start\":[0,20],\"end\":[0,0]}]. List position i becomes geometry index i for apply_sketch_constraint."
+          "description_en": "Ordered list of raw 2D geometry elements (in the sketch's own local plane coordinates, mm). Supported types ONLY: \"line\" (requires \"start\": [x, y], \"end\": [x, y]), \"circle\" (requires \"center\": [x, y], \"radius\": r), and \"arc\" (requires \"center\": [x, y], \"radius\": r, \"start_angle\": deg, \"end_angle\": deg). Any other type is rejected. Do NOT use x1/y1/x2/y2, cx/cy, \"points\", \"width\"/\"height\" or any other field names. Every field below is REQUIRED for its type — a circle/arc with no \"center\" is invalid and will be rejected. EXAMPLES (one line each): line -> {\"type\": \"line\", \"start\": [0, 0], \"end\": [10, 0]}. circle -> {\"type\": \"circle\", \"center\": [0, 0], \"radius\": 50}. arc -> {\"type\": \"arc\", \"center\": [0, 0], \"radius\": 20, \"start_angle\": 0, \"end_angle\": 90}. There is no \"rectangle\" type — build one from 4 \"line\" entries forming a closed loop, e.g. a 10x20 rectangle: [{\"type\":\"line\",\"start\":[0,0],\"end\":[10,0]},{\"type\":\"line\",\"start\":[10,0],\"end\":[10,20]},{\"type\":\"line\",\"start\":[10,20],\"end\":[0,20]},{\"type\":\"line\",\"start\":[0,20],\"end\":[0,0]}]. List position i becomes geometry index i for apply_sketch_constraint."
         }
       ]
     },
@@ -1792,7 +1792,7 @@
     {
       "id": "mark_task_completed",
       "read_only": true,
-      "description_en": "Marks a task complete — ONLY once its create_/modify_ tool already returned ok:true; never mark done before actually building it. Evidence-Based Task Completion: created_feature_names is checked against what actually exists in the FreeCAD document — a name that isn't there gets this call rejected, not silently accepted.",
+      "description_en": "Marks a task complete — ONLY for a task that did NOT advance automatically. A task whose own declared tool succeeded is already completed by the backend (that tool's result says \"it already advanced automatically\"); do NOT call this for it, that is a wasted iteration. Otherwise, call this only once the work actually returned ok:true; never mark done before actually building it. Evidence-Based Task Completion: created_feature_names is checked against what actually exists in the FreeCAD document — a name that isn't there gets this call rejected, not silently accepted.",
       "parameters": [
         {
           "name": "task_id",
