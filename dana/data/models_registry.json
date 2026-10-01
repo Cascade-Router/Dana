@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated_by": "dana/data/models_registry.json is the Model Registry's catalog snapshot — hand-seeded, then kept fresh by scripts/sync_model_catalog.py (see .github/workflows/update_models.yml). Pricing/context/rate-limit figures are 'close enough for the control panel', not a billing-grade source of truth — same convention as dana/core/pricing.py.",
+  "generated_by": "dana/data/models_registry.json is the Model Registry's catalog snapshot \u2014 hand-seeded, then kept fresh by scripts/sync_model_catalog.py (see .github/workflows/update_models.yml). Pricing/context/rate-limit figures are 'close enough for the control panel', not a billing-grade source of truth \u2014 same convention as dana/core/pricing.py.",
   "providers": {
     "openai": {
       "requires_api_key": true,
@@ -11,9 +11,19 @@
           "name": "GPT-4o",
           "context_window": 128000,
           "max_output_tokens": 16384,
-          "pricing": { "prompt_per_1m": 2.50, "completion_per_1m": 10.00 },
-          "rate_limits": { "tpm": 450000, "rpm": 5000, "rpd": null },
-          "modalities": ["text", "vision"],
+          "pricing": {
+            "prompt_per_1m": 2.5,
+            "completion_per_1m": 10.0
+          },
+          "rate_limits": {
+            "tpm": 450000,
+            "rpm": 5000,
+            "rpd": null
+          },
+          "modalities": [
+            "text",
+            "vision"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": false,
           "is_deprecated": false
@@ -23,9 +33,19 @@
           "name": "GPT-4o mini",
           "context_window": 128000,
           "max_output_tokens": 16384,
-          "pricing": { "prompt_per_1m": 0.15, "completion_per_1m": 0.60 },
-          "rate_limits": { "tpm": 2000000, "rpm": 5000, "rpd": null },
-          "modalities": ["text", "vision"],
+          "pricing": {
+            "prompt_per_1m": 0.15,
+            "completion_per_1m": 0.6
+          },
+          "rate_limits": {
+            "tpm": 2000000,
+            "rpm": 5000,
+            "rpd": null
+          },
+          "modalities": [
+            "text",
+            "vision"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": false,
           "is_deprecated": false
@@ -41,9 +61,20 @@
           "name": "Gemini 2.5 Pro",
           "context_window": 1000000,
           "max_output_tokens": 65536,
-          "pricing": { "prompt_per_1m": 1.25, "completion_per_1m": 10.00 },
-          "rate_limits": { "tpm": 2000000, "rpm": 150, "rpd": 1000 },
-          "modalities": ["text", "vision", "audio"],
+          "pricing": {
+            "prompt_per_1m": 1.25,
+            "completion_per_1m": 10.0
+          },
+          "rate_limits": {
+            "tpm": 2000000,
+            "rpm": 150,
+            "rpd": 1000
+          },
+          "modalities": [
+            "text",
+            "vision",
+            "audio"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": true,
           "is_deprecated": false
@@ -53,9 +84,20 @@
           "name": "Gemini 2.5 Flash",
           "context_window": 1000000,
           "max_output_tokens": 65536,
-          "pricing": { "prompt_per_1m": 0.30, "completion_per_1m": 2.50 },
-          "rate_limits": { "tpm": 4000000, "rpm": 1000, "rpd": 10000 },
-          "modalities": ["text", "vision", "audio"],
+          "pricing": {
+            "prompt_per_1m": 0.3,
+            "completion_per_1m": 2.5
+          },
+          "rate_limits": {
+            "tpm": 4000000,
+            "rpm": 1000,
+            "rpd": 10000
+          },
+          "modalities": [
+            "text",
+            "vision",
+            "audio"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": true,
           "is_deprecated": false
@@ -65,9 +107,20 @@
           "name": "Gemini 3.7 Flash",
           "context_window": 1000000,
           "max_output_tokens": 65536,
-          "pricing": { "prompt_per_1m": 0.075, "completion_per_1m": 0.30 },
-          "rate_limits": { "tpm": 4000000, "rpm": 1000, "rpd": 10000 },
-          "modalities": ["text", "vision", "audio"],
+          "pricing": {
+            "prompt_per_1m": 0.075,
+            "completion_per_1m": 0.3
+          },
+          "rate_limits": {
+            "tpm": 4000000,
+            "rpm": 1000,
+            "rpd": 10000
+          },
+          "modalities": [
+            "text",
+            "vision",
+            "audio"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": true,
           "is_deprecated": false
@@ -83,9 +136,18 @@
           "name": "GPT-OSS 120B (Groq)",
           "context_window": 131072,
           "max_output_tokens": 32768,
-          "pricing": { "prompt_per_1m": 0.0, "completion_per_1m": 0.0 },
-          "rate_limits": { "tpm": null, "rpm": null, "rpd": null },
-          "modalities": ["text"],
+          "pricing": {
+            "prompt_per_1m": 0.0,
+            "completion_per_1m": 0.0
+          },
+          "rate_limits": {
+            "tpm": null,
+            "rpm": null,
+            "rpd": null
+          },
+          "modalities": [
+            "text"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": false,
           "is_deprecated": false
@@ -95,9 +157,18 @@
           "name": "GPT-OSS 20B (Groq)",
           "context_window": 131072,
           "max_output_tokens": 32768,
-          "pricing": { "prompt_per_1m": 0.0, "completion_per_1m": 0.0 },
-          "rate_limits": { "tpm": null, "rpm": null, "rpd": null },
-          "modalities": ["text"],
+          "pricing": {
+            "prompt_per_1m": 0.0,
+            "completion_per_1m": 0.0
+          },
+          "rate_limits": {
+            "tpm": null,
+            "rpm": null,
+            "rpd": null
+          },
+          "modalities": [
+            "text"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": false,
           "is_deprecated": false
@@ -107,9 +178,18 @@
           "name": "Llama 3.3 70B Versatile (Groq)",
           "context_window": 131072,
           "max_output_tokens": 32768,
-          "pricing": { "prompt_per_1m": 0.0, "completion_per_1m": 0.0 },
-          "rate_limits": { "tpm": null, "rpm": null, "rpd": null },
-          "modalities": ["text"],
+          "pricing": {
+            "prompt_per_1m": 0.0,
+            "completion_per_1m": 0.0
+          },
+          "rate_limits": {
+            "tpm": null,
+            "rpm": null,
+            "rpd": null
+          },
+          "modalities": [
+            "text"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": false,
           "is_deprecated": false
@@ -125,9 +205,18 @@
           "name": "Nemotron 3 Super 120B (free)",
           "context_window": 262144,
           "max_output_tokens": 8192,
-          "pricing": { "prompt_per_1m": 0.0, "completion_per_1m": 0.0 },
-          "rate_limits": { "tpm": null, "rpm": 20, "rpd": 200 },
-          "modalities": ["text"],
+          "pricing": {
+            "prompt_per_1m": 0.0,
+            "completion_per_1m": 0.0
+          },
+          "rate_limits": {
+            "tpm": null,
+            "rpm": 20,
+            "rpd": 200
+          },
+          "modalities": [
+            "text"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": false,
           "is_deprecated": false
@@ -137,9 +226,18 @@
           "name": "Llama 3.3 70B Instruct",
           "context_window": 131072,
           "max_output_tokens": 8192,
-          "pricing": { "prompt_per_1m": 0.12, "completion_per_1m": 0.30 },
-          "rate_limits": { "tpm": null, "rpm": null, "rpd": null },
-          "modalities": ["text"],
+          "pricing": {
+            "prompt_per_1m": 0.1,
+            "completion_per_1m": 0.32
+          },
+          "rate_limits": {
+            "tpm": null,
+            "rpm": null,
+            "rpd": null
+          },
+          "modalities": [
+            "text"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": false,
           "is_deprecated": false
@@ -149,21 +247,41 @@
           "name": "Claude 3.5 Sonnet (via OpenRouter)",
           "context_window": 200000,
           "max_output_tokens": 8192,
-          "pricing": { "prompt_per_1m": 3.00, "completion_per_1m": 15.00 },
-          "rate_limits": { "tpm": null, "rpm": null, "rpd": null },
-          "modalities": ["text", "vision"],
+          "pricing": {
+            "prompt_per_1m": 3.0,
+            "completion_per_1m": 15.0
+          },
+          "rate_limits": {
+            "tpm": null,
+            "rpm": null,
+            "rpd": null
+          },
+          "modalities": [
+            "text",
+            "vision"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": false,
-          "is_deprecated": false
+          "is_deprecated": true
         },
         {
           "id": "openai/gpt-4o",
           "name": "GPT-4o (via OpenRouter)",
           "context_window": 128000,
           "max_output_tokens": 16384,
-          "pricing": { "prompt_per_1m": 2.50, "completion_per_1m": 10.00 },
-          "rate_limits": { "tpm": null, "rpm": null, "rpd": null },
-          "modalities": ["text", "vision"],
+          "pricing": {
+            "prompt_per_1m": 2.5,
+            "completion_per_1m": 10.0
+          },
+          "rate_limits": {
+            "tpm": null,
+            "rpm": null,
+            "rpd": null
+          },
+          "modalities": [
+            "text",
+            "vision"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": false,
           "is_deprecated": false
@@ -179,9 +297,18 @@
           "name": "DeepSeek Chat (V3)",
           "context_window": 64000,
           "max_output_tokens": 8192,
-          "pricing": { "prompt_per_1m": 0.28, "completion_per_1m": 0.42 },
-          "rate_limits": { "tpm": null, "rpm": null, "rpd": null },
-          "modalities": ["text"],
+          "pricing": {
+            "prompt_per_1m": 0.28,
+            "completion_per_1m": 0.42
+          },
+          "rate_limits": {
+            "tpm": null,
+            "rpm": null,
+            "rpd": null
+          },
+          "modalities": [
+            "text"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": false,
           "is_deprecated": false
@@ -191,9 +318,18 @@
           "name": "DeepSeek Reasoner (R1)",
           "context_window": 64000,
           "max_output_tokens": 8192,
-          "pricing": { "prompt_per_1m": 0.55, "completion_per_1m": 2.19 },
-          "rate_limits": { "tpm": null, "rpm": null, "rpd": null },
-          "modalities": ["text"],
+          "pricing": {
+            "prompt_per_1m": 0.55,
+            "completion_per_1m": 2.19
+          },
+          "rate_limits": {
+            "tpm": null,
+            "rpm": null,
+            "rpd": null
+          },
+          "modalities": [
+            "text"
+          ],
           "supports_tool_calling": false,
           "supports_thought_signature": false,
           "is_deprecated": false
@@ -209,9 +345,18 @@
           "name": "Qwen 2.5 Coder 14B (local)",
           "context_window": 32768,
           "max_output_tokens": 8192,
-          "pricing": { "prompt_per_1m": 0.0, "completion_per_1m": 0.0 },
-          "rate_limits": { "tpm": null, "rpm": null, "rpd": null },
-          "modalities": ["text"],
+          "pricing": {
+            "prompt_per_1m": 0.0,
+            "completion_per_1m": 0.0
+          },
+          "rate_limits": {
+            "tpm": null,
+            "rpm": null,
+            "rpd": null
+          },
+          "modalities": [
+            "text"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": false,
           "is_deprecated": false
@@ -221,9 +366,18 @@
           "name": "Llama 3.3 70B (local)",
           "context_window": 131072,
           "max_output_tokens": 8192,
-          "pricing": { "prompt_per_1m": 0.0, "completion_per_1m": 0.0 },
-          "rate_limits": { "tpm": null, "rpm": null, "rpd": null },
-          "modalities": ["text"],
+          "pricing": {
+            "prompt_per_1m": 0.0,
+            "completion_per_1m": 0.0
+          },
+          "rate_limits": {
+            "tpm": null,
+            "rpm": null,
+            "rpd": null
+          },
+          "modalities": [
+            "text"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": false,
           "is_deprecated": false
@@ -233,9 +387,18 @@
           "name": "Llama 3.1 8B (local)",
           "context_window": 131072,
           "max_output_tokens": 8192,
-          "pricing": { "prompt_per_1m": 0.0, "completion_per_1m": 0.0 },
-          "rate_limits": { "tpm": null, "rpm": null, "rpd": null },
-          "modalities": ["text"],
+          "pricing": {
+            "prompt_per_1m": 0.0,
+            "completion_per_1m": 0.0
+          },
+          "rate_limits": {
+            "tpm": null,
+            "rpm": null,
+            "rpd": null
+          },
+          "modalities": [
+            "text"
+          ],
           "supports_tool_calling": true,
           "supports_thought_signature": false,
           "is_deprecated": false
@@ -245,9 +408,18 @@
           "name": "Mistral 7B (local)",
           "context_window": 32768,
           "max_output_tokens": 8192,
-          "pricing": { "prompt_per_1m": 0.0, "completion_per_1m": 0.0 },
-          "rate_limits": { "tpm": null, "rpm": null, "rpd": null },
-          "modalities": ["text"],
+          "pricing": {
+            "prompt_per_1m": 0.0,
+            "completion_per_1m": 0.0
+          },
+          "rate_limits": {
+            "tpm": null,
+            "rpm": null,
+            "rpd": null
+          },
+          "modalities": [
+            "text"
+          ],
           "supports_tool_calling": false,
           "supports_thought_signature": false,
           "is_deprecated": false
