@@ -886,13 +886,15 @@
     },
     {
       "id": "create_freecad_polar_pattern",
-      "description_en": "Repeats an existing 3D feature (a Pad/Pocket) evenly around a body axis, via PartDesign::PolarPattern. feature_name MUST be a 3D feature from create_freecad_pad/create_freecad_pocket — NEVER a create_freecad_sketch profile; pad/pocket it first, then pattern the result.",
+      "description_en": "Repeats one or more existing 3D features (Pads/Pockets) evenly around a body axis, via PartDesign::PolarPattern. List EVERY feature that should be repeated in feature_name; a feature left out of the list stays as a single copy. feature_name MUST be a 3D feature from create_freecad_pad/create_freecad_pocket — NEVER a create_freecad_sketch profile; pad/pocket it first, then pattern the result.",
       "parameters": [
         {
           "name": "feature_name",
-          "type": "string",
+          "type": "array",
+          "items_type": "string",
+          "accepts_single": true,
           "required": true,
-          "description_en": "Name of the existing 3D feature to repeat — never a raw sketch name."
+          "description_en": "Names of the existing 3D features (Pads/Pockets) to repeat together, e.g. [\"Pad001\", \"Pad002\", \"Pocket004\"] for an arm, the motor mount at its tip and that mount's shaft hole. Only the listed features are repeated. A single feature may be given as a one-element list. Never a raw sketch name."
         },
         {
           "name": "occurrences",
@@ -927,13 +929,15 @@
     },
     {
       "id": "create_freecad_linear_pattern",
-      "description_en": "Repeats an existing 3D feature (a Pad/Pocket) evenly along a body axis, via PartDesign::LinearPattern. feature_name MUST be a 3D feature from create_freecad_pad/create_freecad_pocket — NEVER a create_freecad_sketch profile; pad/pocket it first, then pattern the result.",
+      "description_en": "Repeats one or more existing 3D features (Pads/Pockets) evenly along a body axis, via PartDesign::LinearPattern. List EVERY feature that should be repeated in feature_name; a feature left out of the list stays as a single copy. feature_name MUST be a 3D feature from create_freecad_pad/create_freecad_pocket — NEVER a create_freecad_sketch profile; pad/pocket it first, then pattern the result.",
       "parameters": [
         {
           "name": "feature_name",
-          "type": "string",
+          "type": "array",
+          "items_type": "string",
+          "accepts_single": true,
           "required": true,
-          "description_en": "Name of the existing 3D feature to repeat — never a raw sketch name."
+          "description_en": "Names of the existing 3D features (Pads/Pockets) to repeat together, e.g. [\"Pad001\", \"Pad002\", \"Pocket004\"] for an arm, the motor mount at its tip and that mount's shaft hole. Only the listed features are repeated. A single feature may be given as a one-element list. Never a raw sketch name."
         },
         {
           "name": "occurrences",

@@ -297,7 +297,7 @@ def test_partdesign_replay_uses_recorded_names_and_references():
     assert 'newObject("PartDesign::Pad", \'Pad\')' in script
     assert "_require_sketch(doc, 'HoleSketch')" in script
     assert 'newObject("PartDesign::Pocket", \'Pocket\')' in script
-    assert "_feat = resolve_object(doc, 'Pocket')" in script
+    assert "for _src in ['Pocket']:" in script
     assert "newObject('PartDesign::PolarPattern', 'PolarPattern')" in script
     assert "newObject('PartDesign::LinearPattern', 'LinearPattern')" in script
     assert "[_require_sketch(doc, _n) for _n in ['LoftBase', 'LoftTop001']]" in script

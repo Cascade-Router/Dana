@@ -330,6 +330,32 @@ class MockControlPlane(BaseControlPlane):
         }
 
 
+def _mock_pattern_sources(op: str, feature_name: Any) -> tuple[list[str], list[Path]] | dict[str, Any]:
+    """(feature names, their mesh paths) for a pattern call, or an error
+    payload. Same name/list normalization as the real engine."""
+    from dana.plugins.freecad.engine import pattern_feature_names
+
+    names = pattern_feature_names(feature_name)
+    if isinstance(names, str):
+        return {"ok": False, "error": f"{op}: {names}"}
+    sources: list[Path] = []
+    for name in names:
+        source_path = _mock_object_registry().get(name)
+        if not source_path:
+            return {
+                "ok": False,
+                "error": (
+                    f"{op}: no feature named {name!r} in this session — "
+                    "create it first with create_freecad_pad or create_freecad_pocket"
+                ),
+            }
+        source = Path(source_path)
+        if not source.is_file():
+            return {"ok": False, "error": f"{op}: source path not found: {source_path}"}
+        sources.append(source)
+    return names, sources
+
+
 class MockFreeCADEngine(BaseCADEngine):
     """Headless stand-in for :class:`dana.platform.win32.RealFreeCADEngine`.
 
@@ -1359,7 +1385,7 @@ class MockFreeCADEngine(BaseCADEngine):
 
     def create_polar_pattern(
         self,
-        feature_name: str,
+        feature_name: str | list[str],
         occurrences: int,
         angle: float = 360.0,
         axis: str = "Z",
@@ -1386,20 +1412,12 @@ class MockFreeCADEngine(BaseCADEngine):
         if angle_f <= 0:
             return {"ok": False, "error": "create_polar_pattern: angle must be a positive number"}
 
-        source_path = _mock_object_registry().get(feature_name)
-        if not source_path:
-            return {
-                "ok": False,
-                "error": (
-                    f"create_polar_pattern: no feature named {feature_name!r} in this session — "
-                    "create it first with create_freecad_pad or create_freecad_pocket"
-                ),
-            }
-        source = Path(source_path)
-        if not source.is_file():
-            return {"ok": False, "error": f"create_polar_pattern: source path not found: {source_path}"}
-
-        base_mesh = trimesh.load(source, force="mesh")
+        features = _mock_pattern_sources("create_polar_pattern", feature_name)
+        if isinstance(features, dict):
+            return features
+        names, sources = features
+        meshes = [trimesh.load(source, force="mesh") for source in sources]
+        base_mesh = trimesh.util.concatenate(meshes) if len(meshes) > 1 else meshes[0]
         # Safe stub: a headless mesh has no real PartDesign::Body/Origin
         # behind it — this rotates about the GLOBAL origin along the chosen
         # axis (a body's own principal axes always pass through its own
@@ -1433,6 +1451,7 @@ class MockFreeCADEngine(BaseCADEngine):
                 "angle": angle_f,
                 "axis": axis_u,
                 "reversed_direction": bool(reversed_direction),
+                "features": names,
             },
             "bounding_box": _bbox(combined),
             "path": str(out_path),
@@ -1443,7 +1462,7 @@ class MockFreeCADEngine(BaseCADEngine):
 
     def create_linear_pattern(
         self,
-        feature_name: str,
+        feature_name: str | list[str],
         occurrences: int,
         length: float,
         direction: str = "X",
@@ -1471,20 +1490,12 @@ class MockFreeCADEngine(BaseCADEngine):
         if length_f <= 0:
             return {"ok": False, "error": "create_linear_pattern: length must be a positive number"}
 
-        source_path = _mock_object_registry().get(feature_name)
-        if not source_path:
-            return {
-                "ok": False,
-                "error": (
-                    f"create_linear_pattern: no feature named {feature_name!r} in this session — "
-                    "create it first with create_freecad_pad or create_freecad_pocket"
-                ),
-            }
-        source = Path(source_path)
-        if not source.is_file():
-            return {"ok": False, "error": f"create_linear_pattern: source path not found: {source_path}"}
-
-        base_mesh = trimesh.load(source, force="mesh")
+        features = _mock_pattern_sources("create_linear_pattern", feature_name)
+        if isinstance(features, dict):
+            return features
+        names, sources = features
+        meshes = [trimesh.load(source, force="mesh") for source in sources]
+        base_mesh = trimesh.util.concatenate(meshes) if len(meshes) > 1 else meshes[0]
         # Safe stub: total span from first to last copy, inclusive — same
         # "honest, non-rigorous approximation" philosophy as
         # create_polar_pattern's own mock above.
@@ -1514,6 +1525,7 @@ class MockFreeCADEngine(BaseCADEngine):
                 "length": length_f,
                 "direction": direction_u,
                 "reversed_direction": bool(reversed_direction),
+                "features": names,
             },
             "bounding_box": _bbox(combined),
             "path": str(out_path),

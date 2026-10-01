@@ -46,6 +46,7 @@ from dana.platform import factory as platform_factory
 from dana.platform import get_cad_engine, get_control_plane
 from dana.plugins.freecad.call_log import CadCallLog
 from dana.plugins.freecad.error_digest import digest_error
+from dana.plugins.freecad.engine import pattern_feature_names
 from dana.plugins.freecad import skill_compiler
 from dana.plugins.memory.core_memory import format_core_memory_for_prompt, write_core_memory
 from dana.plugins.os.background_services import list_background_services as _fs_list_background_services
@@ -2484,6 +2485,26 @@ def _apply_topology_redirects(
                     )
                 resolved[key] = living
 
+    if tool_id in ("create_freecad_polar_pattern", "create_freecad_linear_pattern"):
+        # feature_name may be a LIST of features patterned together; the
+        # generic single-string loop above skips a list, so redirect each
+        # entry here and record every one as consumed by this pattern.
+        raw_features = resolved.get("feature_name")
+        if isinstance(raw_features, list):
+            new_features = []
+            for raw_name in raw_features:
+                requested = str(raw_name).strip()
+                living = resolve_living_leaf(requested) if requested else requested
+                if living != requested:
+                    warnings.append(
+                        f"Note: Auto-redirected a feature_name entry from '{requested}' to "
+                        f"'{living}' to reflect recent boolean/feature operations."
+                    )
+                new_features.append(living)
+                if living:
+                    input_names.append(living)
+            resolved["feature_name"] = new_features
+
     if tool_id == "define_kinematic_joint":
         # child_link/parent_link reference EXISTING assembly members a
         # joint definition does not consume — same reasoning as
@@ -4448,17 +4469,18 @@ _PATTERN_AXES = frozenset({"X", "Y", "Z"})
 
 
 def _tool_create_freecad_polar_pattern(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
-    feature_name = str(args.get("feature_name") or "").strip()
-    if not feature_name:
-        return {"ok": False, "error": "create_freecad_polar_pattern requires feature_name"}
-    # feature_name has already been redirected to its resolve_living_leaf by
-    # dispatch_tool_call's _apply_topology_redirects, before this handler
-    # ever runs — see that function's docstring.
-    if feature_name not in _object_registry():
+    # One feature name or a list of them (all patterned together). Each has
+    # already been redirected to its resolve_living_leaf by dispatch_tool_call's
+    # _apply_topology_redirects, before this handler ever runs.
+    features = pattern_feature_names(args.get("feature_name"))
+    if isinstance(features, str):
+        return {"ok": False, "error": f"create_freecad_polar_pattern: {features}"}
+    unknown = [name for name in features if name not in _object_registry()]
+    if unknown:
         return {
             "ok": False,
             "error": (
-                f"unknown feature_name '{feature_name}' — create it first with "
+                f"unknown feature_name {', '.join(repr(n) for n in unknown)} — create it first with "
                 "create_freecad_pad or create_freecad_pocket"
             ),
         }
@@ -4477,7 +4499,7 @@ def _tool_create_freecad_polar_pattern(args: dict[str, Any], engine: Any, _cp: A
     except (TypeError, ValueError):
         return {"ok": False, "error": "create_freecad_polar_pattern: angle must be numeric if given"}
     return engine.create_polar_pattern(
-        feature_name,
+        features,
         occurrences,
         angle=angle,
         axis=axis,
@@ -4486,17 +4508,18 @@ def _tool_create_freecad_polar_pattern(args: dict[str, Any], engine: Any, _cp: A
 
 
 def _tool_create_freecad_linear_pattern(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
-    feature_name = str(args.get("feature_name") or "").strip()
-    if not feature_name:
-        return {"ok": False, "error": "create_freecad_linear_pattern requires feature_name"}
-    # feature_name has already been redirected to its resolve_living_leaf by
-    # dispatch_tool_call's _apply_topology_redirects, before this handler
-    # ever runs — see that function's docstring.
-    if feature_name not in _object_registry():
+    # One feature name or a list of them (all patterned together). Each has
+    # already been redirected to its resolve_living_leaf by dispatch_tool_call's
+    # _apply_topology_redirects, before this handler ever runs.
+    features = pattern_feature_names(args.get("feature_name"))
+    if isinstance(features, str):
+        return {"ok": False, "error": f"create_freecad_linear_pattern: {features}"}
+    unknown = [name for name in features if name not in _object_registry()]
+    if unknown:
         return {
             "ok": False,
             "error": (
-                f"unknown feature_name '{feature_name}' — create it first with "
+                f"unknown feature_name {', '.join(repr(n) for n in unknown)} — create it first with "
                 "create_freecad_pad or create_freecad_pocket"
             ),
         }
@@ -4514,7 +4537,7 @@ def _tool_create_freecad_linear_pattern(args: dict[str, Any], engine: Any, _cp: 
     if direction not in _PATTERN_AXES:
         return {"ok": False, "error": "create_freecad_linear_pattern requires direction to be one of X, Y, Z"}
     return engine.create_linear_pattern(
-        feature_name,
+        features,
         occurrences,
         length,
         direction=direction,

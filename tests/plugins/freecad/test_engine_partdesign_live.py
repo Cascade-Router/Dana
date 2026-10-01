@@ -374,3 +374,80 @@ def test_macro_replays_sweep_and_loft_sessions_identically() -> None:
     for name in ("Body", sweep["name"], loft["name"]):
         assert replay[name]["valid"] is True
         assert math.isclose(replay[name]["volume"], live[name]["volume"], rel_tol=1e-9), name
+
+
+# -- multi-feature pattern ------------------------------------------------------------
+
+
+def _probe(points: dict[str, tuple[float, float]]) -> dict[str, bool]:
+    """Whether the session Body's final solid has material at each (x, y), z=2."""
+    script = (
+        "import FreeCAD as App, json\n"
+        f"doc = App.openDocument({str(engine._session_document_path())!r})\n"
+        "body = [o for o in doc.Objects if o.TypeId == 'PartDesign::Body'][0]\n"
+        f"out = {{k: body.Shape.isInside(App.Vector(x, y, 2.0), 1e-6, True) for k, (x, y) in {points!r}.items()}}\n"
+        f"print({engine._OK_MARKER!r} + '_PROBE ' + json.dumps(out))\n"
+    )
+    result = engine._run_freecad_script(script)
+    assert result["ok"], result
+    match = re.search(re.escape(engine._OK_MARKER + "_PROBE ") + r"(\{.*\})", result["stdout"])
+    return json.loads(match.group(1))
+
+
+def test_one_polar_pattern_repeats_arm_motor_pad_and_shaft_hole_together() -> None:
+    log = CadCallLog()
+    d = 74.25 / math.sqrt(2)  # motor center on the +X+Y diagonal, 74.25 mm out
+    _run_logged(log, "create_freecad_sketch", {"name": "Plate", "plane": "XY", "geometry": _rect(-30, -30, 30, 30)},
+                engine.create_sketch("Plate", "XY", _rect(-30, -30, 30, 30)))
+    _run_logged(log, "create_freecad_pad", {"sketch_name": "Plate", "length": 4}, engine.create_pad("Plate", 4))
+    w = 5 / math.sqrt(2)  # half-width 5 mm, offset perpendicular to the diagonal
+    arm_pts = [(20 - w, 20 + w), (20 + w, 20 - w), (d + w, d - w), (d - w, d + w)]
+    arm = [{"type": "line", "start": list(arm_pts[i]), "end": list(arm_pts[(i + 1) % 4])} for i in range(4)]
+    _run_logged(log, "create_freecad_sketch", {"name": "Arm", "plane": "XY", "geometry": arm},
+                engine.create_sketch("Arm", "XY", arm))
+    arm_pad = _run_logged(log, "create_freecad_pad", {"sketch_name": "Arm", "length": 4}, engine.create_pad("Arm", 4))
+    motor = [{"type": "circle", "center": [d, d], "radius": 14}]
+    _run_logged(log, "create_freecad_sketch", {"name": "Motor", "plane": "XY", "geometry": motor},
+                engine.create_sketch("Motor", "XY", motor))
+    motor_pad = _run_logged(log, "create_freecad_pad", {"sketch_name": "Motor", "length": 4},
+                            engine.create_pad("Motor", 4))
+    shaft = [{"type": "circle", "center": [d, d], "radius": 2.5}]
+    _run_logged(log, "create_freecad_sketch", {"name": "Shaft", "plane": "XY", "geometry": shaft},
+                engine.create_sketch("Shaft", "XY", shaft))
+    shaft_hole = _run_logged(log, "create_freecad_pocket", {"sketch_name": "Shaft", "depth": 1, "through_all": True},
+                             engine.create_pocket("Shaft", 1, through_all=True))
+    features = [arm_pad["name"], motor_pad["name"], shaft_hole["name"]]
+    pattern = _run_logged(log, "create_freecad_polar_pattern", {"feature_name": features, "occurrences": 4},
+                          engine.create_polar_pattern(features, 4))
+    assert pattern["dimensions"]["features"] == features
+
+    corners = {"+X+Y": (d, d), "-X+Y": (-d, d), "-X-Y": (-d, -d), "+X-Y": (d, -d)}
+    pad_points = {f"pad {k}": (x + 9 * (1 if x > 0 else -1), y) for k, (x, y) in corners.items()}
+    hole_points = {f"hole {k}": (x, y) for k, (x, y) in corners.items()}
+    arm_points = {f"arm {k}": (0.7 * x, 0.7 * y) for k, (x, y) in corners.items()}
+    probe = _probe({**pad_points, **hole_points, **arm_points})
+    assert all(probe[k] for k in pad_points), probe  # a motor pad at every corner
+    assert not any(probe[k] for k in hole_points), probe  # and every shaft hole is open
+    assert all(probe[k] for k in arm_points), probe  # an arm on every diagonal
+
+    live = _measure("Body", pattern["name"])
+    assert live["Body"]["tip"] == pattern["name"]
+    replay = _replay_measure(log, "Body", pattern["name"])
+    assert replay["Body"]["tip"] == pattern["name"]
+    assert math.isclose(replay["Body"]["volume"], live["Body"]["volume"], rel_tol=1e-9)
+
+
+def test_pattern_of_features_in_different_bodies_is_rejected() -> None:
+    _ok(engine.create_sketch("A", "XY", _rect(0, 0, 10, 10)))
+    a = _ok(engine.create_pad("A", 4))["name"]
+    # A second Body, then a feature in it.
+    script = (
+        "import FreeCAD as App\n"
+        f"doc = App.openDocument({str(engine._session_document_path())!r})\n"
+        "doc.addObject('PartDesign::Body', 'Body2')\n"
+        "doc.save()\n"
+    )
+    assert engine._run_freecad_script(script, require_marker=False)["ok"]
+    _ok(engine.create_sketch("B", "XY", _rect(20, 0, 30, 10)))
+    b = _ok(engine.create_pad("B", 4))["name"]  # joins the newest (active) body: Body2
+    assert "different PartDesign bodies" in _err(engine.create_polar_pattern([a, b], 4))

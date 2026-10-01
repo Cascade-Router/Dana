@@ -1939,14 +1939,20 @@ def create_pocket(
 
 
 _PATTERN_BODY = """\
-_feat = resolve_object(doc, {source_name!r})
-if _feat is None:
-    raise RuntimeError("Object not found: " + {source_name!r})
-_body = _body_of(_feat)
-if _body is None or _feat.TypeId in ("Sketcher::SketchObject", "PartDesign::Body"):
-    raise RuntimeError({source_name!r} + " is a " + _feat.TypeId + ", not a PartDesign feature (pattern a create_freecad_pad/create_freecad_pocket result)")
+_feats = []
+for _src in {source_names!r}:
+    _feat = resolve_object(doc, _src)
+    if _feat is None:
+        raise RuntimeError("Object not found: " + _src)
+    if _body_of(_feat) is None or _feat.TypeId in ("Sketcher::SketchObject", "PartDesign::Body"):
+        raise RuntimeError(_src + " is a " + _feat.TypeId + ", not a PartDesign feature (pattern a create_freecad_pad/create_freecad_pocket result)")
+    _feats.append(_feat)
+_bodies = sorted(set(_body_of(f).Name for f in _feats))
+if len(_bodies) > 1:
+    raise RuntimeError("features to pattern belong to different PartDesign bodies: " + ", ".join(_bodies))
+_body = _body_of(_feats[0])
 obj = _body.newObject({type_id!r}, {feature_name!r})
-obj.Originals = [_feat]
+obj.Originals = _feats
 setattr(obj, {axis_prop!r}, (_origin_axis(_body, {axis_role!r}), [""]))
 obj.Occurrences = {occurrences!r}
 setattr(obj, {extent_prop!r}, {extent!r})
@@ -1955,12 +1961,35 @@ _check_feature(doc, obj)
 """
 
 
+def pattern_feature_names(raw: Any) -> list[str] | str:
+    """Normalize a pattern's feature_name argument (one name, a list of names,
+    or a JSON-encoded list of names) into a non-empty list of distinct names,
+    or an error message."""
+    if isinstance(raw, str):
+        text = raw.strip()
+        if text.startswith("["):
+            try:
+                raw = json.loads(text)
+            except json.JSONDecodeError:
+                return "feature_name looks like a list but isn't valid JSON"
+        else:
+            raw = [text] if text else []
+    if not isinstance(raw, (list, tuple)):
+        return "feature_name must be a feature name or a list of feature names"
+    names = [str(n).strip() for n in raw]
+    if not names or any(not n for n in names):
+        return "feature_name requires at least one non-empty feature name"
+    if len(set(names)) != len(names):
+        return "feature_name lists the same feature more than once"
+    return names
+
+
 def _pattern(
     op: str,
     *,
     type_id: str,
     base_name: str,
-    feature_name: str,
+    feature_name: str | Sequence[str],
     occurrences: Any,
     axis: str,
     axis_prop: str,
@@ -1969,9 +1998,9 @@ def _pattern(
     extent_label: str,
     reversed_direction: bool,
 ) -> str:
-    feature = (feature_name or "").strip()
-    if not feature:
-        return _error(f"{op} requires feature_name")
+    features = pattern_feature_names(feature_name)
+    if isinstance(features, str):
+        return _error(f"{op}: {features}")
     axis_u = (axis or "").strip().upper()
     if axis_u not in _PATTERN_AXIS_ROLES:
         return _error(f"{op}: unknown {'axis' if axis_prop == 'Axis' else 'direction'} '{axis}' — must be X, Y, or Z")
@@ -1992,6 +2021,7 @@ def _pattern(
         extent_label: extent_f,
         ("axis" if axis_prop == "Axis" else "direction"): axis_u,
         "reversed_direction": bool(reversed_direction),
+        "features": features,
     }
     if is_dry_run_enabled():
         return _dry_run_result(op, name=base_name, type=type_id, dimensions=dims)
@@ -2000,7 +2030,7 @@ def _pattern(
         return missing
     script, session_path = _partdesign_script(
         "pattern",
-        source_name=feature,
+        source_names=features,
         type_id=type_id,
         feature_name=base_name,
         axis_prop=axis_prop,
@@ -2018,14 +2048,15 @@ def _pattern(
 
 
 def create_polar_pattern(
-    feature_name: str,
+    feature_name: str | Sequence[str],
     occurrences: int,
     angle: float = 360.0,
     axis: str = "Z",
     reversed_direction: bool = False,
 ) -> str:
-    """Repeat a Pad/Pocket feature around one of its Body's origin axes via a
-    ``PartDesign::PolarPattern`` (``occurrences`` includes the original)."""
+    """Repeat one or more Pad/Pocket features (one name or a list, all in the
+    same Body) around one of the Body's origin axes via a
+    ``PartDesign::PolarPattern`` (``occurrences`` includes the originals)."""
     return _pattern(
         "create_polar_pattern",
         type_id="PartDesign::PolarPattern",
@@ -2042,13 +2073,14 @@ def create_polar_pattern(
 
 
 def create_linear_pattern(
-    feature_name: str,
+    feature_name: str | Sequence[str],
     occurrences: int,
     length: float,
     direction: str = "X",
     reversed_direction: bool = False,
 ) -> str:
-    """Repeat a Pad/Pocket feature along one of its Body's origin axes via a
+    """Repeat one or more Pad/Pocket features (one name or a list, all in the
+    same Body) along one of the Body's origin axes via a
     ``PartDesign::LinearPattern`` (``length`` spans first to last copy)."""
     return _pattern(
         "create_linear_pattern",
@@ -2260,10 +2292,15 @@ def partdesign_replay_code(tool_id: str, arguments: dict[str, Any], result: dict
     if tool_id in ("create_freecad_polar_pattern", "create_freecad_linear_pattern"):
         polar = tool_id == "create_freecad_polar_pattern"
         axis_u = str(dims.get("axis" if polar else "direction") or ("Z" if polar else "X")).upper()
+        # dimensions["features"] is what the engine actually patterned; older
+        # records only carry the raw (single-name) argument.
+        sources = dims.get("features") or pattern_feature_names(arguments["feature_name"])
+        if isinstance(sources, str):
+            raise ValueError(f"{tool_id}: {sources}")
         return _partdesign_code(
             "pattern",
             feature_name=name,
-            source_name=str(arguments["feature_name"]),
+            source_names=list(sources),
             type_id="PartDesign::PolarPattern" if polar else "PartDesign::LinearPattern",
             axis_prop="Axis" if polar else "Direction",
             axis_role=_PATTERN_AXIS_ROLES[axis_u],

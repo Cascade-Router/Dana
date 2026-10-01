@@ -48,6 +48,11 @@ class ToolParameterSpec:
     item_properties: tuple[ToolItemPropertySpec, ...] = ()
     description_en: str = ""
     description_fa: str = ""
+    # Only for ``type == "array"``: also accept a single bare item (e.g. one
+    # feature name where a list of names is also allowed). The LLM-facing
+    # schema still advertises the array; this only keeps argument validation
+    # from rejecting a model that sends the one-element case as a plain value.
+    accepts_single: bool = False
 
 
 @dataclass(frozen=True)
@@ -129,6 +134,7 @@ def load_tool_registry(path: str | None = None) -> dict[str, ToolSpec]:
                 ),
                 description_en=str(p.get("description_en") or ""),
                 description_fa=str(p.get("description_fa") or ""),
+                accepts_single=bool(p.get("accepts_single", False)),
             )
             for p in (item.get("parameters") or [])
         )
@@ -312,7 +318,11 @@ def tool_argument_model(spec: ToolSpec) -> type[BaseModel]:
         return cached
     fields: dict[str, Any] = {}
     for param in spec.parameters:
-        py_type = list[_item_annotation(param)] if param.type == "array" else _JSON_TYPE_TO_PY.get(param.type, Any)
+        if param.type == "array":
+            item = _item_annotation(param)
+            py_type = list[item] | item if param.accepts_single else list[item]
+        else:
+            py_type = _JSON_TYPE_TO_PY.get(param.type, Any)
         fields[param.name] = (py_type | None, None)
     model = create_model(f"_{spec.id}_args", __config__=_MODEL_CONFIG, **fields)
     _ARGUMENT_MODEL_CACHE[spec.id] = model
