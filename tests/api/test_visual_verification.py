@@ -115,6 +115,13 @@ def _mock_llm(monkeypatch: pytest.MonkeyPatch, *turns: list[ToolCall] | str) -> 
 
 
 @pytest.fixture(autouse=True)
+def _interactive_mode(interactive_tool_schema: None) -> None:
+    """Everything here exercises the live-frontend capture path, which
+    DANA_HEADLESS=true (local .env, CI) deliberately bypasses — see
+    tests/test_headless_guard.py for that side."""
+
+
+@pytest.fixture(autouse=True)
 def _mock_platform(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server_module, "get_cad_engine", lambda: MockFreeCADEngine())
     monkeypatch.setattr(server_module, "get_control_plane", lambda: MockControlPlane())

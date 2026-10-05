@@ -767,6 +767,7 @@ def _capture_tool_names(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return captured
 
 
+@pytest.mark.usefixtures("interactive_tool_schema")
 def test_update_context_normalizes_cad_to_freecad_essential_tool_set(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -795,6 +796,7 @@ def test_update_context_normalizes_cad_to_freecad_essential_tool_set(
     assert captured["tool_names"] == react_dispatch._CORE_TOOL_IDS | react_dispatch._FREECAD_ESSENTIAL_TOOL_IDS
 
 
+@pytest.mark.usefixtures("interactive_tool_schema")
 def test_no_active_plugins_yields_core_tools_only(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """A fresh connection that never sends update_context (or one that sends
     an empty active_plugins list) must only ever offer the LLM the 3 core
@@ -810,6 +812,7 @@ def test_no_active_plugins_yields_core_tools_only(client: TestClient, monkeypatc
     assert captured["tool_names"] == react_dispatch._CORE_TOOL_IDS
 
 
+@pytest.mark.usefixtures("interactive_tool_schema")
 def test_update_context_with_non_list_active_plugins_is_ignored_not_fatal(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

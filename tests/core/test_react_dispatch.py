@@ -1629,6 +1629,7 @@ def test_llm_tool_ids_all_have_handlers() -> None:
         assert tool_id in rd.TOOL_HANDLERS, tool_id
 
 
+@pytest.mark.usefixtures("interactive_tool_schema")
 def test_llm_tools_schema_resolves_against_tools_json() -> None:
     schema = rd._llm_tools_schema()
     names = {t["function"]["name"] for t in schema}
@@ -1690,12 +1691,14 @@ def test_build_visual_inspection_result_without_api_key_passes_none(monkeypatch:
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("interactive_tool_schema")
 def test_llm_tools_schema_with_no_plugins_active_is_core_only() -> None:
     schema = rd._llm_tools_schema(frozenset())
     names = {t["function"]["name"] for t in schema}
     assert names == rd._CORE_TOOL_IDS
 
 
+@pytest.mark.usefixtures("interactive_tool_schema")
 def test_llm_tools_schema_with_freecad_active_matches_core_plus_freecad() -> None:
     """"freecad" active is core + a TOKEN-BUDGET-CAPPED subset of FreeCAD's
     own (native + manifest-extended) tools — no longer the full ~26-tool set
@@ -1855,6 +1858,7 @@ def test_freecad_manifest_colliding_tool_ids_still_use_native_handler() -> None:
         assert tool_id not in rd._PLUGIN_TOOL_SCHEMAS, f"{tool_id} should stay native, not plugin-wrapped"
 
 
+@pytest.mark.usefixtures("interactive_tool_schema")
 def test_llm_tools_schema_default_still_matches_full_legacy_set() -> None:
     """No active_plugins arg at all (e.g. a caller not yet plugin-aware)
     must keep behaving exactly like the pre-capability-routing code —
@@ -1865,6 +1869,7 @@ def test_llm_tools_schema_default_still_matches_full_legacy_set() -> None:
     assert names == rd._LLM_TOOL_IDS
 
 
+@pytest.mark.usefixtures("interactive_tool_schema")
 def test_llm_tools_schema_unknown_plugin_name_yields_core_only() -> None:
     """An active plugin id with no matching tool set (e.g. a future plugin
     react_dispatch doesn't know about yet) must degrade to core tools, not

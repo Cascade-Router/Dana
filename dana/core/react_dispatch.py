@@ -1831,12 +1831,32 @@ def _tool_query_engineering_standard(args: dict[str, Any], _engine: Any, _cp: An
 # and specifically rather than silently no-op'ing.
 VISUAL_INSPECTION_TOOLS: frozenset[str] = frozenset({"take_canvas_screenshot"})
 
+# Tools that capture a live screen/canvas — under DANA_HEADLESS=true there is
+# no display or frontend to capture, so _llm_tools_schema prunes them from
+# every turn's tools= and take_canvas_screenshot (core, so most likely to be
+# called from a stale history anyway) short-circuits to a "skipped" result
+# instead of suspending the loop on a frontend that will never answer.
+HEADLESS_PRUNED_TOOL_IDS: frozenset[str] = frozenset(
+    {"take_canvas_screenshot", "execute_vision_analysis", "analyze_desktop_screen"}
+)
+_HEADLESS_SCREENSHOT_RESULT = {
+    "ok": True,
+    "status": "skipped",
+    "message": "Headless mode active; screenshot bypassed.",
+}
+
+
+def is_headless() -> bool:
+    return os.getenv("DANA_HEADLESS", "false").lower() == "true"
+
 
 def is_visual_inspection_tool(tool_id: str) -> bool:
-    return tool_id in VISUAL_INSPECTION_TOOLS
+    return tool_id in VISUAL_INSPECTION_TOOLS and not is_headless()
 
 
 def _tool_take_canvas_screenshot(_args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    if is_headless():
+        return dict(_HEADLESS_SCREENSHOT_RESULT)
     return {
         "ok": False,
         "error": (
@@ -4372,6 +4392,60 @@ def _tool_create_freecad_sketch_extrude(args: dict[str, Any], engine: Any, _cp: 
 _SKETCH_PLANES = frozenset({"XY", "XZ", "YZ"})
 
 
+class SchemaValidationError(ValueError):
+    """A tool payload that doesn't match its declared schema — recoverable:
+    the handler turns it into an ordinary ``ok: False`` result the model can
+    correct on its next turn, before any engine call happens."""
+
+
+SKETCH_GEOMETRY_PRIMITIVES: tuple[str, ...] = ("line", "circle", "arc")
+_SKETCH_PRIMITIVE_KEYS: dict[str, frozenset[str]] = {
+    "line": frozenset({"type", "start", "end"}),
+    "circle": frozenset({"type", "center", "radius"}),
+    "arc": frozenset({"type", "center", "radius", "start_angle", "end_angle"}),
+}
+_SKETCH_GEOMETRY_ERROR = "Invalid geometry primitive. Only 'line', 'circle', and 'arc' with format [x, y, ...] are supported."
+
+
+def validate_sketch_geometry(geometry: Any) -> None:
+    """Strict pre-validation for create_freecad_sketch, run before the engine
+    sees the payload: whitelisted types only, exactly that type's keys (no
+    x1/y1, cx/cy, width/height, ...), and every point a 2-number [x, y].
+    Raises SchemaValidationError naming the offending element."""
+    if not isinstance(geometry, list) or not geometry:
+        raise SchemaValidationError(f"{_SKETCH_GEOMETRY_ERROR} geometry must be a non-empty list.")
+    for i, item in enumerate(geometry):
+        if not isinstance(item, dict):
+            raise SchemaValidationError(f"{_SKETCH_GEOMETRY_ERROR} geometry[{i}] must be an object.")
+        kind = item.get("type")
+        allowed = _SKETCH_PRIMITIVE_KEYS.get(kind) if isinstance(kind, str) else None
+        if allowed is None:
+            raise SchemaValidationError(f"{_SKETCH_GEOMETRY_ERROR} geometry[{i}] has type {kind!r}.")
+        unknown = sorted(set(item) - allowed)
+        missing = sorted(allowed - set(item))
+        if unknown or missing:
+            detail = "; ".join(
+                part
+                for part in (
+                    f"unsupported keys {unknown}" if unknown else "",
+                    f"missing keys {missing}" if missing else "",
+                )
+                if part
+            )
+            raise SchemaValidationError(f"{_SKETCH_GEOMETRY_ERROR} geometry[{i}] ({kind}): {detail}.")
+        for key in ("start", "end", "center"):
+            if key in item:
+                point = item[key]
+                if not (
+                    isinstance(point, list)
+                    and len(point) == 2
+                    and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in point)
+                ):
+                    raise SchemaValidationError(
+                        f"{_SKETCH_GEOMETRY_ERROR} geometry[{i}] ({kind}): {key!r} must be [x, y]."
+                    )
+
+
 def _tool_create_freecad_sketch(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
     name = str(args.get("name") or "").strip()
     if not name:
@@ -4380,8 +4454,10 @@ def _tool_create_freecad_sketch(args: dict[str, Any], engine: Any, _cp: Any) -> 
     if plane not in _SKETCH_PLANES:
         return {"ok": False, "error": "create_freecad_sketch requires plane to be one of XY, XZ, YZ"}
     geometry = args.get("geometry")
-    if not isinstance(geometry, list) or not geometry:
-        return {"ok": False, "error": "create_freecad_sketch requires a non-empty geometry list"}
+    try:
+        validate_sketch_geometry(geometry)
+    except SchemaValidationError as exc:
+        return {"ok": False, "error": str(exc)}
     return engine.create_sketch(name, plane, geometry)
 
 
@@ -6161,6 +6237,9 @@ def _llm_tools_schema(
     and a soft narrowing bias (however strongly weighted) is not a
     structural guarantee of that; a fixed allow-list is.
     """
+    if is_headless():
+        hidden_tool_ids = hidden_tool_ids | HEADLESS_PRUNED_TOOL_IDS
+        force_include = force_include - HEADLESS_PRUNED_TOOL_IDS
     if hard_restrict_to is not None:
         schemas = list(_llm_tools_schema_cached(frozenset(hard_restrict_to) - hidden_tool_ids))
         minified = minify_tool_schemas(schemas)
@@ -9314,7 +9393,9 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
             return f"Ambiguous match for '{payload.get('query')}' — candidates: {titles}."
         return f"{payload.get('title')}: {payload.get('dimensions')}."
     if call.tool_id == "take_canvas_screenshot":
-        return str(payload.get("summary") or payload.get("note") or "Captured the canvas viewport.")
+        return str(
+            payload.get("summary") or payload.get("note") or payload.get("message") or "Captured the canvas viewport."
+        )
     if call.tool_id == "execute_vision_analysis":
         return str(payload.get("summary") or "Analyzed the CAD viewport.")
     if call.tool_id == "manipulate_camera":

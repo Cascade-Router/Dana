@@ -399,3 +399,14 @@ def _teardown_lingering_tk_root():
     except Exception:  # noqa: BLE001 — teardown must never fail a passing test
         pass
     tkinter._default_root = None
+
+
+@pytest.fixture
+def interactive_tool_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Turn off react_dispatch's headless tool pruning (and the screenshot
+    short-circuit) for a test that checks the full interactive tool set.
+    Patches is_headless only — DANA_HEADLESS itself stays set, so the
+    FreeCAD GUI-launch lock in engine.py is untouched."""
+    import dana.core.react_dispatch as react_dispatch
+
+    monkeypatch.setattr(react_dispatch, "is_headless", lambda: False)
