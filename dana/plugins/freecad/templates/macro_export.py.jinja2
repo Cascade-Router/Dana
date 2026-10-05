@@ -19,15 +19,12 @@ import Part
 import Mesh
 
 doc = App.newDocument({{ document_name|pyrepr }})
-{% if steps|selectattr("kind", "equalto", "partdesign")|list %}
+{% if partdesign_preamble %}
 
 # Sketcher/PartDesign helpers — the same code Dana's engine runs for these
 # steps (dana.plugins.freecad.engine._PARTDESIGN_HELPERS), so the replay
 # builds, names and validates features exactly as the live session did.
-import json
-import Sketcher
-
-{{ partdesign_helpers }}
+{{ partdesign_preamble }}
 {% endif %}
 
 {% for step in steps %}
@@ -277,7 +274,7 @@ Part.export(export_targets_{{ step.index }}, {{ step.path|pyrepr }})
 Mesh.export(export_targets_{{ step.index }}, {{ step.path|pyrepr }})
 {% endif %}
 
-{% elif step.kind == "partdesign" %}
+{% elif step.kind in partdesign_kinds %}
 {{ step.code }}{{ step.var }} = obj
 
 {% elif step.kind == "blueprint" %}

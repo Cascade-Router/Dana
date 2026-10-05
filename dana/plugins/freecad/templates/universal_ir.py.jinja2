@@ -53,6 +53,11 @@ def resolve_object(doc, target_name):
         return matches[0]
     return None
 
+{% if partdesign_preamble %}
+{# Sketcher/PartDesign steps: the engine's own helpers, so they build,
+   name and validate features exactly as the live tools do. #}
+{{ partdesign_preamble }}
+{% endif %}
 {% if doc_mode == "session" %}
 import os
 _session_path = {{ session_path|pyrepr }}
@@ -354,6 +359,11 @@ for _dx_{{ step.index }}, _dy_{{ step.index }}, _dz_{{ step.index }}, _rot_{{ st
    reference from here on, never `source_object` again. #}
 _src_obj_{{ step.index }}.Visibility = False
 doc.recompute()
+
+{% elif step.kind in partdesign_kinds %}
+{# FreeCAD code from engine.partdesign_step_code (ir.partdesign_render_steps),
+   which binds the op's object to `obj`. #}
+{{ step.code }}{{ step.var }} = obj
 
 {% else %}
 raise RuntimeError("Universal IR: unsupported step kind '{{ step.kind }}' at step {{ step.index }} — "

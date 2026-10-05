@@ -141,6 +141,10 @@ DEFAULT_PARAMETER_FIELDS: dict[str, tuple[str, ...]] = {
     "cylinder": ("radius", "height"),
     "edge_operation": ("value",),
     "modify_parameter": ("new_value",),
+    "pad": ("length",),
+    "pocket": ("depth",),
+    "polar_pattern": ("occurrences",),
+    "linear_pattern": ("occurrences", "length"),
 }
 
 
@@ -231,6 +235,8 @@ def classify_parameters(
         for field_name in candidate_fields:
             if field_name not in step:
                 continue
+            if step["kind"] == "pocket" and field_name == "depth" and step.get("through_all"):
+                continue  # a through-all pocket ignores its depth
             default = step[field_name]
             param_name = f"{step['kind']}_{i}_{field_name}"
             specs.append(
@@ -448,9 +454,8 @@ def _apply_name_prefix(steps: list[dict[str, Any]], prefix: str) -> list[dict[st
         if isinstance(step.get("name"), str) and step["name"] in rename_map:
             step["name"] = rename_map[step["name"]]
         for field_name in _REFERENCE_FIELDS.get(step["kind"], ()):
-            ref = step.get(field_name)
-            if isinstance(ref, str) and ref in rename_map:
-                step[field_name] = rename_map[ref]
+            if field_name in step:
+                step[field_name] = ir.rename_reference(step[field_name], rename_map)
         rewritten.append(step)
     return rewritten
 
@@ -661,6 +666,11 @@ def execute_compiled_steps(steps: list[dict[str, Any]], *, name_prefix: str | No
     if not steps:
         return json.loads(_error("compiled skill has no steps to execute"))
     prefix = name_prefix or uuid.uuid4().hex[:8]
+    if not prefix[0].isalpha():
+        # FreeCAD object names can't start with a digit: it would silently
+        # rename "5e72_Box" to "_5e72_Box", and every later by-name lookup of
+        # "5e72_Box" would find nothing.
+        prefix = f"s{prefix}"
     prefixed = _apply_name_prefix(steps, prefix)
 
     script = ir.render_ir_script(

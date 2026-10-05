@@ -134,12 +134,15 @@ def render_ir_script(
         raise ValueError("render_ir_script(doc_mode='standalone') requires final_path_expr when marker is set")
     if not steps:
         raise ValueError("render_ir_script requires at least one step")
+    steps, partdesign_preamble = partdesign_render_steps(steps)
     template = _ENV.get_template(_TEMPLATE_NAME)
     return template.render(
         doc_mode=doc_mode,
         session_path=session_path,
         document_name=document_name,
         steps=steps,
+        partdesign_kinds=PARTDESIGN_KINDS,
+        partdesign_preamble=partdesign_preamble,
         final_var=final_var or steps[-1]["var"],
         final_path_expr=final_path_expr,
         marker=marker,
@@ -273,6 +276,17 @@ _COMPOSITE_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def rename_reference(ref: Any, rename_map: dict[str, str]) -> Any:
+    """One reference field rewritten through ``rename_map``: a single name, or
+    a list of names (pattern features, loft sections). Anything not in the
+    map is left as it is."""
+    if isinstance(ref, str):
+        return rename_map.get(ref, ref)
+    if isinstance(ref, list):
+        return [rename_map.get(r, r) if isinstance(r, str) else r for r in ref]
+    return ref
+
+
 def unroll_steps(
     raw_steps: list[dict[str, Any]],
     *,
@@ -364,9 +378,8 @@ def unroll_steps(
         if step.get("name") in rename_map:
             step["name"] = rename_map[step["name"]]
         for field_name in ref_fields.get(step["kind"], ()):
-            ref = step.get(field_name)
-            if isinstance(ref, str) and ref in rename_map:
-                step[field_name] = rename_map[ref]
+            if field_name in step:
+                step[field_name] = rename_reference(step[field_name], rename_map)
         index = start_index + offset
         step["index"] = index
         step.setdefault("var", safe_var_name(step.get("name") or step["kind"], index))
@@ -1005,14 +1018,244 @@ register_composite_ir(
 )
 
 
+# ---------------------------------------------------------------------
+# Sketcher/PartDesign kinds — the eight sketch/feature tools as generic,
+# parametric step dicts: dimensions are plain fields (a compiled skill can
+# expose pad "length" or pattern "occurrences"), and every object a step
+# builds on is a by-name reference field (lists for pattern features and
+# loft sections) that skill name-prefixing and composite unrolling rewrite
+# like any other. No FreeCAD code is stored in the step: it's generated at
+# render time by engine.partdesign_step_code, the same code the live tool
+# runs, so the live session, an exported macro and a compiled skill build
+# the same feature tree.
+#
+# The live tools themselves still execute through engine._partdesign_script
+# (with its sketch-DoF and auto-reverse reporting), not _execute_ir_tool.
+# ---------------------------------------------------------------------
+
+PARTDESIGN_KINDS: frozenset[str] = frozenset(
+    {"sketch", "sketch_constraint", "pad", "pocket", "polar_pattern", "linear_pattern", "sweep", "loft"}
+)
+
+_COMPOSITE_REFERENCE_FIELDS.update(
+    {
+        "pad": ("sketch_name",),
+        "pocket": ("sketch_name",),
+        "polar_pattern": ("features",),
+        "linear_pattern": ("features",),
+        "sweep": ("profile_sketch", "path_sketch"),
+        "loft": ("sections",),
+    }
+)
+
+
+def _feature_list(raw: Any) -> list[str]:
+    # Lazy: engine imports this module at load time.
+    from dana.plugins.freecad.engine import pattern_feature_names
+
+    names = pattern_feature_names(raw)
+    if isinstance(names, str):
+        raise ValueError(names)
+    return names
+
+
+def _partdesign_step(kind: str, tool_id: str, name: str, var: str, index: int, **fields: Any) -> dict[str, Any]:
+    return {"kind": kind, "var": var, "name": name, **fields, "index": index, "tool_id": tool_id}
+
+
+def _sketch_from_args(
+    *, name: str = "Sketch", plane: str = "XY", geometry: list[dict[str, Any]], var: str = "obj", index: int = 1
+) -> dict[str, Any]:
+    return _partdesign_step(
+        "sketch", "create_freecad_sketch", name, var, index,
+        plane=str(plane).upper(), geometry=[dict(g) for g in geometry],
+    )
+
+
+def _sketch_constraint_from_args(
+    *, sketch_name: str, constraint_type: str, geometry_indices: list[int], value: float | None = None,
+    var: str = "obj", index: int = 1,
+) -> dict[str, Any]:
+    # name IS the sketch: the constraint creates nothing, it re-binds the
+    # sketch, so the sketch's own rename covers it under prefixing.
+    return _partdesign_step(
+        "sketch_constraint", "apply_sketch_constraint", sketch_name, var, index,
+        constraint_type=str(constraint_type), geometry_indices=[int(i) for i in geometry_indices],
+        value=float(value) if value is not None else None,
+    )
+
+
+def _pad_from_args(
+    *, sketch_name: str, length: float, symmetric_to_plane: bool = False, reversed_direction: bool = False,
+    name: str = "Pad", var: str = "obj", index: int = 1,
+) -> dict[str, Any]:
+    return _partdesign_step(
+        "pad", "create_freecad_pad", name, var, index,
+        sketch_name=str(sketch_name), length=float(length),
+        symmetric=bool(symmetric_to_plane), reversed=bool(reversed_direction),
+    )
+
+
+def _pocket_from_args(
+    *, sketch_name: str, depth: float, through_all: bool = False, symmetric_to_plane: bool = False,
+    reversed_direction: bool = False, name: str = "Pocket", var: str = "obj", index: int = 1,
+) -> dict[str, Any]:
+    return _partdesign_step(
+        "pocket", "create_freecad_pocket", name, var, index,
+        sketch_name=str(sketch_name), depth=float(depth), through_all=bool(through_all),
+        symmetric=bool(symmetric_to_plane), reversed=bool(reversed_direction),
+    )
+
+
+def _polar_pattern_from_args(
+    *, feature_name: Any, occurrences: int, angle: float = 360.0, axis: str = "Z",
+    reversed_direction: bool = False, name: str = "PolarPattern", var: str = "obj", index: int = 1,
+) -> dict[str, Any]:
+    return _partdesign_step(
+        "polar_pattern", "create_freecad_polar_pattern", name, var, index,
+        features=_feature_list(feature_name), occurrences=int(occurrences), angle=float(angle),
+        axis=str(axis).upper(), reversed=bool(reversed_direction),
+    )
+
+
+def _linear_pattern_from_args(
+    *, feature_name: Any, occurrences: int, length: float, direction: str = "X",
+    reversed_direction: bool = False, name: str = "LinearPattern", var: str = "obj", index: int = 1,
+) -> dict[str, Any]:
+    return _partdesign_step(
+        "linear_pattern", "create_freecad_linear_pattern", name, var, index,
+        features=_feature_list(feature_name), occurrences=int(occurrences), length=float(length),
+        direction=str(direction).upper(), reversed=bool(reversed_direction),
+    )
+
+
+def _sweep_from_args(
+    *, profile_sketch: str, path_sketch: str, frenet: bool = True, name: str = "Sweep",
+    var: str = "obj", index: int = 1,
+) -> dict[str, Any]:
+    return _partdesign_step(
+        "sweep", "create_freecad_sweep", name, var, index,
+        profile_sketch=str(profile_sketch), path_sketch=str(path_sketch), frenet=bool(frenet),
+    )
+
+
+def _loft_from_args(
+    *, cross_section_sketches: list[str], ruled: bool = False, closed: bool = False, name: str = "Loft",
+    var: str = "obj", index: int = 1,
+) -> dict[str, Any]:
+    return _partdesign_step(
+        "loft", "create_freecad_loft", name, var, index,
+        sections=[str(s) for s in cross_section_sketches], ruled=bool(ruled), closed=bool(closed),
+    )
+
+
+def _partdesign_record_args(tool_id: str, args: dict[str, Any], dims: dict[str, Any]) -> dict[str, Any]:
+    """A recorded call's native arguments, preferring what the engine reported
+    it actually did (``result["dimensions"]``: coerced values, the pocket's
+    auto-reversed flip, every patterned feature) over the raw request."""
+    if tool_id == "create_freecad_sketch":
+        return {"plane": dims.get("plane") or args.get("plane") or "XY", "geometry": args["geometry"]}
+    if tool_id == "apply_sketch_constraint":
+        return {
+            "constraint_type": dims.get("constraint_type") or args["constraint_type"],
+            "geometry_indices": dims.get("geometry_indices") or args["geometry_indices"],
+            "value": dims.get("value", args.get("value")),
+        }
+    if tool_id in ("create_freecad_pad", "create_freecad_pocket"):
+        size = "length" if tool_id == "create_freecad_pad" else "depth"
+        out = {
+            "sketch_name": args["sketch_name"],
+            size: dims.get(size, args.get(size)),
+            "symmetric_to_plane": dims.get("symmetric_to_plane", args.get("symmetric_to_plane", False)),
+            "reversed_direction": dims.get("reversed_direction", args.get("reversed_direction", False)),
+        }
+        if size == "depth":
+            out["through_all"] = dims.get("through_all", args.get("through_all", False))
+        return out
+    if tool_id in ("create_freecad_polar_pattern", "create_freecad_linear_pattern"):
+        polar = tool_id == "create_freecad_polar_pattern"
+        extent, axis = ("angle", "axis") if polar else ("length", "direction")
+        out = {
+            "feature_name": dims.get("features") or args["feature_name"],
+            "occurrences": dims.get("occurrences", args.get("occurrences")),
+            "reversed_direction": dims.get("reversed_direction", args.get("reversed_direction", False)),
+            axis: dims.get(axis) or args.get(axis) or ("Z" if polar else "X"),
+        }
+        if dims.get(extent, args.get(extent)) is not None:
+            out[extent] = dims.get(extent, args.get(extent))
+        return out
+    if tool_id == "create_freecad_sweep":
+        return {
+            "profile_sketch": args["profile_sketch"],
+            "path_sketch": args["path_sketch"],
+            "frenet": dims.get("frenet", args.get("frenet", True)),
+        }
+    return {
+        "cross_section_sketches": args["cross_section_sketches"],
+        "ruled": dims.get("ruled", args.get("ruled", False)),
+        "closed": dims.get("closed", args.get("closed", False)),
+    }
+
+
+def _partdesign_from_record_for(tool_id: str, from_args: Callable[..., dict[str, Any]]):
+    def from_record(rec: Any, index: int) -> dict[str, Any]:
+        name = rec.result.get("name")
+        if not name:
+            raise ValueError(f"{tool_id}: record has no result name to replay")
+        native = _partdesign_record_args(tool_id, rec.arguments, rec.result.get("dimensions") or {})
+        name_arg = "sketch_name" if tool_id == "apply_sketch_constraint" else "name"
+        native[name_arg] = str(name)
+        return from_args(**native, var=safe_var_name(str(name), index), index=index)
+
+    return from_record
+
+
+for _kind, _tool_id, _from_args in (
+    ("sketch", "create_freecad_sketch", _sketch_from_args),
+    ("sketch_constraint", "apply_sketch_constraint", _sketch_constraint_from_args),
+    ("pad", "create_freecad_pad", _pad_from_args),
+    ("pocket", "create_freecad_pocket", _pocket_from_args),
+    ("polar_pattern", "create_freecad_polar_pattern", _polar_pattern_from_args),
+    ("linear_pattern", "create_freecad_linear_pattern", _linear_pattern_from_args),
+    ("sweep", "create_freecad_sweep", _sweep_from_args),
+    ("loft", "create_freecad_loft", _loft_from_args),
+):
+    register_ir_kind(
+        IRKindSpec(
+            kind=_kind, tool_id=_tool_id, from_args=_from_args,
+            from_record=_partdesign_from_record_for(_tool_id, _from_args),
+        )
+    )
+
+
+def partdesign_render_steps(steps: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
+    """Copies of ``steps`` with each Sketcher/PartDesign step's FreeCAD
+    ``code`` filled in (from its fields as they stand now, after every
+    rewrite), plus the preamble those steps need (imports + the engine's
+    PartDesign helpers), or "" when there are none. Shared by both
+    templates so a macro and a compiled skill render identical code."""
+    if not any(s.get("kind") in PARTDESIGN_KINDS for s in steps):
+        return steps, ""
+    from dana.plugins.freecad.engine import PARTDESIGN_PREAMBLE_HELPERS, partdesign_step_code
+
+    rendered = [
+        {**s, "code": partdesign_step_code(s)} if s.get("kind") in PARTDESIGN_KINDS else s for s in steps
+    ]
+    preamble = "import json\nimport math\nimport Sketcher\n\n" + PARTDESIGN_PREAMBLE_HELPERS
+    return rendered, preamble
+
+
 __all__ = (
+    "PARTDESIGN_KINDS",
     "CompositeIRSpec",
     "IRKindSpec",
     "get_composite_ir",
     "get_ir_kind",
     "is_ir_migrated",
     "migrated_tool_ids",
+    "partdesign_render_steps",
     "register_composite_ir",
+    "rename_reference",
     "register_ir_kind",
     "render_ir_script",
     "unroll_composite",

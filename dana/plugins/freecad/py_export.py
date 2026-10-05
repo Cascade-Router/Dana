@@ -52,14 +52,6 @@ from dana.plugins.freecad.engine import (
     _PIPE_ARC_MIN_BEND_RADIUS as _ARC_MIN_RADIUS,
 )
 
-# Sketcher/PartDesign steps replay the engine's own FreeCAD code verbatim
-# (the same reuse rationale, one level up: the whole op, not a constant).
-from dana.plugins.freecad.engine import (
-    PARTDESIGN_PREAMBLE_HELPERS,
-    PARTDESIGN_TOOL_IDS,
-    partdesign_replay_code,
-)
-
 # Same reuse rationale — the blueprint step's view directions/positions and
 # template file paths must match techdraw_export.py's own layout exactly.
 from dana.plugins.freecad.techdraw_export import _PAGE_TEMPLATES, _VIEW_LAYOUT
@@ -410,19 +402,19 @@ def build_replay_steps(
             skipped.append(f"Step {offset}: {rec.tool_id} failed — {rec.error}")
             continue
         ir_kind = ir.get_ir_kind(rec.tool_id)
-        if ir_kind is not None:
-            step = ir_kind.from_record(rec, offset)
-        elif rec.tool_id in PARTDESIGN_TOOL_IDS:
-            # Sketcher/PartDesign: replay the engine's own FreeCAD code for
-            # the op (see engine.partdesign_replay_code), under the object
-            # name the live call got, so later steps' by-name references hold.
+        if ir_kind is not None and ir_kind.kind in ir.PARTDESIGN_KINDS:
+            # Sketcher/PartDesign: a structured IR step rendered (at template
+            # time) to the engine's own code for the op, under the object name
+            # the live call got, so later steps' by-name references hold. A
+            # record that can't be rebuilt is skipped, not rendered broken.
             try:
-                code = partdesign_replay_code(rec.tool_id, rec.arguments, rec.result)
+                step = ir_kind.from_record(rec, offset)
+                ir.partdesign_render_steps([step])
             except (KeyError, TypeError, ValueError) as exc:
                 skipped.append(f"Step {offset}: {rec.tool_id} could not be replayed — {exc}")
                 continue
-            name = str(rec.result.get("name"))
-            step = {"kind": "partdesign", "var": _safe_var_name(name, offset), "name": name, "code": code}
+        elif ir_kind is not None:
+            step = ir_kind.from_record(rec, offset)
         else:
             builder = _STEP_BUILDERS.get(rec.tool_id)
             if builder is None:
@@ -438,12 +430,14 @@ def build_replay_steps(
 def render_macro_script(log: CadCallLog, *, document_name: str = "DanaModel") -> str:
     """Render ``log`` into a standalone FreeCAD macro's full source text."""
     steps, skipped = build_replay_steps(log.records)
+    steps, partdesign_preamble = ir.partdesign_render_steps(steps)
     template = _ENV.get_template(_TEMPLATE_NAME)
     return template.render(
         document_name=document_name,
         steps=steps,
         skipped=skipped,
-        partdesign_helpers=PARTDESIGN_PREAMBLE_HELPERS,
+        partdesign_kinds=ir.PARTDESIGN_KINDS,
+        partdesign_preamble=partdesign_preamble,
     )
 
 

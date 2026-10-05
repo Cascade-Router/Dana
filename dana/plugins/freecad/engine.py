@@ -44,6 +44,7 @@ import uuid
 from collections.abc import Sequence
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from typing import Any, Literal
 
@@ -2258,96 +2259,114 @@ def _constraint_call(
     return geo_ids, args
 
 
-def partdesign_replay_code(tool_id: str, arguments: dict[str, Any], result: dict[str, Any]) -> str | None:
-    """Macro-export translation for the eight Sketcher/PartDesign tools: the
-    same FreeCAD code the live call ran (see ``_partdesign_code``), rebuilt
-    from a call-log record's resolved ``arguments`` and the engine's own
-    ``result``. Objects are recreated under the exact names the live call
-    got (``result["name"]``, e.g. ``Pocket004``), so later steps that
-    reference them by name resolve to the same objects. ``None`` for any
-    other tool_id; raises ValueError for a record it can't reproduce."""
-    if tool_id not in PARTDESIGN_TOOL_IDS:
-        return None
-    dims = result.get("dimensions") or {}
-    name = result.get("name")
+def partdesign_step_code(step: dict[str, Any]) -> str:
+    """The FreeCAD code for one Sketcher/PartDesign Universal IR step (see
+    ``dana.plugins.freecad.ir``'s "sketch" ... "loft" kinds): the same
+    ``_partdesign_code`` the live call ran, built from the step's generic
+    fields after any skill parameter substitution / name prefixing. The one
+    code generator for these ops in macro export and compiled skills alike.
+    The code binds the op's object to ``obj``. Raises ValueError for a step
+    it can't build."""
+    kind = step.get("kind")
+    name = str(step.get("name") or "")
     if not name:
-        raise ValueError(f"{tool_id}: record has no result name to replay")
-    if tool_id == "create_freecad_sketch":
-        plane = str(dims.get("plane") or arguments.get("plane") or "XY").upper()
-        specs = _sketch_geometry_specs(arguments.get("geometry") or [])
+        raise ValueError(f"{kind}: step has no object name")
+    if kind == "sketch":
+        plane = str(step.get("plane") or "XY").upper()
+        if plane not in _SKETCH_PLANE_ROTATIONS:
+            raise ValueError(f"sketch: unknown plane {plane!r}")
+        specs = _sketch_geometry_specs(step.get("geometry") or [])
+        if not specs:
+            raise ValueError("sketch: geometry is empty")
         return _partdesign_code(
             "create_sketch", feature_name=name, rotation=_SKETCH_PLANE_ROTATIONS[plane], specs=specs
         )
-    if tool_id == "apply_sketch_constraint":
+    if kind == "sketch_constraint":
+        value = step.get("value")
         call = _constraint_call(
-            str(dims.get("constraint_type")), [int(i) for i in dims.get("geometry_indices") or []], dims.get("value")
+            str(step.get("constraint_type")),
+            [int(i) for i in step.get("geometry_indices") or []],
+            float(value) if value is not None else None,
         )
         if isinstance(call, str):
-            raise ValueError(f"apply_sketch_constraint: {call}")
+            raise ValueError(f"sketch_constraint: {call}")
         geo_ids, args = call
         return _partdesign_code(
             "apply_sketch_constraint",
             sketch_name=name,
             geo_ids=geo_ids,
             args=args,
-            constraint_type=dims["constraint_type"],
+            constraint_type=step["constraint_type"],
         )
-    if tool_id == "create_freecad_pad":
-        return _partdesign_code(
-            "create_pad",
-            feature_name=name,
-            sketch_name=str(arguments["sketch_name"]),
-            length=float(dims["length"]),
-            symmetric=bool(dims.get("symmetric_to_plane")),
-            reversed_direction=bool(dims.get("reversed_direction")),
-        )
-    if tool_id == "create_freecad_pocket":
-        return _partdesign_code(
-            "create_pocket",
-            feature_name=name,
-            sketch_name=str(arguments["sketch_name"]),
-            depth=float(dims["depth"]),
-            through_all=bool(dims.get("through_all")),
-            symmetric=bool(dims.get("symmetric_to_plane")),
-            # Already includes an auto-reversed flip (create_pocket records it
-            # into dimensions), so replay cuts the same way without re-probing.
-            reversed_direction=bool(dims.get("reversed_direction")),
-        )
-    if tool_id in ("create_freecad_polar_pattern", "create_freecad_linear_pattern"):
-        polar = tool_id == "create_freecad_polar_pattern"
-        axis_u = str(dims.get("axis" if polar else "direction") or ("Z" if polar else "X")).upper()
-        # dimensions["features"] is what the engine actually patterned; older
-        # records only carry the raw (single-name) argument.
-        sources = dims.get("features") or pattern_feature_names(arguments["feature_name"])
+    if kind in ("pad", "pocket"):
+        size_field = "length" if kind == "pad" else "depth"
+        size = float(step[size_field])
+        if size <= 0:
+            raise ValueError(f"{kind}: {size_field} must be positive")
+        fmt: dict[str, Any] = {
+            "feature_name": name,
+            "sketch_name": str(step["sketch_name"]),
+            size_field: size,
+            "symmetric": bool(step.get("symmetric")),
+            "reversed_direction": bool(step.get("reversed")),
+        }
+        if kind == "pocket":
+            fmt["through_all"] = bool(step.get("through_all"))
+        return _partdesign_code("create_pad" if kind == "pad" else "create_pocket", **fmt)
+    if kind in ("polar_pattern", "linear_pattern"):
+        polar = kind == "polar_pattern"
+        sources = pattern_feature_names(step.get("features"))
         if isinstance(sources, str):
-            raise ValueError(f"{tool_id}: {sources}")
+            raise ValueError(f"{kind}: {sources}")
+        axis_u = str(step.get("axis" if polar else "direction") or ("Z" if polar else "X")).upper()
+        if axis_u not in _PATTERN_AXIS_ROLES:
+            raise ValueError(f"{kind}: axis must be X, Y or Z, got {axis_u!r}")
+        occurrences = int(step["occurrences"])
+        if occurrences < 2:
+            raise ValueError(f"{kind}: occurrences must be at least 2")
         return _partdesign_code(
             "pattern",
             feature_name=name,
-            source_names=list(sources),
+            source_names=sources,
             type_id="PartDesign::PolarPattern" if polar else "PartDesign::LinearPattern",
             axis_prop="Axis" if polar else "Direction",
             axis_role=_PATTERN_AXIS_ROLES[axis_u],
-            occurrences=int(dims["occurrences"]),
+            occurrences=occurrences,
             extent_prop="Angle" if polar else "Length",
-            extent=float(dims["angle" if polar else "length"]),
-            reversed_direction=bool(dims.get("reversed_direction")),
+            extent=float(step["angle" if polar else "length"]),
+            reversed_direction=bool(step.get("reversed")),
         )
-    if tool_id == "create_freecad_sweep":
+    if kind == "sweep":
         return _partdesign_code(
             "create_sweep",
             feature_name=name,
-            profile=str(arguments["profile_sketch"]),
-            path=str(arguments["path_sketch"]),
-            mode="Frenet" if dims.get("frenet", True) else "Standard",
+            profile=str(step["profile_sketch"]),
+            path=str(step["path_sketch"]),
+            mode="Frenet" if step.get("frenet", True) else "Standard",
         )
-    return _partdesign_code(
-        "create_loft",
-        feature_name=name,
-        names=[str(s) for s in arguments["cross_section_sketches"]],
-        ruled=bool(dims.get("ruled")),
-        closed=bool(dims.get("closed")),
-    )
+    if kind == "loft":
+        sections = [str(s) for s in step.get("sections") or []]
+        if len(sections) < 2:
+            raise ValueError("loft: needs at least 2 cross-section sketches")
+        return _partdesign_code(
+            "create_loft", feature_name=name, names=sections, ruled=bool(step.get("ruled")),
+            closed=bool(step.get("closed")),
+        )
+    raise ValueError(f"not a Sketcher/PartDesign IR step kind: {kind!r}")
+
+
+def partdesign_replay_code(tool_id: str, arguments: dict[str, Any], result: dict[str, Any]) -> str | None:
+    """The FreeCAD code that replays one recorded Sketcher/PartDesign call,
+    under the exact object name the live call got (``result["name"]``, e.g.
+    ``Pocket004``) so later steps' by-name references resolve. Goes through
+    the call's Universal IR step (``ir.get_ir_kind(tool_id).from_record``)
+    and ``partdesign_step_code``, the same path macro export and compiled
+    skills render. ``None`` for any other tool_id; raises ValueError for a
+    record it can't reproduce."""
+    if tool_id not in PARTDESIGN_TOOL_IDS:
+        return None
+    record = SimpleNamespace(tool_id=tool_id, arguments=arguments, result=result)
+    return partdesign_step_code(ir.get_ir_kind(tool_id).from_record(record, 0))
 
 
 # The ReAct-level tool ids partdesign_replay_code translates.
