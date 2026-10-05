@@ -678,6 +678,30 @@ def _freecad_subprocess_home() -> str:
         _FREECAD_SUBPROCESS_HOME = home
     return _FREECAD_SUBPROCESS_HOME
 
+# FreeCADCmd imports a .py argument as a module and, if that raises, runs the
+# SAME file again as __main__ in the same process (App/Application.cpp
+# processFiles). The second pass starts from the first pass's half-built
+# in-memory document, so the error it reports is about its own leftovers
+# (e.g. "Pocket001 removed no material" hiding the real failure), and if it
+# happened to succeed it would save those leftovers. This wrapper reports the
+# FIRST exception in FreeCAD's own banner format and exits before the re-run,
+# so a failed script never saves anything.
+_RUN_ONCE_WRAPPER = """\
+import os as _dana_os
+import sys as _dana_sys
+
+try:
+    exec(compile({source!r}, {path!r}, "exec"), {{"__name__": "__main__", "__builtins__": __builtins__}})
+except SystemExit:
+    raise
+except BaseException as _dana_exc:
+    print("Exception while processing file: " + {path!r} + " [" + str(_dana_exc) + "]", file=_dana_sys.stderr)
+    _dana_sys.stdout.flush()
+    _dana_sys.stderr.flush()
+    _dana_os._exit(1)
+"""
+
+
 def _run_freecad_script(
     script_text: str,
     *,
@@ -717,8 +741,8 @@ def _run_freecad_script(
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, encoding="utf-8"
     ) as tmp:
-        tmp.write(script_text)
         script_path = tmp.name
+        tmp.write(_RUN_ONCE_WRAPPER.format(source=script_text, path=script_path))
 
     if sys.platform == "win32":
         env = {**os.environ, **extra_env} if extra_env else None
