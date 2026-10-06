@@ -96,6 +96,7 @@ from dana.core.react_dispatch import (  # noqa: E402
     get_topology_dag,
     is_mutating_tool,
     is_visual_inspection_tool,
+    ALWAYS_PROMPT_TOOL_IDS,
     next_react_turn,
     plugin_registry_view,
 )
@@ -2094,11 +2095,15 @@ async def _run_react_loop(
     # explicit global override (Settings toggle -> "set_auto_approve") and,
     # unlike the other two, has NO carve-out — it bypasses HITL for every
     # mutating tool, arbitrary-script tools included, while enabled.
-    if (
-        is_mutating_tool(call.tool_id)
-        and not session.get("auto_approve")
-        and call.tool_id not in _HITL_ALWAYS_APPROVED_TOOLS
-        and call.tool_id not in session.get("hitl_approved_tools", set())
+    # ALWAYS_PROMPT_TOOL_IDS (physical-world actions, e.g. starting a print)
+    # are the exception to all three: every call asks.
+    if is_mutating_tool(call.tool_id) and (
+        call.tool_id in ALWAYS_PROMPT_TOOL_IDS
+        or (
+            not session.get("auto_approve")
+            and call.tool_id not in _HITL_ALWAYS_APPROVED_TOOLS
+            and call.tool_id not in session.get("hitl_approved_tools", set())
+        )
     ):
         telemetry.debug(
             "[ReAct] '%s' is mutating -> suspending loop for HITL approval "
@@ -2165,7 +2170,8 @@ async def _resolve_react_hitl(websocket: WebSocket, session: dict[str, Any], res
     # prompt entirely (see the is_mutating_tool check in _run_react_loop).
     # A "Modify" approval (an edited-parameters override) still counts as
     # approving the tool itself, not just this one call's specific args.
-    session.setdefault("hitl_approved_tools", set()).add(call.tool_id)
+    if call.tool_id not in ALWAYS_PROMPT_TOOL_IDS:
+        session.setdefault("hitl_approved_tools", set()).add(call.tool_id)
 
     override = response.get("parameters")
     if isinstance(override, dict):

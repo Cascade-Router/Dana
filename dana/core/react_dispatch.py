@@ -71,6 +71,7 @@ from dana.plugins.vision.image_analysis import analyze_reference_design as _visi
 from dana.plugins.vision.image_analysis import analyze_workspace_image as _vision_analyze_workspace_image
 from dana.plugins.web.research import read_webpage as _web_read_webpage
 from dana.plugins.web.research import search_web as _web_search_web
+from dana.plugins.hardware.printer_tools import dispatch_to_printer as _hw_dispatch_to_printer
 from dana.security.dry_run import is_dry_run_enabled
 from dana.tools.cad_vision import analyze_cad_blueprint, capture_cad_viewport
 from dana.tools.schema import (
@@ -1731,6 +1732,28 @@ def _tool_search_web(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, 
 
 def _tool_read_webpage(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
     return _web_read_webpage(str(args.get("url") or ""))
+
+
+# hardware domain — dana.plugins.hardware.printer_tools. Physical action:
+# mutating (gated) in tools.json AND in ALWAYS_PROMPT_TOOL_IDS, so every call
+# asks the human, whatever auto-approve or earlier approvals say.
+def _tool_dispatch_to_printer(
+    args: dict[str, Any],
+    _engine: Any,
+    _cp: Any,
+    *,
+    api_keys: dict[str, str] | None = None,
+    allowed_mounts: list[str] | None = None,
+) -> dict[str, Any]:
+    if platform_factory.IS_HF_SPACE:
+        # On the public Space a "private" address is the host's own network.
+        return {"ok": False, "error": "Security restriction: printer dispatch is disabled in the cloud demo environment."}
+    return _hw_dispatch_to_printer(
+        str(args.get("printer_ip") or ""),
+        str(args.get("gcode_filepath") or ""),
+        allowed_mounts=allowed_mounts,
+        api_keys=api_keys,
+    )
 
 
 # vision_tools domain — VLM analysis of a sandboxed image file
@@ -5155,6 +5178,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "stop_background_service": _tool_stop_background_service,
     "list_background_services": _tool_list_background_services,
     "search_web": _tool_search_web,
+    "dispatch_to_printer": _tool_dispatch_to_printer,
     "read_webpage": _tool_read_webpage,
     "analyze_workspace_image": _tool_analyze_workspace_image,
     "analyze_reference_design": _tool_analyze_reference_design,
@@ -5427,6 +5451,13 @@ def describe_tool_call(call: ToolCall) -> str:
     if call.tool_id == "stop_background_service":
         alias = call.arguments.get("alias", "?")
         return f"Stop the background service `{alias}` (kills its entire process tree)."
+    if call.tool_id == "dispatch_to_printer":
+        gcode = call.arguments.get("gcode_filepath", "?")
+        printer = call.arguments.get("printer_ip", "?")
+        return (
+            f"START A PHYSICAL PRINT: upload `{gcode}` to the printer at `{printer}` and begin printing. "
+            "Only approve if the build plate is clear and someone can attend the printer."
+        )
     return f"Run `{call.tool_id}`."
 
 
@@ -5721,6 +5752,17 @@ _WEB_TOOLS_TOOL_IDS = frozenset({"search_web", "read_webpage"})
 # Read-only inspection; all declare "read_only": true in tools.json.
 _VISION_TOOLS_TOOL_IDS = frozenset({"analyze_workspace_image", "analyze_reference_design", "execute_vision_analysis"})
 
+# Physical hardware (dana.plugins.hardware) — currently one tool, which
+# starts a real print; see ALWAYS_PROMPT_TOOL_IDS.
+_HARDWARE_TOOL_IDS = frozenset({"dispatch_to_printer"})
+
+# Tools that act on the physical world: dana.api.server asks the human before
+# EVERY call — never skipped by session auto-approve, the always-approved
+# list, or an earlier approval of the same tool this session (one approved
+# print must not silently approve the next, with the last part still on the
+# bed).
+ALWAYS_PROMPT_TOOL_IDS: frozenset[str] = frozenset({"dispatch_to_printer"})
+
 # Capability domain name -> the tool ids it unlocks on top of _CORE_TOOL_IDS.
 # Two independent things can add a name to a session's active set (merged in
 # dana.api.server._effective_capabilities before it ever reaches this
@@ -5745,6 +5787,7 @@ _CAPABILITY_TOOL_IDS: dict[str, frozenset[str]] = {
     "os_tools": _OS_TOOLS_TOOL_IDS,
     "web_tools": _WEB_TOOLS_TOOL_IDS,
     "vision_tools": _VISION_TOOLS_TOOL_IDS,
+    "hardware": _HARDWARE_TOOL_IDS,
     # Autonomous Skill Acquisition (dana.core.skill_loader) — unlike every
     # other entry here, this one is NOT a fixed frozenset: it's rebuilt by
     # refresh_user_skills() below every time a skill is saved/removed, so
@@ -8032,12 +8075,18 @@ _OS_TOOLS_INTENT_KEYWORDS = frozenset(
 # see _CAPABILITY_TOOL_IDS's own module-import-time refresh_plugin_tools()
 # call at the bottom of this file for why that's reliably true by the time
 # any real turn runs, without hardcoding the assumption here too.
+_HARDWARE_INTENT_KEYWORDS = frozenset(
+    {"3d printer", "start the print", "start a print", "send it to the printer", "send to printer",
+     "klipper", "moonraker", "gcode", "g-code"}
+)
+
 _DOMAIN_INTENT_KEYWORDS: dict[str, frozenset[str]] = {
     "freecad": _CAD_INTENT_KEYWORDS,
     "software_engineering": _SOFTWARE_ENGINEERING_INTENT_KEYWORDS,
     "web_tools": _WEB_INTENT_KEYWORDS,
     "vision_tools": _VISION_INTENT_KEYWORDS,
     "os_tools": _OS_TOOLS_INTENT_KEYWORDS,
+    "hardware": _HARDWARE_INTENT_KEYWORDS,
 }
 
 
@@ -8995,13 +9044,16 @@ def build_tool_result_message(tool_call_id: str, result: "ToolResult") -> dict[s
 # api_keys to reach ModelProvider the same way build_visual_inspection_result
 # already gets one for the take_canvas_screenshot suspend path. Kept as an
 # explicit, narrow allowlist rather than widening every handler's signature.
-_TOOLS_NEEDING_API_KEYS = frozenset({"analyze_workspace_image", "analyze_reference_design", "analyze_desktop_screen"})
+_TOOLS_NEEDING_API_KEYS = frozenset(
+    {"analyze_workspace_image", "analyze_reference_design", "analyze_desktop_screen", "dispatch_to_printer"}
+)
 
 # Dynamic Workspace Mounting — the os_tools file/process septet, which need
 # the session's currently-registered external mounts (dana.api.workspace's
 # on-disk registry) threaded down to resolve_sandboxed_path's allowed_mounts
-# param. Same narrow-allowlist pattern as _TOOLS_NEEDING_API_KEYS above, and
-# disjoint from it — no handler needs both. stop_background_service/
+# param. Same narrow-allowlist pattern as _TOOLS_NEEDING_API_KEYS above; a
+# tool may be in both (dispatch_tool_call passes each extra independently).
+# stop_background_service/
 # list_background_services are deliberately absent: neither takes a path at
 # all (an alias-only lookup, and a no-argument status listing), so there is
 # nothing for allowed_mounts to thread into.
@@ -9014,6 +9066,7 @@ _TOOLS_NEEDING_MOUNTS = frozenset(
         "search_files",
         "execute_terminal_command",
         "start_background_service",
+        "dispatch_to_printer",  # also in _TOOLS_NEEDING_API_KEYS (its Moonraker key)
     }
 )
 
@@ -9021,8 +9074,7 @@ _TOOLS_NEEDING_MOUNTS = frozenset(
 # CadCallLog to compile FROM — the one piece of session state no other
 # handler needs directly (every other tool reads only its own `args` plus
 # the shared `engine`/`control_plane`). Same narrow-allowlist pattern as
-# _TOOLS_NEEDING_API_KEYS/_TOOLS_NEEDING_MOUNTS above, and disjoint from
-# both — no handler needs more than one of these three extras.
+# _TOOLS_NEEDING_API_KEYS/_TOOLS_NEEDING_MOUNTS above.
 _TOOLS_NEEDING_CALL_LOG = frozenset({"compile_plan_as_skill"})
 
 
@@ -9273,14 +9325,14 @@ def dispatch_tool_call(
         resolved_arguments, input_object_names, topology_warning = _apply_topology_redirects(
             call.tool_id, call.arguments
         )
+        extra: dict[str, Any] = {}
         if call.tool_id in _TOOLS_NEEDING_API_KEYS:
-            payload = handler(resolved_arguments, engine, control_plane, api_keys=api_keys)
-        elif call.tool_id in _TOOLS_NEEDING_MOUNTS:
-            payload = handler(resolved_arguments, engine, control_plane, allowed_mounts=allowed_mounts)
-        elif call.tool_id in _TOOLS_NEEDING_CALL_LOG:
-            payload = handler(resolved_arguments, engine, control_plane, call_log=call_log)
-        else:
-            payload = handler(resolved_arguments, engine, control_plane)
+            extra["api_keys"] = api_keys
+        if call.tool_id in _TOOLS_NEEDING_MOUNTS:
+            extra["allowed_mounts"] = allowed_mounts
+        if call.tool_id in _TOOLS_NEEDING_CALL_LOG:
+            extra["call_log"] = call_log
+        payload = handler(resolved_arguments, engine, control_plane, **extra)
         ok = bool(payload.get("ok", True))
         raw_error = None if ok else str(payload.get("error") or "tool reported failure")
     except Exception as exc:  # noqa: BLE001 — surface as a digested failure, never a crashed caller
@@ -9415,6 +9467,9 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
             titles = ", ".join(m["title"] for m in payload.get("matches", []))
             return f"Ambiguous match for '{payload.get('query')}' — candidates: {titles}."
         return f"{payload.get('title')}: {payload.get('dimensions')}."
+    if call.tool_id == "dispatch_to_printer":
+        job = f" (job {payload['job_id']})" if payload.get("job_id") else ""
+        return f"Started printing `{payload.get('filename')}` on {payload.get('printer')}{job}."
     if call.tool_id == "check_printability":
         verdict = "printable" if payload.get("printable") else "NOT printable"
         supports = "needs supports" if payload.get("requires_supports") else "no supports needed"
@@ -9497,6 +9552,7 @@ __all__ = (
     "get_topology_dag",
     "is_mutating_tool",
     "is_visual_inspection_tool",
+    "ALWAYS_PROMPT_TOOL_IDS",
     "list_user_skills",
     "next_react_turn",
     "parse_utterance",
