@@ -1,18 +1,22 @@
 """Targeted tests for 2D Blueprint Generation:
 dana.plugins.freecad.techdraw_export.generate_2d_blueprint's input
 validation and dry-run behavior, plus one end-to-end dispatch_tool_call
-integration check. Not a full test suite by design — dry-run mode only, no
-live FreeCADCmd required (the real TechDraw/DXF/PDF pipeline was validated
-manually against a live FreeCAD install during development; see the
-module's own docstring for how headless PDF export actually works).
+integration check, all in dry-run mode — plus the DXF->PDF/SVG step for
+real, on a DXF built with ezdxf, with FreeCADCmd itself mocked. The live
+TechDraw run is in test_techdraw_export_live.py (skipped without FreeCAD).
 """
 
 from __future__ import annotations
 
 import json
+import re
+import zlib
+from pathlib import Path
+from typing import Any
 
 import pytest
 
+from dana.plugins.freecad import techdraw_export
 from dana.plugins.freecad.techdraw_export import generate_2d_blueprint
 
 
@@ -117,3 +121,109 @@ def test_dispatch_tool_call_generate_2d_blueprint_unknown_object():
     )
     assert result.ok is False
     assert "object_name" in result.message
+
+
+# -- the real DXF -> PDF/SVG step (no FreeCAD) -----------------------------------
+
+
+def _write_part_dxf(path: Path) -> None:
+    """A stand-in for a TechDraw page: a 100x50 outline with a hole, in the
+    default (ACI 7) layer color TechDraw exports with."""
+    ezdxf = pytest.importorskip("ezdxf")
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+    msp.add_lwpolyline([(40, 60), (140, 60), (140, 110), (40, 110)], close=True)
+    msp.add_circle((90, 85), 12)
+    doc.saveas(path)
+
+
+def _pdf_content(pdf: bytes) -> bytes:
+    """All of the PDF's content streams, inflated."""
+    out = b""
+    for raw in re.findall(rb"stream\r?\n(.*?)\r?\nendstream", pdf, re.S):
+        try:
+            out += zlib.decompress(raw)
+        except zlib.error:
+            out += raw
+    return out
+
+
+def test_dxf_renders_to_a_page_sized_pdf_with_visible_black_strokes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("matplotlib")
+    monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
+    dxf = tmp_path / "page.dxf"
+    _write_part_dxf(dxf)
+
+    pdf_path = techdraw_export._render_dxf_to_pdf(str(dxf), "bracket", (297.0, 210.0))
+
+    assert pdf_path == tmp_path / "exports" / "bracket.pdf"
+    pdf = pdf_path.read_bytes()
+    assert pdf.startswith(b"%PDF-") and b"%%EOF" in pdf[-64:]
+    # A4 landscape in points (1 mm = 72/25.4 pt).
+    box = re.search(rb"/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]", pdf)
+    assert box and abs(float(box[1]) - 841.89) < 1 and abs(float(box[2]) - 595.28) < 1
+    content = _pdf_content(pdf)
+    # Black strokes and real path segments: TechDraw's ACI-7 lines used to
+    # render white-on-white (d94cb5f), a PDF with nothing visible on it.
+    assert re.search(rb"(?<![\d.])0 G\b|(?<![\d.])0 0 0 RG\b", content), "no black stroke color"
+    assert len(re.findall(rb" l\b", content)) >= 4, "outline segments missing"
+    # Drawn 1:1 in page millimetres: the hole's centre (x = 90 mm) is at
+    # 90 * 72 / 25.4 = 255.118 pt, not stretched to fill the page.
+    assert b"255.11811" in content
+
+
+def test_dxf_renders_to_svg_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
+    dxf = tmp_path / "page.dxf"
+    _write_part_dxf(dxf)
+    svg_path = techdraw_export._render_dxf_to_svg(str(dxf), "bracket", (297.0, 210.0))
+    svg = svg_path.read_text(encoding="utf-8")
+    assert svg_path.suffix == ".svg" and "<svg" in svg and "<path" in svg
+
+
+def test_pipeline_turns_the_freecad_dxf_into_pdf_and_svg_and_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_path: str
+) -> None:
+    """generate_2d_blueprint end to end with FreeCADCmd mocked: the mock
+    writes a DXF where the generated script asked TechDraw to."""
+    pytest.importorskip("matplotlib")
+    monkeypatch.delenv("DANA_OS_DRY_RUN")
+    monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
+    seen: dict[str, Any] = {}
+
+    def fake_freecad(script: str, **_kw: Any) -> dict[str, Any]:
+        seen["script"] = script
+        seen["dxf"] = Path(re.search(r"writeDXFPage\(page, '([^']+)'\)", script)[1])
+        _write_part_dxf(seen["dxf"])
+        return {"ok": True, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(techdraw_export, "_run_freecad_script", fake_freecad)
+    result = json.loads(
+        generate_2d_blueprint(existing_path, views=["Top"], filename="plate", object_name="Plate")
+    )
+
+    assert result["ok"] is True, result
+    assert Path(result["path"]) == tmp_path / "exports" / "plate.pdf"
+    assert Path(result["path"]).read_bytes().startswith(b"%PDF-")
+    assert Path(result["svg_path"]).is_file()
+    assert "Default_Template_A4_Landscape.svg" in seen["script"]
+    assert "'Top'" in seen["script"] and "'Front'" not in seen["script"]
+    # The named object is resolved, never "the first unreferenced object".
+    assert "resolve_object(doc, 'Plate')" in seen["script"]
+    assert "not o.InList" not in seen["script"]
+    assert not seen["dxf"].exists(), "the temporary DXF must be deleted"
+
+
+def test_pipeline_reports_a_freecad_failure_without_rendering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_path: str
+) -> None:
+    monkeypatch.delenv("DANA_OS_DRY_RUN")
+    monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
+    monkeypatch.setattr(
+        techdraw_export, "_run_freecad_script", lambda *_a, **_k: {"ok": False, "error": "TechDraw crashed"}
+    )
+    result = json.loads(generate_2d_blueprint(existing_path))
+    assert result["ok"] is False and "TechDraw crashed" in result["error"]
+    assert not (tmp_path / "exports").exists()

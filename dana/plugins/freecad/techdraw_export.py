@@ -35,6 +35,8 @@ from typing import Any
 from dana.plugins.freecad.engine import (
     _EXPORT_DIR,
     _OK_MARKER,
+    _RESOLVE_OBJECT_SNIPPET,
+    _object_lookup_snippet,
     _error,
     _dry_run_result,
     _ok,
@@ -79,8 +81,9 @@ import FreeCAD as App
 import TechDraw
 import os
 
+{resolve_snippet}
 doc = App.openDocument({source_path!r})
-obj = next((o for o in doc.Objects if not o.InList), doc.Objects[-1])
+{object_lookup}
 
 page = doc.addObject("TechDraw::DrawPage", "BlueprintPage")
 template = doc.addObject("TechDraw::DrawSVGTemplate", "BlueprintTemplate")
@@ -134,9 +137,16 @@ def _render_dxf_to_pdf(dxf_path: str, name: str, page_size_mm: tuple[float, floa
         render_config = Configuration(
             background_policy=BackgroundPolicy.WHITE, color_policy=ColorPolicy.BLACK
         )
-        Frontend(RenderContext(doc), ezdxf_matplotlib.MatplotlibBackend(ax), config=render_config).draw_layout(
-            doc.modelspace(), finalize=True
-        )
+        # adjust_figure=False and the limits re-applied after drawing:
+        # finalize() otherwise autoscales the axes to the drawn geometry and
+        # resizes the figure to its aspect ratio, so an "A4" PDF came out the
+        # shape of the part (a 100x50 outline gave a 9.6x4.8 in page) with the
+        # part zoomed to fill it. TechDraw writes the DXF in page millimetres,
+        # so these limits draw the page 1:1.
+        backend = ezdxf_matplotlib.MatplotlibBackend(ax, adjust_figure=False)
+        Frontend(RenderContext(doc), backend, config=render_config).draw_layout(doc.modelspace(), finalize=True)
+        ax.set_xlim(0, width_mm)
+        ax.set_ylim(0, height_mm)
         _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
         out_path = _EXPORT_DIR / f"{_safe_name(name)}.pdf"
         # A retry/re-generation with the same name must never attempt to
@@ -196,10 +206,17 @@ def generate_2d_blueprint(
     views: Sequence[str] | None = None,
     page_size: str = "A4",
     filename: str | None = None,
+    object_name: str | None = None,
 ) -> str:
     """Projects orthographic (Front/Top/Right) and/or Isometric views of the
     object in ``source_path`` onto a standard drawing page and exports a
     PDF. No auto-dimensioning — clean projected geometry only.
+
+    ``object_name`` picks the object inside ``source_path`` (by Name, then
+    Label, then case-insensitively, like the engine's other tools). Every
+    create_* tool writes into one shared session document, so without it the
+    first unreferenced object was drawn, whatever was asked for. Only a
+    genuinely single-object file can omit it.
     """
     if IS_HF_SPACE:
         # Same bypass as standard_parts.py's insert_standard_part (see this
@@ -261,6 +278,8 @@ def generate_2d_blueprint(
     os.unlink(dxf_path)
     try:
         script = _BLUEPRINT_SCRIPT.format(
+            resolve_snippet=_RESOLVE_OBJECT_SNIPPET,
+            object_lookup=_object_lookup_snippet(target_object=object_name),
             source_path=str(target),
             template_parts=_PAGE_TEMPLATES[size_key],
             view_specs=view_specs,

@@ -32,6 +32,11 @@ except Exception:  # noqa: BLE001
 EMPTY_POLL_SLEEP_S = 0.75
 
 
+def normalize_command_key(command: str) -> str:
+    """Case- and whitespace-insensitive key used to skip duplicate commands."""
+    return " ".join((command or "").strip().lower().split())
+
+
 def ensure_input_txt() -> Path:
     """Create ``execution_jail/input.txt`` (and parent) if missing; never raise for miss."""
     try:
@@ -93,20 +98,8 @@ def ingest_text_to_queue(*, empty_sleep: float = 0.0) -> int:
                 # If the file is corrupted or empty, start fresh
                 queue = []
 
-        # 4. Generate structured JSON objects for each task (10s dedupe + pending/running).
-        try:
-            from dana.tools.task_queue import (
-                normalize_command_key,
-                shadow_backup_before_write,
-                try_record_command,
-            )
-        except Exception:  # noqa: BLE001
-            normalize_command_key = lambda c: " ".join(  # noqa: E731
-                (c or "").strip().lower().split()
-            )
-            try_record_command = lambda c: True  # noqa: E731
-            shadow_backup_before_write = None
-
+        # 4. Generate structured JSON objects for each task, skipping any that
+        # repeat a pending/running command.
         existing_keys = {
             normalize_command_key(str(t.get("command") or ""))
             for t in queue
@@ -117,8 +110,6 @@ def ingest_text_to_queue(*, empty_sleep: float = 0.0) -> int:
         for i, text_command in enumerate(raw_tasks):
             key = normalize_command_key(text_command)
             if not key or key in existing_keys:
-                continue
-            if not try_record_command(text_command):
                 continue
             queue.append(
                 {
@@ -134,11 +125,6 @@ def ingest_text_to_queue(*, empty_sleep: float = 0.0) -> int:
             return 0
 
         QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            if shadow_backup_before_write is not None:
-                shadow_backup_before_write(QUEUE_FILE)
-        except Exception:
-            pass
         QUEUE_FILE.write_text(
             json.dumps(queue, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",

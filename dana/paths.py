@@ -31,21 +31,12 @@ DANA_WORKSPACE: Path = PROJECT_ROOT
 
 LOGS_DIR: Path = DANA_WORKSPACE / "logs"
 
-TRACKER_DIR: Path = DANA_WORKSPACE / "tracker"
-
-BUG_TRACKER_PATH: Path = TRACKER_DIR / "bug_tracker.json"
-
-PENDING_PATCHES_DIR: Path = TRACKER_DIR / "pending_patches"
 
 # Filesystem jail (Watchdog cwd, task queue, sandbox_read root).
 EXECUTION_JAIL_DIR: Path = DANA_WORKSPACE / "execution_jail"
 
-EXECUTION_JAIL_LIBRARY_DIR: Path = EXECUTION_JAIL_DIR / "library"
 
-# Structured task queue — array of {id, status, command} (replaces flat input.txt).
-TASK_QUEUE_PATH: Path = EXECUTION_JAIL_DIR / "task_queue.json"
-
-# Deprecated: legacy flat-file interceptor. Migrated into TASK_QUEUE_PATH on read.
+# Flat-file command drop read by scripts/ingest.py.
 TEXT_INJECTION_PATH: Path = EXECUTION_JAIL_DIR / "input.txt"
 
 # Custom (ephemeral) forged tools — primary Tool Forge write target.
@@ -53,15 +44,6 @@ CUSTOM_TOOLS_DIR: Path = DANA_WORKSPACE / "custom_tools"
 
 CUSTOM_TOOLS_ARCHIVE_DIR: Path = CUSTOM_TOOLS_DIR / "_archive"
 
-# Backward-compat aliases (pre-restructure name was generated_tools).
-GENERATED_TOOLS_DIR: Path = CUSTOM_TOOLS_DIR
-
-GENERATED_TOOLS_ARCHIVE_DIR: Path = CUSTOM_TOOLS_ARCHIVE_DIR
-
-LEGACY_DESKTOP_GENERATED_TOOLS_DIR: Path = DANA_WORKSPACE / "generated_tools"
-
-# Live telemetry surface overwritten every ~45s by the dashboard writer.
-DASHBOARD_PATH: Path = DANA_WORKSPACE / "dashboard.md"
 
 CAPTURES_DIR: Path = DANA_WORKSPACE / "captures"
 
@@ -76,15 +58,6 @@ AGENT_WORKSPACE_DIR: Path = DANA_WORKSPACE / "agent_workspace"
 
 # --- Repo-local (config / models / vault / async ledger) ---
 
-DOCS_DIR: Path = PROJECT_ROOT / "docs"
-
-# Unified patch ledger (async Cursor tickets) -- the dana_security/ package
-# that used to hold this (AST sandbox, architect_new_tool) was removed: it
-# was unreachable from the live ReAct dispatch table and only ever called
-# from cascade_router.py, which the live server never imports and which is
-# gated off by default (settings.json's enable_cascade_router). The ledger's
-# real history moved to docs/ rather than being deleted with the package.
-PATCH_LEDGER_PATH: Path = DOCS_DIR / "patch_ledger.md"
 
 TTS_MODELS_DIR: Path = PROJECT_ROOT / "tts_models"
 
@@ -120,14 +93,6 @@ GENERAL_TOOLS_DIR: Path = PROJECT_ROOT / "dana" / "tools" / "general"
 # Legacy empty mirror (not loaded by registry; wipe cleanup only if files appear).
 REPO_CUSTOM_TOOLS_DIR: Path = PROJECT_ROOT / "dana" / "tools" / "custom"
 
-# Legacy in-repo forge dir (stub redirect only — do not write new tools here).
-LEGACY_GENERATED_TOOLS_DIR: Path = PROJECT_ROOT / "dana" / "generated_tools"
-
-TOOL_REGISTRY_INDEX_DIR: Path = DOCS_DIR / "tool_registry_index"
-
-WATCHDOG_HISTORY_DB: Path = DOCS_DIR / "watchdog_history.db"
-
-RESEARCH_SCRATCHPAD_DB: Path = DOCS_DIR / "research_scratchpad.db"
 
 # Preferred wake-word ONNX under assets/models.
 MODELS_DIR: Path = PROJECT_ROOT / "assets" / "models"
@@ -151,22 +116,8 @@ ENV_PATH: Path = PROJECT_ROOT / ".env"
 
 TRIGGER_ASK_PATH: Path = PROJECT_ROOT / ".trigger_ask"
 
-TEMP_REPLY_WAV: Path = PROJECT_ROOT / "temp_reply.wav"
 
 YOLO_WEIGHTS_PATH: Path = MODELS_DIR / "yolov8n.pt"
-
-WORKSPACE_MIGRATION_MARKER: Path = DANA_WORKSPACE / ".dana_workspace_migrated"
-
-WORKSPACE_SUBDIRS: tuple[Path, ...] = (
-    LOGS_DIR,
-    TRACKER_DIR,
-    PENDING_PATCHES_DIR,
-    EXECUTION_JAIL_DIR,
-    EXECUTION_JAIL_LIBRARY_DIR,
-    CUSTOM_TOOLS_DIR,
-    CUSTOM_TOOLS_ARCHIVE_DIR,
-    CAPTURES_DIR,
-)
 
 
 def ensure_project_root_on_syspath() -> Path:

@@ -25,7 +25,6 @@ def custom_dir(tmp_path, monkeypatch):
     (general / "__init__.py").write_text('"""test general"""\n', encoding="utf-8")
 
     monkeypatch.setattr(paths_mod, "CUSTOM_TOOLS_DIR", custom)
-    monkeypatch.setattr(paths_mod, "GENERATED_TOOLS_DIR", custom)
     monkeypatch.setattr(paths_mod, "GENERAL_TOOLS_DIR", general)
     monkeypatch.setattr(reg_mod, "CUSTOM_TOOLS_DIR", custom)
     monkeypatch.setattr(reg_mod, "GENERAL_TOOLS_DIR", general)

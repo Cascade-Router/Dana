@@ -4453,6 +4453,7 @@ def _tool_generate_2d_blueprint(args: dict[str, Any], _engine: Any, _cp: Any) ->
             views=views if isinstance(views, list) and views else None,
             page_size=str(args.get("page_size") or "A4"),
             filename=str(args.get("filename") or "").strip() or None,
+            object_name=object_name,
         )
     )
 
