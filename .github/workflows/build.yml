@@ -168,6 +168,26 @@ jobs:
         # below its COVERAGE_FLOOR (see the script for how it was set).
         run: xvfb-run -a bash scripts/ci/enforce_coverage.sh -m "not live_ollama" --strict-markers --timeout=300 -rfE --junitxml=pytest-report.xml
 
+      - name: Report coverage
+        # The Linux coverage total as an annotation and in the job summary,
+        # so it can be read (and the floor in enforce_coverage.sh set from
+        # it) without opening the raw log. coverage.xml is written even when
+        # the floor check fails.
+        if: always()
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          report = Path("coverage.xml")
+          if not report.exists():
+              raise SystemExit(0)
+          total = float(ET.parse(report).getroot().get("line-rate")) * 100
+          print(f"::notice title=Coverage::Total line coverage of dana/: {total:.2f}%")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write(f"**Coverage of dana/:** {total:.2f}%\n")
+          PY
+
       - name: Annotate test failures
         # Surfaces each failing test as a GitHub annotation (visible on the
         # run summary and PRs without digging through the raw log).
