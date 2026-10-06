@@ -1816,7 +1816,6 @@ def test_wrap_plugin_handler_unpacks_multiple_named_parameters() -> None:
     assert result == {"filepath": "/tmp/model.FCStd", "modification_script": "doc.recompute()"}
 
 
-@pytest.mark.xfail(reason="Known failure: tool handler is never invoked (call is None)", strict=False)
 def test_execute_freecad_script_end_to_end_through_tool_handlers_dispatch() -> None:
     """Full-stack regression: dispatching execute_freecad_script through the
     REAL TOOL_HANDLERS entry (as dispatch_tool_call would) with a realistic

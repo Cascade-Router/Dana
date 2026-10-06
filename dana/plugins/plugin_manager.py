@@ -88,15 +88,28 @@ def _load_entry_module(
     if not entry_path.is_file():
         raise PluginLoadError(f"entry point not found: {entry_path}")
     module_name = f"dana.plugins.{plugin_name}.{entry_path.stem}"
-    if not force_refresh:
-        existing = sys.modules.get(module_name)
-        if existing is not None:
-            return existing
+    existing = sys.modules.get(module_name)
+    if existing is not None and not force_refresh:
+        return existing
     spec = importlib.util.spec_from_file_location(
         module_name, entry_path, submodule_search_locations=[str(plugin_dir)]
     )
     if spec is None or spec.loader is None:
         raise PluginLoadError(f"could not build import spec for {entry_path}")
+    if existing is not None:
+        # A refresh re-executes the file INTO the already-loaded module rather
+        # than replacing it: swapping in a new object left every
+        # ``from dana.plugins.freecad import engine`` (the package attribute,
+        # still the old object) and every name bound from sys.modules after
+        # the swap pointing at two different module twins — two copies of
+        # module state, including the lock that serializes FreeCADCmd runs.
+        # react_dispatch's import-time refresh_plugin_tools() triggered
+        # exactly that on every startup.
+        try:
+            spec.loader.exec_module(existing)
+        except Exception as exc:  # noqa: BLE001
+            raise PluginLoadError(f"entry point {entry_path} raised on reload: {exc}") from exc
+        return existing
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     try:
