@@ -22,11 +22,8 @@ Two access patterns, deliberately kept distinct:
   read/write ``state.name``, never a bare imported name.
 
 This phase intentionally does not change behavior, locking, or eagerness of
-initialization — ``screen_tool``/``camera_tool``/``vault_client`` are
-instantiated at import time here exactly as they were in core_agent.py.
-Converting them to lazy singletons is deferred to the phase that moves their
-respective bootstrap logic (vision tracker / vault bootstrap), where the
-change can be reviewed alongside the code that actually initializes them.
+initialization — ``vault_client`` is instantiated at import time here exactly
+as it was in core_agent.py.
 """
 
 from __future__ import annotations
@@ -34,9 +31,8 @@ from __future__ import annotations
 import queue
 import re
 import threading
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional
 
-import numpy as np
 
 from dana.audio.speech_state import (  # noqa: F401 — re-exported: legacy readers use state.<name>
     ARABIC_SCRIPT_RE,
@@ -50,46 +46,28 @@ from dana.audio.speech_state import (  # noqa: F401 — re-exported: legacy read
     whisper_bundle_lock,
     whisper_ready,
 )
-from dana.core.spatial_context import SPATIAL_AGGREGATOR
 from dana.logging import log_debug
 from dana.audio.tts_manager import get_tts_manager as _get_tts_manager
 from dana.audio.tts_worker import get_tts_worker as _get_tts_worker
 from dana.paths import SETTINGS_PATH as _SETTINGS_PATH, TRIGGER_ASK_PATH
-from dana.secure_memory import SecureMemory, default_vault_path
+from dana.secure_memory import default_vault_path
 from dana.vault_service import VaultClient
-from dana.vision_tools import ScreenAgent, VideoAgent
 
 # ---------------------------------------------------------------------------
 # Vision (tracker thread <-> tool-dispatch <-> GUI)
 # ---------------------------------------------------------------------------
 
 latest_frame_lock = threading.Lock()
-latest_frame: Optional[np.ndarray] = None  # BGR, 640x480  # reassigned
 
 latest_dets_lock = threading.Lock()
-latest_dets: list[tuple[np.ndarray, str, float]] = []  # reassigned
 
-# Dynamic vision tool calling (ScreenAgent / VideoAgent).
-screen_tool = ScreenAgent()
-camera_tool = VideoAgent()
 active_vision_lock = threading.Lock()
-active_vision_tool: Union[ScreenAgent, VideoAgent] = screen_tool  # reassigned
 
-# Sliding-window chat memory for Ollama (last 6 messages = 3 user + 3 assistant).
-conversation_history: list[dict[str, str]] = []
 conversation_history_lock = threading.Lock()
-HISTORY_MAX_MESSAGES = 6
 
-# Decrypted long-term profile (AES vault); injected into Ollama system prompt.
-dana_profile: dict[str, Any] = {}  # reassigned
-dana_vault: Optional["SecureMemory"] = None  # reassigned
-# High-frequency identity keys prefetched post-unlock (skip ReAct vault tools).
-VAULT_HOT_CACHE: dict[str, str] = {}  # reassigned
 
 # Short-term spatial memory so flickering detections still answer "where is X?"
 spatial_memory_lock = threading.Lock()
-spatial_memory: dict[str, float] = {}  # label -> last_seen monotonic time
-SPATIAL_MEMORY_SEC = 2.5
 
 # ---------------------------------------------------------------------------
 # Mic / VAD
@@ -97,44 +75,19 @@ SPATIAL_MEMORY_SEC = 2.5
 
 # Wake word / .trigger_ask starts a conversational turn.
 is_recording = threading.Event()
-# Serialize mic *open/close* for the single ingest producer only.
-mic_lock = threading.Lock()
 # Legacy name kept for call sites: producer-ready / stream healthy.
 wake_mic_released = threading.Event()
 wake_mic_released.set()
-# Device acquisition / first-read hang guards (Windows MME can block forever).
-MIC_STREAM_OPEN_TIMEOUT_S = 2.5
-MIC_STREAM_READ_TIMEOUT_S = 1.5
-MIC_DEVICE_SETTLE_S = 0.08
-# Producer-consumer mic path: one InputStream → shared 16 kHz VAD frames.
-AUDIO_BUFFER_MAX_FRAMES = 100  # ~3s @ 30ms — drop oldest on overflow
-audio_buffer_queue: queue.Queue = queue.Queue(maxsize=AUDIO_BUFFER_MAX_FRAMES)
 mic_ingest_ready = threading.Event()
-mic_ingest_restart = threading.Event()
-_mic_ingest_thread: Optional[threading.Thread] = None  # reassigned
 
-# Resolved device selection (startup-resolved, touched by audio + GUI settings + CLI).
-AUDIO_INPUT_DEVICE: Optional[int] = None  # reassigned
-AUDIO_INPUT_RATE: int = 16000  # reassigned  # mirrors core_agent.SAMPLE_RATE
-AUDIO_OUTPUT_DEVICE: Optional[int] = None  # reassigned
 
 # ---------------------------------------------------------------------------
 # Conversation / UI telemetry
 # ---------------------------------------------------------------------------
 
-# Conversation phase: idle | listening | followup | transcribing | thinking
-ui_state_lock = threading.Lock()
-ui_state = "idle"  # reassigned
-
-# Latest Whisper transcript (logged for headless debugging).
-subtitle_lock = threading.Lock()
-subtitle_text = ""  # reassigned
 
 # Optional injected question from .trigger_ask file contents (automation / tests).
 injected_question_lock = threading.Lock()
-injected_question: Optional[str] = None  # reassigned
-_injected_source: str = "inject"  # reassigned
-_injected_already_logged: bool = False  # reassigned
 
 # ---------------------------------------------------------------------------
 # TTS Output Spooler — producers push (text, interruptible); consumer owns PortAudio.
@@ -148,20 +101,14 @@ tts_queue: queue.Queue[Optional[tuple[str, bool, str]]] = _tts_manager.speech_qu
 speech_queue = tts_queue  # backward-compatible alias / TTSManager.speech_queue
 # Serialize TTS enqueue / flush mutations.
 _tts_enqueue_lock = threading.Lock()
-_speech_enqueue_lock = _tts_enqueue_lock  # alias
-# Exclusive PortAudio output lifecycle (open → write chunks → close / stop).
-playback_lock = threading.RLock()
 # Max phrases allowed to pile up while a stream already owns the speaker.
 _SPEECH_MAX_PENDING_WHILE_BUSY = 3
-# Max time to defer a dequeued phrase while the user is speaking (VAD).
-_TTS_HOLD_FOR_VAD_MAX_S = 12.0
 # Set while tts_worker is actively rendering/playing TTS (mic must stay idle).
 tts_busy = threading.Event()
 # Barge-in: set by VAD when user speaks over TTS; checked in the playback chunk loop.
 tts_interrupt_event = threading.Event()
 # Process-wide barge-in controller (shares ``tts_interrupt_event``).
 _tts_barge = _get_tts_worker(barge_in_event=tts_interrupt_event)
-_tts_worker_thread: Optional[threading.Thread] = None  # reassigned
 
 # ---------------------------------------------------------------------------
 # VAD / engine lifecycle
@@ -169,42 +116,23 @@ _tts_worker_thread: Optional[threading.Thread] = None  # reassigned
 
 # True while ``record_utterance`` owns the microphone (barge-in watcher must stand down).
 vad_capture_active = threading.Event()
-# Set by text/chat ingest to abort active Silero VAD without waiting for max_timeout.
-vad_abort_event = threading.Event()
-# Set when startup mic probe is below DEAD_MIC_RMS_FLOOR (Text-Only / Quiet Mic).
-quiet_mic_mode = threading.Event()
 # Cleared until conversation_worker's Ollama warm-up finishes (gates wake-word arming).
 ollama_ready = threading.Event()
-# Soft-drop audit: last chat mid-task prompt awaiting completion (VAD timeout).
-_active_mid_task_prompt: str | None = None  # reassigned
 _active_mid_task_lock = threading.Lock()
-# Boot coordination: ready audio plays only when all three are set.
-piper_voices_ready = threading.Event()
-wakeword_armed = threading.Event()
-# Stage 8.9.7 — soft engine ignition (clear = STANDBY; set = ACTIVE).
-# Distinct from stop_event / STOP DANA (hard exit).
-engine_engaged = threading.Event()
 _boot_ready_audio_lock = threading.Lock()
-_boot_ready_audio_played = False  # reassigned
 # Set when the TTS spooler is drained and nothing is playing.
 speech_idle = threading.Event()
 speech_idle.set()
 # One "Let me check" per conversational turn (router + ReAct share this).
 _tool_working_ack_sent = threading.Event()
-# PortAudio / hardware fault signal: Audio thread -> Main (soft recovery).
-audio_hardware_fault = threading.Event()
 _audio_hardware_fault_lock = threading.Lock()
-_audio_hardware_fault_detail: str = ""  # reassigned
 
 # ---------------------------------------------------------------------------
 # Paths / vault
 # ---------------------------------------------------------------------------
 
 TRIGGER_FILE = str(TRIGGER_ASK_PATH)
-SETTINGS_FILE = str(_SETTINGS_PATH)
 MEMORY_FILE = default_vault_path()
-MEMORY_SALT = b"dana_secure_salt"
-PBKDF2_ITERATIONS = 390_000
 vault_client = VaultClient()  # reassigned (unlock flow replaces this with a fresh instance)
 
 
@@ -220,109 +148,9 @@ vault_client = VaultClient()  # reassigned (unlock flow replaces this with a fre
 # decouples "something changed state" from "here is how the GUI shows it",
 # so neither side needs to import the other.
 
-_ui_state_listeners: list[Callable[[str], None]] = []
 _ui_state_listeners_lock = threading.Lock()
 
-_transcript_listeners: list[Callable[[str, str, Optional[str]], None]] = []
 _transcript_listeners_lock = threading.Lock()
-
-
-def register_ui_state_listener(fn: Callable[[str], None]) -> None:
-    """Called by the GUI/tray owner (currently core_agent.py) at init time."""
-    with _ui_state_listeners_lock:
-        if fn not in _ui_state_listeners:
-            _ui_state_listeners.append(fn)
-
-
-def unregister_ui_state_listener(fn: Callable[[str], None]) -> None:
-    with _ui_state_listeners_lock:
-        try:
-            _ui_state_listeners.remove(fn)
-        except ValueError:
-            pass
-
-
-def _notify_ui_state_listeners(state: str) -> None:
-    with _ui_state_listeners_lock:
-        listeners = list(_ui_state_listeners)
-    for fn in listeners:
-        try:
-            fn(state)
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def register_transcript_listener(fn: Callable[[str, str, Optional[str]], None]) -> None:
-    """Called by the GUI dashboard owner at init time (unregister on teardown)."""
-    with _transcript_listeners_lock:
-        if fn not in _transcript_listeners:
-            _transcript_listeners.append(fn)
-
-
-def unregister_transcript_listener(fn: Callable[[str, str, Optional[str]], None]) -> None:
-    with _transcript_listeners_lock:
-        try:
-            _transcript_listeners.remove(fn)
-        except ValueError:
-            pass
-
-
-def _notify_transcript_listeners(speaker: str, text: str, agent_id: Optional[str]) -> None:
-    with _transcript_listeners_lock:
-        listeners = list(_transcript_listeners)
-    for fn in listeners:
-        try:
-            fn(speaker, text, agent_id)
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def emit_live_transcript(
-    speaker: str,
-    text: str,
-    *,
-    agent_id: str | None = None,
-) -> None:
-    """Thread-safe bridge from audio/LLM workers into the Dashboard transcript."""
-    _notify_transcript_listeners(speaker, text, agent_id)
-
-
-def set_ui_state(state: str) -> None:
-    """Conversation phase: idle | listening | followup | transcribing | thinking."""
-    global ui_state
-    with ui_state_lock:
-        ui_state = state
-    SPATIAL_AGGREGATOR.set_ui_state(state)
-    log_debug("UI", f"State -> {state}")
-    # Visual cue: tray icon turns green while VAD is actively listening.
-    _notify_ui_state_listeners(state)
-
-
-def get_ui_state() -> str:
-    with ui_state_lock:
-        return ui_state
-
-
-def set_subtitle(text: str) -> None:
-    """Latest Whisper transcript (logged for headless debugging)."""
-    global subtitle_text
-    with subtitle_lock:
-        subtitle_text = text
-    if text:
-        log_debug("UI", f"Subtitle -> {text}")
-
-
-def is_engine_engaged() -> bool:
-    """Stage 8.9.7 — True when Dashboard ENGAGE has armed the LangGraph engine."""
-    return bool(engine_engaged.is_set())
-
-
-def set_engine_engaged(active: bool) -> None:
-    """Arm (True) or soft-standby (False) the conversational engine."""
-    if active:
-        engine_engaged.set()
-    else:
-        engine_engaged.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -338,78 +166,7 @@ def set_engine_engaged(active: bool) -> None:
 # the ui_state/transcript listener pattern above: shared_state never imports
 # GUI code, it just brokers the request/response handoff.
 
-_vault_prompt_listeners: list[Callable[[str], None]] = []
 _vault_prompt_listeners_lock = threading.Lock()
-
-# One outstanding unlock request at a time (vault unlock is a startup-sequence,
-# single-threaded gate — no concurrent unlock attempts are possible).
-vault_unlock_response_event = threading.Event()
-vault_unlock_response: Optional[str] = None  # reassigned; None = cancelled/timeout
-
-
-def register_vault_prompt_listener(fn: Callable[[str], None]) -> None:
-    """Called by the GUI owner (currently core_agent.py) at init time."""
-    with _vault_prompt_listeners_lock:
-        if fn not in _vault_prompt_listeners:
-            _vault_prompt_listeners.append(fn)
-
-
-def unregister_vault_prompt_listener(fn: Callable[[str], None]) -> None:
-    with _vault_prompt_listeners_lock:
-        try:
-            _vault_prompt_listeners.remove(fn)
-        except ValueError:
-            pass
-
-
-def has_vault_prompt_listener() -> bool:
-    """True when a GUI (or other owner) has registered to handle unlock prompts."""
-    with _vault_prompt_listeners_lock:
-        return bool(_vault_prompt_listeners)
-
-
-def _notify_vault_prompt_listeners(reason: str) -> None:
-    with _vault_prompt_listeners_lock:
-        listeners = list(_vault_prompt_listeners)
-    for fn in listeners:
-        try:
-            fn(reason)
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def request_vault_unlock(reason: str, *, timeout: float = 300.0) -> Optional[str]:
-    """Block the calling (background) thread until the GUI supplies a passcode.
-
-    Notifies registered listeners with ``reason`` (why the prompt is needed),
-    then waits up to ``timeout`` seconds for ``supply_vault_unlock_response()``.
-    Returns the passcode, or ``None`` on timeout / cancel / no listener.
-    """
-    global vault_unlock_response
-    if not has_vault_prompt_listener():
-        return None
-    vault_unlock_response = None
-    vault_unlock_response_event.clear()
-    _notify_vault_prompt_listeners(reason)
-    got = vault_unlock_response_event.wait(timeout=timeout)
-    return vault_unlock_response if got else None
-
-
-def supply_vault_unlock_response(password: Optional[str]) -> None:
-    """Called by the GUI (main thread) once its modal is submitted or cancelled."""
-    global vault_unlock_response
-    vault_unlock_response = password
-    vault_unlock_response_event.set()
-
-
-def notify_vault_unlocked() -> None:
-    """Fire-and-forget: tell the GUI owner to clear its 'Vault Locked' banner.
-
-    Distinct from ``request_vault_unlock`` — this never blocks the caller and
-    expects no response; listeners receive ``""`` as the reason to mean
-    "unlocked, clear/close whatever you showed for the last request".
-    """
-    _notify_vault_prompt_listeners("")
 
 
 # ---------------------------------------------------------------------------
@@ -420,61 +177,9 @@ def notify_vault_unlocked() -> None:
 # responsible for its own thread-safe ``.after()`` hand-off to Tk.
 # ---------------------------------------------------------------------------
 
-_spec_approval_listeners: list[Callable[[dict], None]] = []
 _spec_approval_listeners_lock = threading.Lock()
 
-_dictation_sessions_listeners: list[Callable[[], None]] = []
 _dictation_sessions_listeners_lock = threading.Lock()
-
-
-def register_spec_approval_listener(fn: Callable[[dict], None]) -> None:
-    with _spec_approval_listeners_lock:
-        if fn not in _spec_approval_listeners:
-            _spec_approval_listeners.append(fn)
-
-
-def unregister_spec_approval_listener(fn: Callable[[dict], None]) -> None:
-    with _spec_approval_listeners_lock:
-        try:
-            _spec_approval_listeners.remove(fn)
-        except ValueError:
-            pass
-
-
-def notify_spec_approval_requested(payload: dict) -> None:
-    """Fire-and-forget: ask the GUI owner to show its Approve & Run card."""
-    with _spec_approval_listeners_lock:
-        listeners = list(_spec_approval_listeners)
-    for fn in listeners:
-        try:
-            fn(payload)
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def register_dictation_sessions_listener(fn: Callable[[], None]) -> None:
-    with _dictation_sessions_listeners_lock:
-        if fn not in _dictation_sessions_listeners:
-            _dictation_sessions_listeners.append(fn)
-
-
-def unregister_dictation_sessions_listener(fn: Callable[[], None]) -> None:
-    with _dictation_sessions_listeners_lock:
-        try:
-            _dictation_sessions_listeners.remove(fn)
-        except ValueError:
-            pass
-
-
-def notify_dictation_sessions_changed() -> None:
-    """Fire-and-forget: ask the GUI owner to refresh its dictation session list."""
-    with _dictation_sessions_listeners_lock:
-        listeners = list(_dictation_sessions_listeners)
-    for fn in listeners:
-        try:
-            fn()
-        except Exception:  # noqa: BLE001
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -484,33 +189,7 @@ def notify_dictation_sessions_changed() -> None:
 # responsible for its own thread-safe ``.after()`` hand-off to Tk.
 # ---------------------------------------------------------------------------
 
-_feature_flags_listeners: list[Callable[[dict], None]] = []
 _feature_flags_listeners_lock = threading.Lock()
-
-
-def register_feature_flags_listener(fn: Callable[[dict], None]) -> None:
-    with _feature_flags_listeners_lock:
-        if fn not in _feature_flags_listeners:
-            _feature_flags_listeners.append(fn)
-
-
-def unregister_feature_flags_listener(fn: Callable[[dict], None]) -> None:
-    with _feature_flags_listeners_lock:
-        try:
-            _feature_flags_listeners.remove(fn)
-        except ValueError:
-            pass
-
-
-def notify_feature_flags_changed(flags: dict) -> None:
-    """Fire-and-forget: ask the GUI owner to refresh its feature-toggle panel."""
-    with _feature_flags_listeners_lock:
-        listeners = list(_feature_flags_listeners)
-    for fn in listeners:
-        try:
-            fn(flags)
-        except Exception:  # noqa: BLE001
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -521,75 +200,3 @@ def notify_feature_flags_changed(flags: dict) -> None:
 # emit_trace itself moved here in Phase 7 since its only dependencies
 # (the queue and the icon table below) already lived here.
 
-gui_telemetry_queue: queue.Queue = queue.Queue()
-
-# ASCII-only -- emoji tofu glyphs rendered as broken purple boxes on Win fonts.
-_TRACE_STATUS_ICONS: dict[str, str] = {
-    "active": "[~]",
-    "completed": "[OK]",
-    "bypassed": "[--]",
-}
-
-
-def emit_trace(
-    stage: str,
-    status: str,
-    message: str,
-    mode: str | None = None,
-) -> None:
-    """Push one Live Trace event (thread-safe; UI drains on Tk main thread)."""
-    payload = {
-        "stage": str(stage or "").strip() or "stage",
-        "status": str(status or "active").strip().lower(),
-        "message": str(message or "").strip(),
-        "mode": (str(mode).strip().lower() if mode else None),
-    }
-    if payload["status"] not in _TRACE_STATUS_ICONS:
-        payload["status"] = "active"
-    try:
-        gui_telemetry_queue.put_nowait(payload)
-    except Exception:  # noqa: BLE001
-        pass
-
-
-# ---------------------------------------------------------------------------
-# GUI/tray process ownership (Phase 5 core_agent.py decomposition)
-# ---------------------------------------------------------------------------
-# ``_gui_instance`` / ``_tray_icon`` / ``_agent_loop_thread`` are reassigned
-# from several modules (dana.ui.app_gui, dana.ui.tray_icon, dana.core_agent,
-# dana.middleware.hitl_ticket). Per this module's docstring, a bare
-# ``from ... import _gui_instance`` would silently diverge from this
-# module's copy the moment any owner reassigns it. Accessor functions
-# (mirroring set_ui_state/get_ui_state above) are the safe pattern for a
-# reassigned singleton reference shared across modules.
-
-_gui_instance: Optional[Any] = None  # reassigned; the live DanaGUI, if any
-_tray_icon: Optional[Any] = None  # reassigned; the live pystray.Icon, if any
-_agent_loop_thread: Optional[threading.Thread] = None  # reassigned
-
-
-def set_gui_instance(gui: Optional[Any]) -> None:
-    global _gui_instance
-    _gui_instance = gui
-
-
-def get_gui_instance() -> Optional[Any]:
-    return _gui_instance
-
-
-def set_tray_icon(icon: Optional[Any]) -> None:
-    global _tray_icon
-    _tray_icon = icon
-
-
-def get_tray_icon() -> Optional[Any]:
-    return _tray_icon
-
-
-def set_agent_loop_thread(thread: Optional[threading.Thread]) -> None:
-    global _agent_loop_thread
-    _agent_loop_thread = thread
-
-
-def get_agent_loop_thread() -> Optional[threading.Thread]:
-    return _agent_loop_thread

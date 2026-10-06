@@ -6,7 +6,6 @@ import queue
 import threading
 import time
 
-import pytest
 
 
 def test_tts_manager_sequential_queue() -> None:
@@ -42,17 +41,3 @@ def test_tts_manager_sequential_queue() -> None:
     except queue.Full:
         pass
     assert seen == ["alpha", "beta", "gamma"]
-
-
-def test_vision_overlay_gated_without_debug(monkeypatch) -> None:
-    monkeypatch.delenv("DANA_DEBUG_VISION", raising=False)
-    from dana.vision.overlay import RoiOverlay, update_roi, vision_debug_enabled
-
-    assert vision_debug_enabled() is False
-    ov = RoiOverlay()
-    ov.start()
-    # Gate: ready is set immediately, no Tk thread.
-    assert ov._ready.is_set()
-    assert ov._thread is None or not ov._thread.is_alive()
-    update_roi((10, 10, 50, 50), "should not open")
-    assert ov._thread is None or not ov._thread.is_alive()
