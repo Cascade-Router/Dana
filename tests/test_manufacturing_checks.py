@@ -22,6 +22,7 @@ import dana.core.react_dispatch as rd
 from dana.platform.mock import MockFreeCADEngine
 from dana.plugins.freecad import engine, printability
 from dana.plugins.freecad.printability import DEFAULT_PRINTER, Facet, PrinterProfile, build_report
+from dana.plugins.os import file_system
 from dana.session_context import DEFAULT_SESSION_ID, set_session_id
 
 _CLEAN = {"shape_valid": True, "closed_solid": True, "mesh_solid": True, "non_manifold": False,
@@ -194,6 +195,7 @@ _live = pytest.mark.skipif(
 def live_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(engine, "_OUTPUT_DIR", tmp_path / "freecad_output")
     monkeypatch.setattr(engine, "_EXPORT_DIR", tmp_path / "exports")
+    monkeypatch.setattr(file_system, "_SANDBOX_ROOT", (tmp_path / "agent_workspace").resolve())
     monkeypatch.setenv("DANA_HEADLESS", "true")
     monkeypatch.delenv("DANA_OS_DRY_RUN", raising=False)
     set_session_id(f"print-{uuid.uuid4().hex[:8]}")
@@ -226,7 +228,12 @@ def test_live_padded_block_is_printable() -> None:
     report = _check()
     assert (report["printable"], report["requires_supports"], report["target"]) == (True, False, "Body")
     assert report["checks"]["mesh_solid"] is True and report["checks"]["open_edges"] == 0
-    assert Path(report["stl_path"]).read_bytes()[:5] != b"solid"  # binary STL, not ASCII
+    stl = Path(report["stl_path"])
+    assert stl.read_bytes()[:5] != b"solid"  # binary STL, not ASCII
+    # In the sandbox, named after the part, so slice_stl_to_gcode can take it.
+    assert stl.name == "Body.stl"
+    assert file_system.resolve_sandboxed_path(str(stl)) == stl.resolve()
+    assert [p.name for p in stl.parent.iterdir()] == ["Body.stl"]  # no temp file left
 
 
 @pytest.mark.e2e

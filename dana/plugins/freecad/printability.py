@@ -37,8 +37,11 @@ from dana.plugins.freecad.engine import (
     _error,
     _ok,
     _run_freecad_script,
+    _safe_name,
     _session_document_path,
 )
+from dana.plugins.os import file_system
+from dana.session_context import session_scoped_dir
 
 
 @dataclass(frozen=True)
@@ -260,7 +263,12 @@ def check_printability(
     session_path = _session_document_path()
     if not session_path.is_file():
         return _error("check_printability: no session document yet — build a part first")
-    stl_path = str(session_path.with_name("printability_check.stl"))
+    # Inside the agent workspace sandbox (not freecad_output/), so the next
+    # steps — slice_stl_to_gcode, then dispatch_to_printer, both sandboxed —
+    # can use the exported STL and the G-code sliced next to it.
+    prints_dir = session_scoped_dir(file_system._SANDBOX_ROOT / "prints")
+    tmp_stl = prints_dir / f"_check_{os.getpid()}.stl"
+    stl_path = str(tmp_stl)
     fd, data_path = tempfile.mkstemp(suffix=".json")
     os.close(fd)
     try:
@@ -275,6 +283,7 @@ def check_printability(
         )
         result = _run_freecad_script(script)
         if not result["ok"]:
+            tmp_stl.unlink(missing_ok=True)
             return _error(f"check_printability failed: {result['error']}")
         with open(data_path, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -283,6 +292,9 @@ def check_printability(
             os.unlink(data_path)
         except OSError:
             pass
+    final_stl = prints_dir / f"{_safe_name(data['target'])}.stl"
+    os.replace(tmp_stl, final_stl)
+    stl_path = str(final_stl)
     report = build_report(
         target=data["target"],
         checks=data["checks"],
