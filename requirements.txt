@@ -68,9 +68,6 @@ psutil==7.2.2
 pywin32==312; platform_system=="Windows"
 ddgs==9.14.4
 tzdata==2026.3
-# dana/tools/promotion.py
-langchain-core==0.3.86
-langchain-ollama==0.2.3
 comtypes==1.4.16; platform_system=="Windows"
 # Stage 4.3 — silent Windows toast callbacks (PowerShell fallback if absent)
 win11toast==0.36.3; platform_system=="Windows"

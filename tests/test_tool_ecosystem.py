@@ -1,4 +1,4 @@
-"""Focused tests for custom_tools wipe + general promotion pipeline."""
+"""Focused tests for the custom_tools wipe."""
 
 from __future__ import annotations
 
@@ -66,42 +66,3 @@ def test_wipe_custom_tools_deletes_py_keeps_init(custom_dir, monkeypatch):
     assert (custom / "__init__.py").is_file()
     assert reg.get("echo_demo") is None
     assert "custom_tools.echo_demo" not in sys.modules
-
-
-def test_publish_tool_to_general_skip_llm(custom_dir, monkeypatch):
-    custom, general = custom_dir
-    src = custom / "reverse_demo.py"
-    src.write_text(
-        '"""tool for C:\\\\Users\\\\Alice\\\\secret"""\n'
-        "def reverse_demo(text: str = '') -> str:\n"
-        "    return (text or '')[::-1]\n",
-        encoding="utf-8",
-    )
-
-    from dana.tools import promotion as promo
-
-    monkeypatch.setattr(promo, "CUSTOM_TOOLS_DIR", custom)
-    monkeypatch.setattr(promo, "GENERAL_TOOLS_DIR", general)
-    monkeypatch.setattr(promo, "PROJECT_ROOT", general.parent)
-
-    # Avoid broker reload side effects.
-    monkeypatch.setattr(
-        promo,
-        "publish_tool_to_general",
-        promo.publish_tool_to_general,
-    )
-
-    result = promo.publish_tool_to_general("reverse_demo", skip_llm=True)
-    assert result.get("ok"), result
-    dest = general / "reverse_demo.py"
-    assert dest.is_file()
-    body = dest.read_text(encoding="utf-8")
-    assert "Users\\Alice" not in body or "<USER_HOME>" in body
-    assert result.get("ephemeral") is False
-
-    from dana.tools.registry import get_tool_registry
-
-    entry = get_tool_registry().get("reverse_demo")
-    assert entry is not None
-    assert entry.source == "general"
-    assert entry.is_ephemeral is False
