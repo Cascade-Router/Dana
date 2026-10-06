@@ -2109,6 +2109,30 @@
       ]
     },
     {
+      "id": "pause_print",
+      "description_en": "Pause the job running on a networked Klipper 3D printer (Moonraker API). Runs immediately, with no approval prompt, because it only ever stops the machine. Recoverable: the user resumes or cancels the job from the printer's UI. The heaters stay on, so use it for a failing print (spaghetti, a part knocked loose), not for overheating or a hardware fault: use emergency_stop for those.",
+      "parameters": [
+        {
+          "name": "printer_ip",
+          "type": "string",
+          "required": true,
+          "description_en": "The printer's local-network address: an IP (e.g. '192.168.1.50'), 'ip:port' (Moonraker defaults to 7125), or an mDNS name like 'voron.local'."
+        }
+      ]
+    },
+    {
+      "id": "emergency_stop",
+      "description_en": "EMERGENCY STOP a networked Klipper 3D printer (Moonraker API, M112): halts all motion and cuts the heaters at once. Runs immediately, with no approval prompt. Not recoverable: the job is lost and the printer stays down until the user does a FIRMWARE_RESTART. Use it only for danger (overheating, smoke, a crash, the user asking to stop the machine now); for a failing print use pause_print.",
+      "parameters": [
+        {
+          "name": "printer_ip",
+          "type": "string",
+          "required": true,
+          "description_en": "The printer's local-network address: an IP (e.g. '192.168.1.50'), 'ip:port' (Moonraker defaults to 7125), or an mDNS name like 'voron.local'."
+        }
+      ]
+    },
+    {
       "id": "search_web",
       "read_only": true,
       "description_en": "Searches the public web (DuckDuckGo, no API key needed) for current facts, unfamiliar APIs/libraries, hardware specs, or documentation not in your local knowledge. Requires the 'web_tools' capability domain to be loaded first via load_capability. Returns a list of {title, href, body} hits. Read-only.",

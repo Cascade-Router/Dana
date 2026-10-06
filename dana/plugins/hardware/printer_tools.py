@@ -19,6 +19,11 @@ deliberately narrow:
 * dana.api.server prompts for approval on EVERY call
   (``dana.core.react_dispatch.ALWAYS_PROMPT_TOOL_IDS``), whatever the
   auto-approve setting or earlier approvals this session.
+
+``pause_print`` and ``emergency_stop`` are the opposite case: they only ever
+stop a machine, so they run WITHOUT an approval prompt
+(``dana.core.react_dispatch.FAIL_SAFE_TOOL_IDS``) — waiting for a human to
+approve a stop defeats it. Same LAN-only address check and key handling.
 """
 
 from __future__ import annotations
@@ -189,4 +194,43 @@ def dispatch_to_printer(
     return result
 
 
-__all__ = ("GCODE_SUFFIXES", "PrinterAddressError", "dispatch_to_printer", "printer_base_url")
+def _stop_action(
+    action: str, printer_ip: str, api_keys: dict[str, str] | None, client: MoonrakerClient | None
+) -> dict[str, Any]:
+    try:
+        base_url = printer_base_url(printer_ip)
+    except PrinterAddressError as exc:
+        return {"ok": False, "error": f"{action}: {exc}"}
+    client = client or MoonrakerClient(base_url, _moonraker_api_key(api_keys))
+    try:
+        getattr(client, action)()
+    except MoonrakerError as exc:
+        return {"ok": False, "printer": base_url, "error": f"{action}: {exc}"}
+    return {"ok": True, "printer": base_url, "action": action}
+
+
+def pause_print(
+    printer_ip: str, *, api_keys: dict[str, str] | None = None, client: MoonrakerClient | None = None
+) -> dict[str, Any]:
+    """Pause the running job. Recoverable: the job resumes from the printer's
+    UI. Heaters stay on, so this is for print failures (spaghetti, a lifted
+    part), not for thermal faults — those need ``emergency_stop``."""
+    return _stop_action("pause_print", printer_ip, api_keys, client)
+
+
+def emergency_stop(
+    printer_ip: str, *, api_keys: dict[str, str] | None = None, client: MoonrakerClient | None = None
+) -> dict[str, Any]:
+    """M112: Klipper halts motion and cuts heaters immediately. The job is
+    lost and the printer stays down until a FIRMWARE_RESTART."""
+    return _stop_action("emergency_stop", printer_ip, api_keys, client)
+
+
+__all__ = (
+    "GCODE_SUFFIXES",
+    "PrinterAddressError",
+    "dispatch_to_printer",
+    "emergency_stop",
+    "pause_print",
+    "printer_base_url",
+)

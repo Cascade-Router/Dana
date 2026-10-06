@@ -142,7 +142,9 @@ def test_profile_dir_override(workspace: Path, tmp_path: Path, monkeypatch: pyte
 
 
 def test_registered_gated_and_in_the_hardware_domain() -> None:
-    assert rd._CAPABILITY_TOOL_IDS["hardware"] == frozenset({"slice_stl_to_gcode", "dispatch_to_printer"})
+    assert rd._CAPABILITY_TOOL_IDS["hardware"] == frozenset(
+        {"slice_stl_to_gcode", "dispatch_to_printer", "pause_print", "emergency_stop"}
+    )
     assert rd.is_mutating_tool("slice_stl_to_gcode") is True
     assert "slice_stl_to_gcode" not in rd.ALWAYS_PROMPT_TOOL_IDS  # writes a file; it doesn't start a print
 

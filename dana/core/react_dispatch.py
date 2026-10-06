@@ -72,6 +72,8 @@ from dana.plugins.vision.image_analysis import analyze_workspace_image as _visio
 from dana.plugins.web.research import read_webpage as _web_read_webpage
 from dana.plugins.web.research import search_web as _web_search_web
 from dana.plugins.hardware.printer_tools import dispatch_to_printer as _hw_dispatch_to_printer
+from dana.plugins.hardware.printer_tools import emergency_stop as _hw_emergency_stop
+from dana.plugins.hardware.printer_tools import pause_print as _hw_pause_print
 from dana.plugins.hardware.slicer import slice_stl_to_gcode as _hw_slice_stl_to_gcode
 from dana.security.dry_run import is_dry_run_enabled
 from dana.tools.cad_vision import analyze_cad_blueprint, capture_cad_viewport
@@ -1767,6 +1769,24 @@ def _tool_dispatch_to_printer(
         allowed_mounts=allowed_mounts,
         api_keys=api_keys,
     )
+
+
+# hardware domain — the fail-safe pair: they only ever stop a printer, so
+# they're in FAIL_SAFE_TOOL_IDS and run with no approval prompt.
+def _tool_pause_print(
+    args: dict[str, Any], _engine: Any, _cp: Any, *, api_keys: dict[str, str] | None = None
+) -> dict[str, Any]:
+    if platform_factory.IS_HF_SPACE:
+        return {"ok": False, "error": "Security restriction: printer control is disabled in the cloud demo environment."}
+    return _hw_pause_print(str(args.get("printer_ip") or ""), api_keys=api_keys)
+
+
+def _tool_emergency_stop(
+    args: dict[str, Any], _engine: Any, _cp: Any, *, api_keys: dict[str, str] | None = None
+) -> dict[str, Any]:
+    if platform_factory.IS_HF_SPACE:
+        return {"ok": False, "error": "Security restriction: printer control is disabled in the cloud demo environment."}
+    return _hw_emergency_stop(str(args.get("printer_ip") or ""), api_keys=api_keys)
 
 
 # vision_tools domain — VLM analysis of a sandboxed image file
@@ -5192,6 +5212,8 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "list_background_services": _tool_list_background_services,
     "search_web": _tool_search_web,
     "dispatch_to_printer": _tool_dispatch_to_printer,
+    "pause_print": _tool_pause_print,
+    "emergency_stop": _tool_emergency_stop,
     "slice_stl_to_gcode": _tool_slice_stl_to_gcode,
     "read_webpage": _tool_read_webpage,
     "analyze_workspace_image": _tool_analyze_workspace_image,
@@ -5476,6 +5498,10 @@ def describe_tool_call(call: ToolCall) -> str:
             f"START A PHYSICAL PRINT: upload `{gcode}` to the printer at `{printer}` and begin printing. "
             "Only approve if the build plate is clear and someone can attend the printer."
         )
+    if call.tool_id == "pause_print":
+        return f"Pause the print on the printer at `{call.arguments.get('printer_ip', '?')}`."
+    if call.tool_id == "emergency_stop":
+        return f"EMERGENCY STOP the printer at `{call.arguments.get('printer_ip', '?')}` (job lost, needs FIRMWARE_RESTART)."
     return f"Run `{call.tool_id}`."
 
 
@@ -5770,9 +5796,10 @@ _WEB_TOOLS_TOOL_IDS = frozenset({"search_web", "read_webpage"})
 # Read-only inspection; all declare "read_only": true in tools.json.
 _VISION_TOOLS_TOOL_IDS = frozenset({"analyze_workspace_image", "analyze_reference_design", "execute_vision_analysis"})
 
-# Physical hardware (dana.plugins.hardware): slice a model, then start a
-# real print (dispatch_to_printer — see ALWAYS_PROMPT_TOOL_IDS).
-_HARDWARE_TOOL_IDS = frozenset({"slice_stl_to_gcode", "dispatch_to_printer"})
+# Physical hardware (dana.plugins.hardware): slice a model, start a real
+# print (dispatch_to_printer — see ALWAYS_PROMPT_TOOL_IDS), and stop one
+# (pause_print/emergency_stop — see FAIL_SAFE_TOOL_IDS).
+_HARDWARE_TOOL_IDS = frozenset({"slice_stl_to_gcode", "dispatch_to_printer", "pause_print", "emergency_stop"})
 
 # Tools that act on the physical world: dana.api.server asks the human before
 # EVERY call — never skipped by session auto-approve, the always-approved
@@ -5780,6 +5807,12 @@ _HARDWARE_TOOL_IDS = frozenset({"slice_stl_to_gcode", "dispatch_to_printer"})
 # print must not silently approve the next, with the last part still on the
 # bed).
 ALWAYS_PROMPT_TOOL_IDS: frozenset[str] = frozenset({"dispatch_to_printer"})
+
+# The reverse: physical actions that only ever STOP a machine. dana.api.server
+# runs them with no approval prompt at all — a stop that waits for a human
+# to click "approve" is too late. Still mutating (no "read_only" in
+# tools.json); this is an explicit exemption, not a read-only label.
+FAIL_SAFE_TOOL_IDS: frozenset[str] = frozenset({"pause_print", "emergency_stop"})
 
 # Capability domain name -> the tool ids it unlocks on top of _CORE_TOOL_IDS.
 # Two independent things can add a name to a session's active set (merged in
@@ -8095,7 +8128,8 @@ _OS_TOOLS_INTENT_KEYWORDS = frozenset(
 # any real turn runs, without hardcoding the assumption here too.
 _HARDWARE_INTENT_KEYWORDS = frozenset(
     {"3d printer", "start the print", "start a print", "send it to the printer", "send to printer",
-     "klipper", "moonraker", "gcode", "g-code", "slice", "slicer", "prusaslicer"}
+     "klipper", "moonraker", "gcode", "g-code", "slice", "slicer", "prusaslicer",
+     "pause the print", "stop the print", "stop the printer", "emergency stop", "e-stop", "estop"}
 )
 
 _DOMAIN_INTENT_KEYWORDS: dict[str, frozenset[str]] = {
@@ -9063,7 +9097,14 @@ def build_tool_result_message(tool_call_id: str, result: "ToolResult") -> dict[s
 # already gets one for the take_canvas_screenshot suspend path. Kept as an
 # explicit, narrow allowlist rather than widening every handler's signature.
 _TOOLS_NEEDING_API_KEYS = frozenset(
-    {"analyze_workspace_image", "analyze_reference_design", "analyze_desktop_screen", "dispatch_to_printer"}
+    {
+        "analyze_workspace_image",
+        "analyze_reference_design",
+        "analyze_desktop_screen",
+        "dispatch_to_printer",
+        "pause_print",
+        "emergency_stop",
+    }
 )
 
 # Dynamic Workspace Mounting — the os_tools file/process septet, which need
@@ -9491,6 +9532,10 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
     if call.tool_id == "dispatch_to_printer":
         job = f" (job {payload['job_id']})" if payload.get("job_id") else ""
         return f"Started printing `{payload.get('filename')}` on {payload.get('printer')}{job}."
+    if call.tool_id == "pause_print":
+        return f"Paused the print on {payload.get('printer')}."
+    if call.tool_id == "emergency_stop":
+        return f"Emergency-stopped {payload.get('printer')}; it needs a FIRMWARE_RESTART before the next print."
     if call.tool_id == "check_printability":
         verdict = "printable" if payload.get("printable") else "NOT printable"
         supports = "needs supports" if payload.get("requires_supports") else "no supports needed"

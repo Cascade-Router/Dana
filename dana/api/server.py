@@ -97,6 +97,7 @@ from dana.core.react_dispatch import (  # noqa: E402
     is_mutating_tool,
     is_visual_inspection_tool,
     ALWAYS_PROMPT_TOOL_IDS,
+    FAIL_SAFE_TOOL_IDS,
     next_react_turn,
     plugin_registry_view,
 )
@@ -107,6 +108,7 @@ from dana.session_context import set_session_id  # noqa: E402
 from dana.platform import get_cad_engine, get_control_plane  # noqa: E402
 from dana.platform.factory import IS_HF_SPACE  # noqa: E402
 from dana.plugins.freecad.call_log import CadCallLog  # noqa: E402
+from dana.plugins.hardware import watchdog as printer_watchdog  # noqa: E402
 from dana.plugins.freecad.py_export import write_macro_script  # noqa: E402
 from dana.plugins.memory.core_memory import read_core_memory  # noqa: E402
 from dana.security.dry_run import is_dry_run_enabled  # noqa: E402
@@ -241,6 +243,8 @@ def _touch_capability_domains(session: dict[str, Any], domains: frozenset[str]) 
 _active_sessions: dict[WebSocket, dict[str, Any]] = {}
 _voice_service: VoiceService | None = None
 _event_loop: asyncio.AbstractEventLoop | None = None
+# Started in _lifespan only when DANA_PRINTER_IP names a LAN printer.
+_printer_watchdog: printer_watchdog.PrinterWatchdog | None = None
 
 
 def _flush_local_ollama_model() -> None:
@@ -385,7 +389,7 @@ def _on_voice_state(state: VoiceState, transcript: str) -> None:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    global _voice_service, _event_loop
+    global _voice_service, _event_loop, _printer_watchdog
     # Conversation Logger: dana.logging.log_conversation()/reset_conversation_log()
     # predate this headless FastAPI backend (they're from the retired
     # CustomTkinter run.py UI) and were never wired into it during the
@@ -403,10 +407,18 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     sys.stdout = _BroadcastStream(original_stdout, "stdout")  # type: ignore[assignment]
     sys.stderr = _BroadcastStream(original_stderr, "stderr")  # type: ignore[assignment]
     sweep_task = asyncio.create_task(_sweep_stale_suspensions())
+    # Hardware safety watchdog (dana.plugins.hardware.watchdog): a plain
+    # thread polling the printer, independent of any chat session. Never on
+    # the public Space, where a "LAN" address is the host's own network.
+    if not IS_HF_SPACE:
+        _printer_watchdog = printer_watchdog.start_from_env()
     try:
         yield
     finally:
         sweep_task.cancel()
+        if _printer_watchdog is not None:
+            _printer_watchdog.stop()
+            _printer_watchdog = None
         sys.stdout, sys.stderr = original_stdout, original_stderr
         if _voice_service is not None:
             _voice_service.stop()
@@ -2096,8 +2108,9 @@ async def _run_react_loop(
     # unlike the other two, has NO carve-out — it bypasses HITL for every
     # mutating tool, arbitrary-script tools included, while enabled.
     # ALWAYS_PROMPT_TOOL_IDS (physical-world actions, e.g. starting a print)
-    # are the exception to all three: every call asks.
-    if is_mutating_tool(call.tool_id) and (
+    # are the exception to all three: every call asks. FAIL_SAFE_TOOL_IDS
+    # (pausing/e-stopping a printer) never ask: a stop has to happen now.
+    if is_mutating_tool(call.tool_id) and call.tool_id not in FAIL_SAFE_TOOL_IDS and (
         call.tool_id in ALWAYS_PROMPT_TOOL_IDS
         or (
             not session.get("auto_approve")

@@ -104,9 +104,16 @@ def _harden_tool_registry() -> None:
     -process and silently undo this, but if one is ever added here, it
     would need to re-apply this hardening afterward.
     """
-    # dispatch_to_printer makes REAL network requests (unlike the mocked CAD
+    # The printer tools make REAL network requests (unlike the mocked CAD
     # tools), and on this host "a LAN address" means the Space's own network.
-    for tool_id in ("execute_terminal_command", "execute_code_task", "search_codebase", "dispatch_to_printer"):
+    for tool_id in (
+        "execute_terminal_command",
+        "execute_code_task",
+        "search_codebase",
+        "dispatch_to_printer",
+        "pause_print",
+        "emergency_stop",
+    ):
         react_dispatch.TOOL_HANDLERS.pop(tool_id, None)
     for tool_id in ("execute_code_task", "search_codebase"):
         react_dispatch._PLUGIN_TOOL_SCHEMAS.pop(tool_id, None)

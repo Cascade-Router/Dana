@@ -12,6 +12,10 @@ Endpoints (Moonraker's documented REST API):
 * ``POST /server/files/upload`` — multipart ``file`` into the ``gcodes`` root.
 * ``POST /printer/print/start`` — JSON ``{"filename": ...}``; replies ``"ok"``.
 * ``GET  /server/history/list?limit=1&order=desc`` — newest job, for its id.
+* ``POST /printer/print/pause`` — pause the running job (heaters stay on).
+* ``POST /printer/emergency_stop`` — M112: Klipper shuts down at once, the
+  job is lost and the printer needs a FIRMWARE_RESTART.
+* ``GET  /server/webcams/list`` — configured webcams and their snapshot URLs.
 
 Every response wraps its payload as ``{"result": ...}``; failures carry
 ``{"error": {"code", "message"}}``. Auth, when the printer requires it, is
@@ -160,3 +164,32 @@ class MoonrakerClient:
         result = self._request("GET", "/server/history/list?limit=1&order=desc")
         jobs = (result.get("jobs") or []) if isinstance(result, dict) else []
         return jobs[0] if jobs else None
+
+    def pause_print(self) -> None:
+        result = self._request("POST", "/printer/print/pause")
+        if result != "ok":
+            raise MoonrakerError(f"POST /printer/print/pause: unexpected reply {result!r}")
+
+    def emergency_stop(self) -> None:
+        result = self._request("POST", "/printer/emergency_stop")
+        if result != "ok":
+            raise MoonrakerError(f"POST /printer/emergency_stop: unexpected reply {result!r}")
+
+    def list_webcams(self) -> list[dict[str, Any]]:
+        result = self._request("GET", "/server/webcams/list")
+        webcams = result.get("webcams") if isinstance(result, dict) else None
+        return [cam for cam in webcams or [] if isinstance(cam, dict)]
+
+    def fetch_image(self, url: str) -> tuple[bytes, str]:
+        """GET a webcam snapshot (raw image, not a Moonraker JSON reply);
+        returns (bytes, mime type). ``url`` must already be absolute."""
+        try:
+            response = self._session.get(url, timeout=self.timeout)
+        except requests.RequestException as exc:
+            raise MoonrakerError(f"GET {url}: snapshot request failed ({exc})") from exc
+        if not response.ok:
+            raise MoonrakerError(f"GET {url}: HTTP {response.status_code}")
+        mime = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if not mime.startswith("image/"):
+            raise MoonrakerError(f"GET {url}: not an image ({mime or 'no content type'})")
+        return response.content, mime
