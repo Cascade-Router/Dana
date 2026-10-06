@@ -48,8 +48,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def install_process_hooks() -> None:
+    """Process-wide setup the old run.py entry point did and this launcher
+    lost when it replaced it (a8b40ed): write unhandled crashes (main thread
+    and worker threads) to logs/fatal_crash.log, and on Windows give every
+    subprocess CREATE_NO_WINDOW, so FreeCADCmd, the slicer and other children
+    of the windowless pythonw.exe server don't each flash a console window.
+    Both are idempotent."""
+    from dana.logging import install_fatal_crash_hooks
+    from dana.paths import apply_windows_process_hardening
+
+    install_fatal_crash_hooks()
+    apply_windows_process_hardening()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    install_process_hooks()
 
     import uvicorn
 

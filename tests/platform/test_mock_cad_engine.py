@@ -25,34 +25,30 @@ def engine() -> MockFreeCADEngine:
     return MockFreeCADEngine()
 
 
-@pytest.mark.xfail(reason="Known failure: trimesh.load returns a Scene (no is_watertight) with the installed trimesh", strict=False)
 def test_box_is_watertight_with_correct_volume(engine: MockFreeCADEngine) -> None:
     result = engine.create_box(40, 25, 15)
-    mesh = trimesh.load(result["path"])
+    mesh = trimesh.load(result["path"], force="mesh")
     assert mesh.is_watertight
     assert math.isclose(mesh.volume, 40 * 25 * 15, rel_tol=1e-6)
 
 
-@pytest.mark.xfail(reason="Known failure: trimesh.load returns a Scene (no is_watertight) with the installed trimesh", strict=False)
 def test_pyramid_is_watertight_with_correct_volume(engine: MockFreeCADEngine) -> None:
     result = engine.create_pyramid(50, 50, 75)
-    mesh = trimesh.load(result["path"])
+    mesh = trimesh.load(result["path"], force="mesh")
     assert mesh.is_watertight
     assert math.isclose(mesh.volume, 50 * 50 * 75 / 3, rel_tol=1e-6)
 
 
-@pytest.mark.xfail(reason="Known failure: trimesh.load returns a Scene (no is_watertight) with the installed trimesh", strict=False)
 def test_square_extrusion_is_watertight_with_correct_volume(engine: MockFreeCADEngine) -> None:
     result = engine.create_extrusion([[-10, -10], [10, -10], [10, 10], [-10, 10]], 25)
-    mesh = trimesh.load(result["path"])
+    mesh = trimesh.load(result["path"], force="mesh")
     assert mesh.is_watertight
     assert math.isclose(mesh.volume, 20 * 20 * 25, rel_tol=1e-6)
 
 
-@pytest.mark.xfail(reason="Known failure: trimesh.load returns a Scene (no is_watertight) with the installed trimesh", strict=False)
 def test_star_prism_is_watertight(engine: MockFreeCADEngine) -> None:
     result = engine.create_star_prism(8, 60, 20, 5)
-    mesh = trimesh.load(result["path"])
+    mesh = trimesh.load(result["path"], force="mesh")
     assert mesh.is_watertight
     assert mesh.volume > 0
 
@@ -73,7 +69,7 @@ def test_star_prism_volume_matches_analytic_polygon_area_times_height() -> None:
     polygon_area = abs(shoelace) / 2.0
 
     result = MockFreeCADEngine().create_star_prism(points, outer, inner, height)
-    mesh = trimesh.load(result["path"])
+    mesh = trimesh.load(result["path"], force="mesh")
     assert math.isclose(mesh.volume, polygon_area * height, rel_tol=1e-6)
 
 
@@ -90,7 +86,6 @@ def test_star_prism_rejects_too_few_points(engine: MockFreeCADEngine) -> None:
     assert result["ok"] is False
 
 
-@pytest.mark.xfail(reason="Known failure: trimesh.load returns a Scene (no is_watertight) with the installed trimesh", strict=False)
 def test_polygon_is_watertight_with_correct_volume(engine: MockFreeCADEngine) -> None:
     """Same shoelace-area-times-height check as the star prism above — the
     fan-from-centroid triangulation is exact for any convex polygon (a
@@ -108,7 +103,7 @@ def test_polygon_is_watertight_with_correct_volume(engine: MockFreeCADEngine) ->
     polygon_area = abs(shoelace) / 2.0
 
     result = engine.create_polygon(sides, radius, height)
-    mesh = trimesh.load(result["path"])
+    mesh = trimesh.load(result["path"], force="mesh")
     assert mesh.is_watertight
     assert math.isclose(mesh.volume, polygon_area * height, rel_tol=1e-6)
 
