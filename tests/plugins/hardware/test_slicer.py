@@ -1,0 +1,168 @@
+"""slice_stl_to_gcode with ``subprocess.run`` patched out: the fake slicer
+writes the --output file the way PrusaSlicer would, so these tests check the
+exact command line, the returned path, and every failure mode without a
+slicer installed."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+import pytest
+
+import dana.core.react_dispatch as rd
+from dana.plugins.hardware import slicer
+from dana.plugins.hardware.slicer import slice_stl_to_gcode
+from dana.plugins.os import file_system
+from dana.tools.schema import ToolCall
+
+SLICER = "C:/Tools/PrusaSlicer/prusa-slicer-console.exe"
+
+
+@pytest.fixture
+def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    root = (tmp_path / "agent_workspace").resolve()
+    (root / "prints").mkdir(parents=True)
+    (root / "slicer_profiles").mkdir()
+    (root / "slicer_profiles" / "mk4_default.ini").write_text("bed_shape = 0x0,250x0,250x210,0x210\n")
+    (root / "prints" / "bracket.stl").write_bytes(b"\x00" * 84)  # an (empty) binary STL
+    monkeypatch.setattr(file_system, "_SANDBOX_ROOT", root)
+    monkeypatch.setenv("DANA_SLICER_PATH", SLICER)
+    monkeypatch.delenv("DANA_SLICER_PROFILE_DIR", raising=False)
+    return root
+
+
+def _fake_slicer(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess:
+    output = command[command.index("--output") + 1]
+    open(output, "w").close()  # what the slicer does: write the G-code file
+    return subprocess.CompletedProcess(command, 0, stdout="Slicing result exported to " + output, stderr="")
+
+
+def test_slices_with_the_right_command_and_returns_the_absolute_gcode_path(workspace: Path) -> None:
+    with mock.patch("subprocess.run", side_effect=_fake_slicer) as run:
+        result = slice_stl_to_gcode("prints/bracket.stl")
+
+    expected_gcode = workspace / "prints" / "bracket_sliced.gcode"
+    assert result["ok"] is True, result
+    assert result["gcode_path"] == str(expected_gcode)
+    assert Path(result["gcode_path"]).is_absolute() and expected_gcode.is_file()
+    assert (result["printer_profile"], result["slicer"]) == ("mk4_default", SLICER)
+
+    command = run.call_args.args[0]
+    assert command == [
+        SLICER, "--export-gcode",
+        "--load", str(workspace / "slicer_profiles" / "mk4_default.ini"),
+        "--output", str(expected_gcode),
+        str(workspace / "prints" / "bracket.stl"),
+    ]
+    kwargs = run.call_args.kwargs
+    assert kwargs["check"] is True and kwargs["timeout"] == slicer.SLICE_TIMEOUT_S
+    assert "shell" not in kwargs  # argument list, never a shell string
+
+
+def test_named_profile_and_absolute_input_path(workspace: Path) -> None:
+    (workspace / "slicer_profiles" / "petg_fast.ini").write_text("\n")
+    with mock.patch("subprocess.run", side_effect=_fake_slicer) as run:
+        result = slice_stl_to_gcode(str(workspace / "prints" / "bracket.stl"), "petg_fast")
+    assert result["ok"] is True
+    assert str(workspace / "slicer_profiles" / "petg_fast.ini") in run.call_args.args[0]
+
+
+def test_slicer_not_installed_is_a_clean_error(workspace: Path) -> None:
+    with mock.patch("subprocess.run", side_effect=FileNotFoundError(2, "No such file", SLICER)):
+        result = slice_stl_to_gcode("prints/bracket.stl")
+    assert result["ok"] is False
+    assert "slicer not found" in result["error"] and "DANA_SLICER_PATH" in result["error"]
+
+
+def test_slicer_failure_reports_its_exit_code_and_stderr(workspace: Path) -> None:
+    failure = subprocess.CalledProcessError(
+        1, [SLICER], output="", stderr="Loading model...\nObjects could not fit on the bed\n"
+    )
+    with mock.patch("subprocess.run", side_effect=failure):
+        result = slice_stl_to_gcode("prints/bracket.stl")
+    assert result["ok"] is False
+    assert "exit 1" in result["error"] and "Objects could not fit on the bed" in result["error"]
+
+
+def test_timeout_is_a_clean_error(workspace: Path) -> None:
+    with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired([SLICER], 600)):
+        result = slice_stl_to_gcode("prints/bracket.stl")
+    assert result["ok"] is False and "timed out" in result["error"]
+
+
+def test_clean_exit_without_output_is_not_success(workspace: Path) -> None:
+    with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([SLICER], 0, "", "")):
+        result = slice_stl_to_gcode("prints/bracket.stl")
+    assert result["ok"] is False and "wrote no G-code" in result["error"]
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("prints/missing.stl",), "no such file"),
+        (("prints/bracket.gcode",), "is not a model file"),
+        (("../outside.stl",), "outside the sandbox"),
+        (("prints/bracket.stl", "no_such_profile"), "no slicer profile 'no_such_profile'"),
+        (("prints/bracket.stl", "../../etc/passwd"), "invalid printer_profile name"),
+    ],
+)
+def test_bad_inputs_never_run_the_slicer(workspace: Path, args: tuple[str, ...], message: str) -> None:
+    (workspace / "prints" / "bracket.gcode").write_text("G28\n")
+    with mock.patch("subprocess.run") as run:
+        result = slice_stl_to_gcode(*args)
+    assert result["ok"] is False and message in result["error"]
+    run.assert_not_called()
+
+
+def test_slicer_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DANA_SLICER_PATH", "D:/custom/slicer.exe")
+    assert slicer.find_slicer() == "D:/custom/slicer.exe"
+    monkeypatch.delenv("DANA_SLICER_PATH")
+    monkeypatch.setattr(slicer.shutil, "which", lambda name: f"/usr/bin/{name}" if name == "prusa-slicer" else None)
+    assert slicer.find_slicer() == "/usr/bin/prusa-slicer"
+    monkeypatch.setattr(slicer.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(slicer, "_WINDOWS_DEFAULT", Path("Z:/nope.exe"))
+    assert slicer.find_slicer() == "prusa-slicer"  # -> FileNotFoundError -> clean error
+
+
+def test_profile_dir_override(workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    profiles = tmp_path / "my_profiles"
+    profiles.mkdir()
+    (profiles / "mk4_default.ini").write_text("\n")
+    monkeypatch.setenv("DANA_SLICER_PROFILE_DIR", str(profiles))
+    with mock.patch("subprocess.run", side_effect=_fake_slicer) as run:
+        assert slice_stl_to_gcode("prints/bracket.stl")["ok"] is True
+    assert str(profiles / "mk4_default.ini") in run.call_args.args[0]
+
+
+# -- agent wiring: the check -> slice -> dispatch chain ---------------------------------
+
+
+def test_registered_gated_and_in_the_hardware_domain() -> None:
+    assert rd._CAPABILITY_TOOL_IDS["hardware"] == frozenset({"slice_stl_to_gcode", "dispatch_to_printer"})
+    assert rd.is_mutating_tool("slice_stl_to_gcode") is True
+    assert "slice_stl_to_gcode" not in rd.ALWAYS_PROMPT_TOOL_IDS  # writes a file; it doesn't start a print
+
+
+def test_sliced_gcode_path_is_accepted_by_dispatch_to_printer(workspace: Path) -> None:
+    """The slicer's output lands where dispatch_to_printer's sandbox check
+    accepts it — the chain's handoff, end to end through dispatch_tool_call."""
+    with mock.patch("subprocess.run", side_effect=_fake_slicer):
+        sliced = rd.dispatch_tool_call(
+            ToolCall(tool_id="slice_stl_to_gcode", arguments={"stl_filepath": "prints/bracket.stl"}),
+            engine=None, control_plane=None,
+        )
+    assert sliced.ok is True, sliced.message
+    gcode_path = sliced.payload["gcode_path"]
+
+    from dana.plugins.hardware import printer_tools
+
+    with mock.patch.object(printer_tools.MoonrakerClient, "get_status", return_value={
+        "state": "printing", "print_state": "printing", "heaters": {}, "state_message": None, "current_file": "x",
+    }):
+        result = printer_tools.dispatch_to_printer("192.168.1.50", gcode_path)
+    # Got past file validation (stage "status"), i.e. the path was accepted.
+    assert result["stage"] == "status", result

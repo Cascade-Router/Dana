@@ -72,6 +72,7 @@ from dana.plugins.vision.image_analysis import analyze_workspace_image as _visio
 from dana.plugins.web.research import read_webpage as _web_read_webpage
 from dana.plugins.web.research import search_web as _web_search_web
 from dana.plugins.hardware.printer_tools import dispatch_to_printer as _hw_dispatch_to_printer
+from dana.plugins.hardware.slicer import slice_stl_to_gcode as _hw_slice_stl_to_gcode
 from dana.security.dry_run import is_dry_run_enabled
 from dana.tools.cad_vision import analyze_cad_blueprint, capture_cad_viewport
 from dana.tools.schema import (
@@ -1732,6 +1733,18 @@ def _tool_search_web(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, 
 
 def _tool_read_webpage(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
     return _web_read_webpage(str(args.get("url") or ""))
+
+
+# hardware domain — dana.plugins.hardware.slicer: runs the PrusaSlicer CLI
+# and writes G-code into the workspace. Gated like any other mutating tool.
+def _tool_slice_stl_to_gcode(
+    args: dict[str, Any], _engine: Any, _cp: Any, *, allowed_mounts: list[str] | None = None
+) -> dict[str, Any]:
+    return _hw_slice_stl_to_gcode(
+        str(args.get("stl_filepath") or ""),
+        str(args.get("printer_profile") or "") or "mk4_default",
+        allowed_mounts=allowed_mounts,
+    )
 
 
 # hardware domain — dana.plugins.hardware.printer_tools. Physical action:
@@ -5179,6 +5192,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "list_background_services": _tool_list_background_services,
     "search_web": _tool_search_web,
     "dispatch_to_printer": _tool_dispatch_to_printer,
+    "slice_stl_to_gcode": _tool_slice_stl_to_gcode,
     "read_webpage": _tool_read_webpage,
     "analyze_workspace_image": _tool_analyze_workspace_image,
     "analyze_reference_design": _tool_analyze_reference_design,
@@ -5451,6 +5465,10 @@ def describe_tool_call(call: ToolCall) -> str:
     if call.tool_id == "stop_background_service":
         alias = call.arguments.get("alias", "?")
         return f"Stop the background service `{alias}` (kills its entire process tree)."
+    if call.tool_id == "slice_stl_to_gcode":
+        stl = call.arguments.get("stl_filepath", "?")
+        profile = call.arguments.get("printer_profile") or "mk4_default"
+        return f"Slice `{stl}` into G-code with the PrusaSlicer profile `{profile}` (writes a .gcode file next to it)."
     if call.tool_id == "dispatch_to_printer":
         gcode = call.arguments.get("gcode_filepath", "?")
         printer = call.arguments.get("printer_ip", "?")
@@ -5752,9 +5770,9 @@ _WEB_TOOLS_TOOL_IDS = frozenset({"search_web", "read_webpage"})
 # Read-only inspection; all declare "read_only": true in tools.json.
 _VISION_TOOLS_TOOL_IDS = frozenset({"analyze_workspace_image", "analyze_reference_design", "execute_vision_analysis"})
 
-# Physical hardware (dana.plugins.hardware) — currently one tool, which
-# starts a real print; see ALWAYS_PROMPT_TOOL_IDS.
-_HARDWARE_TOOL_IDS = frozenset({"dispatch_to_printer"})
+# Physical hardware (dana.plugins.hardware): slice a model, then start a
+# real print (dispatch_to_printer — see ALWAYS_PROMPT_TOOL_IDS).
+_HARDWARE_TOOL_IDS = frozenset({"slice_stl_to_gcode", "dispatch_to_printer"})
 
 # Tools that act on the physical world: dana.api.server asks the human before
 # EVERY call — never skipped by session auto-approve, the always-approved
@@ -8077,7 +8095,7 @@ _OS_TOOLS_INTENT_KEYWORDS = frozenset(
 # any real turn runs, without hardcoding the assumption here too.
 _HARDWARE_INTENT_KEYWORDS = frozenset(
     {"3d printer", "start the print", "start a print", "send it to the printer", "send to printer",
-     "klipper", "moonraker", "gcode", "g-code"}
+     "klipper", "moonraker", "gcode", "g-code", "slice", "slicer", "prusaslicer"}
 )
 
 _DOMAIN_INTENT_KEYWORDS: dict[str, frozenset[str]] = {
@@ -9067,6 +9085,7 @@ _TOOLS_NEEDING_MOUNTS = frozenset(
         "execute_terminal_command",
         "start_background_service",
         "dispatch_to_printer",  # also in _TOOLS_NEEDING_API_KEYS (its Moonraker key)
+        "slice_stl_to_gcode",
     }
 )
 
@@ -9467,6 +9486,8 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
             titles = ", ".join(m["title"] for m in payload.get("matches", []))
             return f"Ambiguous match for '{payload.get('query')}' — candidates: {titles}."
         return f"{payload.get('title')}: {payload.get('dimensions')}."
+    if call.tool_id == "slice_stl_to_gcode":
+        return f"Sliced `{payload.get('stl_path')}` -> `{payload.get('gcode_path')}` (profile {payload.get('printer_profile')})."
     if call.tool_id == "dispatch_to_printer":
         job = f" (job {payload['job_id']})" if payload.get("job_id") else ""
         return f"Started printing `{payload.get('filename')}` on {payload.get('printer')}{job}."

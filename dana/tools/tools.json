@@ -680,7 +680,7 @@
     {
       "id": "check_printability",
       "read_only": true,
-      "description_en": "Pre-print sanity check of a finished part, before telling the user it's ready to 3D print. Exports the part to a binary STL and reports {printable, requires_supports, warnings}: printable is false for an open/non-manifold/self-intersecting mesh or a part larger than the printer's build volume; requires_supports is true when downward-facing surface is steeper than max_overhang_deg from vertical (checked as oriented: +Z up, lowest point on the bed). Read-only — does not modify anything. Defaults to the session's last PartDesign Body.",
+      "description_en": "Pre-print sanity check of a finished part, before telling the user it's ready to 3D print. Exports the part to a binary STL (stl_path, ready for slice_stl_to_gcode) and reports {printable, requires_supports, warnings}: printable is false for an open/non-manifold/self-intersecting mesh or a part larger than the printer's build volume; requires_supports is true when downward-facing surface is steeper than max_overhang_deg from vertical (checked as oriented: +Z up, lowest point on the bed). Read-only — does not modify anything. Defaults to the session's last PartDesign Body.",
       "parameters": [
         {
           "name": "object_name",
@@ -1607,7 +1607,7 @@
     {
       "id": "load_capability",
       "read_only": true,
-      "description_en": "Dynamically unlocks a capability domain's tools for the rest of this conversation, when the user's request needs something outside your current tool set. NEVER tell the user to manually enable a plugin/domain themselves — call this FIRST instead, then call the newly-unlocked tool in a later turn; a domain's tools never appear until this has been called for it. Available domains: 'freecad' (the 7 essential CAD primitives — create a box/cylinder, one boolean op, one edge op, a parameter tweak, a bounding-box check, export — covers most basic modeling requests at low token cost), 'freecad_full' (all 24 FreeCAD tools, including patterns, assembly mates, 2D blueprints, standard-parts lookup, and camera control — only load this if 'freecad' genuinely isn't enough, since it costs far more tokens per turn), 'os_tools' (sandboxed filesystem operations and Python script execution), 'web_tools' (web search and webpage reading, for unfamiliar APIs, current facts, or documentation not in your local knowledge), 'vision_tools' (VLM analysis of an image file in the sandboxed workspace, e.g. verifying a chart you just generated, or of the live FreeCAD viewport via execute_vision_analysis), 'hardware' (send a G-code file to a networked Klipper/Moonraker 3D printer and start the print), 'user_skills' (every permanent skill you've previously taught yourself via save_new_skill). Pass 'tool_id' INSTEAD of 'domain' to unhide one specific tool a prior unload_capability(tool_id=...) call hid.",
+      "description_en": "Dynamically unlocks a capability domain's tools for the rest of this conversation, when the user's request needs something outside your current tool set. NEVER tell the user to manually enable a plugin/domain themselves — call this FIRST instead, then call the newly-unlocked tool in a later turn; a domain's tools never appear until this has been called for it. Available domains: 'freecad' (the 7 essential CAD primitives — create a box/cylinder, one boolean op, one edge op, a parameter tweak, a bounding-box check, export — covers most basic modeling requests at low token cost), 'freecad_full' (all 24 FreeCAD tools, including patterns, assembly mates, 2D blueprints, standard-parts lookup, and camera control — only load this if 'freecad' genuinely isn't enough, since it costs far more tokens per turn), 'os_tools' (sandboxed filesystem operations and Python script execution), 'web_tools' (web search and webpage reading, for unfamiliar APIs, current facts, or documentation not in your local knowledge), 'vision_tools' (VLM analysis of an image file in the sandboxed workspace, e.g. verifying a chart you just generated, or of the live FreeCAD viewport via execute_vision_analysis), 'hardware' (slice a model into G-code with PrusaSlicer, and send G-code to a networked Klipper/Moonraker 3D printer to start the print), 'user_skills' (every permanent skill you've previously taught yourself via save_new_skill). Pass 'tool_id' INSTEAD of 'domain' to unhide one specific tool a prior unload_capability(tool_id=...) call hid.",
       "parameters": [
         {
           "name": "domain",
@@ -1623,7 +1623,7 @@
             "hardware",
             "user_skills"
           ],
-          "description_en": "The capability domain to load: 'software_engineering' (read/edit/refactor/debug code — search_codebase, analyze_codebase, execute_code_task, run_verification_command to verify), 'freecad' (CAD modeling — essential tools; only use 'freecad_full' if a heavier tool is genuinely needed), 'os_tools' (filesystem/shell access), 'web_tools' (web search/page fetch), 'vision_tools' (image and CAD-viewport analysis), 'hardware' (3D printer dispatch), 'user_skills' (previously self-taught skills). Omit if passing 'tool_id' instead."
+          "description_en": "The capability domain to load: 'software_engineering' (read/edit/refactor/debug code — search_codebase, analyze_codebase, execute_code_task, run_verification_command to verify), 'freecad' (CAD modeling — essential tools; only use 'freecad_full' if a heavier tool is genuinely needed), 'os_tools' (filesystem/shell access), 'web_tools' (web search/page fetch), 'vision_tools' (image and CAD-viewport analysis), 'hardware' (slicing and 3D printer dispatch), 'user_skills' (previously self-taught skills). Omit if passing 'tool_id' instead."
         },
         {
           "name": "tool_id",
@@ -2073,8 +2073,26 @@
       "parameters": []
     },
     {
+      "id": "slice_stl_to_gcode",
+      "description_en": "Slice a 3D model (.stl/.3mf/.obj in the workspace) into printer G-code with the PrusaSlicer command line, using one of the user's exported PrusaSlicer configs. Writes <name>_sliced.gcode next to the model and returns its absolute gcode_path, ready for dispatch_to_printer. Typical chain: check_printability (gives stl_path) -> slice_stl_to_gcode -> dispatch_to_printer. Does not start a print.",
+      "parameters": [
+        {
+          "name": "stl_filepath",
+          "type": "string",
+          "required": true,
+          "description_en": "The model to slice, inside the workspace or a mounted directory — e.g. the stl_path check_printability returned."
+        },
+        {
+          "name": "printer_profile",
+          "type": "string",
+          "required": false,
+          "description_en": "Name of the user's exported PrusaSlicer config in the workspace's slicer_profiles/ folder (without .ini). Default 'mk4_default'."
+        }
+      ]
+    },
+    {
       "id": "dispatch_to_printer",
-      "description_en": "Send a G-code file to a networked Klipper 3D printer (Moonraker API) and START PRINTING it. Physical action: the user approves every call. In order: checks the printer is idle and ready (refuses, sending nothing, if it is printing, paused, starting up or in an error state), uploads the file, starts the print, and returns the job id. Needs sliced G-code — not an STL/STEP model; run check_printability on the model first.",
+      "description_en": "Send a G-code file to a networked Klipper 3D printer (Moonraker API) and START PRINTING it. Physical action: the user approves every call. In order: checks the printer is idle and ready (refuses, sending nothing, if it is printing, paused, starting up or in an error state), uploads the file, starts the print, and returns the job id. Needs sliced G-code — not an STL/STEP model: run check_printability on the model, then slice_stl_to_gcode on the stl_path it returns, then pass the resulting gcode_path here.",
       "parameters": [
         {
           "name": "printer_ip",

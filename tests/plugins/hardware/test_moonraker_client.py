@@ -341,7 +341,7 @@ def test_file_must_be_existing_gcode_inside_the_workspace(gcode: Path, make: Any
 def test_tool_is_gated_always_prompts_and_lives_in_the_hardware_domain() -> None:
     assert rd.is_mutating_tool("dispatch_to_printer") is True
     assert "dispatch_to_printer" in rd.ALWAYS_PROMPT_TOOL_IDS
-    assert rd._CAPABILITY_TOOL_IDS["hardware"] == frozenset({"dispatch_to_printer"})
+    assert "dispatch_to_printer" in rd._CAPABILITY_TOOL_IDS["hardware"]
     assert "PHYSICAL PRINT" in rd.describe_tool_call(
         ToolCall(tool_id="dispatch_to_printer", arguments={"printer_ip": PRINTER, "gcode_filepath": "a.gcode"})
     )
