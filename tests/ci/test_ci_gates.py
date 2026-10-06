@@ -186,6 +186,19 @@ def test_new_dead_function_fails_but_a_new_cross_module_one_does_not(
     assert "legacy_dead" not in out  # legacy.py wasn't touched
 
 
+def test_a_gitignored_local_file_cannot_hide_new_dead_code(
+    git_repo: tuple[Path, str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CI never sees gitignored files, so a local one that still calls a name
+    must not make that name look used (the 2026-10-06 mic_ingest_ready miss)."""
+    repo, base = git_repo
+    _write(repo, ".gitignore", "pkg/scratch.py\n")
+    _write(repo, "pkg/scratch.py", "from pkg.helpers import orphan\n\norphan()\n")
+    _write(repo, "pkg/helpers.py", "def orphan():\n    return 5\n")
+    assert dead_code.main(["--base", base]) == 1
+    assert "pkg/helpers.py:1: unused function 'orphan'" in capsys.readouterr().out
+
+
 def test_committed_change_is_compared_to_the_given_base(git_repo: tuple[Path, str]) -> None:
     repo, base = git_repo
     _write(repo, "pkg/legacy.py", "def legacy_dead():\n    return 1\n\n\ndef used():\n    return 2\n\n\ndef new_dead():\n    return 6\n")

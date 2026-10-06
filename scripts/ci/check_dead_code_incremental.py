@@ -82,6 +82,15 @@ def vulture_settings() -> tuple[list[str], list[str]]:
     return paths, args
 
 
+def visible_python_files(paths: list[str]) -> list[str]:
+    """The working tree's .py files under ``paths`` that git tracks or would
+    track: gitignored local files (scratch scripts, old copies) are left out,
+    so a local run scans what CI scans and can't be masked by a stray file
+    that still uses a name."""
+    out = _git("ls-files", "--cached", "--others", "--exclude-standard", "--", *paths)
+    return sorted(f for f in out.splitlines() if f.endswith(".py") and (REPO_ROOT / f).is_file())
+
+
 def run_vulture(root: Path, paths: list[str], args: list[str]) -> list[tuple[str, int, str]]:
     """Findings as (posix path relative to root, line, message)."""
     present = [p for p in paths if (root / p).exists()]
@@ -140,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     paths, vulture_args = vulture_settings()
-    head_findings = run_vulture(REPO_ROOT, paths, vulture_args)
+    head_findings = run_vulture(REPO_ROOT, visible_python_files(paths), vulture_args)
     with tempfile.TemporaryDirectory() as tmp:
         export_revision(base, paths, Path(tmp))
         # The base tree has no pyproject.toml; settings come in as CLI args.

@@ -60,6 +60,10 @@ python-dotenv==1.2.2
 # Optional at runtime (its absence is a supported no-op), but declared here
 # explicitly since it was previously only an incidental transitive dep.
 PyYAML>=6.0
+# dana/core/react_dispatch.py _count_tokens — exact cl100k counts for the tool
+# schema token budget. Without it the fallback estimate overcounts and trims
+# tool schemas harder. Was only ever installed via langchain-openai.
+tiktoken>=0.7.0,<1.0.0
 psutil==7.2.2
 pywin32==312; platform_system=="Windows"
 ddgs==9.14.4
@@ -78,6 +82,7 @@ pyinstaller>=6.0.0
 jinja2>=3.1.0
 # 2D Blueprint Generation — TechDraw has no headless PDF writer of its own,
 # so dana/plugins/freecad/techdraw_export.py renders the DXF it DOES produce
-# headlessly (TechDraw.writeDXFPage) to PDF via ezdxf + the already-required
-# matplotlib.
+# headlessly (TechDraw.writeDXFPage) to PDF via ezdxf + matplotlib. matplotlib
+# used to arrive only through ultralytics, so it is listed directly now.
 ezdxf>=1.3.0
+matplotlib>=3.5

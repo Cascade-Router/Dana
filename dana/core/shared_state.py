@@ -78,7 +78,6 @@ is_recording = threading.Event()
 # Legacy name kept for call sites: producer-ready / stream healthy.
 wake_mic_released = threading.Event()
 wake_mic_released.set()
-mic_ingest_ready = threading.Event()
 
 
 # ---------------------------------------------------------------------------
