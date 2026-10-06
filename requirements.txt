@@ -22,9 +22,6 @@ websockets==15.0.1
 sentry-sdk>=2.18.0
 transformers==5.13.0
 accelerate==1.14.0
-einops==0.8.2
-timm==1.0.28
-ultralytics==8.4.91
 opencv-python-headless>=4.8.0
 Pillow>=10.2.0
 # dana/plugins/vision/ocr_grounding.py — deterministic dimension-text
@@ -48,64 +45,33 @@ sounddevice==0.5.5
 soundfile==0.14.0
 piper-tts==1.4.2
 # Stage 8.1 — multi-voice mixer + Jason OS TTS (no VRAM)
-pygame-ce==2.5.3
 pyttsx3==2.99
-openwakeword==0.6.0
 onnxruntime>=1.20.0,<2.0.0
 # Silero VAD loads via torch.hub (snakers4/silero-vad); no webrtcvad.
 # Cap below 81 — pkg_resources / legacy plugin paths still used in places.
 setuptools==80.9.0
 mss==10.2.0
-pytesseract>=0.3.10
 requests==2.34.2
 httpx==0.28.1
 beautifulsoup4==4.15.0
-playwright==1.62.0
 cryptography==49.0.0
-keyring==25.7.0
 python-dotenv==1.2.2
 # Dynamic LLM Router — routing_config.yaml (dana/core/routing_config.py).
 # Optional at runtime (its absence is a supported no-op), but declared here
 # explicitly since it was previously only an incidental transitive dep.
 PyYAML>=6.0
-pystray==0.19.5
-customtkinter==6.0.0
 psutil==7.2.2
 pywin32==312; platform_system=="Windows"
 ddgs==9.14.4
 tzdata==2026.3
-# Stage 6.2 — Jason bulk slide ingestion
-python-pptx==1.0.2
-# Out-of-process research swarm (cloud LLM — never Ollama)
-# Keep within deploy corridor: langgraph>=0.2,<0.4 / langchain>=0.3,<0.4
-langgraph==0.3.34
-langchain==0.3.27
+# dana/tools/promotion.py
 langchain-core==0.3.86
 langchain-ollama==0.2.3
-langchain-openai==0.3.35
-langchain-community==0.3.31
-duckduckgo-search==8.1.1
-langchain-groq==0.2.5
-pycaw==20251023; platform_system=="Windows"
 comtypes==1.4.16; platform_system=="Windows"
-# Stage 7.2 — global panic hotkey (hardware kill switch)
-keyboard==0.13.5
-# Module 2 mailroom — ASR-tolerant command matching (Levenshtein / WRatio)
-rapidfuzz==3.14.5
 # Stage 4.3 — silent Windows toast callbacks (PowerShell fallback if absent)
 win11toast==0.36.3; platform_system=="Windows"
 # Optional: faster ToolRegistry vector search (falls back to NumPy cosine if absent)
 # faiss-cpu>=1.8.0
-# Stage — long-term codebase memory vault (Chroma + MiniLM)
-chromadb
-sentence-transformers
-langchain-huggingface
-langchain-text-splitters
-# Realtime Chroma sync on workspace file create/modify/delete
-watchdog>=4.0.0
-# DAG / LangGraph TUI monitor
-textual>=0.80.0
-rich>=13.0.0
 # Windows onedir packaging (see build_dana.py)
 pyinstaller>=6.0.0
 # Frontier 4 — "Show Your Work" Python export (dana/plugins/freecad/py_export.py)
