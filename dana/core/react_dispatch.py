@@ -4128,6 +4128,27 @@ def _tool_inspect_spatial_properties(args: dict[str, Any], engine: Any, _cp: Any
     return engine.inspect_spatial_properties(target_path, target_object=target_name)
 
 
+def _tool_check_printability(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    # object_name is deliberately NOT checked against _object_registry():
+    # the usual target is a PartDesign Body ("Body"), which no create_* tool
+    # registers by name; the engine resolves it (or the default) itself.
+    object_name = str(args.get("object_name") or "").strip() or None
+    build_volume = args.get("build_volume_mm")
+    if build_volume is not None:
+        if (
+            not isinstance(build_volume, list)
+            or len(build_volume) != 3
+            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in build_volume)
+        ):
+            return {"ok": False, "error": "check_printability: build_volume_mm must be [x, y, z] in mm, all positive"}
+    max_overhang = args.get("max_overhang_deg", 45.0)
+    if not isinstance(max_overhang, (int, float)) or isinstance(max_overhang, bool) or not 0 < max_overhang < 90:
+        return {"ok": False, "error": "check_printability: max_overhang_deg must be a number between 0 and 90"}
+    return engine.check_printability(
+        object_name, build_volume_mm=build_volume, max_overhang_deg=float(max_overhang)
+    )
+
+
 def _tool_query_topology(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
     part_name = str(args.get("part_name") or "").strip()
     if not part_name:
@@ -5075,6 +5096,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "get_freecad_bounding_box": _tool_get_freecad_bounding_box,
     "inspect_spatial_properties": _tool_inspect_spatial_properties,
     "query_topology": _tool_query_topology,
+    "check_printability": _tool_check_printability,
     "analyze_bounding_box_collisions": _tool_analyze_bounding_box_collisions,
     "create_freecad_pipe": _tool_create_freecad_pipe,
     "create_freecad_helix": _tool_create_freecad_helix,
@@ -5496,6 +5518,7 @@ _FREECAD_TOOL_IDS = frozenset(
         "get_freecad_bounding_box",
         "inspect_spatial_properties",
         "query_topology",
+        "check_printability",
         "analyze_bounding_box_collisions",
         "create_freecad_pipe",
         "create_freecad_helix",
@@ -9392,6 +9415,11 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
             titles = ", ".join(m["title"] for m in payload.get("matches", []))
             return f"Ambiguous match for '{payload.get('query')}' — candidates: {titles}."
         return f"{payload.get('title')}: {payload.get('dimensions')}."
+    if call.tool_id == "check_printability":
+        verdict = "printable" if payload.get("printable") else "NOT printable"
+        supports = "needs supports" if payload.get("requires_supports") else "no supports needed"
+        warnings = payload.get("warnings") or []
+        return f"`{payload.get('target')}` is {verdict}, {supports}." + (" " + " ".join(warnings) if warnings else "")
     if call.tool_id == "take_canvas_screenshot":
         return str(
             payload.get("summary") or payload.get("note") or payload.get("message") or "Captured the canvas viewport."

@@ -223,6 +223,22 @@ class RealFreeCADEngine(BaseCADEngine):
 
         return json.loads(engine.query_topology(part_name))
 
+    def check_printability(
+        self,
+        object_name: str | None = None,
+        build_volume_mm: Sequence[float] | None = None,
+        max_overhang_deg: float = 45.0,
+    ) -> dict[str, Any]:
+        from dana.plugins.freecad import printability
+
+        return json.loads(
+            printability.check_printability(
+                object_name,
+                printer=printability.printer_profile(build_volume_mm),
+                max_overhang_deg=max_overhang_deg,
+            )
+        )
+
     def create_pipe(
         self,
         pipe_radius: float,

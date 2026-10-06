@@ -840,6 +840,26 @@ class MockFreeCADEngine(BaseCADEngine):
             "driver": "mock",
         }
 
+    def check_printability(
+        self,
+        object_name: str | None = None,
+        build_volume_mm: Sequence[float] | None = None,
+        max_overhang_deg: float = 45.0,
+    ) -> dict[str, Any]:
+        # Same "no honest partial stub" reasoning as query_topology above: the
+        # verdict hinges on the real Body's exported mesh (watertightness,
+        # manifoldness, every facet's normal), which this driver's
+        # one-primitive-per-file registry can't reproduce for a PartDesign
+        # Body. The report logic itself is pure (printability.build_report).
+        return {
+            "ok": False,
+            "error": (
+                "check_printability is not supported by the mock CAD driver (no FreeCADCmd binary "
+                "available) — a real FreeCAD engine is required to export and evaluate the part's mesh."
+            ),
+            "driver": "mock",
+        }
+
     def create_pipe(
         self,
         pipe_radius: float,

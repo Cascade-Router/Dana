@@ -230,6 +230,19 @@ class BaseCADEngine(ABC):
         "vertex_count": int}``."""
 
     @abstractmethod
+    def check_printability(
+        self,
+        object_name: str | None = None,
+        build_volume_mm: Sequence[float] | None = None,
+        max_overhang_deg: float = 45.0,
+    ) -> dict[str, Any]:
+        """Read-only pre-print sanity check of a session part (default: the
+        last PartDesign Body): closed/manifold/watertight mesh, build-volume
+        fit, and overhangs steeper than ``max_overhang_deg`` from vertical.
+        Returns ``{"ok": bool, "printable": bool, "requires_supports": bool,
+        "warnings": [...], ...}`` — see dana.plugins.freecad.printability."""
+
+    @abstractmethod
     def query_topology(self, part_name: str) -> dict[str, Any]:
         """Read-only: per-face topology of a previously-created object,
         resolved by NAME against this driver's own shared session state —

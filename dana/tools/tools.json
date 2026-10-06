@@ -678,6 +678,31 @@
       ]
     },
     {
+      "id": "check_printability",
+      "read_only": true,
+      "description_en": "Pre-print sanity check of a finished part, before telling the user it's ready to 3D print. Exports the part to a binary STL and reports {printable, requires_supports, warnings}: printable is false for an open/non-manifold/self-intersecting mesh or a part larger than the printer's build volume; requires_supports is true when downward-facing surface is steeper than max_overhang_deg from vertical (checked as oriented: +Z up, lowest point on the bed). Read-only — does not modify anything. Defaults to the session's last PartDesign Body.",
+      "parameters": [
+        {
+          "name": "object_name",
+          "type": "string",
+          "required": false,
+          "description_en": "Object to check (e.g. 'Body'). Omit to check the session's last PartDesign Body, or its last visible solid if there is no Body."
+        },
+        {
+          "name": "build_volume_mm",
+          "type": "array",
+          "required": false,
+          "description_en": "Printer build volume [x, y, z] in mm. Default [250, 210, 220] (Prusa MK4)."
+        },
+        {
+          "name": "max_overhang_deg",
+          "type": "number",
+          "required": false,
+          "description_en": "Steepest printable overhang, in degrees from vertical. Default 45."
+        }
+      ]
+    },
+    {
       "id": "query_topology",
       "read_only": true,
       "description_en": "Returns per-face topology of an existing object: for every face, its face_index (e.g. 'Face3', 1-based — matching apply_assembly_constraint's own part1_element/part2_element numbering), area, is_planar, surface_type, centroid, and normal (a 3-vector ONLY when is_planar is true — null with an explanatory normal_warning for any curved face, since a single normal vector is not well-defined across a cylindrical/conical/toroidal/B-Spline surface). For a PLANAR face only (null for any curved face, same reasoning as normal): u_span_physical_mm/v_span_physical_mm (that face's own real, trimmed extent in mm along each of its two parametric axes — compare these to tell which axis is the LONGER one) and u_direction_vector/v_direction_vector (those two axes' real WORLD-space [x, y, z] directions, correct regardless of which way the face's normal points). Use these BEFORE calling apply_assembly_constraint with a uv_tensor: compare u_direction_vector/v_direction_vector against a chassis's own elongation axis (from get_bounding_box) to deterministically pick whether varying uv_tensor's u or v spreads parts along the chassis's long (e.g. front-to-back) axis, instead of guessing and re-mating. Read-only — does not modify anything. Use this BEFORE apply_assembly_constraint to mathematically deduce opposite faces (matching areas, anti-parallel normals), the largest flat face (a candidate mounting surface), or top/bottom (by centroid Z) from real BRep data, instead of guessing a Face index blind. Face indices reflect a snapshot of the object's CURRENT shape only — re-query after any boolean/fillet/pattern operation on this part rather than trusting a stale index.",
