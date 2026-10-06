@@ -51,6 +51,7 @@ __pycache__/
 .ruff_cache/
 .tox/
 .coverage
+coverage.xml
 htmlcov/
 
 # PyInstaller / packaging

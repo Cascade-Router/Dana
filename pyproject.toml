@@ -43,6 +43,15 @@ markers = [
   "e2e: live end-to-end OS/vision/browser manipulation tests",
   "live_ollama: needs a reachable Ollama server at OLLAMA_URL; deselected in CI",
 ]
+# scripts/ci/check_dead_code_incremental.py reads this. paths are the code
+# that counts as "using" something: the package plus its entry points, NOT
+# tests/ (a function only tests call is still dead in production).
+[tool.vulture]
+paths = ["dana", "scripts", "app.py", "start_dana.py"]
+min_confidence = 60
+# Called by the framework, never by name: FastAPI routes, pydantic validators.
+ignore_decorators = ["@app.*", "@router.*", "@field_validator", "@model_validator"]
+
 
 [tool.mypy]
 python_version = "3.12"

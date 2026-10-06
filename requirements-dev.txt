@@ -1,3 +1,5 @@
 # Development / CI test dependencies (not required for production runtime).
 pytest>=8.0,<9
 pytest-timeout>=2.3,<3
+pytest-cov>=5,<8
+vulture>=2.11,<3

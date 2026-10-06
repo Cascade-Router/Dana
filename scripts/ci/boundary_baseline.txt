@@ -1,0 +1,24 @@
+# Existing dana/core -> dana.plugins/dana.manufacturing imports, one
+# '<file> <module>' edge per line. scripts/ci/check_boundaries.py fails on
+# any edge not listed here. Remove lines as refactors remove the imports;
+# never add to it to get a new import through.
+dana/core/react_dispatch.py dana.plugins.freecad
+dana/core/react_dispatch.py dana.plugins.freecad.call_log
+dana/core/react_dispatch.py dana.plugins.freecad.engine
+dana/core/react_dispatch.py dana.plugins.freecad.engineering_standards
+dana/core/react_dispatch.py dana.plugins.freecad.error_digest
+dana/core/react_dispatch.py dana.plugins.freecad.mesh_ops
+dana/core/react_dispatch.py dana.plugins.freecad.standard_parts
+dana/core/react_dispatch.py dana.plugins.freecad.techdraw_export
+dana/core/react_dispatch.py dana.plugins.hardware.printer_tools
+dana/core/react_dispatch.py dana.plugins.hardware.slicer
+dana/core/react_dispatch.py dana.plugins.memory.core_memory
+dana/core/react_dispatch.py dana.plugins.os.background_services
+dana/core/react_dispatch.py dana.plugins.os.desktop_vision
+dana/core/react_dispatch.py dana.plugins.os.file_system
+dana/core/react_dispatch.py dana.plugins.os.process_manager
+dana/core/react_dispatch.py dana.plugins.planning.task_board
+dana/core/react_dispatch.py dana.plugins.plugin_manager
+dana/core/react_dispatch.py dana.plugins.vision.image_analysis
+dana/core/react_dispatch.py dana.plugins.web.research
+dana/core/skill_loader.py dana.plugins.os.file_system
