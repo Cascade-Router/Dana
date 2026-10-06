@@ -138,10 +138,9 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          # 3.11 was forced by openwakeword (tflite-runtime wheels stop at
-          # cp311) and dana/telemetry.py (datetime.UTC); both were removed
-          # 2026-10-06, so this can move to 3.12 once a run confirms it.
-          python-version: "3.11"
+          # Was 3.11 while openwakeword (tflite-runtime wheels stop at cp311)
+          # was a dependency; it was removed on 2026-10-06.
+          python-version: "3.12"
           cache: pip
           cache-dependency-path: |
             requirements.txt
