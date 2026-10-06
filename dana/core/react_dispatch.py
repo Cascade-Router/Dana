@@ -3956,6 +3956,18 @@ def _tool_perform_freecad_boolean(args: dict[str, Any], engine: Any, _cp: Any) -
         if candidate and candidate not in merged:
             merged.append(candidate)
     if len(merged) < 2:
+        if len(merged) == 1 and len([n for n in (base_name, tool_name, *listed) if n]) >= 2:
+            # Two or more names were given but the topology redirect sent
+            # them to the same living leaf: an earlier boolean already
+            # consumed them into one object.
+            return {
+                "ok": False,
+                "error": (
+                    f"perform_freecad_boolean: every object named resolves to '{merged[0]}' — an earlier "
+                    "boolean already combined them into it. Name two different existing objects, or "
+                    "create new ones first."
+                ),
+            }
         return {
             "ok": False,
             "error": "perform_freecad_boolean requires either base_object+tool_object, or objects (2+ names)",

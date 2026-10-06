@@ -880,23 +880,20 @@ def test_dispatch_boolean_end_to_end_via_object_name_registry() -> None:
     assert rd._object_registry()["Cut"] == cut_result.payload["path"]
 
 
-@pytest.mark.xfail(reason="Known failure: boolean dispatch now returns ok=False", strict=False)
+def _make_box_and_cylinder(engine: Any, control_plane: Any, box: str, cylinder: str) -> None:
+    for tool_id, arguments in (
+        ("create_freecad_box", {"length": 20, "width": 20, "height": 20, "name": box}),
+        ("create_freecad_cylinder", {"radius": 5, "height": 20, "name": cylinder}),
+    ):
+        assert rd.dispatch_tool_call(ToolCall(tool_id=tool_id, arguments=arguments), engine, control_plane).ok
+
+
 def test_dispatch_boolean_union_and_intersect_use_default_names() -> None:
     from dana.platform.mock import MockControlPlane, MockFreeCADEngine
 
     engine = MockFreeCADEngine()
     control_plane = MockControlPlane()
-    rd.dispatch_tool_call(
-        ToolCall(tool_id="create_freecad_box", arguments={"length": 20, "width": 20, "height": 20, "name": "UBoxA"}),
-        engine,
-        control_plane,
-    )
-    rd.dispatch_tool_call(
-        ToolCall(tool_id="create_freecad_cylinder", arguments={"radius": 5, "height": 20, "name": "UCylA"}),
-        engine,
-        control_plane,
-    )
-
+    _make_box_and_cylinder(engine, control_plane, "UBoxA", "UCylA")
     union_result = rd.dispatch_tool_call(
         ToolCall(
             tool_id="perform_freecad_boolean",
@@ -909,10 +906,12 @@ def test_dispatch_boolean_union_and_intersect_use_default_names() -> None:
     assert union_result.payload["name"] == "Fusion"
     assert union_result.payload["type"] == "Part::MultiFuse"
 
+    # The union consumed UBoxA/UCylA, so the intersect needs its own inputs.
+    _make_box_and_cylinder(engine, control_plane, "IBoxB", "ICylB")
     intersect_result = rd.dispatch_tool_call(
         ToolCall(
             tool_id="perform_freecad_boolean",
-            arguments={"operation": "intersect", "base_object": "UBoxA", "tool_object": "UCylA"},
+            arguments={"operation": "intersect", "base_object": "IBoxB", "tool_object": "ICylB"},
         ),
         engine,
         control_plane,
@@ -920,6 +919,34 @@ def test_dispatch_boolean_union_and_intersect_use_default_names() -> None:
     assert intersect_result.ok is True
     assert intersect_result.payload["name"] == "Common"
     assert intersect_result.payload["type"] == "Part::MultiCommon"
+
+
+def test_dispatch_boolean_on_already_combined_objects_says_why_it_failed() -> None:
+    """Both names redirect to the same living leaf (the earlier union), so
+    the error must say so, not claim fewer than two names were given."""
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    control_plane = MockControlPlane()
+    _make_box_and_cylinder(engine, control_plane, "RBoxA", "RCylA")
+    args = {"base_object": "RBoxA", "tool_object": "RCylA"}
+    assert rd.dispatch_tool_call(
+        ToolCall(tool_id="perform_freecad_boolean", arguments={"operation": "union", **args}), engine, control_plane
+    ).ok
+    again = rd.dispatch_tool_call(
+        ToolCall(tool_id="perform_freecad_boolean", arguments={"operation": "intersect", **args}), engine, control_plane
+    )
+    assert again.ok is False
+    assert "resolves to 'Fusion'" in again.message
+    assert "already combined" in again.message
+
+    one_name = rd.dispatch_tool_call(
+        ToolCall(tool_id="perform_freecad_boolean", arguments={"operation": "union", "base_object": "Fusion"}),
+        engine,
+        control_plane,
+    )
+    assert one_name.ok is False
+    assert "requires either base_object+tool_object" in one_name.message
 
 
 def test_parse_utterance_boolean_pass_through(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1816,7 +1843,7 @@ def test_wrap_plugin_handler_unpacks_multiple_named_parameters() -> None:
     assert result == {"filepath": "/tmp/model.FCStd", "modification_script": "doc.recompute()"}
 
 
-def test_execute_freecad_script_end_to_end_through_tool_handlers_dispatch() -> None:
+def test_execute_freecad_script_end_to_end_through_tool_handlers_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     """Full-stack regression: dispatching execute_freecad_script through the
     REAL TOOL_HANDLERS entry (as dispatch_tool_call would) with a realistic
     tool-call arguments dict must reach FreeCAD's own engine.execute_freecad_
@@ -1826,6 +1853,10 @@ def test_execute_freecad_script_end_to_end_through_tool_handlers_dispatch() -> N
     install."""
     from dana.plugins.freecad import engine as freecad_engine
 
+    # CI runs with DANA_OS_DRY_RUN=1, which makes execute_freecad_script
+    # return before it ever reaches _run_freecad_script. The subprocess is
+    # mocked below, so dry-run mode has nothing to protect here.
+    monkeypatch.delenv("DANA_OS_DRY_RUN", raising=False)
     with patch.object(
         freecad_engine, "_run_freecad_script", return_value={"ok": True, "stdout": "done", "stderr": ""}
     ) as mock_run:
@@ -2125,8 +2156,7 @@ def test_llm_tools_schema_keeps_newly_unlocked_tools_sticky_across_narrowing() -
     assert "execute_code_task" in names
 
 
-@pytest.mark.xfail(reason="Known failure: full FreeCAD unlock now exceeds the token budget", strict=False)
-def test_load_capability_freecad_full_unlock_stays_under_budget() -> None:
+def test_load_capability_freecad_full_unlock_stays_under_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression for the reported 8,966-token 413: load_capability(domain=
     "freecad_full") unlocks ~42 tools (Sketcher/PartDesign Pad/Pocket/
     patterns/sweep/loft/assembly added across the 5-phase CAD expansion,
@@ -2135,6 +2165,10 @@ def test_load_capability_freecad_full_unlock_stays_under_budget() -> None:
     which _cap_schemas_by_token_budget never trims, so the very next turn's
     schema blew far past _TOOL_TOKEN_BUDGET on its own. The unlocked set must
     now be ranked/capped the same way a large keyword-suggested domain is."""
+    # freecad_full is refused outright for local Ollama sessions (see
+    # _tool_load_capability's freecad_full Gate), and the suite's conftest
+    # leaves the session local, so run this as the cloud session it's about.
+    monkeypatch.setattr(rd, "tool_calling_provider", lambda: "openrouter")
     raw_text = "create a box, cut a circular hole through it, export as STEP"
     unlock_result = rd._tool_load_capability({"domain": "freecad_full"}, None, None)
     assert unlock_result["ok"] is True
