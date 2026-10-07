@@ -4568,6 +4568,7 @@ def _tool_generate_2d_blueprint(args: dict[str, Any], _engine: Any, _cp: Any) ->
             page_size=str(args.get("page_size") or "A4"),
             filename=str(args.get("filename") or "").strip() or None,
             object_name=object_name,
+            include_dimensions=args.get("include_dimensions") is not False,
         )
     )
 
@@ -9668,7 +9669,13 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         return f"Exported {payload.get('target_count')} object(s) as {str(payload.get('format')).upper()} -> `{payload.get('path')}`."
     if call.tool_id == "generate_2d_blueprint":
         views = ", ".join(payload.get("views", []))
-        return f"Generated {str(payload.get('page_size')).upper()} blueprint ({views}) -> `{payload.get('path')}`."
+        sizes = "; ".join(
+            f"{d['view']} {d['width_mm']:g} x {d['height_mm']:g} mm" for d in payload.get("dimensions") or []
+        )
+        return (
+            f"Generated {str(payload.get('page_size')).upper()} blueprint ({views}) -> `{payload.get('path')}`."
+            + (f" Dimensioned: {sizes}." if sizes else "")
+        )
     if call.tool_id == "get_freecad_bounding_box":
         return (
             f"Bounding box: x=[{payload.get('x_min')}, {payload.get('x_max')}], "

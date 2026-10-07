@@ -126,15 +126,29 @@ def test_dispatch_tool_call_generate_2d_blueprint_unknown_object():
 # -- the real DXF -> PDF/SVG step (no FreeCAD) -----------------------------------
 
 
-def _write_part_dxf(path: Path) -> None:
+def _write_part_dxf(path: Path, layer: str = "0") -> None:
     """A stand-in for a TechDraw page: a 100x50 outline with a hole, in the
-    default (ACI 7) layer color TechDraw exports with."""
+    default (ACI 7) layer color TechDraw exports with. TechDraw puts each
+    view on its own ``View<Name>`` layer; geometry on layer "0" belongs to no
+    view, so it gets no dimension callouts."""
     ezdxf = pytest.importorskip("ezdxf")
     doc = ezdxf.new()
+    if layer not in doc.layers:
+        doc.layers.add(layer)
     msp = doc.modelspace()
-    msp.add_lwpolyline([(40, 60), (140, 60), (140, 110), (40, 110)], close=True)
-    msp.add_circle((90, 85), 12)
+    msp.add_lwpolyline([(40, 60), (140, 60), (140, 110), (40, 110)], close=True, dxfattribs={"layer": layer})
+    msp.add_circle((90, 85), 12, dxfattribs={"layer": layer})
     doc.saveas(path)
+
+
+def _pdf_text(pdf: bytes) -> list[str]:
+    """Each text run in the PDF's content. Matplotlib's TrueType (fonttype 42)
+    runs are TJ arrays of 2-byte strings, e.g. [ (\\x001) 0.58 (\\x000) ] TJ."""
+    runs = []
+    for array in re.findall(rb"\[(.*?)\]\s*TJ", _pdf_content(pdf), re.S):
+        chars = b"".join(re.findall(rb"\((.*?)(?<!\\)\)", array, re.S))
+        runs.append(chars.replace(b"\x00", b"").decode("latin-1"))
+    return runs
 
 
 def _pdf_content(pdf: bytes) -> bytes:
@@ -178,9 +192,10 @@ def test_dxf_renders_to_svg_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
     dxf = tmp_path / "page.dxf"
     _write_part_dxf(dxf)
-    svg_path = techdraw_export._render_dxf_to_svg(str(dxf), "bracket", (297.0, 210.0))
+    svg_path, sizes = techdraw_export._render_dxf_to_svg(str(dxf), "bracket", (297.0, 210.0))
     svg = svg_path.read_text(encoding="utf-8")
     assert svg_path.suffix == ".svg" and "<path" in svg
+    assert sizes == [] and "<text" not in svg  # layer "0" is not a view: nothing to dimension
     root = re.search(r'<svg[^>]*width="297mm" height="210mm" viewBox="0 0 ([\d.]+) ([\d.]+)"', svg)
     assert root, svg[:300]
     per_mm_x, per_mm_y = float(root[1]) / 297.0, float(root[2]) / 210.0
@@ -193,6 +208,81 @@ def test_dxf_renders_to_svg_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert y / per_mm_y == pytest.approx(210 - 60, abs=0.01)
     assert width / per_mm_x == pytest.approx(100, abs=0.01)
     assert height / per_mm_y == pytest.approx(50, abs=0.01)
+
+
+# -- dimension callouts -----------------------------------------------------------------
+
+
+def _svg_texts(svg: str) -> dict[str, tuple[float, float, bool]]:
+    """{label: (x, y, rotated)} for every <text> element, in viewBox units."""
+    return {
+        m["text"]: (float(m["x"]), float(m["y"]), "rotate(" in m["attrs"])
+        for m in re.finditer(r'<text x="(?P<x>[\d.]+)" y="(?P<y>[\d.]+)"(?P<attrs>[^>]*)>(?P<text>[^<]*)</text>', svg)
+    }
+
+
+def test_view_gets_width_and_height_callouts_as_real_text_in_svg_and_pdf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("matplotlib")
+    monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
+    dxf = tmp_path / "page.dxf"
+    _write_part_dxf(dxf, layer="ViewFront")  # the 100x50 outline at (40, 60) mm
+
+    svg_path, sizes = techdraw_export._render_dxf_to_svg(str(dxf), "bracket", (297.0, 210.0))
+    pdf = techdraw_export._render_dxf_to_pdf(str(dxf), "bracket", (297.0, 210.0)).read_bytes()
+
+    assert sizes == [{"view": "Front", "width_mm": 100.0, "height_mm": 50.0}]
+    svg = svg_path.read_text(encoding="utf-8")
+    per_mm = float(re.search(r'viewBox="0 0 ([\d.]+)', svg)[1]) / 297.0
+    texts = _svg_texts(svg)
+    assert set(texts) == {"100 mm", "50 mm"}
+    # Width label centred under the outline, outside it; height label centred
+    # to its left, rotated. (SVG y runs down: page y = 210 - svg y.)
+    x, y, rotated = texts["100 mm"]
+    assert x / per_mm == pytest.approx(90, abs=0.01) and 210 - y / per_mm < 60 and not rotated
+    x, y, rotated = texts["50 mm"]
+    assert x / per_mm < 40 and 210 - y / per_mm == pytest.approx(85, abs=0.01) and rotated
+    assert 'fill="#000000"' in svg
+
+    assert pdf.startswith(b"%PDF-") and b"/ToUnicode" in pdf  # searchable text
+    assert sorted(_pdf_text(pdf)) == ["100 mm", "50 mm"]
+
+
+def test_include_dimensions_false_renders_exactly_the_bare_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("matplotlib")
+    monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
+    view_dxf, bare_dxf = tmp_path / "view.dxf", tmp_path / "bare.dxf"
+    _write_part_dxf(view_dxf, layer="ViewFront")
+    _write_part_dxf(bare_dxf)  # layer "0": no view, so the renderers add nothing
+
+    off_svg, sizes = techdraw_export._render_dxf_to_svg(str(view_dxf), "off", (297.0, 210.0), include_dimensions=False)
+    bare_svg, _ = techdraw_export._render_dxf_to_svg(str(bare_dxf), "bare", (297.0, 210.0))
+    on_svg, _ = techdraw_export._render_dxf_to_svg(str(view_dxf), "on", (297.0, 210.0))
+    off_pdf = techdraw_export._render_dxf_to_pdf(str(view_dxf), "off", (297.0, 210.0), include_dimensions=False)
+    bare_pdf = techdraw_export._render_dxf_to_pdf(str(bare_dxf), "bare", (297.0, 210.0))
+
+    assert sizes == []
+    assert off_svg.read_text(encoding="utf-8") == bare_svg.read_text(encoding="utf-8")
+    assert _pdf_content(off_pdf.read_bytes()) == _pdf_content(bare_pdf.read_bytes())
+    assert _pdf_text(off_pdf.read_bytes()) == []
+    # The callouts' own lines (dimension, extension and arrow strokes) are extra paths.
+    assert on_svg.read_text(encoding="utf-8").count("<path") > off_svg.read_text(encoding="utf-8").count("<path")
+
+
+def test_isometric_view_is_not_dimensioned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
+    dxf = tmp_path / "page.dxf"
+    _write_part_dxf(dxf, layer="ViewIsometric")
+    svg_path, sizes = techdraw_export._render_dxf_to_svg(str(dxf), "iso", (297.0, 210.0))
+    assert sizes == [] and "<text" not in svg_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(("value", "label"), [(100.0, "100 mm"), (50.004, "50 mm"), (12.3456, "12.35 mm"), (0.5, "0.5 mm")])
+def test_dimension_labels_round_to_two_decimals(value: float, label: str) -> None:
+    assert techdraw_export._format_mm(value) == label
 
 
 def test_pipeline_turns_the_freecad_dxf_into_pdf_and_svg_and_cleans_up(
@@ -226,6 +316,42 @@ def test_pipeline_turns_the_freecad_dxf_into_pdf_and_svg_and_cleans_up(
     assert "resolve_object(doc, 'Plate')" in seen["script"]
     assert "not o.InList" not in seen["script"]
     assert not seen["dxf"].exists(), "the temporary DXF must be deleted"
+
+
+@pytest.mark.parametrize("include_dimensions", [True, False])
+def test_pipeline_reports_each_dimensioned_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_path: str, include_dimensions: bool
+) -> None:
+    pytest.importorskip("matplotlib")
+    from dana.core import react_dispatch as rd
+    from dana.tools.schema import ToolCall
+
+    monkeypatch.delenv("DANA_OS_DRY_RUN")
+    monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
+    seen: dict[str, str] = {}
+
+    def fake_freecad(script: str, **_kw: Any) -> dict[str, Any]:
+        seen["script"] = script
+        _write_part_dxf(Path(re.search(r"writeDXFPage\(page, '([^']+)'\)", script)[1]), layer="ViewTop")
+        return {"ok": True, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(techdraw_export, "_run_freecad_script", fake_freecad)
+    result = json.loads(
+        generate_2d_blueprint(existing_path, views=["Top"], object_name="Plate", include_dimensions=include_dimensions)
+    )
+
+    assert result["ok"] is True, result
+    # Pinned to 1:1, so the measured DXF extents are the part's real millimetres.
+    assert 'view.ScaleType = "Custom"' in seen["script"] and "view.Scale = 1.0" in seen["script"]
+    summary = rd.summarize_result(
+        ToolCall(tool_id="generate_2d_blueprint", arguments={}), rd.ToolResult("generate_2d_blueprint", True, result, "", 0)
+    )
+    if include_dimensions:
+        assert result["dimensions"] == [{"view": "Top", "width_mm": 100.0, "height_mm": 50.0}]
+        assert "Top 100 x 50 mm" in summary
+    else:
+        assert result["dimensions"] == []
+        assert "Dimensioned" not in summary
 
 
 def test_pipeline_reports_a_freecad_failure_without_rendering(

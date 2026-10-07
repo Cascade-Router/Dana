@@ -25,6 +25,7 @@ from dana.platform.mock import MockControlPlane, MockFreeCADEngine
 from dana.plugins.hardware import printer_tools
 from dana.plugins.hardware.moonraker_client import MoonrakerClient, MoonrakerError
 from dana.plugins.hardware.printer_tools import dispatch_to_printer, printer_base_url
+from dana.plugins.hardware.slicer import BINARY_GCODE_MAGIC
 from dana.plugins.os import file_system
 from dana.tools.schema import ToolCall
 
@@ -332,6 +333,18 @@ def test_file_must_be_existing_gcode_inside_the_workspace(gcode: Path, make: Any
     with mock.patch.object(requests.Session, "request") as request:
         result = dispatch_to_printer(PRINTER, str(target))
     assert result["ok"] is False and result["stage"] == "validate" and message in result["error"]
+    request.assert_not_called()
+
+
+@pytest.mark.parametrize("filename", ["bracket.bgcode", "bracket_sliced.gcode"])
+def test_binary_gcode_is_refused_before_contacting_the_printer(gcode: Path, filename: str) -> None:
+    """By extension, and by content: a binary-profile slice can sit in a .gcode file."""
+    target = gcode.parent / filename
+    target.write_bytes(BINARY_GCODE_MAGIC + b"\x01\x00\x00\x00" + b"\x00" * 32)
+    with mock.patch.object(requests.Session, "request") as request:
+        result = dispatch_to_printer(PRINTER, str(target))
+    assert result["ok"] is False and result["stage"] == "validate"
+    assert "Klipper requires text (ASCII) .gcode" in result["error"]
     request.assert_not_called()
 
 

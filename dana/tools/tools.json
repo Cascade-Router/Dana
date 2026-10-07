@@ -1596,7 +1596,7 @@
     {
       "id": "generate_2d_blueprint",
       "read_only": true,
-      "description_en": "Projects clean orthographic (Front/Top/Right) and/or Isometric views of a completed object onto a standard drawing page and exports a PDF — a professional 2D blueprint, not dimensioned (no auto-dimensioning yet, geometry only). Use this once a part or assembly is finished, to hand off a standard technical drawing. Read-only.",
+      "description_en": "Projects clean orthographic (Front/Top/Right) and/or Isometric views of a completed object onto a standard drawing page and exports a PDF (plus an SVG) at 1:1 — a professional 2D blueprint. Each orthographic view (Front/Top/Right) gets its overall width and height dimensioned in mm (isometric views are not dimensioned), and the result's 'dimensions' lists those measurements per view; no feature-level dimensions (holes, offsets). Use this once a part or assembly is finished, to hand off a standard technical drawing. Read-only.",
       "parameters": [
         {
           "name": "object_name",
@@ -1626,6 +1626,12 @@
           "type": "string",
           "required": false,
           "description_en": "Output PDF name, without extension. Defaults to the object's own name."
+        },
+        {
+          "name": "include_dimensions",
+          "type": "boolean",
+          "required": false,
+          "description_en": "Add the overall width/height dimension callouts to each orthographic view. Default true; false gives the bare projected outlines."
         }
       ]
     },
@@ -2129,7 +2135,7 @@
           "name": "gcode_filepath",
           "type": "string",
           "required": true,
-          "description_en": "Path to the .gcode/.gco/.g/.bgcode file, inside the workspace or a mounted directory."
+          "description_en": "Path to the .gcode/.gco/.g file, inside the workspace or a mounted directory. Must be text G-code: Prusa binary G-code (.bgcode) is refused, since Klipper can only print text G-code."
         }
       ]
     },

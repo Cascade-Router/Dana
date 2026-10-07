@@ -34,9 +34,14 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from dana.plugins.hardware.moonraker_client import DEFAULT_PORT, MoonrakerClient, MoonrakerError
+from dana.plugins.hardware.slicer import BINARY_GCODE_MAGIC
 from dana.plugins.os.file_system import PathEscapeError, resolve_sandboxed_path
 
-GCODE_SUFFIXES = frozenset({".gcode", ".gco", ".g", ".bgcode"})
+GCODE_SUFFIXES = frozenset({".gcode", ".gco", ".g"})
+_BINARY_GCODE_ERROR = (
+    "dispatch_to_printer: {name} is Prusa binary G-code (.bgcode); Klipper requires text (ASCII) .gcode. "
+    "Re-slice with binary G-code turned off in the slicer profile (binary_gcode = 0)."
+)
 
 
 class PrinterAddressError(ValueError):
@@ -118,6 +123,8 @@ def dispatch_to_printer(
         path = resolve_sandboxed_path(gcode_filepath, allowed_mounts)
     except PathEscapeError as exc:
         return {"ok": False, "stage": "validate", "error": f"dispatch_to_printer: {exc}"}
+    if path.suffix.lower() == ".bgcode":
+        return {"ok": False, "stage": "validate", "error": _BINARY_GCODE_ERROR.format(name=path.name)}
     if path.suffix.lower() not in GCODE_SUFFIXES:
         return {
             "ok": False,
@@ -126,6 +133,10 @@ def dispatch_to_printer(
         }
     if not path.is_file():
         return {"ok": False, "stage": "validate", "error": f"dispatch_to_printer: no such file: {path}"}
+    # Content, not just the name: a binary-profile slice can sit in a .gcode file.
+    with path.open("rb") as f:
+        if f.read(len(BINARY_GCODE_MAGIC)) == BINARY_GCODE_MAGIC:
+            return {"ok": False, "stage": "validate", "error": _BINARY_GCODE_ERROR.format(name=path.name)}
 
     client = client or MoonrakerClient(base_url, _moonraker_api_key(api_keys))
 

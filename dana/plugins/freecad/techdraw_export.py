@@ -2,9 +2,13 @@
 a completed 3D object onto a standard drawing-page layout and exports a PDF,
 via FreeCAD's TechDraw workbench.
 
-No auto-dimensioning here by design (scripted TechDraw dimensioning is
-brittle) — this is purely "project the geometry cleanly," matching the
-directive's explicit scope.
+No TechDraw dimension objects (scripted TechDraw dimensioning is brittle).
+Instead, each orthographic view gets overall width/height callouts added
+after export, measured from that view's own geometry in the DXF (TechDraw
+puts each view on its own ``View<Name>`` layer, at scale 1, in page
+millimetres), so the numbers are the part's real size. Isometric views get
+none: their extents aren't part dimensions. ``include_dimensions=False``
+gives the bare projection.
 
 Headless PDF export turned out to be the hard part: TechDraw's PDF/SVG page
 writers (``TechDrawGui.exportPageAsPdf``/``exportPageAsSvg``) only exist in
@@ -27,8 +31,10 @@ tooling, not a cross-platform primitive.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +101,9 @@ for name, direction, xdirection, fx, fy in {view_specs!r}:
     view.Source = [obj]
     view.Direction = App.Vector(*direction)
     view.XDirection = App.Vector(*xdirection)
+    # 1:1 always: the dimension callouts read real millimetres off the DXF.
+    view.ScaleType = "Custom"
+    view.Scale = 1.0
     page.addView(view)
     view.X = fx * page.PageWidth
     view.Y = fy * page.PageHeight
@@ -105,10 +114,119 @@ print("{marker} path=" + {dxf_path!r})
 """
 
 
-def _render_dxf_to_pdf(dxf_path: str, name: str, page_size_mm: tuple[float, float]) -> Path:
+# Dimension callout geometry, in page millimetres.
+_DIM_LAYER = "Dimensions"
+_DIM_OFFSET_MM = 8.0  # geometry edge -> dimension line
+_DIM_EXT_GAP_MM = 1.5  # gap between geometry and extension line
+_DIM_EXT_OVERSHOOT_MM = 2.0  # extension line past the dimension line
+_DIM_ARROW_MM = 2.5
+_DIM_TEXT_MM = 3.5
+_DIM_TEXT_GAP_MM = 1.0  # dimension line -> near edge of its label
+_ORTHO_VIEWS = ("Front", "Top", "Right")
+
+_Point = tuple[float, float]
+_Segment = tuple[_Point, _Point]
+
+
+@dataclass(frozen=True)
+class _Label:
+    x: float
+    y: float
+    text: str
+    vertical: bool
+
+
+@dataclass(frozen=True)
+class _Callouts:
+    sizes: list[dict[str, Any]]  # [{"view", "width_mm", "height_mm"}]
+    segments: list[_Segment]
+    labels: list[_Label]
+
+
+def _format_mm(value: float) -> str:
+    """Rounded to 2 decimals, trailing zeros dropped: 100.0 -> '100 mm'."""
+    return f"{value:.2f}".rstrip("0").rstrip(".") + " mm"
+
+
+def _arrow(tip: _Point, direction: _Point) -> list[_Segment]:
+    """Open arrowhead at ``tip`` pointing along unit vector ``direction``."""
+    dx, dy = direction
+    bx, by = -dx * _DIM_ARROW_MM, -dy * _DIM_ARROW_MM
+    sx, sy = -dy * _DIM_ARROW_MM * 0.3, dx * _DIM_ARROW_MM * 0.3
+    return [(tip, (tip[0] + bx + sx, tip[1] + by + sy)), (tip, (tip[0] + bx - sx, tip[1] + by - sy))]
+
+
+def _dimension_callouts(doc: Any) -> _Callouts:
+    """Overall width (below) and height (left) callouts for every
+    orthographic view present on ``doc``'s ``View<Name>`` layers."""
+    from ezdxf import bbox
+
+    msp = doc.modelspace()
+    sizes: list[dict[str, Any]] = []
+    segments: list[_Segment] = []
+    labels: list[_Label] = []
+    for view in _ORTHO_VIEWS:
+        box = bbox.extents(msp.query(f'*[layer=="View{view}"]'))
+        if not box.has_data:
+            continue
+        (x0, y0), (x1, y1) = box.extmin.vec2, box.extmax.vec2
+        width, height = x1 - x0, y1 - y0
+        sizes.append({"view": view, "width_mm": round(width, 2), "height_mm": round(height, 2)})
+
+        if width > 0:
+            yd = y0 - _DIM_OFFSET_MM
+            segments += [
+                ((x0, y0 - _DIM_EXT_GAP_MM), (x0, yd - _DIM_EXT_OVERSHOOT_MM)),
+                ((x1, y0 - _DIM_EXT_GAP_MM), (x1, yd - _DIM_EXT_OVERSHOOT_MM)),
+                ((x0, yd), (x1, yd)),
+                *_arrow((x0, yd), (-1.0, 0.0)),
+                *_arrow((x1, yd), (1.0, 0.0)),
+            ]
+            label_y = yd - _DIM_TEXT_GAP_MM - _DIM_TEXT_MM / 2
+            labels.append(_Label((x0 + x1) / 2, label_y, _format_mm(width), vertical=False))
+        if height > 0:
+            xd = x0 - _DIM_OFFSET_MM
+            segments += [
+                ((x0 - _DIM_EXT_GAP_MM, y0), (xd - _DIM_EXT_OVERSHOOT_MM, y0)),
+                ((x0 - _DIM_EXT_GAP_MM, y1), (xd - _DIM_EXT_OVERSHOOT_MM, y1)),
+                ((xd, y0), (xd, y1)),
+                *_arrow((xd, y0), (0.0, -1.0)),
+                *_arrow((xd, y1), (0.0, 1.0)),
+            ]
+            label_x = xd - _DIM_TEXT_GAP_MM - _DIM_TEXT_MM / 2
+            labels.append(_Label(label_x, (y0 + y1) / 2, _format_mm(height), vertical=True))
+    return _Callouts(sizes, segments, labels)
+
+
+def _add_callout_lines(doc: Any, callouts: _Callouts) -> None:
+    """Draw the callouts' lines into ``doc``, so both renderers draw the same
+    geometry (black, like the views, via ColorPolicy.BLACK). Labels are added
+    per renderer as real text instead: ezdxf renders DXF TEXT as glyph
+    outlines, which can't be searched or selected."""
+    if _DIM_LAYER not in doc.layers:
+        doc.layers.add(_DIM_LAYER)
+    msp = doc.modelspace()
+    for start, end in callouts.segments:
+        msp.add_line(start, end, dxfattribs={"layer": _DIM_LAYER})
+
+
+def _load_page(dxf_path: str, include_dimensions: bool) -> tuple[Any, _Callouts | None]:
+    """The exported DXF page, with dimension lines added if requested."""
+    import ezdxf
+
+    doc = ezdxf.readfile(dxf_path)
+    if not include_dimensions:
+        return doc, None
+    callouts = _dimension_callouts(doc)
+    _add_callout_lines(doc, callouts)
+    return doc, callouts
+
+
+def _render_dxf_to_pdf(
+    dxf_path: str, name: str, page_size_mm: tuple[float, float], include_dimensions: bool = True
+) -> Path:
     """Renders a TechDraw-exported DXF page to a PDF, sized to the page's
     real physical dimensions — a pure Python step, no FreeCAD involved."""
-    import ezdxf
     import matplotlib
 
     matplotlib.use("Agg")  # headless — never try to open a display/window
@@ -117,7 +235,7 @@ def _render_dxf_to_pdf(dxf_path: str, name: str, page_size_mm: tuple[float, floa
     from ezdxf.addons.drawing import matplotlib as ezdxf_matplotlib
     from ezdxf.addons.drawing.config import BackgroundPolicy, ColorPolicy, Configuration
 
-    doc = ezdxf.readfile(dxf_path)
+    doc, callouts = _load_page(dxf_path, include_dimensions)
     width_mm, height_mm = page_size_mm
     fig = plt.figure(figsize=(width_mm / 25.4, height_mm / 25.4))
     try:
@@ -147,6 +265,17 @@ def _render_dxf_to_pdf(dxf_path: str, name: str, page_size_mm: tuple[float, floa
         Frontend(RenderContext(doc), backend, config=render_config).draw_layout(doc.modelspace(), finalize=True)
         ax.set_xlim(0, width_mm)
         ax.set_ylim(0, height_mm)
+        for label in callouts.labels if callouts else ():
+            ax.text(
+                label.x,
+                label.y,
+                label.text,
+                fontsize=_DIM_TEXT_MM / 25.4 * 72,  # mm -> pt
+                color="black",
+                ha="center",
+                va="center",
+                rotation=90 if label.vertical else 0,
+            )
         _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
         out_path = _EXPORT_DIR / f"{_safe_name(name)}.pdf"
         # A retry/re-generation with the same name must never attempt to
@@ -157,13 +286,39 @@ def _render_dxf_to_pdf(dxf_path: str, name: str, page_size_mm: tuple[float, floa
         # guarantees this write always starts from a clean, unlocked state
         # regardless of what left the old one there.
         out_path.unlink(missing_ok=True)
-        fig.savefig(out_path)
+        # TrueType (42) instead of matplotlib's default Type 3 fonts, so the
+        # dimension labels can be searched and copied out of the PDF.
+        with matplotlib.rc_context({"pdf.fonttype": 42}):
+            fig.savefig(out_path)
     finally:
         plt.close(fig)
     return out_path
 
 
-def _render_dxf_to_svg(dxf_path: str, name: str, page_size_mm: tuple[float, float]) -> Path:
+def _svg_labels(svg_text: str, labels: list[_Label], page_size_mm: tuple[float, float]) -> str:
+    """``labels`` appended to ezdxf's SVG as real ``<text>`` elements. Its
+    viewBox maps the page with one uniform scale and y pointing down, so the
+    page-mm point (x, y) is (x * s, (page_height - y) * s)."""
+    from xml.sax.saxutils import escape
+
+    m = re.search(r'viewBox="0 0 ([0-9.]+) ([0-9.]+)"', svg_text)
+    if not m or not labels:
+        return svg_text
+    scale = float(m.group(1)) / page_size_mm[0]
+    elements = []
+    for label in labels:
+        x, y = label.x * scale, (page_size_mm[1] - label.y) * scale
+        rotate = f' transform="rotate(-90 {x:.0f} {y:.0f})"' if label.vertical else ""
+        elements.append(
+            f'<text x="{x:.0f}" y="{y:.0f}" font-size="{_DIM_TEXT_MM * scale:.0f}" font-family="sans-serif" '
+            f'fill="#000000" text-anchor="middle" dominant-baseline="central"{rotate}>{escape(label.text)}</text>'
+        )
+    return svg_text.replace("</svg>", '<g class="dimensions">' + "".join(elements) + "</g></svg>", 1)
+
+
+def _render_dxf_to_svg(
+    dxf_path: str, name: str, page_size_mm: tuple[float, float], include_dimensions: bool = True
+) -> tuple[Path, list[dict[str, Any]]]:
     """Renders a TechDraw-exported DXF page to SVG — same pure-Python,
     no-FreeCAD step as ``_render_dxf_to_pdf`` above (headless SVG export via
     FreeCAD's own ``TechDrawGui.exportPageAsSvg`` needs a live Qt
@@ -174,14 +329,16 @@ def _render_dxf_to_svg(dxf_path: str, name: str, page_size_mm: tuple[float, floa
     — ``Frontend.draw_layout`` drives exactly one backend per call, by
     ezdxf's own API shape, so each output format needs its own render pass
     over the same DXF.
+
+    Also returns the overall size of each dimensioned view (empty without
+    dimensions).
     """
-    import ezdxf
     from ezdxf.addons.drawing import Frontend, RenderContext, layout
     from ezdxf.addons.drawing.config import BackgroundPolicy, ColorPolicy, Configuration
     from ezdxf.addons.drawing.svg import SVGBackend
     from ezdxf.math import BoundingBox2d
 
-    doc = ezdxf.readfile(dxf_path)
+    doc, callouts = _load_page(dxf_path, include_dimensions)
     width_mm, height_mm = page_size_mm
     backend = SVGBackend()
     # Same black-on-white forcing as _render_dxf_to_pdf — TechDraw's native
@@ -200,6 +357,8 @@ def _render_dxf_to_svg(dxf_path: str, name: str, page_size_mm: tuple[float, floa
         settings=layout.Settings(fit_page=False, scale=1.0),
         render_box=BoundingBox2d([(0.0, 0.0), (width_mm, height_mm)]),
     )
+    if callouts:
+        svg_text = _svg_labels(svg_text, callouts.labels, page_size_mm)
 
     _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = _EXPORT_DIR / f"{_safe_name(name)}.svg"
@@ -207,7 +366,7 @@ def _render_dxf_to_svg(dxf_path: str, name: str, page_size_mm: tuple[float, floa
     # function's comment for the exact failure this prevents.
     out_path.unlink(missing_ok=True)
     out_path.write_text(svg_text, encoding="utf-8")
-    return out_path
+    return out_path, callouts.sizes if callouts else []
 
 
 def generate_2d_blueprint(
@@ -216,10 +375,14 @@ def generate_2d_blueprint(
     page_size: str = "A4",
     filename: str | None = None,
     object_name: str | None = None,
+    include_dimensions: bool = True,
 ) -> str:
     """Projects orthographic (Front/Top/Right) and/or Isometric views of the
-    object in ``source_path`` onto a standard drawing page and exports a
-    PDF. No auto-dimensioning — clean projected geometry only.
+    object in ``source_path`` onto a standard drawing page and exports a PDF
+    and an SVG at 1:1. With ``include_dimensions`` (the default) each
+    orthographic view gets its overall width and height dimensioned in mm,
+    and the result's ``dimensions`` lists them per view; ``False`` gives the
+    bare projection.
 
     ``object_name`` picks the object inside ``source_path`` (by Name, then
     Label, then case-insensitively, like the engine's other tools). Every
@@ -300,12 +463,14 @@ def generate_2d_blueprint(
             return _error(f"generate_2d_blueprint failed: {result['error']}")
 
         try:
-            pdf_path = _render_dxf_to_pdf(dxf_path, resolved_name, _PAGE_SIZES_MM[size_key])
+            pdf_path = _render_dxf_to_pdf(dxf_path, resolved_name, _PAGE_SIZES_MM[size_key], include_dimensions)
         except Exception as exc:  # noqa: BLE001 — surface as a normal tool failure, not a crash
             return _error(f"generate_2d_blueprint: DXF->PDF conversion failed: {exc}")
 
         try:
-            svg_path = _render_dxf_to_svg(dxf_path, resolved_name, _PAGE_SIZES_MM[size_key])
+            svg_path, dimensions = _render_dxf_to_svg(
+                dxf_path, resolved_name, _PAGE_SIZES_MM[size_key], include_dimensions
+            )
         except Exception as exc:  # noqa: BLE001 — surface as a normal tool failure, not a crash
             return _error(f"generate_2d_blueprint: DXF->SVG conversion failed: {exc}")
     finally:
@@ -315,7 +480,12 @@ def generate_2d_blueprint(
             pass
 
     return _ok(
-        name=resolved_name, views=requested, page_size=size_key, path=str(pdf_path), svg_path=str(svg_path)
+        name=resolved_name,
+        views=requested,
+        page_size=size_key,
+        path=str(pdf_path),
+        svg_path=str(svg_path),
+        dimensions=dimensions,
     )
 
 

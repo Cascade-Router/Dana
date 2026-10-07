@@ -50,7 +50,7 @@ def captured_dxf(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     seen: dict[str, Any] = {}
     render = techdraw_export._render_dxf_to_pdf
 
-    def spy(dxf_path: str, name: str, page_size_mm: tuple[float, float]) -> Path:
+    def spy(dxf_path: str, name: str, page_size_mm: tuple[float, float], include_dimensions: bool = True) -> Path:
         from ezdxf import bbox
 
         doc = ezdxf.readfile(dxf_path)
@@ -58,7 +58,7 @@ def captured_dxf(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         seen["size"] = (extents.size.x, extents.size.y)
         seen["extmin"] = (extents.extmin.x, extents.extmin.y)
         seen["extmax"] = (extents.extmax.x, extents.extmax.y)
-        return render(dxf_path, name, page_size_mm)
+        return render(dxf_path, name, page_size_mm, include_dimensions)
 
     monkeypatch.setattr(techdraw_export, "_render_dxf_to_pdf", spy)
     return seen
@@ -96,3 +96,29 @@ def test_the_named_object_is_drawn_not_the_first_one_in_the_document(captured_dx
     # (and tiny). Both include the A4 template frame only if TechDraw exports
     # it, so compare the drawn geometry's aspect, not its absolute size.
     assert width > 2 * height, f"drew a {width:.1f} x {height:.1f} view — not WidePlate's top"
+
+
+def test_orthographic_views_are_dimensioned_with_the_parts_real_size() -> None:
+    """A 100 x 50 x 20 box: Front shows length x height, Top length x width,
+    Right width x height. The isometric view gets no callouts."""
+    import re
+
+    box = _ok(engine.create_box(100, 50, 20, name="Block"))
+    result = _ok(techdraw_export.generate_2d_blueprint(box["path"], filename="block", object_name="Block"))
+
+    assert result["dimensions"] == [
+        {"view": "Front", "width_mm": 100.0, "height_mm": 20.0},
+        {"view": "Top", "width_mm": 100.0, "height_mm": 50.0},
+        {"view": "Right", "width_mm": 50.0, "height_mm": 20.0},
+    ]
+    svg = Path(result["svg_path"]).read_text(encoding="utf-8")
+    labels = sorted(re.findall(r"<text[^>]*>([^<]*)</text>", svg))
+    assert labels == sorted(["100 mm", "20 mm", "100 mm", "50 mm", "50 mm", "20 mm"])
+    assert Path(result["path"]).read_bytes().startswith(b"%PDF-")
+
+    bare = _ok(
+        techdraw_export.generate_2d_blueprint(
+            box["path"], filename="block_bare", object_name="Block", include_dimensions=False
+        )
+    )
+    assert bare["dimensions"] == [] and "<text" not in Path(bare["svg_path"]).read_text(encoding="utf-8")
