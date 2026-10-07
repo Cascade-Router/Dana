@@ -2140,6 +2140,96 @@ def _format_object_registry_overlay(session_id: str | None = None) -> str:
     return f"Current Document Features: {names}"
 
 
+# Assembly state, per session: which parts each assembly holds and which of
+# them are anchored, mated (apply_assembly_constraint) or still floating, plus
+# declared kinematic joints. Recorded from SUCCESSFUL assembly tool calls in
+# dispatch_tool_call, the same way _OBJECT_PATH_REGISTRY is, so it mirrors the
+# DanaAnchored/DanaConstrained/DanaKinematicJoints state those calls wrote
+# into the session document without core importing the FreeCAD plugin.
+# {session_id: {assembly: {"members": [...], "anchored": set, "mated": {part: to},
+#                          "joints": {child: (parent, type)}}}}
+_ASSEMBLY_STATE_REGISTRY: dict[str, dict[str, dict[str, Any]]] = {}
+
+_ASSEMBLY_STATE_TOOL_IDS = frozenset(
+    {
+        "create_freecad_assembly",
+        "add_parts_to_assembly",
+        "anchor_assembly_root",
+        "apply_assembly_constraint",
+        "define_kinematic_joint",
+    }
+)
+
+
+def _assembly(name: str) -> dict[str, Any]:
+    assemblies = _ASSEMBLY_STATE_REGISTRY.setdefault(get_session_id(), {})
+    return assemblies.setdefault(name, {"members": [], "anchored": set(), "mated": {}, "joints": {}})
+
+
+def _record_assembly_call(tool_id: str, args: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Update this session's assembly state after a successful assembly call.
+    ``args`` are the resolved (post-redirect) arguments that actually ran."""
+    if tool_id == "create_freecad_assembly":
+        name = str(payload.get("name") or args.get("name") or "").strip()
+        if name:
+            _assembly(name)
+        return
+    assembly_name = str(args.get("assembly_name") or "").strip()
+    if not assembly_name:
+        return
+    asm = _assembly(assembly_name)
+
+    def member(part: Any) -> str:
+        part = str(part or "").strip()
+        if part and part not in asm["members"]:
+            asm["members"].append(part)
+        return part
+
+    if tool_id == "add_parts_to_assembly":
+        for part in args.get("part_names") or []:
+            member(part)
+    elif tool_id == "anchor_assembly_root":
+        part = member(args.get("part_name"))
+        asm["anchored"].add(part)
+        asm["mated"].pop(part, None)
+    elif tool_id == "apply_assembly_constraint":
+        member(args.get("part1_name"))
+        asm["mated"][member(args.get("part2_name"))] = str(args.get("part1_name") or "")
+    elif tool_id == "define_kinematic_joint":
+        child = member(args.get("child_link"))
+        asm["joints"][child] = (str(args.get("parent_link") or "base_link"), str(args.get("joint_type") or "fixed"))
+
+
+def _format_assembly_state(session_id: str | None = None) -> str:
+    """One line per assembly listing every member as anchored, mated to
+    another part, or floating (neither), plus its joint if one is declared.
+    ``""`` when the session has no assembly."""
+    sid = session_id if session_id is not None else get_session_id()
+    assemblies = _ASSEMBLY_STATE_REGISTRY.get(sid) or {}
+    if not assemblies:
+        return ""
+    lines = []
+    for name, asm in assemblies.items():
+        parts = []
+        for part in asm["members"]:
+            if part in asm["anchored"]:
+                status = "anchored"
+            elif part in asm["mated"]:
+                status = f"mated to {asm['mated'][part]}"
+            else:
+                status = "FLOATING"
+            if part in asm["joints"]:
+                parent, joint_type = asm["joints"][part]
+                status += f", {joint_type} joint to {parent}"
+            parts.append(f"{part} ({status})")
+        lines.append(f"{name}: {', '.join(parts) if parts else 'no parts yet'}")
+    return (
+        "\n=== ASSEMBLIES ===\n" + "\n".join(lines) + "\n==================\n"
+        "FLOATING parts have no position relative to the rest yet: place them with "
+        "apply_assembly_constraint (or anchor one root part) before joints or export."
+    )
+
+
 # Topological Lineage Graph (TLG) — Phase 5: replaces the flat
 # active_solid/consumed-ancestors scheme (Phase 4) with a real DAG the
 # frontend's DAG Monitor can render directly, and which derives "is this
@@ -7396,6 +7486,9 @@ def build_system_prompt(
     # function's docstring for how this differs from plan_section above.
     # Deliberately the LAST thing appended, so it's the freshest text in
     # the model's context on every turn.
+    assembly_state = _format_assembly_state(session_id)
+    if assembly_state:
+        lines.append(assembly_state)
     active_plan = _get_active_plan(session_id)
     if active_plan:
         lines.append(
@@ -9440,6 +9533,8 @@ def dispatch_tool_call(
         if isinstance(payload, dict) and payload.get("name") and payload.get("path"):
             _object_registry()[str(payload["name"])] = str(payload["path"])
             _record_topology_node(str(payload["name"]), input_object_names)
+        if call.tool_id in _ASSEMBLY_STATE_TOOL_IDS and isinstance(payload, dict):
+            _record_assembly_call(call.tool_id, resolved_arguments, payload)
         if topology_warning and isinstance(payload, dict) and payload.get("ok", True):
             existing = payload.get("message")
             payload["message"] = f"{existing} {topology_warning}".strip() if existing else topology_warning

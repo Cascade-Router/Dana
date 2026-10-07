@@ -301,6 +301,15 @@ def _reset_measurement_gate_state():
 
 
 @pytest.fixture(autouse=True)
+def _reset_assembly_state():
+    """Same safety net for ``_ASSEMBLY_STATE_REGISTRY`` (per-session assembly
+    membership/mate/joint state), so one test's assemblies never show up in
+    a later test's system prompt."""
+    yield
+    _react_dispatch_module._ASSEMBLY_STATE_REGISTRY.clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_truncation_nudge_state():
     """Global safety net, same rationale as ``_reset_measurement_gate_state``
     above: the Truncation Recovery Nudge's ``_OUTPUT_TRUNCATED_BY_SESSION``
