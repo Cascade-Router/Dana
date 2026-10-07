@@ -1,11 +1,6 @@
-"""Speech (STT + TTS text) state split out of ``dana.core.shared_state``.
-
-``dana.audio.stt`` and the TTS text sanitizers in ``dana.audio.tts_manager``
-need only these names. Importing them from here instead
-of ``shared_state`` keeps the live server from loading the legacy voice/vision
-stack (vault daemon client, YOLO agents) just to transcribe or speak.
-``shared_state`` re-exports the shared objects, so legacy readers of
-``state.stop_event`` etc. still see the same instances.
+"""Shared speech state and text filters for ``dana.audio.stt`` (the Whisper
+bundle and its load status, the shutdown event, hallucination filters) and the
+TTS text sanitizers in ``dana.audio.tts_manager`` (markdown/code-fence regexes).
 """
 
 from __future__ import annotations

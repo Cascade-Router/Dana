@@ -42,12 +42,10 @@ trimesh>=4.0.0
 # Python 3.10 CI: typing.NotRequired needs typing_extensions
 typing_extensions>=4.8.0
 sounddevice==0.5.5
-soundfile==0.14.0
 piper-tts==1.4.2
-# Stage 8.1 — multi-voice mixer + Jason OS TTS (no VRAM)
+# Offline OS voices: per-agent reply voices and the fallback when Piper is unavailable (no VRAM)
 pyttsx3==2.99
 onnxruntime>=1.20.0,<2.0.0
-# Silero VAD loads via torch.hub (snakers4/silero-vad); no webrtcvad.
 # Cap below 81 — pkg_resources / legacy plugin paths still used in places.
 setuptools==80.9.0
 mss==10.2.0

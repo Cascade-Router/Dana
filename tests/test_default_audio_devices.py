@@ -6,10 +6,8 @@ from typing import Optional
 from unittest.mock import MagicMock, patch
 
 from dana.audio.devices import (
-    SYSTEM_DEFAULT_LABEL,
     get_default_audio_devices,
     resolve_live_input_device,
-    stream_device_kwargs,
 )
 
 
@@ -57,9 +55,6 @@ def test_get_default_audio_devices_tolerates_query_failure() -> None:
     assert din is None and dout is None
 
 
-def test_stream_device_kwargs_omits_none() -> None:
-    assert stream_device_kwargs(None) == {}
-    assert stream_device_kwargs(3) == {"device": 3}
 
 
 def test_resolve_live_input_device_keeps_live_default() -> None:
@@ -121,5 +116,3 @@ def test_resolve_live_input_device_quiet_when_none_live() -> None:
     assert reason == "quiet_mic"
 
 
-def test_system_default_label_constant() -> None:
-    assert SYSTEM_DEFAULT_LABEL == "System Default (Auto)"

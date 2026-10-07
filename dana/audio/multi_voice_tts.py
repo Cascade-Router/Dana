@@ -10,16 +10,12 @@ from __future__ import annotations
 
 import os
 import tempfile
-import threading
 import wave
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 VoiceId = Literal["dana", "jason", "moa", "vision", "typist"]
 
-JASON_ANDON_LINE = (
-    "Operator failure detected. Resyncing workspace in background."
-)
 
 # Stage 8.8 — agent_id → voice profile (pitch/rate stand-ins for distinct personas).
 AGENT_VOICE_MAP: dict[str, str] = {
@@ -63,21 +59,6 @@ VOICE_RATES: dict[str, int] = {
     "typist": 188,
 }
 
-# GUI persona colors (Stage 8.5.2 transcript tags) — shared with Assistive Orb.
-PERSONA_COLORS: dict[str, str] = {
-    "jason": "#9c27b0",
-    "llama": "#0288d1",
-    "broker": "#0288d1",
-    "dana": "#0288d1",
-    "deepseek": "#d32f2f",
-    "moa": "#d32f2f",
-    "vision": "#388e3c",
-    "yolo": "#388e3c",
-    "florence": "#388e3c",
-    "typist": "#f57c00",
-    "ghost_typist": "#f57c00",
-    "default": "#00E676",
-}
 
 # Patch 8.3.1 — Piper is optional; ImportError → silent pyttsx3 fallback.
 PIPER_AVAILABLE = True
@@ -87,8 +68,6 @@ except ImportError:
     PIPER_AVAILABLE = False
     _DEFAULT_PIPER_ONNX = None  # type: ignore[assignment]
 
-_ACTIVE_AGENT_LOCK = threading.Lock()
-_ACTIVE_TTS_AGENT = "broker"
 
 
 def _log(msg: str) -> None:
@@ -131,40 +110,12 @@ def resolve_voice_id(agent_id: str | None) -> str:
     return "dana"
 
 
-def persona_color_for_agent(agent_id: str | None) -> str:
-    """Return GUI persona hex color for ``agent_id``."""
-    key = normalize_agent_id(agent_id)
-    if key in PERSONA_COLORS:
-        return PERSONA_COLORS[key]
-    voice = resolve_voice_id(key)
-    # Map voice → closest persona color.
-    voice_to_persona = {
-        "dana": "broker",
-        "jason": "jason",
-        "moa": "moa",
-        "vision": "vision",
-        "typist": "typist",
-    }
-    return PERSONA_COLORS.get(voice_to_persona.get(voice, "default"), PERSONA_COLORS["default"])
 
 
-def set_active_tts_agent(agent_id: str | None) -> str:
-    """Publish the agent currently speaking (orb pulse + routing)."""
-    global _ACTIVE_TTS_AGENT
-    resolved = normalize_agent_id(agent_id) or "broker"
-    with _ACTIVE_AGENT_LOCK:
-        _ACTIVE_TTS_AGENT = resolved
-    return resolved
 
 
-def get_active_tts_agent() -> str:
-    with _ACTIVE_AGENT_LOCK:
-        return _ACTIVE_TTS_AGENT
 
 
-def uses_receptionist_piper(agent_id: str | None) -> bool:
-    """True when playback should stay on the default Piper receptionist path."""
-    return resolve_voice_id(agent_id) == "dana"
 
 
 def synthesize_speech(
@@ -216,13 +167,6 @@ def synthesize_speech(
     return dest
 
 
-def synthesize_jason_andon_line(*, out_path: str | Path | None = None) -> Path:
-    """CTO Andon recovery utterance."""
-    return synthesize_speech(
-        JASON_ANDON_LINE,
-        voice_id="jason",
-        out_path=out_path,
-    )
 
 
 def _synthesize_piper(text: str, dest: Path) -> bool:
@@ -308,50 +252,5 @@ def _write_silence_wav(path: Path, *, duration_s: float = 1.0, rate: int = 22050
         wf.writeframes(b"\x00\x00" * n_frames)
 
 
-def write_tone_wav(
-    path: str | Path,
-    *,
-    duration_s: float = 1.0,
-    freq_hz: float = 440.0,
-    rate: int = 22050,
-    amplitude: float = 0.2,
-) -> Path:
-    """Utility for dry ducking demos (no TTS dependency)."""
-    import math
-    import struct
-
-    dest = Path(path)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    n = max(1, int(rate * float(duration_s)))
-    frames = bytearray()
-    for i in range(n):
-        sample = amplitude * math.sin(2.0 * math.pi * freq_hz * (i / rate))
-        frames += struct.pack("<h", int(max(-1.0, min(1.0, sample)) * 32767))
-    with wave.open(str(dest), "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(rate)
-        wf.writeframes(bytes(frames))
-    return dest
 
 
-def svg_logo_loader_notes() -> dict[str, Any]:
-    """Optional Stage 8.8 outline: how to load a static SVG onto the orb Canvas.
-
-    Tk Canvas has no native SVG. Compatible approaches (not wired by default):
-
-    1. ``svglib`` + ``reportlab`` → render SVG to a ``.png``, then
-       ``tk.PhotoImage`` / ``PIL.ImageTk`` onto the Canvas.
-    2. Pre-bake a circular logo PNG under ``dana/assets/`` and
-       ``canvas.create_image(...)`` inside ``AssistiveTouchOrb._draw_orb``.
-    3. Stage 8.9.9 default: LANCZOS PNG via ``dana.ui.logo`` + PhotoImage /
-       CTkImage; smooth Canvas polygons if the asset is missing.
-
-    Returns a small dict describing the preferred asset path convention.
-    """
-    return {
-        "preferred_asset": "assets/dana_logo.png",
-        "libraries": ("Pillow", "customtkinter"),
-        "canvas_api": "create_image(cx, cy, image=photo) / CTkImage",
-        "fallback": "smooth create_polygon mark (AssistiveTouchOrb._draw_smooth_mark)",
-    }

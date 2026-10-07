@@ -847,13 +847,11 @@ async def _speak_reply(websocket: WebSocket, text: str) -> None:
     way every other websocket session on this server shares.
 
     The import is deliberately deferred (not a top-level import) and
-    wrapped in the same broad except as the rest of this function: the
-    dana.audio package pulls in dana.core.shared_state, which has its own
-    pre-existing hard dependency on a diagnostics-only module not on
-    sys.path outside pytest's conftest. Importing eagerly at server-module
-    load time would take the whole server down at boot; VoiceService's own
-    lazy/guarded imports (see start_whisper_background_load) already work
-    around the same issue the same way.
+    wrapped in the same broad except as the rest of this function: speech
+    is optional, so a missing or broken TTS dependency (Piper, pyttsx3)
+    must cost this one reply its audio, never the server its boot, the
+    same way VoiceService guards its own lazy STT imports (see
+    start_whisper_background_load).
     """
     try:
         from dana.audio.multi_voice_tts import synthesize_speech

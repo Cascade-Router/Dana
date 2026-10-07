@@ -6,5 +6,3 @@
 
 torch==2.13.0+cu126
 torchvision==0.28.0+cu126
-# Silero hubconf imports torchaudio (cu126 latest published wheel lags torch 2.13).
-torchaudio==2.11.0+cu126

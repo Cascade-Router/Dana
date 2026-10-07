@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-SYSTEM_DEFAULT_LABEL = "System Default (Auto)"
 _FALLBACK_RATE = 16000
 _SKIP_NAME_TOKENS = ("mapper", "primary sound", "cable", "vb-audio")
 
@@ -59,11 +58,6 @@ def default_device_samplerate(kind: str = "input") -> Optional[int]:
     return None
 
 
-def stream_device_kwargs(device: Optional[int]) -> dict[str, Any]:
-    """Kwargs for InputStream/OutputStream: omit ``device`` when using OS default."""
-    if device is None:
-        return {}
-    return {"device": int(device)}
 
 
 def _input_samplerate(device: Optional[int]) -> int:

@@ -474,14 +474,8 @@ def prepare_audio_for_whisper(
     return audio.astype(np.float32, copy=False)
 
 
-def _whisper_initial_prompt_text() -> str:
-    """Deprecated: live STT no longer feeds initial_prompt into the decoder."""
-    return ""
 
 
-def _whisper_prompt_ids(processor, device) -> Optional[Any]:
-    """Always ``None`` — do not condition Whisper on prior text / ticket logs."""
-    return None
 
 
 def transcribe_audio(
