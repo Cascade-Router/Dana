@@ -2902,11 +2902,12 @@ def test_dispatch_hard_blocks_tool_belonging_to_a_different_pending_task() -> No
         control_plane,
     )
     assert result.ok is False
-    # Actionable: names the active task's declared tool and the ways forward.
-    message = result.message.lower()
-    assert "isn't task 1's declared tool" in message and "create_freecad_box" in message
-    assert "mark_task_completed" in message and "insert_task" in message
-    assert "out-of-order" in message
+    # Names the task that owns the tool, and how to finish the current one.
+    assert result.message.startswith(
+        "Execution blocked: 'perform_freecad_boolean' belongs to task 2 ('task two'). "
+        "Complete your current task 1 first: call ['create_freecad_box'], or mark_task_completed to advance."
+    ), result.message
+    assert len(result.message) <= 400  # digest_error truncates reasons beyond this
     # Never reached the engine -- the active task's own status is untouched.
     entry = rd._PLAN_STATE_REGISTRY[sid]
     tasks_by_id = {t["id"]: t for t in entry["tasks"]}

@@ -3297,6 +3297,28 @@ def _fsm_out_of_order_check(tool_id: str, session_id: str | None = None) -> str 
     # more verbose wording silently cut off well before reaching this last
     # sentence, so the one new actionable option (insert_before_task_id)
     # never actually reached the model. Every clause below earns its place.
+    owner = next(
+        (
+            t
+            for t in (entry.get("tasks") or [])
+            if t.get("id") != active["id"]
+            and t.get("status") != "done"
+            and tool_id in (t.get("expected_tool_ids") or frozenset())
+        ),
+        None,
+    )
+    if owner is not None:
+        # The tool is a LATER step of the plan, not a missing prerequisite:
+        # name that step, so the model knows it is running ahead rather than
+        # guessing whether to insert a new task.
+        description = str(owner.get("description") or "").strip()
+        if len(description) > 60:
+            description = description[:57] + "..."
+        return (
+            f"Execution blocked: '{tool_id}' belongs to task {owner['id']} ('{description}'). "
+            f"Complete your current task {active['id']} first: call {sorted(expected)}, or "
+            f"mark_task_completed to advance. No out-of-order execution."
+        )
     return (
         f"Execution blocked: '{tool_id}' isn't task {active['id']}'s declared tool "
         f"({sorted(expected)}). Call its own tool, or mark_task_completed to advance. If "

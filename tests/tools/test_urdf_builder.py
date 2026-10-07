@@ -103,3 +103,33 @@ def test_flat_star_multiple_roots_synthesizes_base_link(tmp_path) -> None:
         assert joint_el.get("type") == "fixed"
         assert joint_el.find("parent").get("link") == ROOT_LINK_NAME
         assert joint_el.find("child").get("link") in {"part_a", "part_b", "part_c"}
+
+
+def test_prismatic_travel_is_converted_from_mm_to_metres_and_revolute_left_in_radians(tmp_path) -> None:
+    """define_kinematic_joint takes a slider's travel in mm (its tool
+    description says so); URDF limits are metres. A 0..50 mm slider used to
+    be written as 0..50 m. Revolute limits are radians and stay as given."""
+    base = {"name": "base", "mesh_file": "meshes/base.stl", "origin_xyz": [0.0, 0.0, 0.0], "origin_rpy": [0.0, 0.0, 0.0]}
+    slider = {
+        "name": "slider", "mesh_file": "meshes/slider.stl", "origin_xyz": [0.0, 0.0, 25.0],
+        "origin_rpy": [0.0, 0.0, 0.0], "joint_parent": "base", "joint_type": "prismatic",
+        "joint_axis": [0.0, 0.0, 1.0], "limit_lower": 0.0, "limit_upper": 50.0,
+    }
+    arm = {
+        "name": "arm", "mesh_file": "meshes/arm.stl", "origin_xyz": [10.0, 0.0, 0.0],
+        "origin_rpy": [0.0, 0.0, 0.0], "joint_parent": "slider", "joint_type": "revolute",
+        "joint_axis": [0.0, 0.0, 1.0], "limit_lower": -1.57, "limit_upper": 1.57,
+    }
+    result = json.loads(export_assembly_parts_to_urdf("rig", [base, slider, arm], str(tmp_path)))
+    root = ET.parse(result["path"]).getroot()
+    joints = {j.get("name") or j.find("child").get("link"): j for j in root.findall("joint")}
+    by_child = {j.find("child").get("link"): j for j in joints.values()}
+
+    slide = by_child["slider"]
+    assert slide.get("type") == "prismatic"
+    assert float(slide.find("limit").get("lower")) == 0.0
+    assert float(slide.find("limit").get("upper")) == 0.05
+    assert slide.find("origin").get("xyz") == "0 0 0.025"  # origins were already mm -> m
+
+    turn = by_child["arm"]
+    assert (float(turn.find("limit").get("lower")), float(turn.find("limit").get("upper"))) == (-1.57, 1.57)

@@ -171,11 +171,11 @@ def _add_joint_kinematics(
     1 velocity — generic placeholders, not a real actuator's numbers; the
     unit is radians for a revolute joint but is just as arbitrary a
     placeholder (real URDF/SI meters, like every other length in this file
-    — see ``_MM_TO_M``'s own comment) for a prismatic one. Unlike
-    ``origin_xyz``, a caller-supplied ``limit_lower``/``limit_upper`` is
-    used exactly as given (there's no FreeCAD-native mm value to convert
-    from) — a caller wanting a prismatic joint's range to match this file's
-    now-meters convention passes it in meters already.
+    — see ``_MM_TO_M``'s own comment) for a prismatic one. A
+    caller-supplied ``limit_lower``/``limit_upper`` is written exactly as
+    given, so it must already be in URDF units (radians, or metres for a
+    prismatic joint): ``export_assembly_parts_to_urdf`` converts
+    define_kinematic_joint's millimetre slider travel before calling this.
     """
     if joint_type == "fixed":
         return
@@ -527,12 +527,20 @@ def export_assembly_parts_to_urdf(
         ET.SubElement(joint_el, "child", link=part_name)
         ET.SubElement(joint_el, "origin", xyz=_mm_xyz_str(origin), rpy=_rpy_str(rpy))
         axis = _xyz_tuple(part.get("joint_axis"), default=(0.0, 0.0, 1.0))
+        lower, upper = part.get("limit_lower"), part.get("limit_upper")
+        if joint_type == "prismatic":
+            # define_kinematic_joint takes a slider's travel in mm (its tool
+            # description says so, like every length the agent handles);
+            # URDF wants metres. Passed through unconverted, a 50 mm slider
+            # was exported as 50 m of travel.
+            lower = None if lower is None else float(lower) * _MM_TO_M
+            upper = None if upper is None else float(upper) * _MM_TO_M
         _add_joint_kinematics(
             joint_el,
             joint_type,
             axis,
-            part.get("limit_lower"),
-            part.get("limit_upper"),
+            lower,
+            upper,
             part.get("limit_effort"),
             part.get("limit_velocity"),
         )
