@@ -145,7 +145,7 @@ def test_runs_every_stage_in_order_and_stops_before_printing(monkeypatch: pytest
     ]
     assert recorder.calls[0][1] == {"assembly_name": "Kit", "material": "PETG"}
     assert result.payload["bom"]["materials"] == ["PETG"]
-    assert recorder.calls[3][1] == {"object_name": "Kit", "filename": "Kit_blueprint"}
+    assert recorder.calls[3][1] == {"object_name": "Kit", "filename": "Kit_blueprint", "scale": "auto"}
     assert recorder.calls[5][1]["printer_profile"] == "mk4_default"
     payload = result.payload
     assert payload["artifacts"] == {

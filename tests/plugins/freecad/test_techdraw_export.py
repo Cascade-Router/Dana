@@ -192,10 +192,10 @@ def test_dxf_renders_to_svg_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
     dxf = tmp_path / "page.dxf"
     _write_part_dxf(dxf)
-    svg_path, sizes = techdraw_export._render_dxf_to_svg(str(dxf), "bracket", (297.0, 210.0))
+    svg_path, sheet = techdraw_export._render_dxf_to_svg(str(dxf), "bracket", (297.0, 210.0))
     svg = svg_path.read_text(encoding="utf-8")
     assert svg_path.suffix == ".svg" and "<path" in svg
-    assert sizes == [] and "<text" not in svg  # layer "0" is not a view: nothing to dimension
+    assert sheet.dimensions == [] and "<text" not in svg  # layer "0" is not a view: nothing to dimension
     root = re.search(r'<svg[^>]*width="297mm" height="210mm" viewBox="0 0 ([\d.]+) ([\d.]+)"', svg)
     assert root, svg[:300]
     per_mm_x, per_mm_y = float(root[1]) / 297.0, float(root[2]) / 210.0
@@ -229,10 +229,10 @@ def test_view_gets_width_and_height_callouts_as_real_text_in_svg_and_pdf(
     dxf = tmp_path / "page.dxf"
     _write_part_dxf(dxf, layer="ViewFront")  # the 100x50 outline at (40, 60) mm
 
-    svg_path, sizes = techdraw_export._render_dxf_to_svg(str(dxf), "bracket", (297.0, 210.0))
+    svg_path, sheet = techdraw_export._render_dxf_to_svg(str(dxf), "bracket", (297.0, 210.0))
     pdf = techdraw_export._render_dxf_to_pdf(str(dxf), "bracket", (297.0, 210.0)).read_bytes()
 
-    assert sizes == [{"view": "Front", "width_mm": 100.0, "height_mm": 50.0}]
+    assert sheet.dimensions == [{"view": "Front", "width_mm": 100.0, "height_mm": 50.0}]
     svg = svg_path.read_text(encoding="utf-8")
     per_mm = float(re.search(r'viewBox="0 0 ([\d.]+)', svg)[1]) / 297.0
     texts = _svg_texts(svg)
@@ -258,13 +258,13 @@ def test_include_dimensions_false_renders_exactly_the_bare_projection(
     _write_part_dxf(view_dxf, layer="ViewFront")
     _write_part_dxf(bare_dxf)  # layer "0": no view, so the renderers add nothing
 
-    off_svg, sizes = techdraw_export._render_dxf_to_svg(str(view_dxf), "off", (297.0, 210.0), include_dimensions=False)
+    off_svg, sheet = techdraw_export._render_dxf_to_svg(str(view_dxf), "off", (297.0, 210.0), include_dimensions=False)
     bare_svg, _ = techdraw_export._render_dxf_to_svg(str(bare_dxf), "bare", (297.0, 210.0))
     on_svg, _ = techdraw_export._render_dxf_to_svg(str(view_dxf), "on", (297.0, 210.0))
     off_pdf = techdraw_export._render_dxf_to_pdf(str(view_dxf), "off", (297.0, 210.0), include_dimensions=False)
     bare_pdf = techdraw_export._render_dxf_to_pdf(str(bare_dxf), "bare", (297.0, 210.0))
 
-    assert sizes == []
+    assert sheet.dimensions == []
     assert off_svg.read_text(encoding="utf-8") == bare_svg.read_text(encoding="utf-8")
     assert _pdf_content(off_pdf.read_bytes()) == _pdf_content(bare_pdf.read_bytes())
     assert _pdf_text(off_pdf.read_bytes()) == []
@@ -276,8 +276,97 @@ def test_isometric_view_is_not_dimensioned(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
     dxf = tmp_path / "page.dxf"
     _write_part_dxf(dxf, layer="ViewIsometric")
-    svg_path, sizes = techdraw_export._render_dxf_to_svg(str(dxf), "iso", (297.0, 210.0))
-    assert sizes == [] and "<text" not in svg_path.read_text(encoding="utf-8")
+    svg_path, sheet = techdraw_export._render_dxf_to_svg(str(dxf), "iso", (297.0, 210.0))
+    assert sheet.dimensions == [] and "<text" not in svg_path.read_text(encoding="utf-8")
+
+
+# -- drawing scale --------------------------------------------------------------------
+
+_A4 = (297.0, 210.0)
+
+
+def _write_views_dxf(path: Path, length: float, width: float, height: float) -> None:
+    """What TechDraw writes at 1:1 for a length x width x height box: each view
+    a rectangle centred on its A4 layout slot, on its own View<Name> layer
+    (the isometric one approximated by its bounding rectangle)."""
+    ezdxf = pytest.importorskip("ezdxf")
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+    # True isometric projection of the box's bounding rectangle.
+    iso_w, iso_h = (length + width) * 0.7071, height * 0.8165 + (length + width) * 0.4082
+    for view, (w, h) in {"Front": (length, height), "Top": (length, width), "Right": (width, height),
+                         "Isometric": (iso_w, iso_h)}.items():
+        fx, fy = techdraw_export._VIEW_LAYOUT[view.lower()]["slot"]
+        cx, cy = fx * _A4[0], fy * _A4[1]
+        doc.layers.add(f"View{view}")
+        msp.add_lwpolyline(
+            [(cx - w / 2, cy - h / 2), (cx + w / 2, cy - h / 2), (cx + w / 2, cy + h / 2), (cx - w / 2, cy + h / 2)],
+            close=True,
+            dxfattribs={"layer": f"View{view}"},
+        )
+    doc.saveas(path)
+
+
+def test_auto_scale_shrinks_a_large_part_to_fit_and_labels_its_true_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ezdxf import bbox
+
+    monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
+    dxf = tmp_path / "page.dxf"
+    _write_views_dxf(dxf, 300, 200, 100)  # overflows A4 at 1:1
+
+    assert techdraw_export._load_page(str(dxf), _A4).fits_page is False  # the default 1:1
+    sheet = techdraw_export._load_page(str(dxf), _A4, scale="auto")
+
+    # The Top view's 200 mm depth plus its callouts limits it to ~0.27, so 1:4.
+    assert (sheet.scale, sheet.fits_page) == (0.25, True)
+    extents = bbox.extents(sheet.doc.modelspace())  # views and callouts
+    assert extents.extmin.x >= 0 and extents.extmin.y >= 0 and extents.extmax.x <= 297 and extents.extmax.y <= 210
+    assert sheet.dimensions == [
+        {"view": "Front", "width_mm": 300.0, "height_mm": 100.0},
+        {"view": "Top", "width_mm": 300.0, "height_mm": 200.0},
+        {"view": "Right", "width_mm": 200.0, "height_mm": 100.0},
+    ]
+    svg_path, _ = techdraw_export._render_dxf_to_svg(str(dxf), "big", _A4, scale="auto")
+    labels = sorted(_svg_texts(svg_path.read_text(encoding="utf-8")))
+    assert labels == ["100 mm", "200 mm", "300 mm", "SCALE 1:4"]
+    pdf = techdraw_export._render_dxf_to_pdf(str(dxf), "big", _A4, scale="auto").read_bytes()
+    assert "SCALE 1:4" in _pdf_text(pdf) and "300 mm" in _pdf_text(pdf)
+
+
+def test_auto_scale_enlarges_a_small_part(tmp_path: Path) -> None:
+    dxf = tmp_path / "page.dxf"
+    _write_views_dxf(dxf, 10, 10, 10)
+    sheet = techdraw_export._load_page(str(dxf), _A4, scale="auto")
+    assert (sheet.scale, sheet.fits_page) == (5.0, True)
+    assert sheet.dimensions[0] == {"view": "Front", "width_mm": 10.0, "height_mm": 10.0}
+
+
+def test_explicit_scale_halves_the_views_but_not_the_labels(tmp_path: Path) -> None:
+    dxf = tmp_path / "page.dxf"
+    _write_views_dxf(dxf, 100, 50, 20)
+    front_at_1 = techdraw_export._view_boxes(techdraw_export._load_page(str(dxf), _A4).doc)["Front"]
+    sheet = techdraw_export._load_page(str(dxf), _A4, scale=0.5)
+
+    x0, y0, x1, y1 = techdraw_export._view_boxes(sheet.doc)["Front"]
+    assert (x1 - x0, y1 - y0) == (pytest.approx(50.0), pytest.approx(10.0))
+    # Scaled about its own centre: the layout slot is unchanged.
+    assert (x0 + x1) / 2 == pytest.approx((front_at_1[0] + front_at_1[2]) / 2)
+    assert sheet.dimensions[0] == {"view": "Front", "width_mm": 100.0, "height_mm": 20.0}
+    assert [label.text for label in sheet.labels if label.text.startswith("SCALE")] == ["SCALE 1:2"]
+
+
+@pytest.mark.parametrize(("factor", "text"), [(1.0, "1:1"), (0.5, "1:2"), (0.25, "1:4"), (0.2, "1:5"), (0.1, "1:10"),
+                                              (2.0, "2:1"), (5.0, "5:1"), (0.3, "1:3.33")])
+def test_scale_is_written_in_iso_notation(factor: float, text: str) -> None:
+    assert techdraw_export._scale_text(factor) == text
+
+
+@pytest.mark.parametrize("scale", ["huge", 0, -1, 1000])
+def test_rejects_a_bad_scale(existing_path: str, scale: Any) -> None:
+    result = json.loads(generate_2d_blueprint(existing_path, scale=scale))
+    assert result["ok"] is False and "scale must be 'auto' or a number" in result["error"]
 
 
 @pytest.mark.parametrize(("value", "label"), [(100.0, "100 mm"), (50.004, "50 mm"), (12.3456, "12.35 mm"), (0.5, "0.5 mm")])

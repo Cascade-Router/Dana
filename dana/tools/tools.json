@@ -1596,7 +1596,7 @@
     {
       "id": "generate_2d_blueprint",
       "read_only": true,
-      "description_en": "Projects clean orthographic (Front/Top/Right) and/or Isometric views of a completed object onto a standard drawing page and exports a PDF (plus an SVG) at 1:1 — a professional 2D blueprint. Each orthographic view (Front/Top/Right) gets its overall width and height dimensioned in mm (isometric views are not dimensioned), and the result's 'dimensions' lists those measurements per view; no feature-level dimensions (holes, offsets). Use this once a part or assembly is finished, to hand off a standard technical drawing. Read-only.",
+      "description_en": "Projects clean orthographic (Front/Top/Right) and/or Isometric views of a completed object onto a standard drawing page and exports a PDF (plus an SVG) — a professional 2D blueprint, at 1:1 unless scale says otherwise. Each orthographic view (Front/Top/Right) gets its overall width and height dimensioned in mm (isometric views are not dimensioned), and the result's 'dimensions' lists those measurements per view; no feature-level dimensions (holes, offsets). Use this once a part or assembly is finished, to hand off a standard technical drawing. Read-only.",
       "parameters": [
         {
           "name": "object_name",
@@ -1632,6 +1632,12 @@
           "type": "boolean",
           "required": false,
           "description_en": "Add the overall width/height dimension callouts to each orthographic view. Default true; false gives the bare projected outlines."
+        },
+        {
+          "name": "scale",
+          "type": "string",
+          "required": false,
+          "description_en": "Drawing scale (drawing size / true size). Default 1 (1:1). 'auto' picks the largest of 0.1, 0.2, 0.25, 0.5, 1, 2, 5 whose views fit the page without overlapping (use it for parts too big or too small for 1:1), or give a number such as 0.5 for 1:2. Dimension labels always state true sizes; the result reports scale ('1:4'), scale_factor and fits_page, and a scaled sheet states its scale."
         }
       ]
     },

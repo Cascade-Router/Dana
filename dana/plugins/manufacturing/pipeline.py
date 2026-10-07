@@ -12,14 +12,57 @@ separate dispatch_to_printer calls, each of which asks the user.
 Each step runs an existing agent tool through ``run_tool(tool_id, args)``
 (injected; see pipeline_tools.py), so every step keeps that tool's own
 argument validation and name resolution.
+
+With ``auto_orient`` (the default), a part check_printability says would
+print better in another principal pose gets a rotated copy of its print STL
+(``<part>_oriented.stl``, resting on Z = 0) and that copy is sliced. Only the
+print file turns: the CAD part, its exported STL, the URDF and the drawing
+keep the modelled pose.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 RunTool = Callable[[str, dict[str, Any]], dict[str, Any]]
+
+
+def _orientation_to_apply(check: dict[str, Any]) -> dict[str, Any] | None:
+    """check_printability's recommended pose, if rotating the print to it is
+    worth doing: the part isn't fine as modelled, its mesh is sound (rotation
+    can't fix a broken one), and the recommendation is a real rotation that
+    fits the bed and is support-free, or at least strictly better than the
+    modelled pose (fits where that doesn't, or overhangs less)."""
+    if check.get("current_orientation_printable") is not False or not check.get("mesh_sound"):
+        return None
+    best = check.get("recommended_orientation") or {}
+    current = next((o for o in check.get("orientations") or [] if o.get("is_current")), None)
+    if not best.get("rotation") or current is None or best.get("fit") == "too_large":
+        return None
+    if best.get("support_free"):
+        return best
+    if current.get("fit") == "too_large" or best["overhang_area_mm2"] < current["overhang_area_mm2"]:
+        return best
+    return None
+
+
+def _orient_stl(stl_path: str, rotation: dict[str, Any]) -> str:
+    """Write ``stl_path`` turned by ``rotation`` ({"axis", "degrees"}, about the
+    part's own axes, as check_printability reports it) and lowered so its
+    bottom sits at Z = 0, next to the original as ``<stem>_oriented.stl``."""
+    import trimesh
+
+    mesh = trimesh.load(stl_path, force="mesh")
+    axis = {"X": [1.0, 0.0, 0.0], "Y": [0.0, 1.0, 0.0], "Z": [0.0, 0.0, 1.0]}[rotation["axis"]]
+    mesh.apply_transform(trimesh.transformations.rotation_matrix(math.radians(rotation["degrees"]), axis))
+    mesh.apply_translation([0.0, 0.0, -mesh.bounds[0][2]])
+    source = Path(stl_path)
+    out = source.with_name(f"{source.stem}_oriented.stl")
+    mesh.export(out)  # binary STL
+    return str(out)
 
 
 def execute_manufacturing_pipeline(
@@ -29,6 +72,7 @@ def execute_manufacturing_pipeline(
     material: str = "PLA",
     part_materials: dict[str, str] | None = None,
     printer_profile: str = "mk4_default",
+    auto_orient: bool = True,
 ) -> dict[str, Any]:
     """Run every pre-print manufacturing step for ``assembly_name``.
 
@@ -38,8 +82,9 @@ def execute_manufacturing_pipeline(
     prints don't depend on each other, and the result stays ``ok: True`` so
     the artifacts that were made reach the agent (dispatch_tool_call reduces
     a failed result to its error message). ``complete`` is true only when
-    every step succeeded and every part has G-code. A part is sliced only if
-    check_printability calls it printable.
+    every step succeeded and every part has G-code. A part is sliced if
+    check_printability calls it printable, or if ``auto_orient`` turned it
+    into a pose that fits the bed.
     """
     assembly = (assembly_name or "").strip()
     if not assembly:
@@ -76,7 +121,11 @@ def execute_manufacturing_pipeline(
 
     # Named after the assembly: the default is the source file's name, which
     # for every session object is the shared Session_Active document.
-    blueprint = step("generate_2d_blueprint", {"object_name": assembly, "filename": f"{assembly}_blueprint"})
+    # "auto" scale: an assembly's size isn't known up front, and 1:1 only suits mid-sized ones.
+    blueprint = step(
+        "generate_2d_blueprint",
+        {"object_name": assembly, "filename": f"{assembly}_blueprint", "scale": "auto"},
+    )
 
     parts: list[dict[str, Any]] = []
     for name in part_names:
@@ -93,10 +142,23 @@ def execute_manufacturing_pipeline(
         if check.get("current_orientation_printable") is False:
             part["recommended_orientation"] = check.get("recommended_orientation")
             part["remediation_hint"] = check.get("remediation_hint")
-        if check.get("ok") and check.get("printable") and check.get("stl_path"):
+        print_stl = check.get("stl_path")
+        pose = _orientation_to_apply(check) if auto_orient and check.get("ok") and print_stl else None
+        if pose is not None:
+            try:
+                print_stl = _orient_stl(print_stl, pose["rotation"])
+            except Exception as exc:  # noqa: BLE001 — fall back to the modelled pose, reported as a failed step
+                steps.append({"step": f"auto_orient:{name}", "tool": "auto_orient", "ok": False, "error": str(exc)})
+                print_stl, pose = check.get("stl_path"), None
+            else:
+                part["applied_orientation"] = {
+                    key: pose[key] for key in ("up_axis", "bed_face", "rotation", "requires_supports", "height_mm")
+                }
+                part["print_stl_path"] = print_stl
+        if check.get("ok") and print_stl and (check.get("printable") or pose is not None):
             sliced = step(
                 "slice_stl_to_gcode",
-                {"stl_filepath": check["stl_path"], "printer_profile": printer_profile},
+                {"stl_filepath": print_stl, "printer_profile": printer_profile},
                 label=f"slice_stl_to_gcode:{name}",
             )
             part["gcode_path"] = sliced.get("gcode_path") if sliced.get("ok") else None
@@ -117,13 +179,24 @@ def execute_manufacturing_pipeline(
             f" Incomplete: failed steps {failed_steps}, parts without G-code {not_ready}; "
             "see steps and parts for the errors and printability warnings."
         )
-    # The STL is sliced as modelled, so a part that needs supports (or only
-    # fits rotated) in that pose is worth a look before printing.
-    orientation_hints = {p["name"]: p["remediation_hint"] for p in parts if p.get("remediation_hint")}
+    auto_oriented = [p["name"] for p in parts if "applied_orientation" in p]
+    if auto_oriented:
+        next_step += (
+            f" Auto-oriented for printing: {auto_oriented} (only their print STL was rotated, see "
+            "applied_orientation; the CAD model, URDF and drawing keep the modelled pose)."
+        )
+    # Still worth a look before printing: parts printed as modelled while
+    # needing supports or not fitting, and auto-oriented ones that still need
+    # supports. An auto-oriented, support-free part is resolved.
+    orientation_hints = {
+        p["name"]: p["remediation_hint"]
+        for p in parts
+        if p.get("remediation_hint") and (p.get("applied_orientation") or {}).get("requires_supports") is not False
+    }
     if orientation_hints:
         next_step += (
-            f" Not support-free (or not fitting) as modelled: {sorted(orientation_hints)}. Any G-code for them "
-            "was sliced as modelled; see orientation_hints for how to reorient or fix each before printing."
+            f" Not support-free (or not fitting) as printed: {sorted(orientation_hints)}; see orientation_hints "
+            "for how to reorient or fix each before printing."
         )
     return {
         "ok": True,
@@ -140,6 +213,7 @@ def execute_manufacturing_pipeline(
         "collisions": collisions.get("collisions") or [],
         "parts": parts,
         "orientation_hints": orientation_hints,
+        "auto_oriented": auto_oriented,
         "steps": steps,
         "ready_to_print": ready,
         "not_ready_to_print": not_ready,

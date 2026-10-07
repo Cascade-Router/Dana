@@ -4569,6 +4569,7 @@ def _tool_generate_2d_blueprint(args: dict[str, Any], _engine: Any, _cp: Any) ->
             filename=str(args.get("filename") or "").strip() or None,
             object_name=object_name,
             include_dimensions=args.get("include_dimensions") is not False,
+            scale=args.get("scale") if args.get("scale") not in (None, "") else 1.0,
         )
     )
 
@@ -9672,8 +9673,10 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         sizes = "; ".join(
             f"{d['view']} {d['width_mm']:g} x {d['height_mm']:g} mm" for d in payload.get("dimensions") or []
         )
+        scale = payload.get("scale")
         return (
             f"Generated {str(payload.get('page_size')).upper()} blueprint ({views}) -> `{payload.get('path')}`."
+            + (f" Scale {scale}." if scale and scale != "1:1" else "")
             + (f" Dimensioned: {sizes}." if sizes else "")
         )
     if call.tool_id == "get_freecad_bounding_box":

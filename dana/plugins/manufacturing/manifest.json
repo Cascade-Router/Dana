@@ -6,7 +6,7 @@
     {
       "id": "run_full_manufacturing_pipeline",
       "function": "run_full_manufacturing_pipeline",
-      "description_en": "One call that takes a finished assembly (from create_freecad_assembly) all the way to print-ready G-code. In order: bill of materials CSV (generate_assembly_bom), collision check plus URDF export (validate_assembly_collisions, export_assembly_to_urdf), 2D PDF blueprint (generate_2d_blueprint), then check_printability and slice_stl_to_gcode for every part. When the user asks to 'manufacture' an assembly, 'export everything', or 'finish the assembly', use THIS tool instead of calling those tools one by one. It does NOT start a print: the result's ready_to_print lists each part's gcode_filepath, and printing still means one dispatch_to_printer call per part, each approved by the user. Parts that check_printability rejects are not sliced and are listed in not_ready_to_print. Returns artifacts (bom_csv, urdf, blueprint_pdf, gcode), per-part results and a per-step ok/error log. Only a failed BOM fails the call; any later failed step (URDF, blueprint, a rejected or unsliceable part) leaves the rest running and is reported with complete=false plus failed_steps and not_ready_to_print, so always check 'complete' before telling the user everything is done.",
+      "description_en": "One call that takes a finished assembly (from create_freecad_assembly) all the way to print-ready G-code. In order: bill of materials CSV (generate_assembly_bom), collision check plus URDF export (validate_assembly_collisions, export_assembly_to_urdf), 2D PDF blueprint (generate_2d_blueprint, scale 'auto' so any size fits the sheet), then check_printability and slice_stl_to_gcode for every part. With auto_orient (default true), a part check_printability says prints better in another principal pose (support-free, or fitting the bed) has only its print STL rotated into that pose before slicing; the CAD model, URDF and drawing keep the modelled pose, and the part's applied_orientation records the rotation. When the user asks to 'manufacture' an assembly, 'export everything', or 'finish the assembly', use THIS tool instead of calling those tools one by one. It does NOT start a print: the result's ready_to_print lists each part's gcode_filepath, and printing still means one dispatch_to_printer call per part, each approved by the user. Parts that check_printability rejects are not sliced and are listed in not_ready_to_print. Returns artifacts (bom_csv, urdf, blueprint_pdf, gcode), per-part results and a per-step ok/error log. Only a failed BOM fails the call; any later failed step (URDF, blueprint, a rejected or unsliceable part) leaves the rest running and is reported with complete=false plus failed_steps and not_ready_to_print, so always check 'complete' before telling the user everything is done.",
       "aliases_en": {
         "_intent": [
           "manufacture the assembly",
@@ -41,6 +41,12 @@
           "type": "string",
           "required": false,
           "description_en": "PrusaSlicer config name in the workspace's slicer_profiles/ folder (without .ini). Default 'mk4_default'."
+        },
+        {
+          "name": "auto_orient",
+          "type": "boolean",
+          "required": false,
+          "description_en": "Rotate each part's print STL into check_printability's recommended pose before slicing when that pose is support-free or strictly better. Default true; false slices every part as modelled."
         }
       ]
     }

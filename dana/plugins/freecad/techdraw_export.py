@@ -10,6 +10,11 @@ millimetres), so the numbers are the part's real size. Isometric views get
 none: their extents aren't part dimensions. ``include_dimensions=False``
 gives the bare projection.
 
+Drawing scale works the same way: TechDraw always draws 1:1, and each view
+is then scaled about its own centre in the DXF (``scale``, or "auto" to pick
+the largest standard scale whose layout fits the page). Sizes are measured
+before that, so labels keep stating true millimetres.
+
 Headless PDF export turned out to be the hard part: TechDraw's PDF/SVG page
 writers (``TechDrawGui.exportPageAsPdf``/``exportPageAsSvg``) only exist in
 the ``TechDrawGui`` module, which needs a live Qt ``FreeCADGui`` instance —
@@ -156,24 +161,40 @@ def _arrow(tip: _Point, direction: _Point) -> list[_Segment]:
     return [(tip, (tip[0] + bx + sx, tip[1] + by + sy)), (tip, (tip[0] + bx - sx, tip[1] + by - sy))]
 
 
-def _dimension_callouts(doc: Any) -> _Callouts:
-    """Overall width (below) and height (left) callouts for every
-    orthographic view present on ``doc``'s ``View<Name>`` layers."""
+_Box = tuple[float, float, float, float]  # x0, y0, x1, y1 in page mm
+
+
+def _view_boxes(doc: Any) -> dict[str, _Box]:
+    """Each view's extents on the page, keyed by view name (layer ``View<Name>``)."""
     from ezdxf import bbox
 
     msp = doc.modelspace()
+    boxes: dict[str, _Box] = {}
+    for key in _VIEW_LAYOUT:
+        name = key.capitalize()
+        box = bbox.extents(msp.query(f'*[layer=="View{name}"]'))
+        if box.has_data:
+            boxes[name] = (box.extmin.x, box.extmin.y, box.extmax.x, box.extmax.y)
+    return boxes
+
+
+def _dimension_callouts(doc: Any, scale: float = 1.0) -> _Callouts:
+    """Overall width (below) and height (left) callouts for every
+    orthographic view present on ``doc``'s ``View<Name>`` layers. The views
+    are drawn at ``scale``, so the labels and sizes divide it back out: they
+    always state the part's true size."""
+    boxes = _view_boxes(doc)
     sizes: list[dict[str, Any]] = []
     segments: list[_Segment] = []
     labels: list[_Label] = []
     for view in _ORTHO_VIEWS:
-        box = bbox.extents(msp.query(f'*[layer=="View{view}"]'))
-        if not box.has_data:
+        if view not in boxes:
             continue
-        (x0, y0), (x1, y1) = box.extmin.vec2, box.extmax.vec2
-        width, height = x1 - x0, y1 - y0
+        x0, y0, x1, y1 = boxes[view]
+        width, height = (x1 - x0) / scale, (y1 - y0) / scale
         sizes.append({"view": view, "width_mm": round(width, 2), "height_mm": round(height, 2)})
 
-        if width > 0:
+        if x1 > x0:
             yd = y0 - _DIM_OFFSET_MM
             segments += [
                 ((x0, y0 - _DIM_EXT_GAP_MM), (x0, yd - _DIM_EXT_OVERSHOOT_MM)),
@@ -184,7 +205,7 @@ def _dimension_callouts(doc: Any) -> _Callouts:
             ]
             label_y = yd - _DIM_TEXT_GAP_MM - _DIM_TEXT_MM / 2
             labels.append(_Label((x0 + x1) / 2, label_y, _format_mm(width), vertical=False))
-        if height > 0:
+        if y1 > y0:
             xd = x0 - _DIM_OFFSET_MM
             segments += [
                 ((x0 - _DIM_EXT_GAP_MM, y0), (xd - _DIM_EXT_OVERSHOOT_MM, y0)),
@@ -210,20 +231,107 @@ def _add_callout_lines(doc: Any, callouts: _Callouts) -> None:
         msp.add_line(start, end, dxfattribs={"layer": _DIM_LAYER})
 
 
-def _load_page(dxf_path: str, include_dimensions: bool) -> tuple[Any, _Callouts | None]:
-    """The exported DXF page, with dimension lines added if requested."""
+# Standard drawing scales "auto" chooses from (drawing size / true size).
+_ISO_SCALES = (0.1, 0.2, 0.25, 0.5, 1.0, 2.0, 5.0)
+_PAGE_MARGIN_MM = 10.0
+# Room a dimensioned view needs to its left and below for its callouts
+# (offset + extension overshoot + label, see the _DIM_* constants).
+_DIM_ALLOWANCE_MM = 15.0
+
+
+def _scale_text(scale: float) -> str:
+    """ISO notation: 0.25 -> '1:4', 2.0 -> '2:1', 1.0 -> '1:1'."""
+    if scale < 1.0:
+        return f"1:{round(1.0 / scale, 2):g}"
+    return f"{round(scale, 2):g}:1"
+
+
+def _fits_page(
+    boxes: dict[str, _Box], scale: float, page_size_mm: tuple[float, float], include_dimensions: bool
+) -> bool:
+    """Whether every view, scaled about its own centre, stays inside its
+    quarter of the 2x2 view layout (and the page margin), leaving room for its
+    dimension callouts, so no two views or callouts overlap."""
+    width_mm, height_mm = page_size_mm
+    xs = sorted({spec["slot"][0] for spec in _VIEW_LAYOUT.values()})
+    ys = sorted({spec["slot"][1] for spec in _VIEW_LAYOUT.values()})
+    x_split, y_split = (xs[0] + xs[-1]) / 2 * width_mm, (ys[0] + ys[-1]) / 2 * height_mm
+    for name, (x0, y0, x1, y1) in boxes.items():
+        fx, fy = _VIEW_LAYOUT[name.lower()]["slot"]
+        cell_x0, cell_x1 = (_PAGE_MARGIN_MM, x_split) if fx * width_mm < x_split else (x_split, width_mm - _PAGE_MARGIN_MM)
+        cell_y0, cell_y1 = (_PAGE_MARGIN_MM, y_split) if fy * height_mm < y_split else (y_split, height_mm - _PAGE_MARGIN_MM)
+        allowance = _DIM_ALLOWANCE_MM if include_dimensions and name in _ORTHO_VIEWS else 0.0
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        half_w, half_h = (x1 - x0) * scale / 2, (y1 - y0) * scale / 2
+        if cx - half_w - allowance < cell_x0 or cx + half_w > cell_x1:
+            return False
+        if cy - half_h - allowance < cell_y0 or cy + half_h > cell_y1:
+            return False
+    return True
+
+
+def _scale_views(doc: Any, boxes: dict[str, _Box], scale: float) -> None:
+    """Scale every view's geometry by ``scale`` about that view's own centre,
+    so the layout positions stay put."""
+    from ezdxf.math import Matrix44
+
+    msp = doc.modelspace()
+    for name, (x0, y0, x1, y1) in boxes.items():
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        m = Matrix44.chain(Matrix44.translate(-cx, -cy, 0), Matrix44.scale(scale), Matrix44.translate(cx, cy, 0))
+        for entity in msp.query(f'*[layer=="View{name}"]'):
+            entity.transform(m)
+
+
+@dataclass(frozen=True)
+class _Sheet:
+    """A loaded, scaled and annotated page, ready for either renderer."""
+
+    doc: Any
+    labels: list[_Label]
+    dimensions: list[dict[str, Any]]  # true sizes per orthographic view
+    scale: float
+    fits_page: bool
+
+
+def _load_page(
+    dxf_path: str, page_size_mm: tuple[float, float], include_dimensions: bool = True, scale: float | str = 1.0
+) -> _Sheet:
+    """The exported DXF page (drawn 1:1 by TechDraw), rescaled to ``scale``
+    ("auto": the largest of ``_ISO_SCALES`` that fits, else the smallest),
+    with dimension lines added if requested. At 1:1 nothing is transformed and
+    no scale note is added, so the output is exactly the unscaled page."""
     import ezdxf
 
     doc = ezdxf.readfile(dxf_path)
-    if not include_dimensions:
-        return doc, None
-    callouts = _dimension_callouts(doc)
-    _add_callout_lines(doc, callouts)
-    return doc, callouts
+    boxes = _view_boxes(doc)
+    if scale == "auto":
+        fitting = [s for s in _ISO_SCALES if _fits_page(boxes, s, page_size_mm, include_dimensions)]
+        factor = max(fitting) if fitting else min(_ISO_SCALES)
+    else:
+        factor = float(scale)
+    fits = _fits_page(boxes, factor, page_size_mm, include_dimensions)
+    labels: list[_Label] = []
+    if factor != 1.0:
+        _scale_views(doc, boxes, factor)
+        labels.append(
+            _Label(page_size_mm[0] - _PAGE_MARGIN_MM - 20.0, _PAGE_MARGIN_MM, f"SCALE {_scale_text(factor)}", False)
+        )
+    dimensions: list[dict[str, Any]] = []
+    if include_dimensions:
+        callouts = _dimension_callouts(doc, factor)
+        _add_callout_lines(doc, callouts)
+        labels = callouts.labels + labels
+        dimensions = callouts.sizes
+    return _Sheet(doc, labels, dimensions, factor, fits)
 
 
 def _render_dxf_to_pdf(
-    dxf_path: str, name: str, page_size_mm: tuple[float, float], include_dimensions: bool = True
+    dxf_path: str,
+    name: str,
+    page_size_mm: tuple[float, float],
+    include_dimensions: bool = True,
+    scale: float | str = 1.0,
 ) -> Path:
     """Renders a TechDraw-exported DXF page to a PDF, sized to the page's
     real physical dimensions — a pure Python step, no FreeCAD involved."""
@@ -235,7 +343,8 @@ def _render_dxf_to_pdf(
     from ezdxf.addons.drawing import matplotlib as ezdxf_matplotlib
     from ezdxf.addons.drawing.config import BackgroundPolicy, ColorPolicy, Configuration
 
-    doc, callouts = _load_page(dxf_path, include_dimensions)
+    sheet = _load_page(dxf_path, page_size_mm, include_dimensions, scale)
+    doc = sheet.doc
     width_mm, height_mm = page_size_mm
     fig = plt.figure(figsize=(width_mm / 25.4, height_mm / 25.4))
     try:
@@ -265,7 +374,7 @@ def _render_dxf_to_pdf(
         Frontend(RenderContext(doc), backend, config=render_config).draw_layout(doc.modelspace(), finalize=True)
         ax.set_xlim(0, width_mm)
         ax.set_ylim(0, height_mm)
-        for label in callouts.labels if callouts else ():
+        for label in sheet.labels:
             ax.text(
                 label.x,
                 label.y,
@@ -317,8 +426,12 @@ def _svg_labels(svg_text: str, labels: list[_Label], page_size_mm: tuple[float, 
 
 
 def _render_dxf_to_svg(
-    dxf_path: str, name: str, page_size_mm: tuple[float, float], include_dimensions: bool = True
-) -> tuple[Path, list[dict[str, Any]]]:
+    dxf_path: str,
+    name: str,
+    page_size_mm: tuple[float, float],
+    include_dimensions: bool = True,
+    scale: float | str = 1.0,
+) -> tuple[Path, _Sheet]:
     """Renders a TechDraw-exported DXF page to SVG — same pure-Python,
     no-FreeCAD step as ``_render_dxf_to_pdf`` above (headless SVG export via
     FreeCAD's own ``TechDrawGui.exportPageAsSvg`` needs a live Qt
@@ -330,15 +443,16 @@ def _render_dxf_to_svg(
     ezdxf's own API shape, so each output format needs its own render pass
     over the same DXF.
 
-    Also returns the overall size of each dimensioned view (empty without
-    dimensions).
+    Also returns the sheet it drew (true view sizes, the scale used, whether
+    the layout fits the page).
     """
     from ezdxf.addons.drawing import Frontend, RenderContext, layout
     from ezdxf.addons.drawing.config import BackgroundPolicy, ColorPolicy, Configuration
     from ezdxf.addons.drawing.svg import SVGBackend
     from ezdxf.math import BoundingBox2d
 
-    doc, callouts = _load_page(dxf_path, include_dimensions)
+    sheet = _load_page(dxf_path, page_size_mm, include_dimensions, scale)
+    doc = sheet.doc
     width_mm, height_mm = page_size_mm
     backend = SVGBackend()
     # Same black-on-white forcing as _render_dxf_to_pdf — TechDraw's native
@@ -357,8 +471,7 @@ def _render_dxf_to_svg(
         settings=layout.Settings(fit_page=False, scale=1.0),
         render_box=BoundingBox2d([(0.0, 0.0), (width_mm, height_mm)]),
     )
-    if callouts:
-        svg_text = _svg_labels(svg_text, callouts.labels, page_size_mm)
+    svg_text = _svg_labels(svg_text, sheet.labels, page_size_mm)
 
     _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = _EXPORT_DIR / f"{_safe_name(name)}.svg"
@@ -366,7 +479,7 @@ def _render_dxf_to_svg(
     # function's comment for the exact failure this prevents.
     out_path.unlink(missing_ok=True)
     out_path.write_text(svg_text, encoding="utf-8")
-    return out_path, callouts.sizes if callouts else []
+    return out_path, sheet
 
 
 def generate_2d_blueprint(
@@ -376,13 +489,20 @@ def generate_2d_blueprint(
     filename: str | None = None,
     object_name: str | None = None,
     include_dimensions: bool = True,
+    scale: float | str = 1.0,
 ) -> str:
     """Projects orthographic (Front/Top/Right) and/or Isometric views of the
     object in ``source_path`` onto a standard drawing page and exports a PDF
-    and an SVG at 1:1. With ``include_dimensions`` (the default) each
-    orthographic view gets its overall width and height dimensioned in mm,
-    and the result's ``dimensions`` lists them per view; ``False`` gives the
-    bare projection.
+    and an SVG. With ``include_dimensions`` (the default) each orthographic
+    view gets its overall width and height dimensioned in mm, and the
+    result's ``dimensions`` lists them per view; ``False`` gives the bare
+    projection.
+
+    ``scale`` is the drawing scale (drawing size / true size): 1.0 by
+    default, any positive number, or "auto" for the largest of
+    0.1/0.2/0.25/0.5/1/2/5 whose layout fits the page. Dimension labels always
+    state true sizes; the result carries ``scale`` ("1:2"), ``scale_factor``
+    and ``fits_page``, and a sheet not at 1:1 says its scale in the corner.
 
     ``object_name`` picks the object inside ``source_path`` (by Name, then
     Label, then case-insensitively, like the engine's other tools). Every
@@ -406,6 +526,17 @@ def generate_2d_blueprint(
             f"generate_2d_blueprint: unknown page_size '{page_size}' — "
             f"must be one of {', '.join(sorted(_PAGE_SIZES_MM))}"
         )
+    if isinstance(scale, str) and scale.strip().lower() == "auto":
+        scale = "auto"
+    else:
+        try:
+            scale = float(scale)
+        except (TypeError, ValueError):
+            scale = 0.0
+        if not 0.0 < scale <= 100.0:
+            return _error(
+                "generate_2d_blueprint: scale must be 'auto' or a number between 0 and 100 (e.g. 0.5 for 1:2)"
+            )
 
     requested = [str(v).strip() for v in (views or _DEFAULT_VIEWS) if str(v).strip()]
     if not requested:
@@ -463,13 +594,15 @@ def generate_2d_blueprint(
             return _error(f"generate_2d_blueprint failed: {result['error']}")
 
         try:
-            pdf_path = _render_dxf_to_pdf(dxf_path, resolved_name, _PAGE_SIZES_MM[size_key], include_dimensions)
+            pdf_path = _render_dxf_to_pdf(
+                dxf_path, resolved_name, _PAGE_SIZES_MM[size_key], include_dimensions, scale
+            )
         except Exception as exc:  # noqa: BLE001 — surface as a normal tool failure, not a crash
             return _error(f"generate_2d_blueprint: DXF->PDF conversion failed: {exc}")
 
         try:
-            svg_path, dimensions = _render_dxf_to_svg(
-                dxf_path, resolved_name, _PAGE_SIZES_MM[size_key], include_dimensions
+            svg_path, sheet = _render_dxf_to_svg(
+                dxf_path, resolved_name, _PAGE_SIZES_MM[size_key], include_dimensions, scale
             )
         except Exception as exc:  # noqa: BLE001 — surface as a normal tool failure, not a crash
             return _error(f"generate_2d_blueprint: DXF->SVG conversion failed: {exc}")
@@ -485,7 +618,10 @@ def generate_2d_blueprint(
         page_size=size_key,
         path=str(pdf_path),
         svg_path=str(svg_path),
-        dimensions=dimensions,
+        dimensions=sheet.dimensions,
+        scale=_scale_text(sheet.scale),
+        scale_factor=sheet.scale,
+        fits_page=sheet.fits_page,
     )
 
 

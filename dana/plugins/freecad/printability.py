@@ -245,6 +245,7 @@ def evaluate_orientations(
 
     return {
         "current_orientation_printable": mesh_ok and current["support_free"],
+        "mesh_sound": mesh_ok,
         "recommended_orientation": best,
         "remediation_hint": hint,
         "orientations": poses,

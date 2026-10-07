@@ -50,7 +50,13 @@ def captured_dxf(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     seen: dict[str, Any] = {}
     render = techdraw_export._render_dxf_to_pdf
 
-    def spy(dxf_path: str, name: str, page_size_mm: tuple[float, float], include_dimensions: bool = True) -> Path:
+    def spy(
+        dxf_path: str,
+        name: str,
+        page_size_mm: tuple[float, float],
+        include_dimensions: bool = True,
+        scale: float | str = 1.0,
+    ) -> Path:
         from ezdxf import bbox
 
         doc = ezdxf.readfile(dxf_path)
@@ -58,7 +64,7 @@ def captured_dxf(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         seen["size"] = (extents.size.x, extents.size.y)
         seen["extmin"] = (extents.extmin.x, extents.extmin.y)
         seen["extmax"] = (extents.extmax.x, extents.extmax.y)
-        return render(dxf_path, name, page_size_mm, include_dimensions)
+        return render(dxf_path, name, page_size_mm, include_dimensions, scale)
 
     monkeypatch.setattr(techdraw_export, "_render_dxf_to_pdf", spy)
     return seen
@@ -122,3 +128,23 @@ def test_orthographic_views_are_dimensioned_with_the_parts_real_size() -> None:
         )
     )
     assert bare["dimensions"] == [] and "<text" not in Path(bare["svg_path"]).read_text(encoding="utf-8")
+
+
+def test_auto_scale_fits_a_large_part_on_a4_and_keeps_true_dimensions() -> None:
+    """300 x 200 x 100 overflows A4 at 1:1; "auto" picks a reduction scale."""
+    import re
+
+    box = _ok(engine.create_box(300, 200, 100, name="Slab"))
+    at_1 = _ok(techdraw_export.generate_2d_blueprint(box["path"], filename="slab_1to1", object_name="Slab"))
+    auto = _ok(techdraw_export.generate_2d_blueprint(box["path"], filename="slab", object_name="Slab", scale="auto"))
+
+    assert (at_1["scale"], at_1["fits_page"]) == ("1:1", False)
+    assert auto["scale_factor"] < 1.0 and auto["fits_page"] is True
+    assert auto["scale"] == f"1:{round(1 / auto['scale_factor'], 2):g}"
+    assert auto["dimensions"] == [
+        {"view": "Front", "width_mm": 300.0, "height_mm": 100.0},
+        {"view": "Top", "width_mm": 300.0, "height_mm": 200.0},
+        {"view": "Right", "width_mm": 200.0, "height_mm": 100.0},
+    ]
+    labels = re.findall(r"<text[^>]*>([^<]*)</text>", Path(auto["svg_path"]).read_text(encoding="utf-8"))
+    assert {"300 mm", "200 mm", "100 mm", f"SCALE {auto['scale']}"} <= set(labels)
