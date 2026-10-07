@@ -51,6 +51,8 @@ paths = ["dana", "scripts", "app.py", "start_dana.py"]
 min_confidence = 60
 # Called by the framework, never by name: FastAPI routes, pydantic validators.
 ignore_decorators = ["@app.*", "@router.*", "@field_validator", "@model_validator"]
+# Plugin tool functions, called only by name from their manifest.json.
+ignore_names = ["run_full_manufacturing_pipeline"]
 
 
 [tool.mypy]

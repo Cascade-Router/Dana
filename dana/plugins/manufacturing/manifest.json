@@ -1,0 +1,42 @@
+{
+  "name": "manufacturing",
+  "domain": "freecad",
+  "entry_point": "pipeline_tools.py",
+  "tools": [
+    {
+      "id": "run_full_manufacturing_pipeline",
+      "function": "run_full_manufacturing_pipeline",
+      "description_en": "One call that takes a finished assembly (from create_freecad_assembly) all the way to print-ready G-code. In order: bill of materials CSV (generate_assembly_bom), collision check plus URDF export (validate_assembly_collisions, export_assembly_to_urdf), 2D PDF blueprint (generate_2d_blueprint), then check_printability and slice_stl_to_gcode for every part. When the user asks to 'manufacture' an assembly, 'export everything', or 'finish the assembly', use THIS tool instead of calling those tools one by one. It does NOT start a print: the result's ready_to_print lists each part's gcode_filepath, and printing still means one dispatch_to_printer call per part, each approved by the user. Parts that check_printability rejects are not sliced and are listed in not_ready_to_print. Returns artifacts (bom_csv, urdf, blueprint_pdf, gcode), per-part results and a per-step ok/error log. Only a failed BOM fails the call; any later failed step (URDF, blueprint, a rejected or unsliceable part) leaves the rest running and is reported with complete=false plus failed_steps and not_ready_to_print, so always check 'complete' before telling the user everything is done.",
+      "aliases_en": {
+        "_intent": [
+          "manufacture the assembly",
+          "manufacture it",
+          "export everything",
+          "finish the assembly",
+          "prepare for printing",
+          "run the manufacturing pipeline"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "assembly_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing assembly container (from create_freecad_assembly)."
+        },
+        {
+          "name": "material",
+          "type": "string",
+          "required": false,
+          "description_en": "Material for the BOM's mass and cost: 'PLA' (default), 'PETG', 'ABS', 'Aluminum 6061' or 'Stainless Steel 304'."
+        },
+        {
+          "name": "printer_profile",
+          "type": "string",
+          "required": false,
+          "description_en": "PrusaSlicer config name in the workspace's slicer_profiles/ folder (without .ini). Default 'mk4_default'."
+        }
+      ]
+    }
+  ]
+}
