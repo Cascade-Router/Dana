@@ -88,7 +88,11 @@ def execute_manufacturing_pipeline(
             "warnings": check.get("warnings") or [],
             "stl_path": check.get("stl_path"),
             "gcode_path": None,
+            "current_orientation_printable": check.get("current_orientation_printable"),
         }
+        if check.get("current_orientation_printable") is False:
+            part["recommended_orientation"] = check.get("recommended_orientation")
+            part["remediation_hint"] = check.get("remediation_hint")
         if check.get("ok") and check.get("printable") and check.get("stl_path"):
             sliced = step(
                 "slice_stl_to_gcode",
@@ -113,6 +117,14 @@ def execute_manufacturing_pipeline(
             f" Incomplete: failed steps {failed_steps}, parts without G-code {not_ready}; "
             "see steps and parts for the errors and printability warnings."
         )
+    # The STL is sliced as modelled, so a part that needs supports (or only
+    # fits rotated) in that pose is worth a look before printing.
+    orientation_hints = {p["name"]: p["remediation_hint"] for p in parts if p.get("remediation_hint")}
+    if orientation_hints:
+        next_step += (
+            f" Not support-free (or not fitting) as modelled: {sorted(orientation_hints)}. Any G-code for them "
+            "was sliced as modelled; see orientation_hints for how to reorient or fix each before printing."
+        )
     return {
         "ok": True,
         "complete": complete,
@@ -127,6 +139,7 @@ def execute_manufacturing_pipeline(
         "bom": {k: bom.get(k) for k in ("materials", "part_count", "total_mass_g", "total_cost", "currency")},
         "collisions": collisions.get("collisions") or [],
         "parts": parts,
+        "orientation_hints": orientation_hints,
         "steps": steps,
         "ready_to_print": ready,
         "not_ready_to_print": not_ready,

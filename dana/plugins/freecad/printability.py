@@ -19,6 +19,11 @@ resting on the build plate needs support. The part is checked as oriented in
 the document (+Z up, lowest point on the bed). Small horizontal holes and short
 bridges also count as overhangs here even though most printers bridge them,
 which is why the report gives the overhang area and Z range, not only a flag.
+
+``evaluate_orientations`` repeats the overhang and build-volume checks for the
+six principal poses (each of the part's ±X/±Y/±Z axes pointing up, i.e. as the
+build-plate normal) and recommends one, with the rotation that gets there and
+a remediation hint. Only those six are tried, not arbitrary angles.
 """
 
 from __future__ import annotations
@@ -103,6 +108,149 @@ def find_overhangs(
     }
 
 
+@dataclass(frozen=True)
+class SolidFacet:
+    """A facet in the part's own frame: unit ``normal`` (x, y, z), ``area``,
+    and its vertices' per-axis minimum ``lo`` and maximum ``hi``."""
+
+    normal: tuple[float, float, float]
+    area: float
+    lo: tuple[float, float, float]
+    hi: tuple[float, float, float]
+
+
+# (part axis pointing up, axis index, sign, rotation that brings it to +Z).
+# Rotations are right-handed about the part's own axes, so e.g. rotating
+# +90° about X turns the part's +Y up. Listed current-pose first.
+_ORIENTATIONS: tuple[tuple[str, int, int, tuple[str, float] | None], ...] = (
+    ("+Z", 2, 1, None),
+    ("-Z", 2, -1, ("X", 180.0)),
+    ("+X", 0, 1, ("Y", -90.0)),
+    ("-X", 0, -1, ("Y", 90.0)),
+    ("+Y", 1, 1, ("X", 90.0)),
+    ("-Y", 1, -1, ("X", -90.0)),
+)
+# A facet this close to straight down counts toward bed contact.
+_BED_CONTACT_NORMAL = -0.999
+
+
+def _evaluate_pose(
+    facets: Sequence[SolidFacet], axis: int, sign: int, printer: PrinterProfile, max_overhang_deg: float
+) -> dict[str, Any]:
+    def up(f: SolidFacet) -> Facet:
+        lo, hi = (f.lo[axis], f.hi[axis]) if sign > 0 else (-f.hi[axis], -f.lo[axis])
+        return Facet(sign * f.normal[axis], f.area, lo, hi)
+
+    projected = [up(f) for f in facets]
+    bed = min(f.z_min for f in projected)
+    height = max(f.z_max for f in projected) - bed
+    footprint = [max(f.hi[i] for f in facets) - min(f.lo[i] for f in facets) for i in range(3) if i != axis]
+    fit = fit_build_volume((*footprint, height), printer)
+    overhangs = find_overhangs(projected, bed_z=bed, max_overhang_deg=max_overhang_deg)
+    contact = sum(
+        f.area for f in projected if f.normal_z < _BED_CONTACT_NORMAL and f.z_max <= bed + BED_CONTACT_TOLERANCE_MM
+    )
+    requires_supports = overhangs["area_mm2"] >= MIN_OVERHANG_AREA_MM2
+    return {
+        "fit": fit,
+        "requires_supports": requires_supports,
+        "support_free": fit != "too_large" and not requires_supports,
+        "overhang_area_mm2": overhangs["area_mm2"],
+        "height_mm": round(height, 3),
+        "bed_contact_mm2": round(contact, 3),
+    }
+
+
+def _describe_pose(pose: dict[str, Any]) -> str:
+    rotation = pose["rotation"]
+    if rotation is None:
+        return "as modelled"
+    return (
+        f"rotated {rotation['degrees']:+g}° about the part's {rotation['axis']} axis "
+        f"(its {pose['up_axis']} side up, {pose['bed_face']} side on the bed)"
+    )
+
+
+def evaluate_orientations(
+    facets: Sequence[SolidFacet],
+    *,
+    printer: PrinterProfile = DEFAULT_PRINTER,
+    max_overhang_deg: float = DEFAULT_MAX_OVERHANG_DEG,
+    mesh_ok: bool = True,
+) -> dict[str, Any]:
+    """Score the six principal poses and pick one.
+
+    Returns ``current_orientation_printable`` (as modelled it fits the bed
+    and needs no supports), ``recommended_orientation`` (one of
+    ``orientations``: the current pose whenever that is already
+    support-free, so a fine part is never told to move; otherwise the best by
+    fit, then supports, then least overhang, then most bed contact, then
+    lowest height), and ``remediation_hint`` (None when nothing needs doing).
+    ``mesh_ok=False`` (an open or non-manifold mesh) makes every pose
+    unprintable: no rotation fixes that.
+    """
+    poses = []
+    for up_axis, axis, sign, rotation in _ORIENTATIONS:
+        pose = {
+            "up_axis": up_axis,
+            "bed_face": ("-" if sign > 0 else "+") + up_axis[1],
+            "rotation": None if rotation is None else {"axis": rotation[0], "degrees": rotation[1]},
+            "is_current": rotation is None,
+            **_evaluate_pose(facets, axis, sign, printer, max_overhang_deg),
+        }
+        poses.append(pose)
+    current = poses[0]
+
+    if current["support_free"]:
+        best = current
+    else:
+        best = min(
+            poses,
+            key=lambda p: (
+                p["fit"] == "too_large",
+                p["requires_supports"],
+                p["overhang_area_mm2"],
+                -p["bed_contact_mm2"],
+                p["height_mm"],
+                not p["is_current"],
+            ),
+        )
+
+    if not mesh_ok:
+        hint = "Repair the mesh first (see warnings); no orientation fixes an open or non-manifold mesh."
+    elif current["support_free"]:
+        hint = None
+    elif best["fit"] == "too_large":
+        hint = (
+            f"Too large for the {printer.name} ({printer.x_mm:g} x {printer.y_mm:g} x {printer.z_mm:g} mm) "
+            "in every principal orientation; scale it down or split it into parts."
+        )
+    elif best["support_free"]:
+        turned = best["fit"] == "fits_rotated"
+        if current["fit"] == "too_large":
+            fits = " and it fits the bed" + (" if turned 90° on it" if turned else "")
+        else:
+            fits = ", turned 90° on the bed" if turned else ""
+        hint = f"Print it {_describe_pose(best)}: no supports needed{fits} ({best['height_mm']:g} mm tall)."
+    else:
+        least = (
+            f"least support is {_describe_pose(best)}, {best['overhang_area_mm2']:g} mm² of overhang"
+            + ("" if best["is_current"] else f" vs {current['overhang_area_mm2']:g} mm² as modelled")
+        )
+        hint = (
+            f"Needs supports in every principal orientation; {least}. Enable supports in the slicer, or redesign "
+            f"the overhangs to {max_overhang_deg:g}° or less from vertical (e.g. chamfers instead of flat ledges), "
+            "or split the part."
+        )
+
+    return {
+        "current_orientation_printable": mesh_ok and current["support_free"],
+        "recommended_orientation": best,
+        "remediation_hint": hint,
+        "orientations": poses,
+    }
+
+
 def fit_build_volume(size: Sequence[float], printer: PrinterProfile) -> str:
     """"fits", "fits_rotated" (only with a 90° turn about Z), or "too_large"."""
     x, y, z = size
@@ -123,12 +271,15 @@ def build_report(
     facets: Iterable[Facet],
     printer: PrinterProfile = DEFAULT_PRINTER,
     max_overhang_deg: float = DEFAULT_MAX_OVERHANG_DEG,
+    solid_facets: Sequence[SolidFacet] | None = None,
 ) -> dict[str, Any]:
     """The agent-facing report. ``checks`` holds the mesh/shape flags:
     ``shape_valid``, ``closed_solid``, ``mesh_solid`` (watertight),
     ``non_manifold`` (bool), ``self_intersections`` (bool),
     ``open_edges`` (count), ``components`` (count). ``bbox`` is
-    ``[x_min, y_min, z_min, x_max, y_max, z_max]``."""
+    ``[x_min, y_min, z_min, x_max, y_max, z_max]``. With ``solid_facets``
+    (the same facets in full 3D) the report also carries
+    ``evaluate_orientations``' fields."""
     warnings: list[str] = []
     blocking = False
 
@@ -152,6 +303,7 @@ def build_report(
         warnings.append("The mesh intersects itself.")
     if (checks.get("components") or 1) > 1:
         warnings.append(f"The part is {checks['components']} separate bodies; each prints as its own island.")
+    mesh_ok = not blocking  # everything so far is a defect no rotation can fix
 
     size = [bbox[3] - bbox[0], bbox[4] - bbox[1], bbox[5] - bbox[2]]
     fit = fit_build_volume(size, printer)
@@ -174,7 +326,7 @@ def build_report(
             f"{overhangs['worst_angle_from_vertical_deg']:.0f}°); it needs supports, a bridge, or reorienting."
         )
 
-    return {
+    report = {
         "printable": not blocking,
         "requires_supports": requires_supports,
         "warnings": warnings,
@@ -184,6 +336,11 @@ def build_report(
         "overhangs": {**overhangs, "max_overhang_deg": max_overhang_deg},
         "checks": checks,
     }
+    if solid_facets:
+        report.update(
+            evaluate_orientations(solid_facets, printer=printer, max_overhang_deg=max_overhang_deg, mesh_ok=mesh_ok)
+        )
+    return report
 
 
 # --- real engine --------------------------------------------------------------------
@@ -236,8 +393,11 @@ checks["open_edges"] = sum(1 for _n in _edge_use.values() if _n == 1)
 checks["facet_count"] = int(mesh.CountFacets)
 
 _bb = mesh.BoundBox
+# [nx, ny, nz, area, x_min, y_min, z_min, x_max, y_max, z_max] per facet.
 facets = [
-    [_f.Normal.z, _f.Area, min(_v[2] for _v in _f.Points), max(_v[2] for _v in _f.Points)]
+    [_f.Normal.x, _f.Normal.y, _f.Normal.z, _f.Area]
+    + [min(_v[_i] for _v in _f.Points) for _i in range(3)]
+    + [max(_v[_i] for _v in _f.Points) for _i in range(3)]
     for _f in mesh.Facets
 ]
 # A file, not stdout: FreeCADCmd's stdout capture can drop output at exit.
@@ -295,13 +455,15 @@ def check_printability(
     final_stl = prints_dir / f"{_safe_name(data['target'])}.stl"
     os.replace(tmp_stl, final_stl)
     stl_path = str(final_stl)
+    solid = [SolidFacet((f[0], f[1], f[2]), f[3], (f[4], f[5], f[6]), (f[7], f[8], f[9])) for f in data["facets"]]
     report = build_report(
         target=data["target"],
         checks=data["checks"],
         bbox=data["bbox"],
-        facets=(Facet(*f) for f in data["facets"]),
+        facets=(Facet(s.normal[2], s.area, s.lo[2], s.hi[2]) for s in solid),
         printer=printer,
         max_overhang_deg=float(max_overhang_deg),
+        solid_facets=solid,
     )
     return _ok(**report, stl_path=stl_path)
 
@@ -320,8 +482,10 @@ __all__ = (
     "DEFAULT_PRINTER",
     "Facet",
     "PrinterProfile",
+    "SolidFacet",
     "build_report",
     "check_printability",
+    "evaluate_orientations",
     "find_overhangs",
     "fit_build_volume",
     "printer_profile",

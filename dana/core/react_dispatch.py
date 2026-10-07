@@ -9716,7 +9716,12 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         verdict = "printable" if payload.get("printable") else "NOT printable"
         supports = "needs supports" if payload.get("requires_supports") else "no supports needed"
         warnings = payload.get("warnings") or []
-        return f"`{payload.get('target')}` is {verdict}, {supports}." + (" " + " ".join(warnings) if warnings else "")
+        hint = payload.get("remediation_hint")
+        return (
+            f"`{payload.get('target')}` is {verdict}, {supports}."
+            + (" " + " ".join(warnings) if warnings else "")
+            + (f" Fix: {hint}" if hint else "")
+        )
     if call.tool_id == "take_canvas_screenshot":
         return str(
             payload.get("summary") or payload.get("note") or payload.get("message") or "Captured the canvas viewport."

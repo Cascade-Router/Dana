@@ -21,7 +21,14 @@ import trimesh
 import dana.core.react_dispatch as rd
 from dana.platform.mock import MockFreeCADEngine
 from dana.plugins.freecad import engine, printability
-from dana.plugins.freecad.printability import DEFAULT_PRINTER, Facet, PrinterProfile, build_report
+from dana.plugins.freecad.printability import (
+    DEFAULT_PRINTER,
+    Facet,
+    PrinterProfile,
+    SolidFacet,
+    build_report,
+    evaluate_orientations,
+)
 from dana.plugins.os import file_system
 from dana.session_context import DEFAULT_SESSION_ID, set_session_id
 
@@ -183,6 +190,142 @@ def test_mock_engine_says_it_cannot_check_rather_than_guessing() -> None:
     assert result["ok"] is False and "real FreeCAD engine is required" in result["error"]
 
 
+# -- orientation analysis ---------------------------------------------------------------
+
+
+def _solid(mesh: trimesh.Trimesh) -> list[SolidFacet]:
+    tri = mesh.vertices[mesh.faces]
+    return [
+        SolidFacet(tuple(map(float, n)), float(a), tuple(map(float, lo)), tuple(map(float, hi)))
+        for n, a, lo, hi in zip(mesh.face_normals, mesh.area_faces, tri.min(axis=1), tri.max(axis=1))
+    ]
+
+
+def _union(*meshes: trimesh.Trimesh) -> trimesh.Trimesh:
+    pytest.importorskip("manifold3d")  # trimesh's boolean backend (requirements-dev.txt)
+    return trimesh.boolean.union(list(meshes))
+
+
+def _upright_tee() -> trimesh.Trimesh:
+    """A T in the XZ plane, 10 mm thick: a 40 mm stem under a 50 mm bar, whose
+    400 mm² underside overhangs as modelled."""
+    return _union(_box((0, 0, 0), (10, 10, 40)), _box((-20, 0, 40), (30, 10, 50)))
+
+
+def _jack() -> trimesh.Trimesh:
+    """Three 60 mm bars crossing at the origin: whichever bar stands up, the
+    other two stick out sideways with overhanging undersides."""
+    return _union(_box((-30, -5, -5), (30, 5, 5)), _box((-5, -30, -5), (5, 30, 5)), _box((-5, -5, -30), (5, 5, 30)))
+
+
+def _rotated(mesh: trimesh.Trimesh, rotation: dict[str, Any]) -> trimesh.Trimesh:
+    axis = {"X": [1, 0, 0], "Y": [0, 1, 0], "Z": [0, 0, 1]}[rotation["axis"]]
+    turned = mesh.copy()
+    turned.apply_transform(trimesh.transformations.rotation_matrix(math.radians(rotation["degrees"]), axis))
+    return turned
+
+
+def test_upright_tee_is_recommended_flat_and_the_rotation_really_removes_the_overhang() -> None:
+    tee = _upright_tee()
+    result = evaluate_orientations(_solid(tee))
+
+    assert result["current_orientation_printable"] is False
+    assert result["orientations"][0]["overhang_area_mm2"] == pytest.approx(400.0)
+    best = result["recommended_orientation"]
+    # Lying flat on a 10 mm face: support-free, biggest bed contact (the T's
+    # whole 900 mm² profile), 10 mm tall.
+    assert (best["up_axis"], best["rotation"], best["requires_supports"]) == ("+Y", {"axis": "X", "degrees": 90.0}, False)
+    assert best["bed_contact_mm2"] == pytest.approx(900.0) and best["height_mm"] == pytest.approx(10.0)
+    assert "rotated +90° about the part's X axis" in result["remediation_hint"]
+    assert "no supports needed" in result["remediation_hint"]
+    # Independent check of the rotation's sign: actually turning the mesh puts
+    # it in a pose the plain as-modelled check calls support-free.
+    turned = _report(_rotated(tee, best["rotation"]))
+    assert turned["requires_supports"] is False
+    assert turned["dimensions_mm"][2] == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize("pose", range(6))
+def test_every_listed_rotation_turns_its_up_axis_to_plus_z(pose: int) -> None:
+    entry = evaluate_orientations(_solid(_box((0, 0, 0), (10, 20, 30))))["orientations"][pose]
+    up = np.zeros(3)
+    up["XYZ".index(entry["up_axis"][1])] = 1.0 if entry["up_axis"][0] == "+" else -1.0
+    if entry["rotation"] is not None:
+        axis = np.eye(3)["XYZ".index(entry["rotation"]["axis"])]
+        up = trimesh.transformations.rotation_matrix(math.radians(entry["rotation"]["degrees"]), axis)[:3, :3] @ up
+    assert up == pytest.approx([0.0, 0.0, 1.0], abs=1e-9)
+
+
+def test_jack_needs_supports_in_every_orientation() -> None:
+    result = evaluate_orientations(_solid(_jack()))
+
+    assert result["current_orientation_printable"] is False
+    assert all(pose["requires_supports"] for pose in result["orientations"])
+    # All six poses are equally bad, so the current one is kept rather than
+    # suggesting a pointless rotation.
+    assert result["recommended_orientation"]["is_current"] is True
+    assert result["remediation_hint"].startswith("Needs supports in every principal orientation")
+    assert "Enable supports" in result["remediation_hint"]
+
+
+def test_part_that_already_prints_is_never_told_to_rotate() -> None:
+    # Lying on its 20x30 side would give more bed contact, but the part is
+    # already fine as modelled.
+    result = evaluate_orientations(_solid(_box((0, 0, 0), (10, 20, 30))))
+    assert result["current_orientation_printable"] is True
+    assert result["recommended_orientation"]["is_current"] is True
+    assert result["remediation_hint"] is None
+
+
+def test_too_tall_as_modelled_but_fits_lying_down() -> None:
+    result = evaluate_orientations(_solid(_box((0, 0, 0), (20, 20, 230))))  # MK4 is 220 mm tall
+    assert result["orientations"][0]["fit"] == "too_large"
+    best = result["recommended_orientation"]
+    # 230 mm only fits along the bed's 250 mm side, hence fits_rotated.
+    assert best["fit"] == "fits_rotated" and best["height_mm"] == pytest.approx(20.0)
+    assert "and it fits the bed if turned 90° on it" in result["remediation_hint"]
+
+
+def test_too_large_every_way() -> None:
+    result = evaluate_orientations(_solid(_box((0, 0, 0), (300, 300, 300))))
+    assert all(pose["fit"] == "too_large" for pose in result["orientations"])
+    assert result["remediation_hint"].startswith("Too large for the Prusa MK4")
+
+
+def test_mesh_defects_are_not_blamed_on_orientation() -> None:
+    box = _box((0, 0, 0), (10, 10, 10))
+    open_shell = trimesh.Trimesh(box.vertices, box.faces[:-2], process=False)
+    z = open_shell.vertices[open_shell.faces][:, :, 2]
+    report = build_report(
+        target="T",
+        checks={**_CLEAN, "mesh_solid": False, "closed_solid": False, "open_edges": 4},
+        bbox=list(open_shell.bounds.flatten()),
+        facets=[Facet(float(n), float(a), float(lo), float(hi))
+                for n, a, lo, hi in zip(open_shell.face_normals[:, 2], open_shell.area_faces, z.min(1), z.max(1))],
+        solid_facets=_solid(open_shell),
+    )
+    assert report["printable"] is False and report["current_orientation_printable"] is False
+    assert report["remediation_hint"].startswith("Repair the mesh first")
+
+
+def test_report_carries_orientation_fields_only_with_solid_facets() -> None:
+    tee = _upright_tee()
+    plain = _report(tee)
+    assert "recommended_orientation" not in plain
+    z = tee.vertices[tee.faces][:, :, 2]
+    full = build_report(
+        target="T",
+        checks=_CLEAN,
+        bbox=list(tee.bounds.flatten()),
+        facets=[Facet(float(n), float(a), float(lo), float(hi))
+                for n, a, lo, hi in zip(tee.face_normals[:, 2], tee.area_faces, z.min(1), z.max(1))],
+        solid_facets=_solid(tee),
+    )
+    # The as-modelled pose agrees with the original single-pose check.
+    assert full["requires_supports"] is True and full["orientations"][0]["requires_supports"] is True
+    assert full["overhangs"]["area_mm2"] == full["orientations"][0]["overhang_area_mm2"]
+
+
 # -- live: real FreeCAD -------------------------------------------------------------------
 
 _live = pytest.mark.skipif(
@@ -296,3 +439,38 @@ def test_live_unknown_object_is_a_clean_error() -> None:
 
     result = rd._tool_check_printability({"object_name": "Nope"}, RealFreeCADEngine(), None)
     assert result["ok"] is False and "Object not found: Nope" in result["error"]
+
+
+@pytest.mark.e2e
+@_live
+@pytest.mark.usefixtures("live_session")
+def test_live_upright_l_bracket_is_recommended_flat() -> None:
+    # Same upright L as the cantilever test: 300 mm² of arm overhangs as modelled.
+    _padded("XZ", [(0, 0), (10, 0), (10, 30), (40, 30), (40, 40), (0, 40)], 10)
+    report = _check()
+
+    assert report["printable"] is True and report["current_orientation_printable"] is False
+    best = report["recommended_orientation"]
+    # Lying on its side: the whole 700 mm² L profile on the bed, no supports.
+    assert best["up_axis"] in ("+Y", "-Y") and best["requires_supports"] is False
+    assert best["bed_contact_mm2"] == pytest.approx(700.0, rel=1e-3)
+    assert best["height_mm"] == pytest.approx(10.0, abs=1e-3)
+    assert "no supports needed" in report["remediation_hint"]
+
+
+@pytest.mark.e2e
+@_live
+@pytest.mark.usefixtures("live_session")
+def test_live_jack_needs_supports_every_way() -> None:
+    for name, size, corner in [
+        ("BarX", (60, 10, 10), (-30, -5, -5)),
+        ("BarY", (10, 60, 10), (-5, -30, -5)),
+        ("BarZ", (10, 10, 60), (-5, -5, -30)),
+    ]:
+        assert json.loads(engine.create_box(*size, name=name, placement=corner))["ok"]
+    assert json.loads(engine.apply_boolean("union", objects=["BarX", "BarY", "BarZ"], name="Jack"))["ok"]
+    report = _check(object_name="Jack")
+
+    assert report["printable"] is True and report["current_orientation_printable"] is False
+    assert all(pose["requires_supports"] for pose in report["orientations"])
+    assert report["remediation_hint"].startswith("Needs supports in every principal orientation")

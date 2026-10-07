@@ -22,9 +22,16 @@ TOOL_ID = "run_full_manufacturing_pipeline"
 class Recorder:
     """Fake handlers for every tool the pipeline could call, logging each call."""
 
-    def __init__(self, *, unprintable: frozenset[str] = frozenset(), fail: frozenset[str] = frozenset()):
+    def __init__(
+        self,
+        *,
+        unprintable: frozenset[str] = frozenset(),
+        needs_reorienting: frozenset[str] = frozenset(),
+        fail: frozenset[str] = frozenset(),
+    ):
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.unprintable = unprintable
+        self.needs_reorienting = needs_reorienting
         self.fail = fail
 
     def results(self, tool_id: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -51,13 +58,20 @@ class Recorder:
         if tool_id == "check_printability":
             name = args["object_name"]
             printable = name not in self.unprintable
+            fine = printable and name not in self.needs_reorienting
+            as_modelled = {"up_axis": "+Z", "rotation": None, "is_current": True, "requires_supports": False}
+            flat = {"up_axis": "+Y", "rotation": {"axis": "X", "degrees": 90.0}, "is_current": False,
+                    "requires_supports": False}
             return {
                 "ok": True,
                 "target": name,
                 "printable": printable,
-                "requires_supports": False,
+                "requires_supports": name in self.needs_reorienting,
                 "warnings": [] if printable else ["larger than the build volume"],
                 "stl_path": f"/ws/prints/{name}.stl",
+                "current_orientation_printable": fine,
+                "recommended_orientation": as_modelled if fine else flat,
+                "remediation_hint": None if fine else f"Print {name} rotated +90° about X: no supports needed.",
             }
         if tool_id == "slice_stl_to_gcode":
             return {"ok": True, "gcode_path": args["stl_filepath"].replace(".stl", "_sliced.gcode")}
@@ -157,6 +171,25 @@ def test_part_materials_reach_the_bom(monkeypatch: pytest.MonkeyPatch) -> None:
         "part_materials": {"Base": "Aluminum 6061"},
     }
     assert result.payload["bom"]["materials"] == ["Aluminum 6061", "PLA"]
+
+
+def test_parts_that_need_reorienting_carry_the_recommendation(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(needs_reorienting=frozenset({"Arm"}))
+    recorder.install(monkeypatch)
+
+    payload = _run(assembly_name="Kit").payload
+
+    base, arm = payload["parts"]
+    assert base["current_orientation_printable"] is True
+    assert "remediation_hint" not in base and "recommended_orientation" not in base
+    assert arm["current_orientation_printable"] is False
+    assert arm["recommended_orientation"]["rotation"] == {"axis": "X", "degrees": 90.0}
+    assert arm["remediation_hint"] == "Print Arm rotated +90° about X: no supports needed."
+    # Still printable, so still sliced (as modelled); the hint is surfaced, not acted on.
+    assert arm["gcode_path"] == "/ws/prints/Arm_sliced.gcode"
+    assert payload["orientation_hints"] == {"Arm": arm["remediation_hint"]}
+    assert "['Arm']" in payload["next_step"] and "orientation_hints" in payload["next_step"]
+    assert payload["complete"] is True
 
 
 def test_unprintable_part_is_not_sliced(monkeypatch: pytest.MonkeyPatch) -> None:
