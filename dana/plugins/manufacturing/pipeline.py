@@ -27,6 +27,7 @@ def execute_manufacturing_pipeline(
     run_tool: RunTool,
     *,
     material: str = "PLA",
+    part_materials: dict[str, str] | None = None,
     printer_profile: str = "mk4_default",
 ) -> dict[str, Any]:
     """Run every pre-print manufacturing step for ``assembly_name``.
@@ -54,7 +55,10 @@ def execute_manufacturing_pipeline(
         steps.append(entry)
         return result
 
-    bom = step("generate_assembly_bom", {"assembly_name": assembly, "material": material})
+    bom_args: dict[str, Any] = {"assembly_name": assembly, "material": material}
+    if part_materials:
+        bom_args["part_materials"] = part_materials
+    bom = step("generate_assembly_bom", bom_args)
     if not bom.get("ok"):
         return {
             "ok": False,
@@ -120,7 +124,7 @@ def execute_manufacturing_pipeline(
             "blueprint_pdf": blueprint.get("path") if blueprint.get("ok") else None,
             "gcode": [r["gcode_filepath"] for r in ready],
         },
-        "bom": {k: bom.get(k) for k in ("material", "part_count", "total_mass_g", "total_cost", "currency")},
+        "bom": {k: bom.get(k) for k in ("materials", "part_count", "total_mass_g", "total_cost", "currency")},
         "collisions": collisions.get("collisions") or [],
         "parts": parts,
         "steps": steps,

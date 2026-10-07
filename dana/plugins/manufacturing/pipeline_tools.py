@@ -13,7 +13,10 @@ from typing import Any
 
 
 def run_full_manufacturing_pipeline(
-    assembly_name: str, material: str = "PLA", printer_profile: str = "mk4_default"
+    assembly_name: str,
+    material: str = "PLA",
+    part_materials: dict[str, str] | None = None,
+    printer_profile: str = "mk4_default",
 ) -> dict[str, Any]:
     from dana.core import react_dispatch
     from dana.platform.factory import get_cad_engine
@@ -26,5 +29,5 @@ def run_full_manufacturing_pipeline(
         return react_dispatch.TOOL_HANDLERS[tool_id](args, engine, None)
 
     return execute_manufacturing_pipeline(
-        assembly_name, run_tool, material=material, printer_profile=printer_profile
+        assembly_name, run_tool, material=material, part_materials=part_materials, printer_profile=printer_profile
     )

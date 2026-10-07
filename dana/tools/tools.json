@@ -1298,7 +1298,7 @@
     {
       "id": "generate_assembly_bom",
       "read_only": true,
-      "description_en": "Bill of materials and cost estimate for an existing assembly (from create_freecad_assembly), for sourcing before dispatching parts to the printer/CNC pipeline. For every member part it reads the real solid volume (FreeCAD Shape.Volume), multiplies by the chosen material's density for mass and by its per-kg price for cost, and writes a CSV (Part Name, Volume (cm3), Mass (g), Material, Cost) to agent_workspace/exports/<assembly_name>_bom.csv, readable afterwards with read_file. Returns per-part rows plus total_mass_g/total_cost. Read-only: changes no geometry and needs no HITL approval. Plan handling is the same as any other tool: if the active task lists generate_assembly_bom in its expected_tools, a successful call completes that task automatically, so do NOT call mark_task_completed afterwards; only a task with no expected_tools needs a manual mark_task_completed. Costs are ballpark raw-material estimates, not quotes.",
+      "description_en": "Bill of materials and cost estimate for an existing assembly (from create_freecad_assembly), for sourcing before dispatching parts to the printer/CNC pipeline. For every member part it reads the real solid volume (FreeCAD Shape.Volume), multiplies by that part's material density for mass and by its per-kg price for cost (one material for all parts, or per part via part_materials), and writes a CSV (Part Name, Volume (cm3), Mass (g), Material, Density (g/cm3), Cost) to agent_workspace/exports/<assembly_name>_bom.csv, readable afterwards with read_file. Returns per-part rows plus total_mass_g/total_cost. Read-only: changes no geometry and needs no HITL approval. Plan handling is the same as any other tool: if the active task lists generate_assembly_bom in its expected_tools, a successful call completes that task automatically, so do NOT call mark_task_completed afterwards; only a task with no expected_tools needs a manual mark_task_completed. Costs are ballpark raw-material estimates, not quotes.",
       "parameters": [
         {
           "name": "assembly_name",
@@ -1310,7 +1310,13 @@
           "name": "material",
           "type": "string",
           "required": false,
-          "description_en": "Material every part is costed in. One of: 'PLA' (default), 'PETG', 'ABS', 'Aluminum 6061', 'Stainless Steel 304' (case-insensitive; '6061' and '304' also work)."
+          "description_en": "Default material, used for every part not listed in part_materials. One of: 'PLA' (default), 'PETG', 'ABS', 'Aluminum 6061', 'Stainless Steel 304' (case-insensitive; '6061' and '304' also work)."
+        },
+        {
+          "name": "part_materials",
+          "type": "object",
+          "required": false,
+          "description_en": "Per-part materials for a mixed assembly: {part_name: material}, e.g. {\"BasePlate\": \"Aluminum 6061\", \"Bracket\": \"PLA\"}. Parts not listed use material. Every name must be a part of the assembly and every material one of those listed for material, or the call fails without writing anything."
         }
       ]
     },

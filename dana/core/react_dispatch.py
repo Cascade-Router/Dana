@@ -5144,7 +5144,20 @@ def _tool_generate_assembly_bom(args: dict[str, Any], engine: Any, _cp: Any) -> 
             "ok": False,
             "error": f"unknown assembly_name '{assembly_name}' — create it first with create_freecad_assembly",
         }
-    return engine.generate_assembly_bom(assembly_name, str(args.get("material") or "PLA").strip())
+    part_materials = args.get("part_materials") or {}
+    if not isinstance(part_materials, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in part_materials.items()
+    ):
+        return {
+            "ok": False,
+            "error": "generate_assembly_bom: part_materials must map part names to material names, "
+            'e.g. {"BasePlate": "Aluminum 6061"}',
+        }
+    return engine.generate_assembly_bom(
+        assembly_name,
+        str(args.get("material") or "PLA").strip(),
+        {k.strip(): v.strip() for k, v in part_materials.items()} or None,
+    )
 
 
 _SIM_TARGET_PLATFORMS = frozenset({"isaac_sim", "gazebo", "ros2", "webots"})
@@ -9687,7 +9700,8 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         return f"Emergency-stopped {payload.get('printer')}; it needs a FIRMWARE_RESTART before the next print."
     if call.tool_id == "generate_assembly_bom":
         return (
-            f"BOM for `{payload.get('name')}` in {payload.get('material')}: {payload.get('part_count')} part(s), "
+            f"BOM for `{payload.get('name')}` in {', '.join(payload.get('materials') or [])}: "
+            f"{payload.get('part_count')} part(s), "
             f"{payload.get('total_mass_g')} g, {payload.get('total_cost')} {payload.get('currency')}. "
             f"Saved to {payload.get('path')}."
         )

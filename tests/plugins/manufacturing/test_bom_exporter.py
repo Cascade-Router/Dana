@@ -23,6 +23,7 @@ from dana.session_context import DEFAULT_SESSION_ID, set_session_id
 from dana.tools.schema import ToolCall
 
 PLA = bom_exporter.load_materials()["materials"]["PLA"]
+AL = bom_exporter.load_materials()["materials"]["Aluminum 6061"]
 
 
 @pytest.fixture(autouse=True)
@@ -72,8 +73,8 @@ def test_one_cm3_pla_cube_mass_and_cost(mock_call, tmp_path: Path) -> None:
     rows = _read_csv(str(path))
     assert rows[0] == list(bom_exporter.CSV_HEADER)
     assert len(rows) == 2
-    name, volume_cm3, mass_g, material, cost = rows[1]
-    assert (name, material) == ("Cube", "PLA")
+    name, volume_cm3, mass_g, material, density, cost = rows[1]
+    assert (name, material, float(density)) == ("Cube", "PLA", 1.24)
     assert float(volume_cm3) == pytest.approx(1.0)
     assert float(mass_g) == pytest.approx(1.24)
     assert float(cost) == pytest.approx(expected_cost, abs=1e-4)
@@ -116,8 +117,70 @@ def test_multi_part_rows_and_totals() -> None:
     assert result["ok"]
     assert [r["mass_g"] for r in result["parts"]] == [pytest.approx(16.0), pytest.approx(4.0)]
     assert result["total_mass_g"] == pytest.approx(20.0)
-    assert result["total_cost"] == pytest.approx(0.02 * result["cost_per_kg"])
+    assert result["total_cost"] == pytest.approx(0.02 * result["parts"][0]["cost_per_kg"])
     assert len(_read_csv(result["path"])) == 3
+
+
+def test_mixed_materials_cost_each_part_in_its_own_material() -> None:
+    # A 10 cm^3 aluminium plate and a 2 cm^3 PLA bracket.
+    parts = [{"name": "BasePlate", "volume_mm3": 10_000.0}, {"name": "Bracket", "volume_mm3": 2_000.0}]
+    result = bom_exporter.build_bom("Mount", parts, "PLA", {"BasePlate": "aluminium 6061"})
+
+    assert result["ok"], result
+    plate, bracket = result["parts"]
+    assert (plate["material"], plate["density_g_cm3"], plate["mass_g"]) == ("Aluminum 6061", 2.70, pytest.approx(27.0))
+    assert (bracket["material"], bracket["mass_g"]) == ("PLA", pytest.approx(2.48))
+    plate_cost = 27.0 / 1000 * AL["cost_per_kg"]
+    bracket_cost = 2.48 / 1000 * PLA["cost_per_kg"]
+    assert plate["cost"] == pytest.approx(plate_cost, abs=1e-4)
+    assert result["total_mass_g"] == pytest.approx(29.48)
+    assert result["total_cost"] == pytest.approx(plate_cost + bracket_cost, abs=1e-4)
+    assert result["materials"] == ["Aluminum 6061", "PLA"]
+    rows = _read_csv(result["path"])[1:]
+    assert [(r[0], r[3], float(r[4])) for r in rows] == [("BasePlate", "Aluminum 6061", 2.70), ("Bracket", "PLA", 1.24)]
+
+
+def test_part_materials_match_a_part_label_too() -> None:
+    parts = [{"name": "Box001", "label": "Lid", "volume_mm3": 1000.0}]
+    result = bom_exporter.build_bom("Case", parts, "PLA", {"Lid": "PETG"})
+    assert result["parts"][0]["material"] == "PETG"
+
+
+@pytest.mark.parametrize(
+    ("part_materials", "expected"),
+    [
+        pytest.param({"BasePlate": "titanium"}, "titanium", id="unknown-material"),
+        pytest.param({"Bolt": "PLA"}, "Bolt", id="unknown-part"),
+    ],
+)
+def test_bad_part_materials_fail_before_writing(part_materials: dict[str, str], expected: str, tmp_path: Path) -> None:
+    parts = [{"name": "BasePlate", "volume_mm3": 1000.0}]
+    result = bom_exporter.build_bom("Mount", parts, "PLA", part_materials)
+    assert not result["ok"]
+    assert expected in result["error"]
+    assert not (tmp_path / "exports").exists()
+
+
+def test_mixed_materials_through_the_tool(mock_call) -> None:
+    assert mock_call("create_freecad_box", name="BasePlate", length=50, width=20, height=10).ok
+    assert mock_call("create_freecad_box", name="Bracket", length=10, width=10, height=20).ok
+    assert mock_call("create_freecad_assembly", name="Mount").ok
+    assert mock_call("add_parts_to_assembly", assembly_name="Mount", part_names=["BasePlate", "Bracket"]).ok
+
+    result = mock_call("generate_assembly_bom", assembly_name="Mount", part_materials={"BasePlate": "6061"})
+    assert result.ok, result.message
+    by_name = {p["name"]: p for p in result.payload["parts"]}
+    assert by_name["BasePlate"]["mass_g"] == pytest.approx(10.0 * 2.70)
+    assert by_name["Bracket"]["mass_g"] == pytest.approx(2.0 * 1.24)
+    summary = rd.summarize_result(ToolCall(tool_id="generate_assembly_bom", arguments={}), result)
+    assert "Aluminum 6061, PLA" in summary
+
+
+def test_part_materials_must_be_a_name_to_material_mapping(mock_call) -> None:
+    assert mock_call("create_freecad_assembly", name="Mount").ok
+    result = mock_call("generate_assembly_bom", assembly_name="Mount", part_materials=["PLA"])
+    assert not result.ok
+    assert "part_materials" in result.message
 
 
 @pytest.mark.parametrize("volume", [0.0, -1000.0])
@@ -158,3 +221,33 @@ def test_real_freecad_volumes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     assert set(rows) == {"Cube", "Peg"}
     assert rows["Cube"]["mass_g"] == pytest.approx(1.24, abs=1e-4)
     assert rows["Peg"]["volume_cm3"] == pytest.approx(math.pi * 0.25, abs=1e-4)  # r=0.5 cm, h=1 cm
+
+
+@pytest.mark.e2e
+@pytest.mark.skipif(
+    fc_engine.detect_freecadcmd() is None,
+    reason="real FreeCADCmd not found (PATH or DANA_FREECADCMD_PATH) — this test drives the real engine",
+)
+def test_real_freecad_mixed_materials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dana.platform.win32 import RealFreeCADEngine
+
+    monkeypatch.setattr(fc_engine, "_OUTPUT_DIR", tmp_path / "freecad_output")
+    monkeypatch.setattr(fc_engine, "_EXPORT_DIR", tmp_path / "freecad_exports")
+    monkeypatch.setenv("DANA_HEADLESS", "true")
+    monkeypatch.delenv("DANA_OS_DRY_RUN", raising=False)
+    call = _dispatcher(RealFreeCADEngine())
+
+    assert call("create_freecad_box", name="BasePlate", length=100, width=50, height=4).ok  # 20 cm^3
+    assert call("create_freecad_box", name="Bracket", length=20, width=10, height=30, placement_z=4).ok  # 6 cm^3
+    assert call("create_freecad_assembly", name="Mount").ok
+    assert call("add_parts_to_assembly", assembly_name="Mount", part_names=["BasePlate", "Bracket"]).ok
+
+    result = call(
+        "generate_assembly_bom", assembly_name="Mount", material="PLA", part_materials={"BasePlate": "Aluminum 6061"}
+    )
+    assert result.ok, result.message
+    by_name = {p["name"]: p for p in result.payload["parts"]}
+    assert (by_name["BasePlate"]["material"], by_name["BasePlate"]["mass_g"]) == ("Aluminum 6061", pytest.approx(54.0))
+    assert (by_name["Bracket"]["material"], by_name["Bracket"]["mass_g"]) == ("PLA", pytest.approx(7.44))
+    expected_cost = 54.0 / 1000 * AL["cost_per_kg"] + 7.44 / 1000 * PLA["cost_per_kg"]
+    assert result.payload["total_cost"] == pytest.approx(expected_cost, abs=1e-4)

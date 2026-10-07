@@ -674,9 +674,13 @@ class BaseCADEngine(ABC):
         docstring)."""
 
     @abstractmethod
-    def generate_assembly_bom(self, assembly_name: str, material: str = "PLA") -> dict[str, Any]:
+    def generate_assembly_bom(
+        self, assembly_name: str, material: str = "PLA", part_materials: dict[str, str] | None = None
+    ) -> dict[str, Any]:
         """Read-only bill of materials for ``assembly_name``: every member
-        part's solid volume, its mass in ``material`` and that mass's cost,
+        part's solid volume, its mass in its material (``part_materials``
+        maps part name -> material; any part not listed uses ``material``)
+        and that mass's cost,
         written to ``agent_workspace/exports/<assembly_name>_bom.csv`` — see
         ``dana.plugins.manufacturing.bom_exporter.build_bom`` for the
         returned fields and the material library."""

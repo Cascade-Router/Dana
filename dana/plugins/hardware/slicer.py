@@ -37,6 +37,10 @@ DEFAULT_PROFILE = "mk4_default"
 MODEL_SUFFIXES = frozenset({".stl", ".3mf", ".obj"})
 SLICE_TIMEOUT_S = 600.0
 _PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# First bytes of Prusa's binary G-code (.bgcode). A profile with
+# binary_gcode = 1 writes it even into a .gcode-named --output file, and
+# Klipper/Moonraker (dispatch_to_printer's target) can only print text G-code.
+BINARY_GCODE_MAGIC = b"GCDE"
 _SLICER_NAMES = ("prusa-slicer-console", "prusa-slicer", "PrusaSlicer")
 _WINDOWS_DEFAULT = Path(r"C:\Program Files\Prusa3D\PrusaSlicer\prusa-slicer-console.exe")
 
@@ -125,6 +129,19 @@ def slice_stl_to_gcode(
 
     if not output.is_file():
         return {"ok": False, "error": f"slice_stl_to_gcode: slicer exited cleanly but wrote no G-code at {output}"}
+    with output.open("rb") as f:
+        is_binary = f.read(len(BINARY_GCODE_MAGIC)) == BINARY_GCODE_MAGIC
+    if is_binary:
+        # Deleted so a later dispatch_to_printer can't pick it up by path.
+        output.unlink(missing_ok=True)
+        return {
+            "ok": False,
+            "error": (
+                f"slice_stl_to_gcode: profile '{profile_name}' produced binary G-code (Prusa .bgcode format), "
+                "which Klipper/Moonraker can't print. In PrusaSlicer, turn off binary G-code in the printer "
+                "settings (binary_gcode = 0), re-export the profile and slice again."
+            ),
+        }
     return {
         "ok": True,
         "gcode_path": str(output.resolve()),

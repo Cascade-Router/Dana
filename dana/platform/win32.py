@@ -547,14 +547,16 @@ class RealFreeCADEngine(BaseCADEngine):
 
         return json.loads(engine.export_assembly_to_urdf(assembly_name, export_directory, density_kg_m3))
 
-    def generate_assembly_bom(self, assembly_name: str, material: str = "PLA") -> dict[str, Any]:
+    def generate_assembly_bom(
+        self, assembly_name: str, material: str = "PLA", part_materials: dict[str, str] | None = None
+    ) -> dict[str, Any]:
         from dana.plugins.freecad import engine
         from dana.plugins.manufacturing.bom_exporter import build_bom
 
         volumes = json.loads(engine.assembly_part_volumes(assembly_name))
         if not volumes.get("ok") or volumes.get("dry_run"):
             return volumes
-        return build_bom(volumes.get("name") or assembly_name, volumes["parts"], material)
+        return build_bom(volumes.get("name") or assembly_name, volumes["parts"], material, part_materials)
 
     def create_feature_on_face(
         self,

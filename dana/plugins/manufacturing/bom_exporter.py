@@ -28,7 +28,7 @@ _MATERIALS_PATH = Path(__file__).with_name("materials.json")
 # agent can read the CSV back with read_file after generating it.
 _EXPORT_DIR = AGENT_WORKSPACE_DIR / "exports"
 
-CSV_HEADER = ("Part Name", "Volume (cm3)", "Mass (g)", "Material", "Cost")
+CSV_HEADER = ("Part Name", "Volume (cm3)", "Mass (g)", "Material", "Density (g/cm3)", "Cost")
 
 _MM3_PER_CM3 = 1000.0
 
@@ -53,31 +53,52 @@ def resolve_material(name: str, library: dict[str, Any]) -> tuple[str, dict[str,
     return None
 
 
-def build_bom(assembly_name: str, parts: list[dict[str, Any]], material: str = "PLA") -> dict[str, Any]:
+def build_bom(
+    assembly_name: str,
+    parts: list[dict[str, Any]],
+    material: str = "PLA",
+    part_materials: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Compute mass and cost for every part in ``parts`` (``{"name",
-    "volume_mm3"}`` dicts) in ``material`` and write
+    "volume_mm3"}`` dicts, optionally with a ``"label"``) and write
     ``<agent_workspace>/exports/<assembly_name>_bom.csv``.
 
-    Returns ``{"ok": True, "path", "material", "currency", "parts": [...],
-    "total_mass_g", "total_cost", ...}``, or ``{"ok": False, "error"}`` for an
-    unknown material, an assembly with no solid parts, or a part whose volume
-    isn't positive (an open shell or inverted solid would otherwise produce a
-    silently wrong mass).
+    Each part is costed in ``part_materials[<its name or label>]`` if given,
+    else in ``material``. Every material and every ``part_materials`` key is
+    checked before anything is computed or written.
+
+    Returns ``{"ok": True, "path", "material" (the default), "materials" (all
+    used), "currency", "parts": [...], "total_mass_g", "total_cost", ...}``,
+    each part row carrying its own material, density, mass and cost. Returns
+    ``{"ok": False, "error"}`` for an unknown material, a ``part_materials``
+    key that names no part, an assembly with no solid parts, or a part whose
+    volume isn't positive (an open shell or inverted solid would otherwise
+    produce a silently wrong mass).
     """
     library = load_materials()
-    resolved = resolve_material(material, library)
-    if resolved is None:
+    overrides = part_materials or {}
+    resolved = {m: resolve_material(m, library) for m in {material, *overrides.values()}}
+    specs = {m: r for m, r in resolved.items() if r is not None}
+    unknown = sorted(set(resolved) - set(specs))
+    if unknown:
         return {
             "ok": False,
-            "error": f"generate_assembly_bom: unknown material {material!r} — choose one of "
+            "error": f"generate_assembly_bom: unknown material(s) {unknown} — choose from "
             f"{sorted(library['materials'])}",
         }
-    material_name, spec = resolved
     if not parts:
         return {
             "ok": False,
             "error": f"generate_assembly_bom: assembly {assembly_name!r} has no parts with solid geometry "
             "— add some with add_parts_to_assembly first",
+        }
+    known_names = {p["name"] for p in parts} | {p["label"] for p in parts if p.get("label")}
+    stray = sorted(k for k in overrides if k not in known_names)
+    if stray:
+        return {
+            "ok": False,
+            "error": f"generate_assembly_bom: part_materials names {stray}, which are not parts of "
+            f"{assembly_name!r} (its parts: {sorted(p['name'] for p in parts)})",
         }
     bad = [p["name"] for p in parts if not float(p.get("volume_mm3") or 0.0) > 0.0]
     if bad:
@@ -87,20 +108,27 @@ def build_bom(assembly_name: str, parts: list[dict[str, Any]], material: str = "
             "inverted solid) — fix their geometry before costing them",
         }
 
-    density = float(spec["density_g_cm3"])
-    cost_per_kg = float(spec["cost_per_kg"])
     rows = []
-    total_mass_g = 0.0
+    total_mass_g = total_cost = 0.0
     for part in parts:
+        choice = overrides.get(part["name"]) or overrides.get(part.get("label") or "") or material
+        material_name, spec = specs[choice]
+        density = float(spec["density_g_cm3"])
         volume_cm3 = float(part["volume_mm3"]) / _MM3_PER_CM3
         mass_g = volume_cm3 * density
+        cost = mass_g / 1000.0 * float(spec["cost_per_kg"])
         total_mass_g += mass_g
+        total_cost += cost
         rows.append(
             {
                 "name": part["name"],
+                "material": material_name,
+                "process": spec.get("process"),
+                "density_g_cm3": density,
+                "cost_per_kg": float(spec["cost_per_kg"]),
                 "volume_cm3": round(volume_cm3, 4),
                 "mass_g": round(mass_g, 4),
-                "cost": round(mass_g / 1000.0 * cost_per_kg, 4),
+                "cost": round(cost, 4),
             }
         )
 
@@ -111,19 +139,19 @@ def build_bom(assembly_name: str, parts: list[dict[str, Any]], material: str = "
         writer = csv.writer(f)
         writer.writerow(CSV_HEADER)
         for row in rows:
-            writer.writerow((row["name"], row["volume_cm3"], row["mass_g"], material_name, row["cost"]))
+            writer.writerow(
+                (row["name"], row["volume_cm3"], row["mass_g"], row["material"], row["density_g_cm3"], row["cost"])
+            )
 
     return {
         "ok": True,
         "name": assembly_name,
         "path": str(path),
-        "material": material_name,
-        "process": spec.get("process"),
-        "density_g_cm3": density,
-        "cost_per_kg": cost_per_kg,
+        "material": specs[material][0],
+        "materials": sorted({r["material"] for r in rows}),
         "currency": library["currency"],
         "parts": rows,
         "part_count": len(rows),
         "total_mass_g": round(total_mass_g, 4),
-        "total_cost": round(total_mass_g / 1000.0 * cost_per_kg, 4),
+        "total_cost": round(total_cost, 4),
     }

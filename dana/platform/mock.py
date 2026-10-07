@@ -1981,7 +1981,9 @@ class MockFreeCADEngine(BaseCADEngine):
             "driver": "mock",
         }
 
-    def generate_assembly_bom(self, assembly_name: str, material: str = "PLA") -> dict[str, Any]:
+    def generate_assembly_bom(
+        self, assembly_name: str, material: str = "PLA", part_materials: dict[str, str] | None = None
+    ) -> dict[str, Any]:
         import trimesh
 
         from dana.plugins.manufacturing.bom_exporter import build_bom
@@ -2024,7 +2026,7 @@ class MockFreeCADEngine(BaseCADEngine):
                 "volume is undefined — a real FreeCAD engine is required to cost them",
                 "driver": "mock",
             }
-        result = build_bom(assembly, parts, material)
+        result = build_bom(assembly, parts, material, part_materials)
         if result.get("ok"):
             result["driver"] = "mock"
             result["note"] = f"{_MOCK_NOTE_CAD}; volumes measured from the mock driver's trimesh meshes"

@@ -35,6 +35,7 @@ class Recorder:
                 "ok": True,
                 "path": "/ws/exports/Kit_bom.csv",
                 "material": args["material"],
+                "materials": sorted({args["material"], *args.get("part_materials", {}).values()}),
                 "parts": [{"name": "Base"}, {"name": "Arm"}],
                 "part_count": 2,
                 "total_mass_g": 12.5,
@@ -129,6 +130,7 @@ def test_runs_every_stage_in_order_and_stops_before_printing(monkeypatch: pytest
         "slice_stl_to_gcode:Arm.stl",
     ]
     assert recorder.calls[0][1] == {"assembly_name": "Kit", "material": "PETG"}
+    assert result.payload["bom"]["materials"] == ["PETG"]
     assert recorder.calls[3][1] == {"object_name": "Kit", "filename": "Kit_blueprint"}
     assert recorder.calls[5][1]["printer_profile"] == "mk4_default"
     payload = result.payload
@@ -140,6 +142,21 @@ def test_runs_every_stage_in_order_and_stops_before_printing(monkeypatch: pytest
     }
     assert [r["part"] for r in payload["ready_to_print"]] == ["Base", "Arm"]
     assert "dispatch_to_printer" in payload["next_step"]
+
+
+def test_part_materials_reach_the_bom(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder()
+    recorder.install(monkeypatch)
+
+    result = _run(assembly_name="Kit", part_materials={"Base": "Aluminum 6061"})
+
+    assert result.ok, result.message
+    assert recorder.calls[0][1] == {
+        "assembly_name": "Kit",
+        "material": "PLA",
+        "part_materials": {"Base": "Aluminum 6061"},
+    }
+    assert result.payload["bom"]["materials"] == ["Aluminum 6061", "PLA"]
 
 
 def test_unprintable_part_is_not_sliced(monkeypatch: pytest.MonkeyPatch) -> None:

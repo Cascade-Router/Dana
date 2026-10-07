@@ -28,7 +28,13 @@
           "name": "material",
           "type": "string",
           "required": false,
-          "description_en": "Material for the BOM's mass and cost: 'PLA' (default), 'PETG', 'ABS', 'Aluminum 6061' or 'Stainless Steel 304'."
+          "description_en": "Default material for the BOM's mass and cost: 'PLA' (default), 'PETG', 'ABS', 'Aluminum 6061' or 'Stainless Steel 304'."
+        },
+        {
+          "name": "part_materials",
+          "type": "object",
+          "required": false,
+          "description_en": "Per-part BOM materials, {part_name: material}; parts not listed use material. Same rules as generate_assembly_bom's part_materials."
         },
         {
           "name": "printer_profile",
