@@ -81,6 +81,14 @@ _MOCK_ASSEMBLY_MEMBERS: dict[str, dict[str, list[str]]] = {}
 # dict directly.
 _MOCK_KINEMATIC_JOINTS: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
 
+# apply_boolean's lineage, per session: result name -> {"operands": [...],
+# "applied": bool}. generate_assembly_bom reads it to leave consumed
+# operands out (the real engine's consumed-operand filter, which reads the
+# same thing off Part::Cut's Base/Tool links) and to refuse a result whose
+# boolean never ran ("applied": False — the trimesh boolean backend,
+# manifold3d, wasn't installed, so the "result" is the uncut base mesh).
+_MOCK_BOOLEAN_RESULTS: dict[str, dict[str, dict[str, Any]]] = {}
+
 
 def _mock_sketch_registry() -> dict[str, list[dict[str, Any]]]:
     """THIS session's own slice of ``_MOCK_SKETCH_GEOMETRY``."""
@@ -95,6 +103,11 @@ def _mock_body_tip_registry() -> dict[str, str]:
 def _mock_assembly_registry() -> dict[str, list[str]]:
     """THIS session's own slice of ``_MOCK_ASSEMBLY_MEMBERS``."""
     return _MOCK_ASSEMBLY_MEMBERS.setdefault(get_session_id(), {})
+
+
+def _mock_boolean_registry() -> dict[str, dict[str, Any]]:
+    """THIS session's own slice of ``_MOCK_BOOLEAN_RESULTS``."""
+    return _MOCK_BOOLEAN_RESULTS.setdefault(get_session_id(), {})
 
 
 def _mock_kinematic_joints_registry() -> dict[str, dict[str, dict[str, Any]]]:
@@ -481,13 +494,16 @@ class MockFreeCADEngine(BaseCADEngine):
             for other in meshes[1:]:
                 mesh = getattr(mesh, mesh_ops[op])(other)
             engine_note = _MOCK_NOTE_CAD
+            applied = True
         except BaseException:  # noqa: BLE001 — boolean engine unavailable in this container
             mesh = meshes[0]
             engine_note = f"{_MOCK_NOTE_CAD}; boolean engine unavailable, returned base unmodified"
+            applied = False
 
         out_path = _mesh_output_path(resolved_name)
         mesh.export(out_path)
         _mock_object_registry()[resolved_name] = str(out_path)
+        _mock_boolean_registry()[resolved_name] = {"operands": object_names, "applied": applied}
         return {
             "ok": True,
             "name": resolved_name,
@@ -1978,8 +1994,21 @@ class MockFreeCADEngine(BaseCADEngine):
         # which a closed trimesh mesh gives exactly (a box primitive is
         # exact; curved primitives are their tessellation). An open mesh has
         # no well-defined volume, so it is refused rather than guessed.
+        booleans = _mock_boolean_registry()
+        consumed = {op for entry in booleans.values() for op in entry["operands"]}
+        uncut = [n for n in members if n not in consumed and booleans.get(n, {}).get("applied") is False]
+        if uncut:
+            return {
+                "ok": False,
+                "error": f"generate_assembly_bom: the mock boolean for {uncut} never ran (trimesh's manifold3d "
+                "backend is not installed), so its mesh is the uncut base — install manifold3d or use a real "
+                "FreeCAD engine to cost it",
+                "driver": "mock",
+            }
         parts, open_meshes = [], []
         for name in members:
+            if name in consumed:
+                continue  # an input to a boolean result, not a separate part
             path = _mock_object_registry().get(name)
             if not path or not Path(path).is_file():
                 continue

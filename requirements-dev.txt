@@ -3,3 +3,6 @@ pytest>=8.0,<9
 pytest-timeout>=2.3,<3
 pytest-cov>=5,<8
 vulture>=2.11,<3
+# trimesh boolean backend: lets the mock CAD driver actually run cut/union/intersect
+# (tests/plugins/manufacturing/test_bom_boolean.py's mock cases need real cut volumes).
+manifold3d>=3,<4
