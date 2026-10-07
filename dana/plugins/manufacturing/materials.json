@@ -1,0 +1,11 @@
+{
+  "_comment": "Baseline material library for generate_assembly_bom (dana.plugins.manufacturing.bom_exporter). density_g_cm3 is the nominal solid density; cost_per_kg is a ballpark raw-stock price in the listed currency (filament spool for FDM, bar/plate stock for CNC) for early estimates, not a quote. Edit freely; keys are matched case-insensitively, as are aliases.",
+  "currency": "USD",
+  "materials": {
+    "PLA": {"density_g_cm3": 1.24, "cost_per_kg": 20.0, "process": "fdm", "aliases": []},
+    "PETG": {"density_g_cm3": 1.27, "cost_per_kg": 22.0, "process": "fdm", "aliases": ["PET-G"]},
+    "ABS": {"density_g_cm3": 1.04, "cost_per_kg": 20.0, "process": "fdm", "aliases": []},
+    "Aluminum 6061": {"density_g_cm3": 2.70, "cost_per_kg": 9.0, "process": "cnc", "aliases": ["6061", "AL6061", "Aluminium 6061", "6061-T6"]},
+    "Stainless Steel 304": {"density_g_cm3": 8.00, "cost_per_kg": 8.0, "process": "cnc", "aliases": ["304", "SS304", "304 Stainless Steel", "304 Stainless"]}
+  }
+}

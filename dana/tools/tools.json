@@ -1296,6 +1296,25 @@
       ]
     },
     {
+      "id": "generate_assembly_bom",
+      "read_only": true,
+      "description_en": "Bill of materials and cost estimate for an existing assembly (from create_freecad_assembly), for sourcing before dispatching parts to the printer/CNC pipeline. For every member part it reads the real solid volume (FreeCAD Shape.Volume), multiplies by the chosen material's density for mass and by its per-kg price for cost, and writes a CSV (Part Name, Volume (cm3), Mass (g), Material, Cost) to agent_workspace/exports/<assembly_name>_bom.csv, readable afterwards with read_file. Returns per-part rows plus total_mass_g/total_cost. Read-only: changes no geometry and needs no HITL approval. Plan handling is the same as any other tool: if the active task lists generate_assembly_bom in its expected_tools, a successful call completes that task automatically, so do NOT call mark_task_completed afterwards; only a task with no expected_tools needs a manual mark_task_completed. Costs are ballpark raw-material estimates, not quotes.",
+      "parameters": [
+        {
+          "name": "assembly_name",
+          "type": "string",
+          "required": true,
+          "description_en": "Name of the existing assembly container (from create_freecad_assembly) to cost."
+        },
+        {
+          "name": "material",
+          "type": "string",
+          "required": false,
+          "description_en": "Material every part is costed in. One of: 'PLA' (default), 'PETG', 'ABS', 'Aluminum 6061', 'Stainless Steel 304' (case-insensitive; '6061' and '304' also work)."
+        }
+      ]
+    },
+    {
       "id": "generate_simulation_wrapper",
       "description_en": "RL Pipeline bridge: writes a standalone Python simulation-loader script that loads a previously-exported .urdf (from export_assembly_to_urdf/generate_urdf_assembly) into a physics simulator, so a caller doesn't have to hand-write the loader boilerplate. For target_platform='isaac_sim': a standalone Isaac Sim script that boots SimulationApp, imports the URDF via the URDF importer extension, spawns it at the origin on a ground plane, and wraps it in a minimal Gym-style RL environment class with empty reset()/step() stubs operating on PyTorch tensors (reward/termination logic is left as TODOs — that's task-specific modeling only the caller can do). For 'gazebo': a ROS2 Python launch file that starts robot_state_publisher plus Gazebo (gazebo_ros's gazebo.launch.py) and spawns the robot into it via spawn_entity.py. For 'ros2': the same launch file shape with no Gazebo dependency — just robot_state_publisher/joint_state_publisher (e.g. for RViz2 visualization or a ros2_control-driven simulator). For 'webots': a Webots robot CONTROLLER script (not a standalone loader — Webots has no runtime call that ingests a raw .urdf; the URDF must first be converted offline to a PROTO via the separate urdf2webots tool and placed in your .wbt world file with this script set as its controller), which generically discovers every Motor-type device on the robot and wraps them in the same minimal Gym-style stub shape. Fails with a clear error if urdf_path doesn't resolve to a real file (same hallucinated-path guard generate_urdf_assembly's own mesh_path uses) rather than emitting a script that would immediately fail when run. Returns the written file's path plus exact run instructions for the chosen platform.",
       "parameters": [

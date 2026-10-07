@@ -145,6 +145,10 @@ _TOPOLOGY_MARKER = f"{_OK_MARKER}_TOPOLOGY"
 
 _TOPOLOGY_RE = re.compile(re.escape(_TOPOLOGY_MARKER) + r" (\[.*\])")
 
+_PART_VOLUMES_MARKER = f"{_OK_MARKER}_PART_VOLUMES"
+
+_PART_VOLUMES_RE = re.compile(re.escape(_PART_VOLUMES_MARKER) + r" (\[.*\])")
+
 _RESOLVED_UV_MARKER = f"{_OK_MARKER}_RESOLVED_UV"
 
 _RESOLVED_UV_RE = re.compile(re.escape(_RESOLVED_UV_MARKER) + r" (\{.*\})")
@@ -4004,6 +4008,74 @@ print("{marker} ok")
 """)
 
 _COLLISION_VOLUME_EPSILON = 1e-6
+
+_ASSEMBLY_PART_VOLUMES_SCRIPT = ("""\
+import FreeCAD as App
+import json
+
+""" + _RESOLVE_OBJECT_SNIPPET + _SESSION_OPEN_SNIPPET + """\
+assembly = resolve_object(doc, {assembly_name!r})
+if assembly is None:
+    raise RuntimeError("Object not found: " + {assembly_name!r})
+
+# Consumed-Operand Filter: same reasoning as export_assembly_to_urdf's own
+# copy -- a boolean's Base/Tool/Shapes inputs stay Group members but are no
+# longer separate material, so counting them would bill the same solid twice.
+_consumed_operands = set()
+for _obj in doc.Objects:
+    for _attr in ("Base", "Tool"):
+        _ref = getattr(_obj, _attr, None)
+        if _ref is not None and hasattr(_ref, "Name"):
+            _consumed_operands.add(_ref.Name)
+    for _ref in (getattr(_obj, "Shapes", None) or []):
+        if hasattr(_ref, "Name"):
+            _consumed_operands.add(_ref.Name)
+
+# Shape.Volume (mm^3) is the exact BRep volume, and on a Compound it is the
+# sum of every solid in it -- unlike CenterOfMass, it needs no unwrap.
+_parts = [
+    dict(name=m.Name, label=m.Label, volume_mm3=m.Shape.Volume)
+    for m in (getattr(assembly, "Group", []) or [])
+    if m.Name not in _consumed_operands
+    and getattr(m, "Shape", None) is not None and not m.Shape.isNull()
+]
+
+print("{marker}_PART_VOLUMES " + json.dumps(_parts))
+print("{marker} ok")
+""")
+
+def assembly_part_volumes(assembly_name: str) -> str:
+    """Read-only: the solid volume (mm^3, from each member's real
+    ``Shape.Volume``) of every part in ``assembly_name`` — the geometry half
+    of ``generate_assembly_bom``; the material/mass/cost half is
+    ``dana.plugins.manufacturing.bom_exporter``. Members with no geometry
+    (an empty sub-group) and consumed boolean operands are left out, same
+    membership rules as ``export_assembly_to_urdf``. Returns ``parts`` as a
+    list of ``{"name", "label", "volume_mm3"}`` dicts."""
+    assembly = (assembly_name or "").strip()
+    if not assembly:
+        return _error("assembly_part_volumes requires assembly_name")
+    if is_dry_run_enabled():
+        return _dry_run_result("assembly_part_volumes", name=assembly, parts=[])
+    session_path = _session_document_path()
+    if not session_path.is_file():
+        return _error(
+            "assembly_part_volumes: no session document yet — create an assembly with "
+            "create_freecad_assembly first"
+        )
+    script = _ASSEMBLY_PART_VOLUMES_SCRIPT.format(
+        assembly_name=assembly,
+        session_path=str(session_path),
+        session_doc_name=_SESSION_DOCUMENT_NAME,
+        marker=_OK_MARKER,
+    )
+    result = _run_freecad_script(script, require_marker=True)
+    if not result["ok"]:
+        return _error(f"assembly_part_volumes failed: {result['error']}")
+    m = _PART_VOLUMES_RE.search(result["stdout"] or "")
+    if not m:
+        return _error("assembly_part_volumes: FreeCAD script succeeded but printed no part volumes")
+    return _ok(name=assembly, parts=json.loads(m.group(1)), path=str(session_path))
 
 def validate_assembly_collisions(assembly_name: str) -> str:
     """Volumetric Validation Gate (Phase 2 of the layout safeguard, the

@@ -1965,6 +1965,42 @@ class MockFreeCADEngine(BaseCADEngine):
             "driver": "mock",
         }
 
+    def generate_assembly_bom(self, assembly_name: str, material: str = "PLA") -> dict[str, Any]:
+        import trimesh
+
+        from dana.plugins.manufacturing.bom_exporter import build_bom
+
+        assembly = (assembly_name or "").strip()
+        members = _mock_assembly_registry().get(assembly)
+        if members is None:
+            return {"ok": False, "error": f"generate_assembly_bom: no assembly named {assembly!r} in this session"}
+        # Unlike export_assembly_to_urdf, a BOM only needs each part's volume,
+        # which a closed trimesh mesh gives exactly (a box primitive is
+        # exact; curved primitives are their tessellation). An open mesh has
+        # no well-defined volume, so it is refused rather than guessed.
+        parts, open_meshes = [], []
+        for name in members:
+            path = _mock_object_registry().get(name)
+            if not path or not Path(path).is_file():
+                continue
+            mesh = trimesh.load(path, force="mesh")
+            if not mesh.is_watertight:
+                open_meshes.append(name)
+                continue
+            parts.append({"name": name, "volume_mm3": abs(float(mesh.volume))})
+        if open_meshes:
+            return {
+                "ok": False,
+                "error": f"generate_assembly_bom: mock mesh(es) for {open_meshes} are not closed, so their "
+                "volume is undefined — a real FreeCAD engine is required to cost them",
+                "driver": "mock",
+            }
+        result = build_bom(assembly, parts, material)
+        if result.get("ok"):
+            result["driver"] = "mock"
+            result["note"] = f"{_MOCK_NOTE_CAD}; volumes measured from the mock driver's trimesh meshes"
+        return result
+
     def create_feature_on_face(
         self,
         object_name: str,

@@ -2338,6 +2338,8 @@ _TOPOLOGY_INPUT_ARG_KEYS: dict[str, tuple[str, ...]] = {
     # same "assembly_name is also this call's own output name" reasoning as
     # define_kinematic_joint/export_assembly_to_urdf above.
     "validate_assembly_collisions": ("assembly_name",),
+    # generate_assembly_bom is read-only too — same reasoning.
+    "generate_assembly_bom": ("assembly_name",),
 }
 # export_freecad_model's target_objects is list-valued (not a single name)
 # and never produces its own topology_dag node — an export is a terminal
@@ -5130,6 +5132,21 @@ def _tool_export_assembly_to_urdf(args: dict[str, Any], engine: Any, _cp: Any) -
     )
 
 
+def _tool_generate_assembly_bom(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
+    assembly_name = str(args.get("assembly_name") or "").strip()
+    if not assembly_name:
+        return {"ok": False, "error": "generate_assembly_bom requires assembly_name"}
+    # Already redirected to its resolve_living_leaf, same as every other
+    # assembly tool's assembly_name above. The material is validated by the
+    # BOM exporter itself (behind the engine), which owns the material library.
+    if assembly_name not in _object_registry():
+        return {
+            "ok": False,
+            "error": f"unknown assembly_name '{assembly_name}' — create it first with create_freecad_assembly",
+        }
+    return engine.generate_assembly_bom(assembly_name, str(args.get("material") or "PLA").strip())
+
+
 _SIM_TARGET_PLATFORMS = frozenset({"isaac_sim", "gazebo", "ros2", "webots"})
 
 
@@ -5302,6 +5319,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "define_kinematic_joint": _tool_define_kinematic_joint,
     "validate_assembly_collisions": _tool_validate_assembly_collisions,
     "export_assembly_to_urdf": _tool_export_assembly_to_urdf,
+    "generate_assembly_bom": _tool_generate_assembly_bom,
     "generate_simulation_wrapper": _tool_generate_simulation_wrapper,
     "create_freecad_feature_on_face": _tool_create_freecad_feature_on_face,
     "batch_pattern_array": _tool_batch_pattern_array,
@@ -5743,6 +5761,7 @@ _FREECAD_TOOL_IDS = frozenset(
         "define_kinematic_joint",
         "validate_assembly_collisions",
         "export_assembly_to_urdf",
+        "generate_assembly_bom",
         "generate_simulation_wrapper",
         "create_freecad_feature_on_face",
         "batch_pattern_array",
@@ -9666,6 +9685,12 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         return f"Paused the print on {payload.get('printer')}."
     if call.tool_id == "emergency_stop":
         return f"Emergency-stopped {payload.get('printer')}; it needs a FIRMWARE_RESTART before the next print."
+    if call.tool_id == "generate_assembly_bom":
+        return (
+            f"BOM for `{payload.get('name')}` in {payload.get('material')}: {payload.get('part_count')} part(s), "
+            f"{payload.get('total_mass_g')} g, {payload.get('total_cost')} {payload.get('currency')}. "
+            f"Saved to {payload.get('path')}."
+        )
     if call.tool_id == "check_printability":
         verdict = "printable" if payload.get("printable") else "NOT printable"
         supports = "needs supports" if payload.get("requires_supports") else "no supports needed"
