@@ -180,7 +180,19 @@ def test_dxf_renders_to_svg_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     _write_part_dxf(dxf)
     svg_path = techdraw_export._render_dxf_to_svg(str(dxf), "bracket", (297.0, 210.0))
     svg = svg_path.read_text(encoding="utf-8")
-    assert svg_path.suffix == ".svg" and "<svg" in svg and "<path" in svg
+    assert svg_path.suffix == ".svg" and "<path" in svg
+    root = re.search(r'<svg[^>]*width="297mm" height="210mm" viewBox="0 0 ([\d.]+) ([\d.]+)"', svg)
+    assert root, svg[:300]
+    per_mm_x, per_mm_y = float(root[1]) / 297.0, float(root[2]) / 210.0
+    # 1:1 like the PDF: the 100x50 outline at (40, 60) mm keeps that size and
+    # position (SVG y runs down from the top edge: 210 - 110 = 100 mm).
+    outline = re.search(r'd="M ([\d.]+) ([\d.]+) l ([\d.]+) 0 l 0 -([\d.]+)', svg)
+    assert outline, svg
+    x, y, width, height = (float(v) for v in outline.groups())
+    assert x / per_mm_x == pytest.approx(40, abs=0.01)
+    assert y / per_mm_y == pytest.approx(210 - 60, abs=0.01)
+    assert width / per_mm_x == pytest.approx(100, abs=0.01)
+    assert height / per_mm_y == pytest.approx(50, abs=0.01)
 
 
 def test_pipeline_turns_the_freecad_dxf_into_pdf_and_svg_and_cleans_up(

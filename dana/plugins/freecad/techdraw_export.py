@@ -179,6 +179,7 @@ def _render_dxf_to_svg(dxf_path: str, name: str, page_size_mm: tuple[float, floa
     from ezdxf.addons.drawing import Frontend, RenderContext, layout
     from ezdxf.addons.drawing.config import BackgroundPolicy, ColorPolicy, Configuration
     from ezdxf.addons.drawing.svg import SVGBackend
+    from ezdxf.math import BoundingBox2d
 
     doc = ezdxf.readfile(dxf_path)
     width_mm, height_mm = page_size_mm
@@ -190,7 +191,15 @@ def _render_dxf_to_svg(dxf_path: str, name: str, page_size_mm: tuple[float, floa
     render_config = Configuration(background_policy=BackgroundPolicy.WHITE, color_policy=ColorPolicy.BLACK)
     Frontend(RenderContext(doc), backend, config=render_config).draw_layout(doc.modelspace(), finalize=True)
     page = layout.Page(width_mm, height_mm, units=layout.Units.mm)
-    svg_text = backend.get_string(page)
+    # 1:1 like the PDF: render exactly the page rectangle (TechDraw's DXF is
+    # in page millimetres) at scale 1. ezdxf's default fit_page=True instead
+    # scales the drawing's own extents to fill the page, so a 10 mm part
+    # came out page-sized.
+    svg_text = backend.get_string(
+        page,
+        settings=layout.Settings(fit_page=False, scale=1.0),
+        render_box=BoundingBox2d([(0.0, 0.0), (width_mm, height_mm)]),
+    )
 
     _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = _EXPORT_DIR / f"{_safe_name(name)}.svg"

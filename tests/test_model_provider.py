@@ -247,7 +247,6 @@ def test_complete_with_complexity_fallback_stays_local_when_disabled(
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(reason="Known failure: default OpenRouter model changed; test still expects meta-llama", strict=False)
 def test_resolve_openai_endpoint_openrouter_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     # This repo's .env now sets DANA_OPENROUTER_MODEL/OPENROUTER_SITE_URL/
     # OPENROUTER_APP_TITLE for local dev — silence ensure_dotenv_loaded()
@@ -262,10 +261,13 @@ def test_resolve_openai_endpoint_openrouter_defaults(monkeypatch: pytest.MonkeyP
     monkeypatch.delenv("HF_SPACE_URL", raising=False)
     monkeypatch.delenv("OPENROUTER_APP_TITLE", raising=False)
     provider = ModelProvider()
-    key, base, model, headers, _fallback_models = provider._resolve_openai_endpoint("openrouter")
+    key, base, model, headers, fallback_models = provider._resolve_openai_endpoint("openrouter")
     assert key == "test-openrouter-key"
     assert base == "https://openrouter.ai/api/v1"
-    assert model == "meta-llama/llama-3.3-70b-instruct:free"
+    # meta-llama/llama-3.3-70b-instruct:free stopped being free on OpenRouter
+    # (live 404); the built-in default is the verified replacement.
+    assert model == "nvidia/nemotron-3.5-lightning:free"
+    assert fallback_models == []
     assert headers["HTTP-Referer"] == "https://github.com/"
     assert headers["X-Title"] == "Dana CAD Agent"
 

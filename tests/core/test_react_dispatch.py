@@ -148,7 +148,6 @@ def test_parse_utterance_unknown_tool_id_from_llm_is_ignored(monkeypatch: pytest
     assert _parse("do something weird") is None
 
 
-@pytest.mark.xfail(reason="Known failure: provider is None where the test expects 'ollama'", strict=False)
 def test_parse_utterance_returns_first_proposed_tool_call(monkeypatch: pytest.MonkeyPatch) -> None:
     # Forces the local-Ollama default deterministically: tool_calling_provider()
     # otherwise resolves whatever this machine's own .env has configured
@@ -166,10 +165,17 @@ def test_parse_utterance_returns_first_proposed_tool_call(monkeypatch: pytest.Mo
     assert call.arguments == {"length": 60, "width": 40, "height": 20}
     assert call.raw_text == "Create a parametric 60x40x20mm box"
     # The tools handed to the LLM are exactly the wired subset, not the
-    # full tools.json registry (which also serves the legacy regex broker).
+    # full tools.json registry (which also serves the legacy regex broker),
+    # minus the screen-capture tools DANA_HEADLESS prunes (the suite runs
+    # headless; see test_headless_guard.py).
     tool_names = {t["function"]["name"] for t in fake.calls[0]["tools"]}
-    assert tool_names == rd._LLM_TOOL_IDS
-    assert fake.calls[0]["provider"] == "ollama"
+    pruned = rd.HEADLESS_PRUNED_TOOL_IDS if rd.is_headless() else frozenset()
+    assert tool_names == rd._LLM_TOOL_IDS - pruned
+    # A standard turn leaves the provider unset on purpose: provider=None hands
+    # the choice to llm_router's routing_config (see _call_llm_once). Only a
+    # turn that already decided (provider_override, the planning-phase lock)
+    # names one.
+    assert fake.calls[0]["provider"] is None
 
 
 # --------------------------------------------------------------------------
@@ -2879,7 +2885,6 @@ def test_dispatch_does_not_advance_on_failed_expected_tool(monkeypatch: pytest.M
     assert tasks_by_id[1]["status"] == "active"  # unchanged -- the model retries the SAME task
 
 
-@pytest.mark.xfail(reason="Known failure: block message wording changed ('out of order' no longer present)", strict=False)
 def test_dispatch_hard_blocks_tool_belonging_to_a_different_pending_task() -> None:
     """Hard-Blocking Policy, case 2: `perform_freecad_boolean` is task 2's
     own expected tool, not task 1's (the active one) -- positive evidence
@@ -2897,8 +2902,11 @@ def test_dispatch_hard_blocks_tool_belonging_to_a_different_pending_task() -> No
         control_plane,
     )
     assert result.ok is False
-    assert "out of order" in result.message.lower()
-    assert "task 2" in result.message.lower()
+    # Actionable: names the active task's declared tool and the ways forward.
+    message = result.message.lower()
+    assert "isn't task 1's declared tool" in message and "create_freecad_box" in message
+    assert "mark_task_completed" in message and "insert_task" in message
+    assert "out-of-order" in message
     # Never reached the engine -- the active task's own status is untouched.
     entry = rd._PLAN_STATE_REGISTRY[sid]
     tasks_by_id = {t["id"]: t for t in entry["tasks"]}
@@ -2906,12 +2914,13 @@ def test_dispatch_hard_blocks_tool_belonging_to_a_different_pending_task() -> No
     assert tasks_by_id[2]["status"] == "pending"
 
 
-@pytest.mark.xfail(reason="Known failure: unmapped tool is now blocked (ok=False)", strict=False)
-def test_dispatch_allows_unmapped_tool_without_advancing() -> None:
-    """Hard-Blocking Policy, case 3: a geometry tool that belongs to NO task
-    in the plan (a k=3 mapping gap, not evidence of skipping ahead) must be
-    ALLOWED through -- refusing on pure absence of evidence is exactly how
-    an unrecoverable stall happens."""
+def test_dispatch_blocks_a_tool_no_task_declared() -> None:
+    """Hard-Blocking Policy, case 3: a tool that belongs to NO task in the
+    plan used to be let through. Universal FSM Enforcement now refuses it
+    while the active task declares a tool (letting it through let the model
+    skip its own declared tool); the stall that permissiveness guarded
+    against is handled by the escape routes the message offers instead:
+    insert_task for a missing prerequisite, mark_task_completed to move on."""
     from dana.platform.mock import MockControlPlane, MockFreeCADEngine
 
     sid = "fsm-allow-unmapped-tool"
@@ -2924,15 +2933,16 @@ def test_dispatch_allows_unmapped_tool_without_advancing() -> None:
         engine,
         control_plane,
     )
-    assert result.ok is True
-    # Allowed, but NOT auto-advanced -- create_freecad_cylinder isn't task 1's
-    # expected tool, so there's nothing to confirm the task actually finished.
+    assert result.ok is False
+    message = result.message.lower()
+    assert "isn't task 1's declared tool" in message
+    assert "insert_task" in message and "mark_task_completed" in message
+    assert "UnmappedCylinder" not in rd._object_registry()  # never reached the engine
     entry = rd._PLAN_STATE_REGISTRY[sid]
     tasks_by_id = {t["id"]: t for t in entry["tasks"]}
     assert tasks_by_id[1]["status"] == "active"
 
 
-@pytest.mark.xfail(reason="Known failure: dispatch returns ok=False for a task with no expected tools", strict=False)
 def test_dispatch_parks_validating_for_task_with_no_expected_tools() -> None:
     """A task the k=3 mapping found nothing tool-shaped for (empty
     expected_tool_ids) cannot auto-advance -- ANY successful geometry tool
@@ -2967,9 +2977,12 @@ def test_dispatch_parks_validating_for_task_with_no_expected_tools() -> None:
     assert entry["fsm_state"] == "validating"
     assert entry["last_validation"] == {"task_id": 1, "tool_id": "create_freecad_box", "ok": True}
 
-    # mark_task_completed is the manual override that resolves it.
+    # mark_task_completed is the manual override that resolves it; it now
+    # has to name what the task produced (created_feature_names, required).
     resolve_result = rd.dispatch_tool_call(
-        ToolCall(tool_id="mark_task_completed", arguments={"task_id": 1}), engine, control_plane
+        ToolCall(tool_id="mark_task_completed", arguments={"task_id": 1, "created_feature_names": ["InspectionAid"]}),
+        engine,
+        control_plane,
     )
     assert resolve_result.ok is True
     assert rd._PLAN_STATE_REGISTRY[sid]["fsm_state"] == "done"

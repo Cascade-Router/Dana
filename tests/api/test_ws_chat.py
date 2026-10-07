@@ -217,17 +217,20 @@ def test_empty_reply_recovers_when_model_answers_on_retry(client: TestClient, mo
     assert events[-1]["content"] == "You're welcome!"
 
 
-@pytest.mark.xfail(reason="Known failure: error reply no longer carries the 'cloud HTTP 502' detail the test expects", strict=False)
 def test_llm_proxy_error_replies_gracefully_without_leaking_the_raw_failure(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A cloud provider 502/400 (dana.core.openai_tool_bridge already turns
     this into a RuntimeError, never a crash) must still end the turn with a
     generic apology — the raw failure text (provider internals: status
     codes, endpoint URLs, sometimes response bodies) has no business
-    reaching the chat bubble, so it's logged server-side (stderr) instead,
-    for whoever's actually debugging the outage."""
+    reaching the chat bubble, so it's logged server-side instead, for
+    whoever's actually debugging the outage: through telemetry.log_error
+    (logger + Sentry), which replaced the old print to stderr."""
     import dana.core.react_dispatch as react_dispatch
+
+    logged: list[dict[str, Any]] = []
+    monkeypatch.setattr(react_dispatch.telemetry, "log_error", lambda **fields: logged.append(fields))
 
     class _FailingProvider:
         def complete_with_tool_calls(self, *_a: Any, **_k: Any) -> dict:
@@ -244,9 +247,10 @@ def test_llm_proxy_error_replies_gracefully_without_leaking_the_raw_failure(
         assert "Bad Gateway" not in assistant["content"]
         assert "problem talking to the model" in assistant["content"]
 
-    captured = capsys.readouterr()
-    assert "cloud HTTP 502" in captured.err
-    assert "Bad Gateway" in captured.err
+    errors = [e for e in logged if e.get("stage") == "next_react_turn"]
+    assert errors, logged
+    assert errors[0]["exc_type"] == "RuntimeError"
+    assert "cloud HTTP 502" in errors[0]["detail"] and "Bad Gateway" in errors[0]["detail"]
 
 
 def test_mutating_tool_requires_hitl_approval_then_proceeds(
