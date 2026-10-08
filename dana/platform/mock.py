@@ -2018,7 +2018,14 @@ class MockFreeCADEngine(BaseCADEngine):
             if not mesh.is_watertight:
                 open_meshes.append(name)
                 continue
-            parts.append({"name": name, "volume_mm3": abs(float(mesh.volume))})
+            parts.append(
+                {
+                    "name": name,
+                    "volume_mm3": abs(float(mesh.volume)),
+                    "center_of_mass_mm": [float(v) for v in mesh.center_mass],
+                    "mesh": mesh,
+                }
+            )
         if open_meshes:
             return {
                 "ok": False,
@@ -2026,7 +2033,15 @@ class MockFreeCADEngine(BaseCADEngine):
                 "volume is undefined — a real FreeCAD engine is required to cost them",
                 "driver": "mock",
             }
-        result = build_bom(assembly, parts, material, part_materials)
+        # Same ground-contact rule as the real engine: vertices within 0.5 mm
+        # of the assembly's lowest Z (mesh vertices, since there is no BRep).
+        footprint: list[list[float]] = []
+        if parts:
+            ground = min(float(p["mesh"].bounds[0][2]) for p in parts)
+            for p in parts:
+                vertices = p.pop("mesh").vertices
+                footprint += [[float(v[0]), float(v[1])] for v in vertices if v[2] <= ground + 0.5]
+        result = build_bom(assembly, parts, material, part_materials, footprint_xy=footprint)
         if result.get("ok"):
             result["driver"] = "mock"
             result["note"] = f"{_MOCK_NOTE_CAD}; volumes measured from the mock driver's trimesh meshes"

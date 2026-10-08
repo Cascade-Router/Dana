@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from dana.paths import AGENT_WORKSPACE_DIR
+from dana.plugins.manufacturing.stability import stability_report
 
 _MATERIALS_PATH = Path(__file__).with_name("materials.json")
 
@@ -58,6 +59,7 @@ def build_bom(
     parts: list[dict[str, Any]],
     material: str = "PLA",
     part_materials: dict[str, str] | None = None,
+    footprint_xy: list[list[float]] | None = None,
 ) -> dict[str, Any]:
     """Compute mass and cost for every part in ``parts`` (``{"name",
     "volume_mm3"}`` dicts, optionally with a ``"label"``) and write
@@ -66,6 +68,12 @@ def build_bom(
     Each part is costed in ``part_materials[<its name or label>]`` if given,
     else in ``material``. Every material and every ``part_materials`` key is
     checked before anything is computed or written.
+
+    When every part carries ``center_of_mass_mm`` (assembly coordinates), the
+    result adds each row's center and ``assembly_center_of_mass_mm``, the
+    mass-weighted mean, so materials matter: a steel base pulls it toward
+    itself. With ``footprint_xy`` (the XY points the assembly stands on) it
+    also adds the static tip-over check from ``stability.stability_report``.
 
     Returns ``{"ok": True, "path", "material" (the default), "materials" (all
     used), "currency", "parts": [...], "total_mass_g", "total_cost", ...}``,
@@ -110,6 +118,8 @@ def build_bom(
 
     rows = []
     total_mass_g = total_cost = 0.0
+    weighted_center = [0.0, 0.0, 0.0]
+    has_centers = all(p.get("center_of_mass_mm") is not None for p in parts)
     for part in parts:
         choice = overrides.get(part["name"]) or overrides.get(part.get("label") or "") or material
         material_name, spec = specs[choice]
@@ -119,18 +129,21 @@ def build_bom(
         cost = mass_g / 1000.0 * float(spec["cost_per_kg"])
         total_mass_g += mass_g
         total_cost += cost
-        rows.append(
-            {
-                "name": part["name"],
-                "material": material_name,
-                "process": spec.get("process"),
-                "density_g_cm3": density,
-                "cost_per_kg": float(spec["cost_per_kg"]),
-                "volume_cm3": round(volume_cm3, 4),
-                "mass_g": round(mass_g, 4),
-                "cost": round(cost, 4),
-            }
-        )
+        row = {
+            "name": part["name"],
+            "material": material_name,
+            "process": spec.get("process"),
+            "density_g_cm3": density,
+            "cost_per_kg": float(spec["cost_per_kg"]),
+            "volume_cm3": round(volume_cm3, 4),
+            "mass_g": round(mass_g, 4),
+            "cost": round(cost, 4),
+        }
+        if has_centers:
+            center = [float(v) for v in part["center_of_mass_mm"]]
+            weighted_center = [w + mass_g * c for w, c in zip(weighted_center, center)]
+            row["center_of_mass_mm"] = [round(v, 3) for v in center]
+        rows.append(row)
 
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", assembly_name).strip("_") or "assembly"
     _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -143,7 +156,7 @@ def build_bom(
                 (row["name"], row["volume_cm3"], row["mass_g"], row["material"], row["density_g_cm3"], row["cost"])
             )
 
-    return {
+    result = {
         "ok": True,
         "name": assembly_name,
         "path": str(path),
@@ -155,3 +168,9 @@ def build_bom(
         "total_mass_g": round(total_mass_g, 4),
         "total_cost": round(total_cost, 4),
     }
+    if has_centers:
+        assembly_center = [w / total_mass_g for w in weighted_center]
+        result["assembly_center_of_mass_mm"] = [round(v, 3) for v in assembly_center]
+        if footprint_xy is not None:
+            result.update(stability_report(assembly_center, footprint_xy))
+    return result

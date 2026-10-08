@@ -556,7 +556,13 @@ class RealFreeCADEngine(BaseCADEngine):
         volumes = json.loads(engine.assembly_part_volumes(assembly_name))
         if not volumes.get("ok") or volumes.get("dry_run"):
             return volumes
-        return build_bom(volumes.get("name") or assembly_name, volumes["parts"], material, part_materials)
+        return build_bom(
+            volumes.get("name") or assembly_name,
+            volumes["parts"],
+            material,
+            part_materials,
+            footprint_xy=volumes.get("footprint_xy"),
+        )
 
     def create_feature_on_face(
         self,

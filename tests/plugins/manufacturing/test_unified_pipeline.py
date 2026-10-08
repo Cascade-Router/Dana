@@ -256,3 +256,22 @@ def test_no_clearance_warnings_by_default(monkeypatch: pytest.MonkeyPatch) -> No
     Recorder().install(monkeypatch)
     payload = _run(assembly_name="Kit").payload
     assert payload["clearance_warnings"] == [] and "Tight fits" not in payload["next_step"]
+
+
+def test_stability_verdict_is_surfaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder()
+    recorder.install(monkeypatch)
+    bom = recorder.results("generate_assembly_bom", {"material": "PLA"})
+    bom.update(
+        assembly_center_of_mass_mm=[34.0, 10.0, 13.0],
+        statically_stable=False,
+        stability_margin_mm=-14.0,
+        stability_warning="Assembly center of mass projects 14.0 mm outside the base footprint, so it will tip over.",
+    )
+    monkeypatch.setitem(rd.TOOL_HANDLERS, "generate_assembly_bom", lambda *_a, **_k: bom)
+
+    payload = _run(assembly_name="Kit").payload
+
+    assert payload["bom"]["statically_stable"] is False and payload["bom"]["stability_margin_mm"] == -14.0
+    assert payload["bom"]["assembly_center_of_mass_mm"] == [34.0, 10.0, 13.0]
+    assert "Stability: Assembly center of mass projects 14.0 mm outside" in payload["next_step"]

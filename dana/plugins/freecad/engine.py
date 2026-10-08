@@ -151,6 +151,13 @@ _PART_VOLUMES_MARKER = f"{_OK_MARKER}_PART_VOLUMES"
 
 _PART_VOLUMES_RE = re.compile(re.escape(_PART_VOLUMES_MARKER) + r" (\[.*\])")
 
+_FOOTPRINT_RE = re.compile(re.escape(f"{_OK_MARKER}_FOOTPRINT") + r" (\[.*\])")
+
+# Ground contact: points this close to the assembly's lowest Z count as
+# touching the ground; curved faces are tessellated this finely (mm).
+_GROUND_TOLERANCE_MM = 0.5
+_FOOTPRINT_DEFLECTION_MM = 0.1
+
 _RESOLVED_UV_MARKER = f"{_OK_MARKER}_RESOLVED_UV"
 
 _RESOLVED_UV_RE = re.compile(re.escape(_RESOLVED_UV_MARKER) + r" (\{.*\})")
@@ -4046,16 +4053,43 @@ for _obj in doc.Objects:
         if hasattr(_ref, "Name"):
             _consumed_operands.add(_ref.Name)
 
-# Shape.Volume (mm^3) is the exact BRep volume, and on a Compound it is the
-# sum of every solid in it -- unlike CenterOfMass, it needs no unwrap.
-_parts = [
-    dict(name=m.Name, label=m.Label, volume_mm3=m.Shape.Volume)
-    for m in (getattr(assembly, "Group", []) or [])
+_members = [
+    m for m in (getattr(assembly, "Group", []) or [])
     if m.Name not in _consumed_operands
     and getattr(m, "Shape", None) is not None and not m.Shape.isNull()
 ]
 
+def _center_of_mass(shape):
+    # CenterOfMass isn't defined on a Compound (a boolean result's Shape), so
+    # take the volume-weighted centre of its solids.
+    solids = shape.Solids
+    volume = sum(s.Volume for s in solids)
+    if not solids or volume <= 0:
+        c = shape.CenterOfMass
+        return [c.x, c.y, c.z]
+    return [sum(s.CenterOfMass[i] * s.Volume for s in solids) / volume for i in range(3)]
+
+# Shape.Volume (mm^3) is the exact BRep volume, and on a Compound it is the
+# sum of every solid in it -- unlike CenterOfMass, it needs no unwrap.
+_parts = [
+    dict(name=m.Name, label=m.Label, volume_mm3=m.Shape.Volume, center_of_mass_mm=_center_of_mass(m.Shape))
+    for m in _members
+]
+
+# Support footprint: every tessellation point within {ground_tol!r} mm of the
+# assembly's lowest Z (the ground plane), in XY.
+_footprint = set()
+if _members:
+    _ground_z = min(m.Shape.BoundBox.ZMin for m in _members)
+    for m in _members:
+        if m.Shape.BoundBox.ZMin > _ground_z + {ground_tol!r}:
+            continue
+        for _p in m.Shape.tessellate({deflection!r})[0]:
+            if _p.z <= _ground_z + {ground_tol!r}:
+                _footprint.add((round(_p.x, 4), round(_p.y, 4)))
+
 print("{marker}_PART_VOLUMES " + json.dumps(_parts))
+print("{marker}_FOOTPRINT " + json.dumps(sorted(_footprint)))
 print("{marker} ok")
 """)
 
@@ -4066,12 +4100,15 @@ def assembly_part_volumes(assembly_name: str) -> str:
     ``dana.plugins.manufacturing.bom_exporter``. Members with no geometry
     (an empty sub-group) and consumed boolean operands are left out, same
     membership rules as ``export_assembly_to_urdf``. Returns ``parts`` as a
-    list of ``{"name", "label", "volume_mm3"}`` dicts."""
+    list of ``{"name", "label", "volume_mm3", "center_of_mass_mm"}`` dicts
+    (assembly coordinates), and ``footprint_xy``: the XY points of the parts
+    within ``_GROUND_TOLERANCE_MM`` of the assembly's lowest Z, i.e. what it
+    stands on."""
     assembly = (assembly_name or "").strip()
     if not assembly:
         return _error("assembly_part_volumes requires assembly_name")
     if is_dry_run_enabled():
-        return _dry_run_result("assembly_part_volumes", name=assembly, parts=[])
+        return _dry_run_result("assembly_part_volumes", name=assembly, parts=[], footprint_xy=[])
     session_path = _session_document_path()
     if not session_path.is_file():
         return _error(
@@ -4080,6 +4117,8 @@ def assembly_part_volumes(assembly_name: str) -> str:
         )
     script = _ASSEMBLY_PART_VOLUMES_SCRIPT.format(
         assembly_name=assembly,
+        ground_tol=_GROUND_TOLERANCE_MM,
+        deflection=_FOOTPRINT_DEFLECTION_MM,
         session_path=str(session_path),
         session_doc_name=_SESSION_DOCUMENT_NAME,
         marker=_OK_MARKER,
@@ -4090,7 +4129,13 @@ def assembly_part_volumes(assembly_name: str) -> str:
     m = _PART_VOLUMES_RE.search(result["stdout"] or "")
     if not m:
         return _error("assembly_part_volumes: FreeCAD script succeeded but printed no part volumes")
-    return _ok(name=assembly, parts=json.loads(m.group(1)), path=str(session_path))
+    footprint = _FOOTPRINT_RE.search(result["stdout"] or "")
+    return _ok(
+        name=assembly,
+        parts=json.loads(m.group(1)),
+        footprint_xy=json.loads(footprint.group(1)) if footprint else [],
+        path=str(session_path),
+    )
 
 def validate_assembly_collisions(assembly_name: str) -> str:
     """Volumetric Validation Gate (Phase 2 of the layout safeguard, the

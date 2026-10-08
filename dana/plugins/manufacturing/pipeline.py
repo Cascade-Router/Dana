@@ -185,6 +185,8 @@ def execute_manufacturing_pipeline(
             f" Auto-oriented for printing: {auto_oriented} (only their print STL was rotated, see "
             "applied_orientation; the CAD model, URDF and drawing keep the modelled pose)."
         )
+    if bom.get("stability_warning"):
+        next_step += f" Stability: {bom['stability_warning']}"
     clearance_warnings = collisions.get("clearance_warnings") or []
     if clearance_warnings:
         tight = ", ".join(f"{w['part_a']}/{w['part_b']} ({w['clearance_mm']:g} mm)" for w in clearance_warnings)
@@ -216,7 +218,20 @@ def execute_manufacturing_pipeline(
             "blueprint_pdf": blueprint.get("path") if blueprint.get("ok") else None,
             "gcode": [r["gcode_filepath"] for r in ready],
         },
-        "bom": {k: bom.get(k) for k in ("materials", "part_count", "total_mass_g", "total_cost", "currency")},
+        "bom": {
+            k: bom.get(k)
+            for k in (
+                "materials",
+                "part_count",
+                "total_mass_g",
+                "total_cost",
+                "currency",
+                "assembly_center_of_mass_mm",
+                "statically_stable",
+                "stability_margin_mm",
+                "stability_warning",
+            )
+        },
         "collisions": collisions.get("collisions") or [],
         "clearance_warnings": clearance_warnings,
         "parts": parts,

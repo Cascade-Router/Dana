@@ -9785,6 +9785,14 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
             f"{payload.get('part_count')} part(s), "
             f"{payload.get('total_mass_g')} g, {payload.get('total_cost')} {payload.get('currency')}. "
             f"Saved to {payload.get('path')}."
+            + (
+                f" Center of mass {payload['assembly_center_of_mass_mm']} mm; "
+                + ("stable" if payload.get("statically_stable") else "NOT stable")
+                + f" (margin {payload.get('stability_margin_mm')} mm)."
+                if payload.get("assembly_center_of_mass_mm") and payload.get("statically_stable") is not None
+                else ""
+            )
+            + (f" {payload['stability_warning']}" if payload.get("stability_warning") else "")
         )
     if call.tool_id == "check_printability":
         verdict = "printable" if payload.get("printable") else "NOT printable"
