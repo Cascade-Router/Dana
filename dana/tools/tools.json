@@ -1650,6 +1650,12 @@
           "type": "boolean",
           "required": false,
           "description_en": "For an assembly: make the PDF a package with the assembly overview on page 1 and one dimensioned detail page per member part after it (each scaled on its own with the same scale setting; 'auto' fits each part), stamped 'PART: <name> | SCALE <s>'. Neighbouring parts hide each other's dimensions on the overview, so use this when a machinist or printer needs every part's size. The result adds page_count and part_sheets. Default false (single overview page); the SVG is always the overview only."
+        },
+        {
+          "name": "title_block",
+          "type": "object",
+          "required": false,
+          "description_en": "Engineering title block for the bottom-right corner, usually from generate_assembly_bom: {title, materials: [..], total_mass_g, total_cost_usd, center_of_mass_mm: [x, y, z], statically_stable, stability_margin_mm, parts: [BOM rows with name, material, mass_g, cost]}. Shows title, scale and units, materials, mass and cost, center of mass and stability on the overview, and each part's material, mass and cost on its part sheet; missing fields are left out. Omit for no title block."
         }
       ]
     },

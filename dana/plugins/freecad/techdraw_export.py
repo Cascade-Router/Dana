@@ -185,6 +185,8 @@ class _Label:
     y: float
     text: str
     vertical: bool
+    anchor: str = "middle"  # SVG text-anchor: "middle" (centred on x) or "start" (left edge at x)
+    size_mm: float = _DIM_TEXT_MM
 
 
 @dataclass(frozen=True)
@@ -293,11 +295,17 @@ def _scale_text(scale: float) -> str:
 
 
 def _fits_page(
-    boxes: dict[str, _Box], scale: float, page_size_mm: tuple[float, float], include_dimensions: bool
+    boxes: dict[str, _Box],
+    scale: float,
+    page_size_mm: tuple[float, float],
+    include_dimensions: bool,
+    bottom_row_floor_mm: float | None = None,
 ) -> bool:
     """Whether every view, scaled about its own centre, stays inside its
     quarter of the 2x2 view layout (and the page margin), leaving room for its
-    dimension callouts, so no two views or callouts overlap."""
+    dimension callouts, so no two views or callouts overlap.
+    ``bottom_row_floor_mm`` raises the bottom row's lower bound (a title
+    block below it)."""
     width_mm, height_mm = page_size_mm
     xs = sorted({spec["slot"][0] for spec in _VIEW_LAYOUT.values()})
     ys = sorted({spec["slot"][1] for spec in _VIEW_LAYOUT.values()})
@@ -306,6 +314,8 @@ def _fits_page(
         fx, fy = _VIEW_LAYOUT[name.lower()]["slot"]
         cell_x0, cell_x1 = (_PAGE_MARGIN_MM, x_split) if fx * width_mm < x_split else (x_split, width_mm - _PAGE_MARGIN_MM)
         cell_y0, cell_y1 = (_PAGE_MARGIN_MM, y_split) if fy * height_mm < y_split else (y_split, height_mm - _PAGE_MARGIN_MM)
+        if bottom_row_floor_mm is not None and fy * height_mm < y_split:
+            cell_y0 = max(cell_y0, bottom_row_floor_mm)
         allowance = _DIM_ALLOWANCE_MM if include_dimensions and name in _ORTHO_VIEWS else 0.0
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
         half_w, half_h = (x1 - x0) * scale / 2, (y1 - y0) * scale / 2
@@ -329,6 +339,66 @@ def _scale_views(doc: Any, boxes: dict[str, _Box], scale: float) -> None:
             entity.transform(m)
 
 
+# Engineering title block, bottom-right: a key column and a value column,
+# one row per field, in ISO 2.5 mm lettering.
+_TITLE_BLOCK_LAYER = "TitleBlock"
+_TITLE_BLOCK_WIDTH_MM = 120.0
+_TITLE_BLOCK_KEY_MM = 30.0
+_TITLE_BLOCK_ROW_MM = 5.5
+_TITLE_BLOCK_TEXT_MM = 2.5
+_TITLE_BLOCK_GAP_MM = 2.0  # block top -> lowest view callout
+
+
+def _title_block_top(row_count: int) -> float:
+    return _PAGE_MARGIN_MM + row_count * _TITLE_BLOCK_ROW_MM
+
+
+def _draw_title_block(doc: Any, rows: Sequence[tuple[str, str]], page_size_mm: tuple[float, float]) -> list[_Label]:
+    """Draw the block's border and grid into ``doc`` (black lines, both
+    renderers) and return its text as labels."""
+    x1 = page_size_mm[0] - _PAGE_MARGIN_MM
+    x0, xk = x1 - _TITLE_BLOCK_WIDTH_MM, x1 - _TITLE_BLOCK_WIDTH_MM + _TITLE_BLOCK_KEY_MM
+    y0, y1 = _PAGE_MARGIN_MM, _title_block_top(len(rows))
+    if _TITLE_BLOCK_LAYER not in doc.layers:
+        doc.layers.add(_TITLE_BLOCK_LAYER)
+    msp = doc.modelspace()
+    attribs = {"layer": _TITLE_BLOCK_LAYER}
+    msp.add_lwpolyline([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], close=True, dxfattribs=attribs)
+    msp.add_line((xk, y0), (xk, y1), dxfattribs=attribs)
+    for i in range(1, len(rows)):
+        y = y1 - i * _TITLE_BLOCK_ROW_MM
+        msp.add_line((x0, y), (x1, y), dxfattribs=attribs)
+    labels = []
+    for i, (key, value) in enumerate(rows):
+        y = y1 - (i + 0.5) * _TITLE_BLOCK_ROW_MM
+        labels.append(_Label(x0 + 1.5, y, key, False, anchor="start", size_mm=_TITLE_BLOCK_TEXT_MM))
+        labels.append(_Label(xk + 1.5, y, value, False, anchor="start", size_mm=_TITLE_BLOCK_TEXT_MM))
+    return labels
+
+
+def _raise_bottom_row(
+    doc: Any, boxes: dict[str, _Box], page_size_mm: tuple[float, float], floor_mm: float, include_dimensions: bool
+) -> None:
+    """Move the bottom-row views (Front, Right) up into the space between
+    ``floor_mm`` and the row split, keeping them level with each other, so a
+    title block in the corner never sits under the Right view."""
+    from ezdxf.math import Matrix44
+
+    height_mm = page_size_mm[1]
+    ys = sorted({spec["slot"][1] for spec in _VIEW_LAYOUT.values()})
+    y_split = (ys[0] + ys[-1]) / 2 * height_mm
+    allowance = _DIM_ALLOWANCE_MM if include_dimensions else 0.0
+    target = (floor_mm + allowance + y_split) / 2
+    msp = doc.modelspace()
+    for name, (_x0, y0, _x1, y1) in boxes.items():
+        if _VIEW_LAYOUT[name.lower()]["slot"][1] * height_mm >= y_split:
+            continue
+        shift = target - (y0 + y1) / 2
+        if shift > 0:
+            for entity in msp.query(f'*[layer=="View{name}"]'):
+                entity.transform(Matrix44.translate(0, shift, 0))
+
+
 @dataclass(frozen=True)
 class _Sheet:
     """A loaded, scaled and annotated page, ready for either renderer."""
@@ -346,26 +416,38 @@ def _load_page(
     include_dimensions: bool = True,
     scale: float | str = 1.0,
     title: str | None = None,
+    title_block: Sequence[tuple[str, str]] | None = None,
 ) -> _Sheet:
     """The exported DXF page (drawn 1:1 by TechDraw), rescaled to ``scale``
     ("auto": the largest of ``_ISO_SCALES`` that fits, else the smallest),
     with dimension lines added if requested. At 1:1 nothing is transformed and
     no scale note is added, so the output is exactly the unscaled page.
-    ``title`` stamps "<title> | SCALE <s>" in the corner, at any scale."""
+    ``title`` stamps "<title> | SCALE <s>" in the corner, at any scale.
+    ``title_block`` rows ((key, value) pairs; a SCALE row is inserted second)
+    draw an engineering title block there instead, and the bottom row of
+    views moves up to clear it."""
     import ezdxf
 
     doc = ezdxf.readfile(dxf_path)
     boxes = _view_boxes(doc)
+    floor = None
+    if title_block is not None:
+        floor = _title_block_top(len(title_block) + 1) + _TITLE_BLOCK_GAP_MM
+        _raise_bottom_row(doc, boxes, page_size_mm, floor, include_dimensions)
+        boxes = _view_boxes(doc)
     if scale == "auto":
-        fitting = [s for s in _ISO_SCALES if _fits_page(boxes, s, page_size_mm, include_dimensions)]
+        fitting = [s for s in _ISO_SCALES if _fits_page(boxes, s, page_size_mm, include_dimensions, floor)]
         factor = max(fitting) if fitting else min(_ISO_SCALES)
     else:
         factor = float(scale)
-    fits = _fits_page(boxes, factor, page_size_mm, include_dimensions)
+    fits = _fits_page(boxes, factor, page_size_mm, include_dimensions, floor)
     labels: list[_Label] = []
     if factor != 1.0:
         _scale_views(doc, boxes, factor)
-    if title or factor != 1.0:
+    if title_block is not None:
+        rows = [title_block[0], ("SCALE", f"{_scale_text(factor)}   (units: mm)"), *title_block[1:]]
+        labels += _draw_title_block(doc, rows, page_size_mm)
+    elif title or factor != 1.0:
         stamp = f"SCALE {_scale_text(factor)}"
         # Centred label: keep a long title clear of the page edge (~1 mm per character at 3.5 mm text).
         half_width = 20.0
@@ -428,9 +510,9 @@ def _sheet_figure(sheet: _Sheet, page_size_mm: tuple[float, float]) -> Any:
                 label.x,
                 label.y,
                 label.text,
-                fontsize=_DIM_TEXT_MM / 25.4 * 72,  # mm -> pt
+                fontsize=label.size_mm / 25.4 * 72,  # mm -> pt
                 color="black",
-                ha="center",
+                ha="left" if label.anchor == "start" else "center",
                 va="center",
                 rotation=90 if label.vertical else 0,
             )
@@ -447,6 +529,7 @@ def _render_dxf_to_pdf(
     include_dimensions: bool = True,
     scale: float | str = 1.0,
     extra_sheets: Sequence[_Sheet] = (),
+    title_block: Sequence[tuple[str, str]] | None = None,
 ) -> Path:
     """Renders a TechDraw-exported DXF page to a PDF, sized to the page's
     real physical dimensions — a pure Python step, no FreeCAD involved.
@@ -466,7 +549,7 @@ def _render_dxf_to_pdf(
     # guarantees this write always starts from a clean, unlocked state
     # regardless of what left the old one there.
     out_path.unlink(missing_ok=True)
-    sheets = [_load_page(dxf_path, page_size_mm, include_dimensions, scale), *extra_sheets]
+    sheets = [_load_page(dxf_path, page_size_mm, include_dimensions, scale, title_block=title_block), *extra_sheets]
     # TrueType (42) instead of matplotlib's default Type 3 fonts, so the
     # dimension labels can be searched and copied out of the PDF.
     with matplotlib.rc_context({"pdf.fonttype": 42}):
@@ -502,8 +585,8 @@ def _svg_labels(svg_text: str, labels: list[_Label], page_size_mm: tuple[float, 
         x, y = label.x * scale, (page_size_mm[1] - label.y) * scale
         rotate = f' transform="rotate(-90 {x:.0f} {y:.0f})"' if label.vertical else ""
         elements.append(
-            f'<text x="{x:.0f}" y="{y:.0f}" font-size="{_DIM_TEXT_MM * scale:.0f}" font-family="sans-serif" '
-            f'fill="#000000" text-anchor="middle" dominant-baseline="central"{rotate}>{escape(label.text)}</text>'
+            f'<text x="{x:.0f}" y="{y:.0f}" font-size="{label.size_mm * scale:.0f}" font-family="sans-serif" '
+            f'fill="#000000" text-anchor="{label.anchor}" dominant-baseline="central"{rotate}>{escape(label.text)}</text>'
         )
     return svg_text.replace("</svg>", '<g class="dimensions">' + "".join(elements) + "</g></svg>", 1)
 
@@ -514,6 +597,7 @@ def _render_dxf_to_svg(
     page_size_mm: tuple[float, float],
     include_dimensions: bool = True,
     scale: float | str = 1.0,
+    title_block: Sequence[tuple[str, str]] | None = None,
 ) -> tuple[Path, _Sheet]:
     """Renders a TechDraw-exported DXF page to SVG — same pure-Python,
     no-FreeCAD step as ``_render_dxf_to_pdf`` above (headless SVG export via
@@ -534,7 +618,7 @@ def _render_dxf_to_svg(
     from ezdxf.addons.drawing.svg import SVGBackend
     from ezdxf.math import BoundingBox2d
 
-    sheet = _load_page(dxf_path, page_size_mm, include_dimensions, scale)
+    sheet = _load_page(dxf_path, page_size_mm, include_dimensions, scale, title_block=title_block)
     doc = sheet.doc
     width_mm, height_mm = page_size_mm
     backend = SVGBackend()
@@ -565,6 +649,46 @@ def _render_dxf_to_svg(
     return out_path, sheet
 
 
+def _mass_cost(mass_g: Any, cost_usd: Any) -> str | None:
+    parts = []
+    if mass_g is not None:
+        parts.append(f"{float(mass_g):.2f} g")
+    if cost_usd is not None:
+        parts.append(f"est. ${float(cost_usd):.2f}")
+    return ", ".join(parts) or None
+
+
+def _overview_rows(block: dict[str, Any], default_title: str) -> list[tuple[str, str]]:
+    """Title-block rows for the assembly/part sheet; fields without a value
+    are left out (the SCALE row is added by _load_page)."""
+    rows = [("TITLE", str(block.get("title") or default_title))]
+    if block.get("materials"):
+        rows.append(("MATERIALS", ", ".join(str(m) for m in block["materials"])))
+    mass_cost = _mass_cost(block.get("total_mass_g"), block.get("total_cost_usd"))
+    if mass_cost:
+        rows.append(("MASS / COST", mass_cost))
+    if block.get("center_of_mass_mm"):
+        rows.append(("CoM (mm)", "(" + ", ".join(f"{float(v):.2f}" for v in block["center_of_mass_mm"]) + ")"))
+    if block.get("statically_stable") is not None:
+        verdict = "STABLE" if block["statically_stable"] else "UNSTABLE"
+        margin = block.get("stability_margin_mm")
+        rows.append(("STABILITY", verdict + (f" ({float(margin):+.2f} mm)" if margin is not None else "")))
+    return rows
+
+
+def _part_rows(block: dict[str, Any], part_name: str) -> list[tuple[str, str]]:
+    """Title-block rows for one part's detail sheet, from the matching entry
+    of ``block["parts"]`` (BOM rows: name, material, mass_g, cost)."""
+    row = next((p for p in block.get("parts") or [] if p.get("name") == part_name), {})
+    rows = [("PART", part_name)]
+    if row.get("material"):
+        rows.append(("MATERIAL", str(row["material"])))
+    mass_cost = _mass_cost(row.get("mass_g"), row.get("cost"))
+    if mass_cost:
+        rows.append(("MASS / COST", mass_cost))
+    return rows
+
+
 def generate_2d_blueprint(
     source_path: str,
     views: Sequence[str] | None = None,
@@ -574,6 +698,7 @@ def generate_2d_blueprint(
     include_dimensions: bool = True,
     scale: float | str = 1.0,
     include_part_sheets: bool = False,
+    title_block: dict[str, Any] | None = None,
 ) -> str:
     """Projects orthographic (Front/Top/Right) and/or Isometric views of the
     object in ``source_path`` onto a standard drawing page and exports a PDF
@@ -596,6 +721,15 @@ def generate_2d_blueprint(
     the single overview sheet. The result adds ``page_count`` and
     ``part_sheets`` (each part's name, scale and view dimensions); without
     the flag, or for a single part, the PDF is the usual single page.
+
+    ``title_block`` (e.g. from the BOM: ``title``, ``materials``,
+    ``total_mass_g``, ``total_cost_usd``, ``center_of_mass_mm``,
+    ``statically_stable``, ``stability_margin_mm``, and ``parts`` as BOM rows)
+    puts an engineering title block in the bottom-right corner of the sheet
+    (title, scale and units, materials, mass and cost, center of mass,
+    stability; missing fields are left out), and on each part sheet a block
+    with that part's material, mass and cost. The bottom row of views moves
+    up to clear it. Without it the sheets are unchanged.
 
     ``object_name`` picks the object inside ``source_path`` (by Name, then
     Label, then case-insensitively, like the engine's other tools). Every
@@ -641,6 +775,9 @@ def generate_2d_blueprint(
             f"must be one of {', '.join(sorted(_VIEW_LAYOUT))}"
         )
 
+    if title_block is not None and not isinstance(title_block, dict):
+        return _error("generate_2d_blueprint: title_block must be an object of title-block fields")
+
     resolved_name = filename or target.stem
     if is_dry_run_enabled():
         return _dry_run_result(
@@ -673,6 +810,7 @@ def generate_2d_blueprint(
     os.close(fd)
     os.unlink(dxf_path)
     sheets_dir = tempfile.mkdtemp(prefix="dana_part_sheets_") if include_part_sheets else None
+    overview_rows = _overview_rows(title_block, object_name or resolved_name) if title_block is not None else None
     try:
         script = _BLUEPRINT_SCRIPT.format(
             resolve_snippet=_RESOLVE_OBJECT_SNIPPET,
@@ -694,7 +832,12 @@ def generate_2d_blueprint(
             manifest = Path(sheets_dir) / "manifest.json" if sheets_dir else None
             for entry in json.loads(manifest.read_text(encoding="utf-8")) if manifest and manifest.is_file() else []:
                 sheet = _load_page(
-                    entry["dxf"], _PAGE_SIZES_MM[size_key], include_dimensions, scale, title=f"PART: {entry['name']}"
+                    entry["dxf"],
+                    _PAGE_SIZES_MM[size_key],
+                    include_dimensions,
+                    scale,
+                    title=f"PART: {entry['name']}",
+                    title_block=_part_rows(title_block, entry["name"]) if title_block is not None else None,
                 )
                 part_sheets.append((entry["name"], sheet))
             pdf_path = _render_dxf_to_pdf(
@@ -704,13 +847,14 @@ def generate_2d_blueprint(
                 include_dimensions,
                 scale,
                 extra_sheets=[sheet for _name, sheet in part_sheets],
+                title_block=overview_rows,
             )
         except Exception as exc:  # noqa: BLE001 — surface as a normal tool failure, not a crash
             return _error(f"generate_2d_blueprint: DXF->PDF conversion failed: {exc}")
 
         try:
             svg_path, sheet = _render_dxf_to_svg(
-                dxf_path, resolved_name, _PAGE_SIZES_MM[size_key], include_dimensions, scale
+                dxf_path, resolved_name, _PAGE_SIZES_MM[size_key], include_dimensions, scale, title_block=overview_rows
             )
         except Exception as exc:  # noqa: BLE001 — surface as a normal tool failure, not a crash
             return _error(f"generate_2d_blueprint: DXF->SVG conversion failed: {exc}")

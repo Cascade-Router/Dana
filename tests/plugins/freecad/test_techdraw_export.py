@@ -146,8 +146,10 @@ def _pdf_text(pdf: bytes) -> list[str]:
     runs are TJ arrays of 2-byte strings, e.g. [ (\\x001) 0.58 (\\x000) ] TJ."""
     runs = []
     for array in re.findall(rb"\[(.*?)\]\s*TJ", _pdf_content(pdf), re.S):
-        chars = b"".join(re.findall(rb"\((.*?)(?<!\\)\)", array, re.S))
-        runs.append(chars.replace(b"\x00", b"").decode("latin-1"))
+        chars = b"".join(re.findall(rb"\((.*?)(?<!\\)\)", array, re.S)).replace(b"\x00", b"")
+        # PDF literal-string escapes: \( \) \\ for the characters themselves.
+        chars = re.sub(rb"\\([()\\])", rb"\1", chars)
+        runs.append(chars.decode("latin-1"))
     return runs
 
 
@@ -497,6 +499,134 @@ def test_assembly_package_has_an_overview_then_one_sheet_per_part(
     assert f"PART: BasePlate | SCALE {plate['scale']}" in texts and f"PART: Pin | SCALE {pin['scale']}" in texts
     assert "220 mm" in texts and "30 mm" in texts
     assert not seen["dir"].exists(), "the per-part DXFs must be cleaned up"
+
+
+# -- title block ------------------------------------------------------------------------
+
+_SUMMARY = {
+    "title": "Rig",
+    "materials": ["Stainless Steel 304", "PLA"],
+    "total_mass_g": 78.88,
+    "total_cost_usd": 0.6312,
+    "center_of_mass_mm": [17.5456, 10.0, 11.3],
+    "statically_stable": True,
+    "stability_margin_mm": 2.4544,
+    "parts": [
+        {"name": "BasePlate", "material": "Stainless Steel 304", "mass_g": 64.0, "cost": 0.512},
+        {"name": "Pin", "material": "PLA", "mass_g": 14.88, "cost": 0.2976},
+    ],
+}
+
+
+def _blueprint_with_fake_freecad(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_path: str, **kwargs: Any
+) -> dict[str, Any]:
+    """generate_2d_blueprint with FreeCADCmd mocked: a 100 x 50 x 20 overview,
+    plus a 220 x 120 x 10 plate and an 8 x 8 x 30 pin when part sheets are
+    asked for."""
+    monkeypatch.delenv("DANA_OS_DRY_RUN", raising=False)
+    monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
+
+    def fake_freecad(script: str, **_kw: Any) -> dict[str, Any]:
+        _write_views_dxf(Path(re.search(r"writeDXFPage\(page, '([^']+)'\)", script)[1]), 100, 50, 20)
+        sheets = re.search(r"os\.path\.join\('([^']+)', \"manifest\.json\"\)", script)
+        if sheets:
+            entries = []
+            for i, (name, size) in enumerate([("BasePlate", (220, 120, 10)), ("Pin", (8, 8, 30))]):
+                path = Path(sheets[1]) / f"part_{i}.dxf"
+                _write_views_dxf(path, *size)
+                entries.append({"name": name, "dxf": str(path)})
+            (Path(sheets[1]) / "manifest.json").write_text(json.dumps(entries), encoding="utf-8")
+        return {"ok": True, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(techdraw_export, "_run_freecad_script", fake_freecad)
+    result = json.loads(generate_2d_blueprint(existing_path, object_name="Rig", **kwargs))
+    assert result["ok"] is True, result
+    return result
+
+
+def test_title_block_shows_the_bom_summary_in_svg_and_pdf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_path: str
+) -> None:
+    pytest.importorskip("matplotlib")
+    result = _blueprint_with_fake_freecad(tmp_path, monkeypatch, existing_path, scale="auto", title_block=_SUMMARY)
+
+    expected = {
+        "TITLE", "Rig",
+        "SCALE", f"{result['scale']}   (units: mm)",
+        "MATERIALS", "Stainless Steel 304, PLA",
+        "MASS / COST", "78.88 g, est. $0.63",
+        "CoM (mm)", "(17.55, 10.00, 11.30)",
+        "STABILITY", "STABLE (+2.45 mm)",
+    }
+    svg_texts = set(_svg_texts(Path(result["svg_path"]).read_text(encoding="utf-8")))
+    assert expected <= svg_texts
+    assert expected <= set(_pdf_text(Path(result["path"]).read_bytes()))
+    # The block replaces the bare corner stamp; the scale is one of its rows.
+    assert not any(t.startswith("SCALE ") for t in svg_texts)
+
+
+def test_views_and_callouts_clear_the_title_block(tmp_path: Path) -> None:
+    from ezdxf import bbox
+
+    dxf = tmp_path / "page.dxf"
+    _write_views_dxf(dxf, 100, 50, 20)
+    rows = techdraw_export._overview_rows(_SUMMARY, "Rig")
+    sheet = techdraw_export._load_page(str(dxf), _A4, scale="auto", title_block=rows)
+
+    block_top = techdraw_export._title_block_top(len(rows) + 1)
+    msp = sheet.doc.modelspace()
+    block = bbox.extents(msp.query('*[layer=="TitleBlock"]'))
+    assert block.extmax.y == pytest.approx(block_top) and block.extmax.x <= 297 - 10 + 1e-6
+    right = techdraw_export._view_boxes(sheet.doc)["Right"]
+    front = techdraw_export._view_boxes(sheet.doc)["Front"]
+    # The Right view sits over the block with room for its callouts below it,
+    # still level with the Front view.
+    assert right[1] - techdraw_export._DIM_ALLOWANCE_MM >= block_top
+    assert (right[1] + right[3]) / 2 == pytest.approx((front[1] + front[3]) / 2)
+    assert sheet.fits_page is True
+
+
+def test_unstable_assembly_says_so() -> None:
+    rows = dict(techdraw_export._overview_rows({**_SUMMARY, "statically_stable": False, "stability_margin_mm": -14}, "Rig"))
+    assert rows["STABILITY"] == "UNSTABLE (-14.00 mm)"
+
+
+def test_missing_fields_are_left_out() -> None:
+    assert techdraw_export._overview_rows({}, "Bracket") == [("TITLE", "Bracket")]
+
+
+def test_title_block_none_is_byte_identical(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
+    dxf = tmp_path / "page.dxf"
+    _write_views_dxf(dxf, 100, 50, 20)
+    plain, _ = techdraw_export._render_dxf_to_svg(str(dxf), "plain", _A4)
+    explicit, _ = techdraw_export._render_dxf_to_svg(str(dxf), "explicit", _A4, title_block=None)
+    titled, _ = techdraw_export._render_dxf_to_svg(str(dxf), "titled", _A4, title_block=[("TITLE", "Rig")])
+    assert plain.read_text(encoding="utf-8") == explicit.read_text(encoding="utf-8")
+    assert plain.read_text(encoding="utf-8") != titled.read_text(encoding="utf-8")
+
+
+def test_part_sheets_get_their_own_title_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_path: str
+) -> None:
+    pytest.importorskip("matplotlib")
+    result = _blueprint_with_fake_freecad(
+        tmp_path, monkeypatch, existing_path, scale="auto", include_part_sheets=True, title_block=_SUMMARY
+    )
+
+    assert result["page_count"] == 3
+    texts = _pdf_text(Path(result["path"]).read_bytes())
+    for row in ("PART", "BasePlate", "Pin", "MATERIAL", "64.00 g, est. $0.51", "14.88 g, est. $0.30"):
+        assert row in texts, row
+    assert texts.count("Stainless Steel 304") == 1  # the plate's sheet; the overview lists it with PLA
+    assert "Stainless Steel 304, PLA" in texts and "STABLE (+2.45 mm)" in texts
+    assert not any(t.startswith("PART: ") for t in texts)  # block instead of the bare stamp
+
+
+def test_title_block_must_be_an_object(existing_path: str) -> None:
+    result = json.loads(generate_2d_blueprint(existing_path, title_block="Rig"))  # type: ignore[arg-type]
+    assert result["ok"] is False and "title_block" in result["error"]
 
 
 def test_pipeline_reports_a_freecad_failure_without_rendering(

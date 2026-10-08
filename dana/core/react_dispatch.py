@@ -4571,6 +4571,7 @@ def _tool_generate_2d_blueprint(args: dict[str, Any], _engine: Any, _cp: Any) ->
             include_dimensions=args.get("include_dimensions") is not False,
             scale=args.get("scale") if args.get("scale") not in (None, "") else 1.0,
             include_part_sheets=args.get("include_part_sheets") is True,
+            title_block=args.get("title_block"),
         )
     )
 

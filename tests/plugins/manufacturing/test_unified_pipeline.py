@@ -145,9 +145,15 @@ def test_runs_every_stage_in_order_and_stops_before_printing(monkeypatch: pytest
     ]
     assert recorder.calls[0][1] == {"assembly_name": "Kit", "material": "PETG"}
     assert result.payload["bom"]["materials"] == ["PETG"]
-    assert recorder.calls[3][1] == {
+    blueprint_args = dict(recorder.calls[3][1])
+    title_block = blueprint_args.pop("title_block")
+    assert blueprint_args == {
         "object_name": "Kit", "filename": "Kit_blueprint", "scale": "auto", "include_part_sheets": True
     }
+    # The BOM's numbers go onto the sheets' title blocks.
+    assert (title_block["title"], title_block["materials"], title_block["total_mass_g"]) == ("Kit", ["PETG"], 12.5)
+    assert title_block["total_cost_usd"] == 0.25
+    assert [p["name"] for p in title_block["parts"]] == ["Base", "Arm"]
     assert recorder.calls[5][1]["printer_profile"] == "mk4_default"
     payload = result.payload
     assert payload["artifacts"] == {

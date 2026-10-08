@@ -49,6 +49,30 @@ def _orientation_to_apply(check: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _title_block(assembly: str, bom: dict[str, Any]) -> dict[str, Any]:
+    """generate_2d_blueprint's title_block from a BOM result (USD costs only;
+    another currency is left off rather than shown with the wrong sign)."""
+    usd = (bom.get("currency") or "USD") == "USD"
+    return {
+        "title": assembly,
+        "materials": bom.get("materials"),
+        "total_mass_g": bom.get("total_mass_g"),
+        "total_cost_usd": bom.get("total_cost") if usd else None,
+        "center_of_mass_mm": bom.get("assembly_center_of_mass_mm"),
+        "statically_stable": bom.get("statically_stable"),
+        "stability_margin_mm": bom.get("stability_margin_mm"),
+        "parts": [
+            {
+                "name": p["name"],
+                "material": p.get("material"),
+                "mass_g": p.get("mass_g"),
+                "cost": p.get("cost") if usd else None,
+            }
+            for p in bom.get("parts") or []
+        ],
+    }
+
+
 def _orient_stl(stl_path: str, rotation: dict[str, Any]) -> str:
     """Write ``stl_path`` turned by ``rotation`` ({"axis", "degrees"}, about the
     part's own axes, as check_printability reports it) and lowered so its
@@ -121,10 +145,17 @@ def execute_manufacturing_pipeline(
 
     # Named after the assembly: the default is the source file's name, which
     # for every session object is the shared Session_Active document.
-    # "auto" scale: an assembly's size isn't known up front, and 1:1 only suits mid-sized ones.
+    # "auto" scale: an assembly's size isn't known up front, and 1:1 only suits
+    # mid-sized ones. The title blocks carry the BOM's numbers onto the sheets.
     blueprint = step(
         "generate_2d_blueprint",
-        {"object_name": assembly, "filename": f"{assembly}_blueprint", "scale": "auto", "include_part_sheets": True},
+        {
+            "object_name": assembly,
+            "filename": f"{assembly}_blueprint",
+            "scale": "auto",
+            "include_part_sheets": True,
+            "title_block": _title_block(assembly, bom),
+        },
     )
 
     parts: list[dict[str, Any]] = []

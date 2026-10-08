@@ -171,3 +171,49 @@ def test_assembly_package_scales_each_part_on_its_own_sheet() -> None:
     by_view = {name: {d["view"]: (d["width_mm"], d["height_mm"]) for d in s["dimensions"]} for name, s in sheets.items()}
     assert by_view["BasePlate"] == {"Front": (200.0, 10.0), "Top": (200.0, 150.0), "Right": (150.0, 10.0)}
     assert by_view["Pin"] == {"Front": (10.0, 30.0), "Top": (10.0, 10.0), "Right": (10.0, 30.0)}
+
+
+def test_assembly_package_carries_title_blocks() -> None:
+    """Overview title block with the assembly summary; each part sheet with
+    its own material, mass and cost."""
+    import re
+    import zlib
+
+    plate = _ok(engine.create_box(200, 150, 10, name="BasePlate"))
+    _ok(engine.create_box(10, 10, 30, name="Pin", placement=(95, 70, 10)))
+    _ok(engine.create_assembly("Rig"))
+    _ok(engine.add_parts_to_assembly("Rig", ["BasePlate", "Pin"]))
+    block = {
+        "title": "Rig",
+        "materials": ["Aluminum 6061", "PLA"],
+        "total_mass_g": 813.72,
+        "total_cost_usd": 7.32,
+        "center_of_mass_mm": [100.0, 75.0, 5.2],
+        "statically_stable": True,
+        "stability_margin_mm": 75.0,
+        "parts": [
+            {"name": "BasePlate", "material": "Aluminum 6061", "mass_g": 810.0, "cost": 7.29},
+            {"name": "Pin", "material": "PLA", "mass_g": 3.72, "cost": 0.0744},
+        ],
+    }
+
+    result = _ok(
+        techdraw_export.generate_2d_blueprint(
+            plate["path"], filename="rig", object_name="Rig", scale="auto", include_part_sheets=True, title_block=block
+        )
+    )
+
+    assert result["page_count"] == 3 and all(s["fits_page"] for s in result["part_sheets"]) and result["fits_page"]
+    pdf = Path(result["path"]).read_bytes()
+    content = b""
+    for raw in re.findall(rb"stream\r?\n(.*?)\r?\nendstream", pdf, re.S):
+        try:
+            content += zlib.decompress(raw)
+        except zlib.error:
+            content += raw
+    chars = b"".join(re.findall(rb"\((.*?)(?<!\\)\)", content, re.S)).replace(b"\x00", b"")
+    text = re.sub(rb"\\([()\\])", rb"\1", chars)
+    text = text.decode("latin-1")
+    for expected in ("Aluminum 6061, PLA", "813.72 g, est. $7.32", "(100.00, 75.00, 5.20)", "STABLE (+75.00 mm)",
+                     "BasePlate", "810.00 g, est. $7.29", "Pin", "3.72 g, est. $0.07"):
+        assert expected in text, expected
