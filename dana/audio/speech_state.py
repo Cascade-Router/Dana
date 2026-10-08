@@ -106,6 +106,8 @@ WHISPER_AMBIENT_SILENT = frozenset(
         "www.youtube.com",
         "thanks for listening",
         "thank you for listening",
+        # distil-whisper's usual output for near-silence (whole transcript only).
+        "you know",
     }
 )
 

@@ -5,13 +5,11 @@ from __future__ import annotations
 from dana.tools.stt_corrector import (
     correct_stt,
     correct_titan_codename_stt,
-    reload_vocabulary,
     strip_trailing_punctuation_hallucinations,
 )
 
 
 def test_notepad_phonetic_corrections() -> None:
-    reload_vocabulary()
     assert correct_stt("open no it's bad") == "open Notepad"
     assert correct_stt("notes pad") == "Notepad"
     assert correct_stt("notes, bad") == "Notepad"
@@ -24,7 +22,6 @@ def test_notepad_phonetic_corrections() -> None:
 
 
 def test_titan_codename_corrections() -> None:
-    reload_vocabulary()
     assert correct_stt("activate the json initiative") == "activate the Titan initiative"
     assert correct_stt("Dana, activate the Jason initiative") == (
         "Dana, activate the Titan initiative"

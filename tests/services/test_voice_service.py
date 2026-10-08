@@ -34,7 +34,7 @@ def test_no_hardware_stays_idle_without_crashing(monkeypatch: pytest.MonkeyPatch
     states: list[tuple[str, str]] = []
     service = VoiceService(on_state=lambda s, t: states.append((s, t)))
 
-    assert service.hardware_available is False
+    assert service._hardware_available is False
     service.start()
     time.sleep(0.1)
     assert service.state == "idle"
@@ -165,6 +165,48 @@ def test_transcribe_logs_failures_instead_of_swallowing_them(monkeypatch: pytest
     monkeypatch.setattr(stt, "ensure_whisper_bundle", still_loading)
     assert VoiceService._transcribe(np.zeros(1600, dtype=np.int16)) == ""
     assert logged and "still loading" in logged[0]
+
+
+def test_capture_records_at_the_device_rate_and_hands_whisper_16k(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real capture loop with a fake 48 kHz mic: one second of speech,
+    then silence. resolve_live_input_device returns (device, rate, reason);
+    unpacking two values used to raise, silently forcing 16 kHz capture, and
+    nothing resampled a native-rate capture before Whisper."""
+    import types
+
+    import dana.audio.devices as devices
+
+    rate = 48000
+    chunk = int(rate * 0.5)
+    t = np.arange(chunk) / rate
+    tone = (8000 * np.sin(2 * np.pi * 440 * t)).astype(np.int16)
+    frames = [tone, tone] + [np.zeros(chunk, dtype=np.int16)] * 4
+    opened: dict[str, int] = {}
+
+    class FakeStream:
+        def __init__(self, *, device, samplerate, channels, dtype):
+            opened["rate"] = samplerate
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self, n):
+            return frames.pop(0).reshape(-1, 1), False
+
+    monkeypatch.setitem(sys.modules, "sounddevice", types.SimpleNamespace(InputStream=FakeStream))
+    monkeypatch.setattr(devices, "resolve_live_input_device", lambda *a, **k: (None, rate, "default_live"))
+    monkeypatch.setattr(VoiceService, "_probe_hardware", staticmethod(lambda: False))
+
+    audio = VoiceService()._capture_utterance()
+
+    assert opened["rate"] == rate  # the device's own rate, not a forced 16 kHz
+    assert audio is not None and len(audio) == 16000  # 1 s of speech, resampled to 16 kHz
+    # Still the same tone: 440 Hz at 16 kHz has a 36.4-sample period.
+    spectrum = np.abs(np.fft.rfft(audio))
+    assert np.argmax(spectrum) * 16000 / len(audio) == pytest.approx(440, abs=2)
 
 
 def test_audio_modules_import_without_pytest_path_injection() -> None:

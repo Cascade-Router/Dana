@@ -36,12 +36,6 @@ def _load_vocabulary() -> dict[str, str]:
     return mapping
 
 
-def reload_vocabulary() -> None:
-    """Clear cache so tests / hot-edits pick up vocabulary.json changes."""
-    global _phrase_map, _phrase_patterns
-    _phrase_map = None
-    _phrase_patterns = None
-    _load_vocabulary()
 
 
 def correct_titan_codename_stt(text: str) -> str:

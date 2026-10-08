@@ -48,7 +48,7 @@ class VoiceService:
     ``on_state`` fires on every state transition as ``(state, transcript)`` —
     ``transcript`` is only non-empty on the ``"speaking"`` transition, once
     an utterance has been finalized. The caller never has to poll: register
-    a callback and read ``.state``/``.hardware_available`` for diagnostics.
+    a callback and read ``.state`` for diagnostics.
     """
 
     def __init__(self, on_state: StateCallback | None = None) -> None:
@@ -65,10 +65,6 @@ class VoiceService:
     @property
     def state(self) -> VoiceState:
         return self._state
-
-    @property
-    def hardware_available(self) -> bool:
-        return self._hardware_available
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -194,11 +190,14 @@ class VoiceService:
             import sounddevice as sd
 
             from dana.audio.devices import resolve_live_input_device
+            from dana.audio.stt import resample_to_16k
         except Exception as exc:  # noqa: BLE001
             log_exception("VoiceService", "audio capture dependencies failed to import", exc=exc)
             return None
         try:
-            device, rate = resolve_live_input_device()
+            # (device, native rate, reason). This used to unpack two values, so
+            # it always raised and silently fell back to the default @ 16 kHz.
+            device, rate, _reason = resolve_live_input_device()
         except Exception as exc:  # noqa: BLE001
             log("VoiceService", f"input device lookup failed ({exc}); using system default @ 16 kHz")
             device, rate = None, 16000
@@ -231,7 +230,9 @@ class VoiceService:
 
         if not chunks:
             return None
-        return np.concatenate(chunks)
+        # Captured at the device's native rate (often 44.1/48 kHz); Whisper
+        # is fed 16 kHz, so resample rather than mislabel the samples.
+        return resample_to_16k(np.concatenate(chunks), rate)
 
     @staticmethod
     def _transcribe(audio: "np.ndarray") -> str:

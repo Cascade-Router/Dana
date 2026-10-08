@@ -94,30 +94,7 @@ GENERAL_TOOLS_DIR: Path = PROJECT_ROOT / "dana" / "tools" / "general"
 REPO_CUSTOM_TOOLS_DIR: Path = PROJECT_ROOT / "dana" / "tools" / "custom"
 
 
-# Preferred wake-word ONNX under assets/models.
-MODELS_DIR: Path = PROJECT_ROOT / "assets" / "models"
-WAKEWORD_ONNX: Path = MODELS_DIR / "dana.onnx"
-WAKEWORD_ONNX_ALT: Path = MODELS_DIR / "wake_word_model.onnx"
-
-
-def resolve_wakeword_onnx() -> Path:
-    """Return the first existing wake-word model path (dana → alt)."""
-    for candidate in (
-        WAKEWORD_ONNX,
-        WAKEWORD_ONNX_ALT,
-        PROJECT_ROOT / "dana.onnx",
-        PROJECT_ROOT / "wake_word_model.onnx",
-    ):
-        if candidate.is_file():
-            return candidate
-    return WAKEWORD_ONNX
-
 ENV_PATH: Path = PROJECT_ROOT / ".env"
-
-TRIGGER_ASK_PATH: Path = PROJECT_ROOT / ".trigger_ask"
-
-
-YOLO_WEIGHTS_PATH: Path = MODELS_DIR / "yolov8n.pt"
 
 
 def ensure_project_root_on_syspath() -> Path:

@@ -488,8 +488,14 @@ def transcribe_audio(
     import torch
 
     raw = np.asarray(audio, dtype=np.float32)
+    # No signal at all (below the level prepare_audio_for_whisper would even
+    # amplify): there is nothing to transcribe, and Whisper given silence
+    # invents text ("you know.", "Thank you.").
+    if raw.size == 0 or float(np.sqrt(np.mean(np.square(raw - raw.mean())))) <= WHISPER_MIN_RMS_FOR_GAIN:
+        log("Conversation", "Skipped transcription: the audio is silent.")
+        return ""
     # Duration from captured samples (before gain) — used for rate hallucination.
-    audio_duration_s = float(raw.size) / float(SAMPLE_RATE) if raw.size else 0.0
+    audio_duration_s = float(raw.size) / float(SAMPLE_RATE)
     audio = prepare_audio_for_whisper(raw)
     inputs = whisper_processor(
         audio,
@@ -529,6 +535,14 @@ def transcribe_audio(
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
     )[0].strip()
+    # Known noise artifacts ("Thank you for watching", "[BLANK_AUDIO]", bare
+    # punctuation) and initial-prompt echoes, judged on Whisper's raw output
+    # (name correction strips trailing brackets). Deliberately not the
+    # stricter is_whisper_hallucination: it drops every one-word reply
+    # ("yes", "stop").
+    if is_silent_non_speech_transcript(text) or is_whisper_prompt_echo(text):
+        log("Conversation", f"Dropped non-speech transcript {text!r}.")
+        return ""
     text = correct_known_stt_names(text)
     # Hard discard: physically impossible speaking rate → empty transcript.
     if is_whisper_rate_hallucination(text, audio_duration_s):
