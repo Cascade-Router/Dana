@@ -185,6 +185,13 @@ def execute_manufacturing_pipeline(
             f" Auto-oriented for printing: {auto_oriented} (only their print STL was rotated, see "
             "applied_orientation; the CAD model, URDF and drawing keep the modelled pose)."
         )
+    clearance_warnings = collisions.get("clearance_warnings") or []
+    if clearance_warnings:
+        tight = ", ".join(f"{w['part_a']}/{w['part_b']} ({w['clearance_mm']:g} mm)" for w in clearance_warnings)
+        next_step += (
+            f" Tight fits below {collisions.get('min_safe_clearance_mm'):g} mm between unmated parts: {tight}; "
+            "they may fuse or not fit once printed."
+        )
     # Still worth a look before printing: parts printed as modelled while
     # needing supports or not fitting, and auto-oriented ones that still need
     # supports. An auto-oriented, support-free part is resolved.
@@ -211,6 +218,7 @@ def execute_manufacturing_pipeline(
         },
         "bom": {k: bom.get(k) for k in ("materials", "part_count", "total_mass_g", "total_cost", "currency")},
         "collisions": collisions.get("collisions") or [],
+        "clearance_warnings": clearance_warnings,
         "parts": parts,
         "orientation_hints": orientation_hints,
         "auto_oriented": auto_oriented,

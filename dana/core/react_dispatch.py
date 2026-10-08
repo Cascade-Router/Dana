@@ -5098,10 +5098,45 @@ def _tool_define_kinematic_joint(args: dict[str, Any], engine: Any, _cp: Any) ->
     return result
 
 
+# FDM printing / assembly tolerance: a non-mated gap smaller than this is
+# likely to fuse, bind, or not fit once printed.
+_DEFAULT_MIN_SAFE_CLEARANCE_MM = 0.2
+
+
+def _clearance_report(assembly_name: str, clearances: list[dict[str, Any]], min_safe_mm: float) -> dict[str, Any]:
+    """Minimum-clearance summary over the assembly's NON-mated part pairs:
+    pairs joined directly by apply_assembly_constraint or
+    define_kinematic_joint (this session's record) are meant to touch, so
+    they're left out. ``clearances`` are the engine's per-pair
+    ``{"part_a", "part_b", "distance_mm"}`` (0.0 when touching/overlapping)."""
+    asm = _assembly(assembly_name)
+    joined = {frozenset((moved, ref)) for moved, ref in asm["mated"].items() if ref}
+    joined |= {frozenset((child, parent)) for child, (parent, _type) in asm["joints"].items()}
+    pairs = [
+        {"part_a": c["part_a"], "part_b": c["part_b"], "clearance_mm": round(float(c["distance_mm"]), 4)}
+        for c in clearances
+        if frozenset((c["part_a"], c["part_b"])) not in joined
+    ]
+    closest = min(pairs, key=lambda p: p["clearance_mm"]) if pairs else None
+    return {
+        "min_clearance_mm": closest["clearance_mm"] if closest else None,
+        "closest_non_mated_pair": closest,
+        "clearance_warnings": [p for p in pairs if 0.0 < p["clearance_mm"] < min_safe_mm],
+        "min_safe_clearance_mm": min_safe_mm,
+    }
+
+
 def _tool_validate_assembly_collisions(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
     assembly_name = str(args.get("assembly_name") or "").strip()
     if not assembly_name:
         return {"ok": False, "error": "validate_assembly_collisions requires assembly_name"}
+    raw_min_safe = args.get("min_safe_clearance_mm")
+    try:
+        min_safe_mm = _DEFAULT_MIN_SAFE_CLEARANCE_MM if raw_min_safe is None else float(raw_min_safe)
+    except (TypeError, ValueError):
+        min_safe_mm = -1.0
+    if not 0.0 <= min_safe_mm < 1000.0:
+        return {"ok": False, "error": "validate_assembly_collisions: min_safe_clearance_mm must be a number >= 0"}
     # assembly_name has already been redirected to its resolve_living_leaf
     # by dispatch_tool_call's _apply_topology_redirects — same as every
     # other assembly tool's own name argument above.
@@ -5110,7 +5145,11 @@ def _tool_validate_assembly_collisions(args: dict[str, Any], engine: Any, _cp: A
             "ok": False,
             "error": f"unknown assembly_name '{assembly_name}' — create it first with create_freecad_assembly",
         }
-    return engine.validate_assembly_collisions(assembly_name)
+    result = engine.validate_assembly_collisions(assembly_name)
+    if result.get("ok"):
+        result["collision_free"] = not result.get("has_collisions")
+        result.update(_clearance_report(assembly_name, result.get("clearances") or [], min_safe_mm))
+    return result
 
 
 def _tool_export_assembly_to_urdf(args: dict[str, Any], engine: Any, _cp: Any) -> dict[str, Any]:
@@ -9708,6 +9747,29 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
         return f"Paused the print on {payload.get('printer')}."
     if call.tool_id == "emergency_stop":
         return f"Emergency-stopped {payload.get('printer')}; it needs a FIRMWARE_RESTART before the next print."
+    if call.tool_id == "validate_assembly_collisions":
+        collisions = payload.get("collisions") or []
+        verdict = (
+            f"{len(collisions)} colliding pair(s): "
+            + ", ".join(f"`{c['part_a']}`/`{c['part_b']}`" for c in collisions)
+            if collisions
+            else "no collisions"
+        )
+        closest = payload.get("closest_non_mated_pair")
+        gap = (
+            f" Tightest non-mated gap: `{closest['part_a']}`/`{closest['part_b']}` {closest['clearance_mm']:g} mm."
+            if closest
+            else ""
+        )
+        warnings = payload.get("clearance_warnings") or []
+        warn = (
+            f" {len(warnings)} pair(s) closer than {payload.get('min_safe_clearance_mm'):g} mm: "
+            + ", ".join(f"`{w['part_a']}`/`{w['part_b']}` ({w['clearance_mm']:g} mm)" for w in warnings)
+            + "."
+            if warnings
+            else ""
+        )
+        return f"Checked {payload.get('checked_members')} part(s) of `{payload.get('name')}`: {verdict}.{gap}{warn}"
     if call.tool_id == "generate_assembly_bom":
         return (
             f"BOM for `{payload.get('name')}` in {', '.join(payload.get('materials') or [])}: "

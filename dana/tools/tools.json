@@ -1261,13 +1261,19 @@
     {
       "id": "validate_assembly_collisions",
       "read_only": true,
-      "description_en": "Volumetric Validation Gate: a whole-assembly, TRUE solid-intersection audit — every member pair's real geometric overlap via FreeCAD's native boolean intersection (Volume of Shape.common(...)), NOT a bounding-box overlap like analyze_bounding_box_collisions (a wheel whose bounding box merely brushes the chassis's but whose actual curved geometry doesn't touch it reports no collision here, while a wheel whose axle genuinely clips through the chassis body IS caught, even if the mating constraint that placed it looked perfectly valid — uv_tensor and the Geometric Fit Guard only ever reason about one face's 2D footprint, never the full 3D solid). Read-only — does not modify anything, no HITL approval needed. Call this ONCE, explicitly, as a final QA pass after every part in the assembly has been positioned, BEFORE export_assembly_to_urdf — it is deliberately NOT wired into every apply_assembly_constraint/position_assembly_part call, since a volumetric check is comparatively expensive and gives no actionable direction to correct from, unlike the Fit Guard's 'resize or pick another face'.",
+      "description_en": "Volumetric Validation Gate: a whole-assembly, TRUE solid-intersection audit — every member pair's real geometric overlap via FreeCAD's native boolean intersection (Volume of Shape.common(...)), NOT a bounding-box overlap like analyze_bounding_box_collisions (a wheel whose bounding box merely brushes the chassis's but whose actual curved geometry doesn't touch it reports no collision here, while a wheel whose axle genuinely clips through the chassis body IS caught, even if the mating constraint that placed it looked perfectly valid — uv_tensor and the Geometric Fit Guard only ever reason about one face's 2D footprint, never the full 3D solid). Read-only — does not modify anything, no HITL approval needed. Call this ONCE, explicitly, as a final QA pass after every part in the assembly has been positioned, BEFORE export_assembly_to_urdf — it is deliberately NOT wired into every apply_assembly_constraint/position_assembly_part call, since a volumetric check is comparatively expensive and gives no actionable direction to correct from, unlike the Fit Guard's 'resize or pick another face'. Also reports clearance between parts that are NOT directly mated (apply_assembly_constraint) or jointed (define_kinematic_joint): min_clearance_mm and closest_non_mated_pair (the tightest gap, 0 when touching/colliding; null with fewer than two non-mated parts), and clearance_warnings for non-mated pairs closer than min_safe_clearance_mm without touching (too tight to print or assemble reliably). collision_free is true when nothing overlaps.",
       "parameters": [
         {
           "name": "assembly_name",
           "type": "string",
           "required": true,
           "description_en": "Name of the existing assembly container (from create_freecad_assembly) to audit."
+        },
+        {
+          "name": "min_safe_clearance_mm",
+          "type": "number",
+          "required": false,
+          "description_en": "Smallest acceptable gap (mm) between parts that aren't mated; closer non-touching pairs are reported in clearance_warnings. Default 0.2 (typical FDM printing / assembly tolerance)."
         }
       ]
     },

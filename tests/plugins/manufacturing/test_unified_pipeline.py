@@ -231,3 +231,26 @@ def test_urdf_is_skipped_when_the_collision_check_fails_but_prints_continue(monk
     assert len(payload["ready_to_print"]) == 2
     assert payload["complete"] is False
     assert payload["failed_steps"] == ["validate_assembly_collisions"]
+
+
+def test_clearance_warnings_are_surfaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder()
+    recorder.install(monkeypatch)
+    tight = {"part_a": "Base", "part_b": "Arm", "clearance_mm": 0.1}
+    monkeypatch.setitem(
+        rd.TOOL_HANDLERS,
+        "validate_assembly_collisions",
+        lambda *_a, **_k: {"ok": True, "collisions": [], "has_collisions": False, "clearance_warnings": [tight],
+                           "min_safe_clearance_mm": 0.2},
+    )
+
+    payload = _run(assembly_name="Kit").payload
+
+    assert payload["clearance_warnings"] == [tight]
+    assert "Base/Arm (0.1 mm)" in payload["next_step"] and "below 0.2 mm" in payload["next_step"]
+
+
+def test_no_clearance_warnings_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    Recorder().install(monkeypatch)
+    payload = _run(assembly_name="Kit").payload
+    assert payload["clearance_warnings"] == [] and "Tight fits" not in payload["next_step"]

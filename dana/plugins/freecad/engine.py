@@ -141,6 +141,8 @@ _COLLISIONS_MARKER = f"{_OK_MARKER}_COLLISIONS"
 
 _COLLISIONS_RE = re.compile(re.escape(_COLLISIONS_MARKER) + r" (\[.*\])")
 
+_CLEARANCES_RE = re.compile(re.escape(f"{_OK_MARKER}_CLEARANCES") + r" (\[.*\])")
+
 _TOPOLOGY_MARKER = f"{_OK_MARKER}_TOPOLOGY"
 
 _TOPOLOGY_RE = re.compile(re.escape(_TOPOLOGY_MARKER) + r" (\[.*\])")
@@ -3956,6 +3958,7 @@ print("{marker}_NAME " + assembly.Name)
 
 _VALIDATE_ASSEMBLY_COLLISIONS_SCRIPT = ("""\
 import FreeCAD as App
+import json
 
 """ + _RESOLVE_OBJECT_SNIPPET + _SESSION_OPEN_SNIPPET + """\
 assembly = resolve_object(doc, {assembly_name!r})
@@ -3987,6 +3990,10 @@ _members = [
 ]
 
 _collisions = []
+# Every pair's true minimum distance (OCCT BRepExtrema via distToShape),
+# 0.0 when the solids touch or overlap -- the caller builds the clearance
+# report from these, since only it knows which pairs are mated.
+_clearances = []
 _epsilon = {epsilon!r}
 for _i in range(len(_members)):
     for _j in range(_i + 1, len(_members)):
@@ -4001,8 +4008,16 @@ for _i in range(len(_members)):
             continue
         if _overlap_volume > _epsilon:
             _collisions.append(dict(part_a=_a.Name, part_b=_b.Name, overlap_volume=_overlap_volume))
+            _distance = 0.0
+        else:
+            try:
+                _distance = float(_a.Shape.distToShape(_b.Shape)[0])
+            except Exception:
+                continue
+        _clearances.append(dict(part_a=_a.Name, part_b=_b.Name, distance_mm=_distance))
 
 print("{marker}_COLLISIONS " + str(_collisions))
+print("{marker}_CLEARANCES " + json.dumps(_clearances))
 print("{marker}_CHECKED " + str(len(_members)))
 print("{marker} ok")
 """)
@@ -4114,7 +4129,9 @@ def validate_assembly_collisions(assembly_name: str) -> str:
     ``analyze_bounding_box_collisions``'s matching note): returns
     ``collisions`` (a list of ``{"part_a", "part_b", "overlap_volume"}``
     dicts, empty if none found) and ``has_collisions``/``checked_members``
-    alongside it. A pair whose actual boolean intersection can't be
+    alongside it, plus ``clearances``: every checked pair's true minimum
+    distance (``{"part_a", "part_b", "distance_mm"}``, 0.0 when touching or
+    overlapping). A pair whose actual boolean intersection can't be
     computed (degenerate/non-solid geometry) is silently skipped rather
     than failing the whole audit — a broken shape shows up via
     ``inspect_spatial_properties`` instead.
@@ -4124,7 +4141,7 @@ def validate_assembly_collisions(assembly_name: str) -> str:
         return _error("validate_assembly_collisions requires assembly_name")
     if is_dry_run_enabled():
         return _dry_run_result(
-            "validate_assembly_collisions", name=assembly, collisions=[], has_collisions=False
+            "validate_assembly_collisions", name=assembly, collisions=[], has_collisions=False, clearances=[]
         )
     session_path = _session_document_path()
     if not session_path.is_file():
@@ -4144,11 +4161,14 @@ def validate_assembly_collisions(assembly_name: str) -> str:
         return _error(f"validate_assembly_collisions failed: {result['error']}")
     collisions = _extract_collisions(result["stdout"]) or []
     checked = _extract_checked_count(result["stdout"]) or 0
+    m = _CLEARANCES_RE.search(result["stdout"] or "")
+    clearances = json.loads(m.group(1)) if m else []
     return _ok(
         name=assembly,
         collisions=collisions,
         has_collisions=bool(collisions),
         checked_members=checked,
+        clearances=clearances,
         path=str(session_path),
     )
 
