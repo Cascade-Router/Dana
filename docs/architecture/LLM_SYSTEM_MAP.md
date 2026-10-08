@@ -94,7 +94,7 @@ OS mic (native rate, often 44100)
        emit_state_change("listening") on dynamic speech floor
   → prepare_audio_for_whisper() / transcribe_audio()
        Distil-Whisper (WHISPER_ID=distil-whisper/distil-small.en)
-       hallucination filters: is_whisper_hallucination, is_silent_non_speech_transcript
+       hallucination filters: silent-audio skip, is_silent_non_speech_transcript, is_whisper_prompt_echo
        correct_known_stt_names()
   → conversation_worker.run_brain_turn()
        fast-paths: clear chat memory, dictation, mode switch, standby/lockdown/time

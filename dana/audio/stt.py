@@ -300,92 +300,6 @@ def is_whisper_rate_hallucination(text: str, duration_s: float) -> bool:
     return rate > float(WHISPER_MAX_WORDS_PER_SEC)
 
 
-def is_whisper_hallucination(
-    text: str,
-    *,
-    audio_duration_s: Optional[float] = None,
-) -> bool:
-    """Reject empty, ultra-short, bracketed non-speech, or known silence hallucinations.
-
-    Short non-Latin script utterances are allowed when they contain letters.
-    Do not hardcode language-specific spam tokens here — diagnose low-SNR
-    captures via STT debug logs instead.
-    When ``audio_duration_s`` is provided, also apply the duration-to-word
-    sanity check (words/sec above ``WHISPER_MAX_WORDS_PER_SEC``).
-    """
-    raw = (text or "").strip()
-    if not raw:
-        return True
-
-    if is_punctuation_or_whitespace_only(raw):
-        return True
-
-    if is_whisper_prompt_echo(raw):
-        return True
-
-    if audio_duration_s is not None and is_whisper_rate_hallucination(
-        raw, float(audio_duration_s)
-    ):
-        return True
-
-    # Breathing / non-speech often lands as [sigh], (breathing), [BLANK_AUDIO], etc.
-    if re.fullmatch(r"(?:\s*[\(\[][^\)\]]*[\)\]]\s*)+", raw):
-        return True
-    paren_stripped = re.sub(r"[\(\[][^\)\]]*[\)\]]", "", raw).strip(" .,!?;:\"'`-")
-    if not paren_stripped:
-        return True
-
-    # Non-Latin script: keep short real phrases; only drop pure noise/punct.
-    if state.ARABIC_SCRIPT_RE.search(raw):
-        letters = state.ARABIC_SCRIPT_RE.findall(raw)
-        return len(letters) < 1
-
-    cleaned = raw.lower().strip(" .,!?;:\"'`")
-    if cleaned in state.WHISPER_HALLUCINATIONS or cleaned in state.WHISPER_AMBIENT_SILENT:
-        return True
-
-    # Explicit non-speech tags Whisper emits even without brackets.
-    non_speech = {
-        "sigh",
-        "breathing",
-        "breath",
-        "inhale",
-        "exhale",
-        "cough",
-        "laughter",
-        "blank_audio",
-        "silence",
-        "music",
-        "applause",
-    }
-    if cleaned in non_speech:
-        return True
-
-    words = [w for w in cleaned.replace("-", " ").split() if w]
-    if len(words) < 2:
-        return True
-
-    # Extra phrase-level traps Whisper-tiny loves on noise.
-    bad_phrases = (
-        "thank you for watching",
-        "thanks for watching",
-        "please subscribe",
-        "like and subscribe",
-        "see you next time",
-        "don't forget to subscribe",
-        "i'm going to be playing with you",
-        "i am going to be playing with you",
-        "i'm going to play with you",
-        "i am going to play with you",
-        "thanks for listening",
-        "thank you for listening",
-        "subtitles by",
-        "transcript by",
-        "draft_cursor_prompt",
-        "patch ledger",
-        "the ticket is on the board",
-    )
-    return any(p in cleaned for p in bad_phrases)
 
 
 def is_silent_non_speech_transcript(text: str) -> bool:
@@ -537,9 +451,8 @@ def transcribe_audio(
     )[0].strip()
     # Known noise artifacts ("Thank you for watching", "[BLANK_AUDIO]", bare
     # punctuation) and initial-prompt echoes, judged on Whisper's raw output
-    # (name correction strips trailing brackets). Deliberately not the
-    # stricter is_whisper_hallucination: it drops every one-word reply
-    # ("yes", "stop").
+    # (name correction strips trailing brackets). Deliberately no "too few
+    # words" rule: one-word replies ("yes", "stop") are real commands.
     if is_silent_non_speech_transcript(text) or is_whisper_prompt_echo(text):
         log("Conversation", f"Dropped non-speech transcript {text!r}.")
         return ""
@@ -559,7 +472,6 @@ __all__ = (
     "ensure_whisper_bundle",
     "is_punctuation_or_whitespace_only",
     "is_silent_non_speech_transcript",
-    "is_whisper_hallucination",
     "is_whisper_prompt_echo",
     "is_whisper_rate_hallucination",
     "load_whisper",

@@ -124,7 +124,7 @@ def execute_manufacturing_pipeline(
     # "auto" scale: an assembly's size isn't known up front, and 1:1 only suits mid-sized ones.
     blueprint = step(
         "generate_2d_blueprint",
-        {"object_name": assembly, "filename": f"{assembly}_blueprint", "scale": "auto"},
+        {"object_name": assembly, "filename": f"{assembly}_blueprint", "scale": "auto", "include_part_sheets": True},
     )
 
     parts: list[dict[str, Any]] = []

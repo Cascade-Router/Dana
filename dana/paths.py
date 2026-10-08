@@ -97,19 +97,6 @@ REPO_CUSTOM_TOOLS_DIR: Path = PROJECT_ROOT / "dana" / "tools" / "custom"
 ENV_PATH: Path = PROJECT_ROOT / ".env"
 
 
-def ensure_project_root_on_syspath() -> Path:
-    """Put the repo root first on ``sys.path`` (safe if already present)."""
-    import sys
-
-    root = str(PROJECT_ROOT)
-    if root not in sys.path:
-        sys.path.insert(0, root)
-    # Relocated root utilities (ingest, spatial_context, vision shim).
-    for sub in ("scripts", os.path.join("scripts", "diagnostics")):
-        p = str(PROJECT_ROOT / sub)
-        if p not in sys.path:
-            sys.path.insert(0, p)
-    return PROJECT_ROOT
 
 
 def ensure_workspace_on_syspath() -> Path:
@@ -122,10 +109,6 @@ def ensure_workspace_on_syspath() -> Path:
     return DANA_WORKSPACE
 
 
-def chdir_project_root() -> Path:
-    """``os.chdir`` into the repo root so any leftover relative paths resolve."""
-    os.chdir(PROJECT_ROOT)
-    return PROJECT_ROOT
 
 
 def _nt_hide_console_if_mp_child() -> None:

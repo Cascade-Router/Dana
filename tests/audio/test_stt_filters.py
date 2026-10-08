@@ -69,6 +69,6 @@ def test_known_non_speech_transcripts_are_dropped(phantom: str) -> None:
 )
 def test_real_commands_pass_through(command: str) -> None:
     # One-word replies matter here ("stop" while a print is running), so the
-    # filter must not use is_whisper_hallucination's "fewer than two words"
-    # rule; and "you know" only counts as noise when it is the whole transcript.
+    # filter has no "fewer than two words" rule; and "you know" only counts as
+    # noise when it is the whole transcript.
     assert _transcribe(_speech(), FakeWhisper(command)) == command

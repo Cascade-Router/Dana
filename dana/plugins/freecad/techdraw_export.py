@@ -35,8 +35,10 @@ tooling, not a cross-platform primitive.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import shutil
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -96,26 +98,70 @@ import os
 doc = App.openDocument({source_path!r})
 {object_lookup}
 
-page = doc.addObject("TechDraw::DrawPage", "BlueprintPage")
-template = doc.addObject("TechDraw::DrawSVGTemplate", "BlueprintTemplate")
-template.Template = os.path.join(App.getResourceDir(), "Mod", "TechDraw", "Templates", *{template_parts!r})
-page.Template = template
+def build_page(source):
+    page = doc.addObject("TechDraw::DrawPage", "BlueprintPage")
+    template = doc.addObject("TechDraw::DrawSVGTemplate", "BlueprintTemplate")
+    template.Template = os.path.join(App.getResourceDir(), "Mod", "TechDraw", "Templates", *{template_parts!r})
+    page.Template = template
+    for name, direction, xdirection, fx, fy in {view_specs!r}:
+        view = doc.addObject("TechDraw::DrawViewPart", "View" + name)
+        view.Source = [source]
+        view.Direction = App.Vector(*direction)
+        view.XDirection = App.Vector(*xdirection)
+        # 1:1 always: the dimension callouts read real millimetres off the DXF.
+        view.ScaleType = "Custom"
+        view.Scale = 1.0
+        page.addView(view)
+        view.X = fx * page.PageWidth
+        view.Y = fy * page.PageHeight
+    doc.recompute()
+    return page
 
-for name, direction, xdirection, fx, fy in {view_specs!r}:
-    view = doc.addObject("TechDraw::DrawViewPart", "View" + name)
-    view.Source = [obj]
-    view.Direction = App.Vector(*direction)
-    view.XDirection = App.Vector(*xdirection)
-    # 1:1 always: the dimension callouts read real millimetres off the DXF.
-    view.ScaleType = "Custom"
-    view.Scale = 1.0
-    page.addView(view)
-    view.X = fx * page.PageWidth
-    view.Y = fy * page.PageHeight
-
-doc.recompute()
+page = build_page(obj)
 TechDraw.writeDXFPage(page, {dxf_path!r})
 print("{marker} path=" + {dxf_path!r})
+"""
+
+# Appended when per-part sheets are requested: one more page per assembly
+# member, each written to its own DXF in ``sheets_dir`` and listed in
+# manifest.json. A finished page is removed before the next is built, so the
+# next page's views get the same ``View<Name>`` names again (FreeCAD reuses
+# a freed name), which is what the DXF layers -- and the dimension code that
+# reads them -- are keyed on. The session document is never saved.
+_PART_SHEETS_SCRIPT = """
+import json
+
+def drop_page(page):
+    for name in [v.Name for v in page.Views] + [page.Name, page.Template.Name]:
+        if doc.getObject(name) is not None:
+            doc.removeObject(name)
+
+# Same membership rules as the BOM and URDF export: a boolean's Base/Tool/
+# Shapes inputs stay Group members but are not separate parts.
+_consumed = set()
+for _o in doc.Objects:
+    for _attr in ("Base", "Tool"):
+        _ref = getattr(_o, _attr, None)
+        if _ref is not None and hasattr(_ref, "Name"):
+            _consumed.add(_ref.Name)
+    for _ref in (getattr(_o, "Shapes", None) or []):
+        if hasattr(_ref, "Name"):
+            _consumed.add(_ref.Name)
+
+drop_page(page)
+_sheets = []
+for _member in getattr(obj, "Group", None) or []:
+    _shape = getattr(_member, "Shape", None)
+    if _member.Name in _consumed or _shape is None or _shape.isNull() or not _shape.Solids:
+        continue
+    _page = build_page(_member)
+    _path = os.path.join({sheets_dir!r}, "part_%d.dxf" % len(_sheets))
+    TechDraw.writeDXFPage(_page, _path)
+    _sheets.append(dict(name=_member.Name, dxf=_path))
+    drop_page(_page)
+
+with open(os.path.join({sheets_dir!r}, "manifest.json"), "w", encoding="utf-8") as _f:
+    json.dump(_sheets, _f)
 """
 
 
@@ -295,12 +341,17 @@ class _Sheet:
 
 
 def _load_page(
-    dxf_path: str, page_size_mm: tuple[float, float], include_dimensions: bool = True, scale: float | str = 1.0
+    dxf_path: str,
+    page_size_mm: tuple[float, float],
+    include_dimensions: bool = True,
+    scale: float | str = 1.0,
+    title: str | None = None,
 ) -> _Sheet:
     """The exported DXF page (drawn 1:1 by TechDraw), rescaled to ``scale``
     ("auto": the largest of ``_ISO_SCALES`` that fits, else the smallest),
     with dimension lines added if requested. At 1:1 nothing is transformed and
-    no scale note is added, so the output is exactly the unscaled page."""
+    no scale note is added, so the output is exactly the unscaled page.
+    ``title`` stamps "<title> | SCALE <s>" in the corner, at any scale."""
     import ezdxf
 
     doc = ezdxf.readfile(dxf_path)
@@ -314,9 +365,14 @@ def _load_page(
     labels: list[_Label] = []
     if factor != 1.0:
         _scale_views(doc, boxes, factor)
-        labels.append(
-            _Label(page_size_mm[0] - _PAGE_MARGIN_MM - 20.0, _PAGE_MARGIN_MM, f"SCALE {_scale_text(factor)}", False)
-        )
+    if title or factor != 1.0:
+        stamp = f"SCALE {_scale_text(factor)}"
+        # Centred label: keep a long title clear of the page edge (~1 mm per character at 3.5 mm text).
+        half_width = 20.0
+        if title:
+            stamp = f"{title} | {stamp}"
+            half_width = len(stamp) * 1.05 + 2.0
+        labels.append(_Label(page_size_mm[0] - _PAGE_MARGIN_MM - half_width, _PAGE_MARGIN_MM, stamp, False))
     dimensions: list[dict[str, Any]] = []
     if include_dimensions:
         callouts = _dimension_callouts(doc, factor)
@@ -326,15 +382,9 @@ def _load_page(
     return _Sheet(doc, labels, dimensions, factor, fits)
 
 
-def _render_dxf_to_pdf(
-    dxf_path: str,
-    name: str,
-    page_size_mm: tuple[float, float],
-    include_dimensions: bool = True,
-    scale: float | str = 1.0,
-) -> Path:
-    """Renders a TechDraw-exported DXF page to a PDF, sized to the page's
-    real physical dimensions — a pure Python step, no FreeCAD involved."""
+def _sheet_figure(sheet: _Sheet, page_size_mm: tuple[float, float]) -> Any:
+    """A matplotlib figure of one loaded sheet, page-sized and drawn 1:1 in
+    page millimetres (the caller saves and closes it)."""
     import matplotlib
 
     matplotlib.use("Agg")  # headless — never try to open a display/window
@@ -343,7 +393,6 @@ def _render_dxf_to_pdf(
     from ezdxf.addons.drawing import matplotlib as ezdxf_matplotlib
     from ezdxf.addons.drawing.config import BackgroundPolicy, ColorPolicy, Configuration
 
-    sheet = _load_page(dxf_path, page_size_mm, include_dimensions, scale)
     doc = sheet.doc
     width_mm, height_mm = page_size_mm
     fig = plt.figure(figsize=(width_mm / 25.4, height_mm / 25.4))
@@ -385,22 +434,56 @@ def _render_dxf_to_pdf(
                 va="center",
                 rotation=90 if label.vertical else 0,
             )
-        _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-        out_path = _EXPORT_DIR / f"{_safe_name(name)}.pdf"
-        # A retry/re-generation with the same name must never attempt to
-        # overwrite a file left over from a prior run in place — observed
-        # live to trip a "ios_base::failbit set: iostream stream error"
-        # further up this same pipeline (see the dxf_path fix below) when a
-        # stale file already sits at the target path; removing it first
-        # guarantees this write always starts from a clean, unlocked state
-        # regardless of what left the old one there.
-        out_path.unlink(missing_ok=True)
-        # TrueType (42) instead of matplotlib's default Type 3 fonts, so the
-        # dimension labels can be searched and copied out of the PDF.
-        with matplotlib.rc_context({"pdf.fonttype": 42}):
-            fig.savefig(out_path)
-    finally:
+    except BaseException:
         plt.close(fig)
+        raise
+    return fig
+
+
+def _render_dxf_to_pdf(
+    dxf_path: str,
+    name: str,
+    page_size_mm: tuple[float, float],
+    include_dimensions: bool = True,
+    scale: float | str = 1.0,
+    extra_sheets: Sequence[_Sheet] = (),
+) -> Path:
+    """Renders a TechDraw-exported DXF page to a PDF, sized to the page's
+    real physical dimensions — a pure Python step, no FreeCAD involved.
+    ``extra_sheets`` (already loaded, e.g. per-part detail sheets) become
+    pages 2..N of the same PDF."""
+    import matplotlib
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = _EXPORT_DIR / f"{_safe_name(name)}.pdf"
+    # A retry/re-generation with the same name must never attempt to
+    # overwrite a file left over from a prior run in place — observed
+    # live to trip a "ios_base::failbit set: iostream stream error"
+    # further up this same pipeline (see the dxf_path fix below) when a
+    # stale file already sits at the target path; removing it first
+    # guarantees this write always starts from a clean, unlocked state
+    # regardless of what left the old one there.
+    out_path.unlink(missing_ok=True)
+    sheets = [_load_page(dxf_path, page_size_mm, include_dimensions, scale), *extra_sheets]
+    # TrueType (42) instead of matplotlib's default Type 3 fonts, so the
+    # dimension labels can be searched and copied out of the PDF.
+    with matplotlib.rc_context({"pdf.fonttype": 42}):
+        if len(sheets) == 1:
+            fig = _sheet_figure(sheets[0], page_size_mm)
+            try:
+                fig.savefig(out_path)
+            finally:
+                plt.close(fig)
+        else:
+            with PdfPages(out_path) as pdf:
+                for sheet in sheets:
+                    fig = _sheet_figure(sheet, page_size_mm)
+                    try:
+                        pdf.savefig(fig)
+                    finally:
+                        plt.close(fig)
     return out_path
 
 
@@ -490,6 +573,7 @@ def generate_2d_blueprint(
     object_name: str | None = None,
     include_dimensions: bool = True,
     scale: float | str = 1.0,
+    include_part_sheets: bool = False,
 ) -> str:
     """Projects orthographic (Front/Top/Right) and/or Isometric views of the
     object in ``source_path`` onto a standard drawing page and exports a PDF
@@ -503,6 +587,15 @@ def generate_2d_blueprint(
     0.1/0.2/0.25/0.5/1/2/5 whose layout fits the page. Dimension labels always
     state true sizes; the result carries ``scale`` ("1:2"), ``scale_factor``
     and ``fits_page``, and a sheet not at 1:1 says its scale in the corner.
+
+    ``include_part_sheets`` on an assembly (an object with member parts)
+    makes the PDF a package: page 1 the assembly as above, then one detail
+    page per member part (boolean inputs left out, as in the BOM), each
+    scaled on its own with the same ``scale`` setting ("auto" fits each
+    part), dimensioned, and stamped "PART: <name> | SCALE <s>". The SVG stays
+    the single overview sheet. The result adds ``page_count`` and
+    ``part_sheets`` (each part's name, scale and view dimensions); without
+    the flag, or for a single part, the PDF is the usual single page.
 
     ``object_name`` picks the object inside ``source_path`` (by Name, then
     Label, then case-insensitively, like the engine's other tools). Every
@@ -579,6 +672,7 @@ def generate_2d_blueprint(
     fd, dxf_path = tempfile.mkstemp(suffix=".dxf")
     os.close(fd)
     os.unlink(dxf_path)
+    sheets_dir = tempfile.mkdtemp(prefix="dana_part_sheets_") if include_part_sheets else None
     try:
         script = _BLUEPRINT_SCRIPT.format(
             resolve_snippet=_RESOLVE_OBJECT_SNIPPET,
@@ -589,13 +683,27 @@ def generate_2d_blueprint(
             dxf_path=dxf_path,
             marker=_OK_MARKER,
         )
+        if sheets_dir:
+            script += _PART_SHEETS_SCRIPT.format(sheets_dir=sheets_dir)
         result = _run_freecad_script(script)
         if not result["ok"]:
             return _error(f"generate_2d_blueprint failed: {result['error']}")
 
+        part_sheets: list[tuple[str, _Sheet]] = []
         try:
+            manifest = Path(sheets_dir) / "manifest.json" if sheets_dir else None
+            for entry in json.loads(manifest.read_text(encoding="utf-8")) if manifest and manifest.is_file() else []:
+                sheet = _load_page(
+                    entry["dxf"], _PAGE_SIZES_MM[size_key], include_dimensions, scale, title=f"PART: {entry['name']}"
+                )
+                part_sheets.append((entry["name"], sheet))
             pdf_path = _render_dxf_to_pdf(
-                dxf_path, resolved_name, _PAGE_SIZES_MM[size_key], include_dimensions, scale
+                dxf_path,
+                resolved_name,
+                _PAGE_SIZES_MM[size_key],
+                include_dimensions,
+                scale,
+                extra_sheets=[sheet for _name, sheet in part_sheets],
             )
         except Exception as exc:  # noqa: BLE001 — surface as a normal tool failure, not a crash
             return _error(f"generate_2d_blueprint: DXF->PDF conversion failed: {exc}")
@@ -611,6 +719,8 @@ def generate_2d_blueprint(
             os.unlink(dxf_path)
         except OSError:
             pass
+        if sheets_dir:
+            shutil.rmtree(sheets_dir, ignore_errors=True)
 
     return _ok(
         name=resolved_name,
@@ -622,6 +732,17 @@ def generate_2d_blueprint(
         scale=_scale_text(sheet.scale),
         scale_factor=sheet.scale,
         fits_page=sheet.fits_page,
+        page_count=1 + len(part_sheets),
+        part_sheets=[
+            {
+                "name": name,
+                "scale": _scale_text(part.scale),
+                "scale_factor": part.scale,
+                "fits_page": part.fits_page,
+                "dimensions": part.dimensions,
+            }
+            for name, part in part_sheets
+        ],
     )
 
 

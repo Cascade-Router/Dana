@@ -443,6 +443,62 @@ def test_pipeline_reports_each_dimensioned_view(
         assert "Dimensioned" not in summary
 
 
+def _pdf_page_count(pdf: bytes) -> int:
+    return len(re.findall(rb"/Type\s*/Page\b", pdf))
+
+
+@pytest.mark.parametrize("include_part_sheets", [True, False])
+def test_assembly_package_has_an_overview_then_one_sheet_per_part(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_path: str, include_part_sheets: bool
+) -> None:
+    """FreeCADCmd mocked: it writes the overview DXF plus, when asked, one
+    DXF per member part and the manifest listing them, where the generated
+    script says to."""
+    pytest.importorskip("matplotlib")
+    monkeypatch.delenv("DANA_OS_DRY_RUN")
+    monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
+    seen: dict[str, Any] = {}
+
+    def fake_freecad(script: str, **_kw: Any) -> dict[str, Any]:
+        seen["script"] = script
+        _write_views_dxf(Path(re.search(r"writeDXFPage\(page, '([^']+)'\)", script)[1]), 220, 120, 60)
+        sheets = re.search(r"os\.path\.join\('([^']+)', \"manifest\.json\"\)", script)
+        if sheets:
+            seen["dir"] = Path(sheets[1])
+            parts = [("BasePlate", (220, 120, 10)), ("Pin", (8, 8, 30))]
+            entries = []
+            for i, (name, size) in enumerate(parts):
+                path = seen["dir"] / f"part_{i}.dxf"
+                _write_views_dxf(path, *size)
+                entries.append({"name": name, "dxf": str(path)})
+            (seen["dir"] / "manifest.json").write_text(json.dumps(entries), encoding="utf-8")
+        return {"ok": True, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(techdraw_export, "_run_freecad_script", fake_freecad)
+    result = json.loads(
+        generate_2d_blueprint(existing_path, object_name="Rig", scale="auto", include_part_sheets=include_part_sheets)
+    )
+
+    assert result["ok"] is True, result
+    pdf = Path(result["path"]).read_bytes()
+    if not include_part_sheets:
+        assert "manifest.json" not in seen["script"]  # exactly the single-sheet script
+        assert (result["page_count"], result["part_sheets"], _pdf_page_count(pdf)) == (1, [], 1)
+        return
+
+    assert result["page_count"] == 3 and _pdf_page_count(pdf) == 3
+    plate, pin = result["part_sheets"]
+    assert (plate["name"], pin["name"]) == ("BasePlate", "Pin")
+    # Each part chose its own scale: the plate is shrunk, the pin enlarged.
+    assert plate["scale_factor"] < 1.0 < pin["scale_factor"] and plate["fits_page"] and pin["fits_page"]
+    assert plate["dimensions"][0] == {"view": "Front", "width_mm": 220.0, "height_mm": 10.0}
+    assert pin["dimensions"][0] == {"view": "Front", "width_mm": 8.0, "height_mm": 30.0}
+    texts = _pdf_text(pdf)
+    assert f"PART: BasePlate | SCALE {plate['scale']}" in texts and f"PART: Pin | SCALE {pin['scale']}" in texts
+    assert "220 mm" in texts and "30 mm" in texts
+    assert not seen["dir"].exists(), "the per-part DXFs must be cleaned up"
+
+
 def test_pipeline_reports_a_freecad_failure_without_rendering(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_path: str
 ) -> None:

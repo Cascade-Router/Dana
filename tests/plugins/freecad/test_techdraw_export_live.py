@@ -50,13 +50,7 @@ def captured_dxf(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     seen: dict[str, Any] = {}
     render = techdraw_export._render_dxf_to_pdf
 
-    def spy(
-        dxf_path: str,
-        name: str,
-        page_size_mm: tuple[float, float],
-        include_dimensions: bool = True,
-        scale: float | str = 1.0,
-    ) -> Path:
+    def spy(dxf_path: str, name: str, page_size_mm: tuple[float, float], *args: Any, **kwargs: Any) -> Path:
         from ezdxf import bbox
 
         doc = ezdxf.readfile(dxf_path)
@@ -64,7 +58,7 @@ def captured_dxf(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         seen["size"] = (extents.size.x, extents.size.y)
         seen["extmin"] = (extents.extmin.x, extents.extmin.y)
         seen["extmax"] = (extents.extmax.x, extents.extmax.y)
-        return render(dxf_path, name, page_size_mm, include_dimensions, scale)
+        return render(dxf_path, name, page_size_mm, *args, **kwargs)
 
     monkeypatch.setattr(techdraw_export, "_render_dxf_to_pdf", spy)
     return seen
@@ -148,3 +142,32 @@ def test_auto_scale_fits_a_large_part_on_a4_and_keeps_true_dimensions() -> None:
     ]
     labels = re.findall(r"<text[^>]*>([^<]*)</text>", Path(auto["svg_path"]).read_text(encoding="utf-8"))
     assert {"300 mm", "200 mm", "100 mm", f"SCALE {auto['scale']}"} <= set(labels)
+
+
+def test_assembly_package_scales_each_part_on_its_own_sheet() -> None:
+    """A 200 x 150 x 10 plate and a 10 x 10 x 30 pin standing on it: page 1
+    is the assembly, pages 2-3 one part each, each at its own ISO scale with
+    its true dimensions."""
+    import re
+
+    plate = _ok(engine.create_box(200, 150, 10, name="BasePlate"))
+    _ok(engine.create_box(10, 10, 30, name="Pin", placement=(95, 70, 10)))
+    _ok(engine.create_assembly("Rig"))
+    _ok(engine.add_parts_to_assembly("Rig", ["BasePlate", "Pin"]))
+
+    result = _ok(
+        techdraw_export.generate_2d_blueprint(
+            plate["path"], filename="rig", object_name="Rig", scale="auto", include_part_sheets=True
+        )
+    )
+
+    assert result["page_count"] == 3
+    pdf = Path(result["path"]).read_bytes()
+    assert len(re.findall(rb"/Type\s*/Page\b", pdf)) == 3
+    sheets = {s["name"]: s for s in result["part_sheets"]}
+    assert set(sheets) == {"BasePlate", "Pin"}
+    assert sheets["BasePlate"]["scale_factor"] < 1.0 < sheets["Pin"]["scale_factor"]
+    assert all(s["fits_page"] for s in sheets.values())
+    by_view = {name: {d["view"]: (d["width_mm"], d["height_mm"]) for d in s["dimensions"]} for name, s in sheets.items()}
+    assert by_view["BasePlate"] == {"Front": (200.0, 10.0), "Top": (200.0, 150.0), "Right": (150.0, 10.0)}
+    assert by_view["Pin"] == {"Front": (10.0, 30.0), "Top": (10.0, 10.0), "Right": (10.0, 30.0)}

@@ -31,48 +31,6 @@ stop_event = threading.Event()
 # Whisper hallucination filters (constants)
 # ---------------------------------------------------------------------------
 
-# Common Whisper-tiny hallucinations on silence / static.
-WHISPER_HALLUCINATIONS = {
-    "",
-    ".",
-    ",",
-    "!",
-    "?",
-    "...",
-    "…",
-    "you",
-    "the",
-    "a",
-    "i",
-    "oh",
-    "uh",
-    "um",
-    "hmm",
-    "thanks",
-    "thank you",
-    "thank you.",
-    "thanks for watching",
-    "thanks for watching.",
-    "subscribe",
-    "subscribe.",
-    "bye",
-    "bye.",
-    "goodbye",
-    "goodbye.",
-    "okay",
-    "ok",
-    "yes",
-    "no",
-    "hello",
-    "hi",
-    "hey",
-    "music",
-    "applause",
-    "laughter",
-    "www.youtube.com",
-    "please subscribe",
-    "like and subscribe",
-}
 
 # Ambient-noise artifacts that must be discarded silently (no LLM, no apology TTS).
 WHISPER_AMBIENT_SILENT = frozenset(

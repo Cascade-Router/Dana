@@ -1644,6 +1644,12 @@
           "type": "string",
           "required": false,
           "description_en": "Drawing scale (drawing size / true size). Default 1 (1:1). 'auto' picks the largest of 0.1, 0.2, 0.25, 0.5, 1, 2, 5 whose views fit the page without overlapping (use it for parts too big or too small for 1:1), or give a number such as 0.5 for 1:2. Dimension labels always state true sizes; the result reports scale ('1:4'), scale_factor and fits_page, and a scaled sheet states its scale."
+        },
+        {
+          "name": "include_part_sheets",
+          "type": "boolean",
+          "required": false,
+          "description_en": "For an assembly: make the PDF a package with the assembly overview on page 1 and one dimensioned detail page per member part after it (each scaled on its own with the same scale setting; 'auto' fits each part), stamped 'PART: <name> | SCALE <s>'. Neighbouring parts hide each other's dimensions on the overview, so use this when a machinist or printer needs every part's size. The result adds page_count and part_sheets. Default false (single overview page); the SVG is always the overview only."
         }
       ]
     },
