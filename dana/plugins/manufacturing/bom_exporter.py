@@ -60,6 +60,7 @@ def build_bom(
     material: str = "PLA",
     part_materials: dict[str, str] | None = None,
     footprint_xy: list[list[float]] | None = None,
+    hardware_masses: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Compute mass and cost for every part in ``parts`` (``{"name",
     "volume_mm3"}`` dicts, optionally with a ``"label"``) and write
@@ -144,6 +145,17 @@ def build_bom(
             weighted_center = [w + mass_g * c for w, c in zip(weighted_center, center)]
             row["center_of_mass_mm"] = [round(v, 3) for v in center]
         rows.append(row)
+
+    if hardware_masses:
+        for hw in hardware_masses:
+            mass_g = float(hw.get("mass_g", 0.0))
+            cost = float(hw.get("cost", 0.0))
+            total_mass_g += mass_g
+            total_cost += cost
+            pos = hw.get("center_of_mass_mm") or hw.get("position_mm")
+            if has_centers and pos is not None:
+                center = [float(v) for v in pos]
+                weighted_center = [w + mass_g * c for w, c in zip(weighted_center, center)]
 
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", assembly_name).strip("_") or "assembly"
     _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
