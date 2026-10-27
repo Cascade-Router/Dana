@@ -39,6 +39,9 @@ easyocr>=1.7.0
 numpy>=1.26.0
 # dana/platform/mock.py — headless CAD geometry for non-Windows/HF Space execution
 trimesh>=4.0.0
+# trimesh's boolean backend (CPU-only). Without it the mock driver's
+# apply_boolean fails, which on the HF Space means every cut/union/intersect.
+manifold3d>=3,<4
 # Python 3.10 CI: typing.NotRequired needs typing_extensions
 typing_extensions>=4.8.0
 sounddevice==0.5.5

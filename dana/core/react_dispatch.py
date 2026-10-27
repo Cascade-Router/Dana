@@ -6001,12 +6001,17 @@ _VISION_TOOLS_TOOL_IDS = frozenset({"analyze_workspace_image", "analyze_referenc
 # (pause_print/emergency_stop — see FAIL_SAFE_TOOL_IDS).
 _HARDWARE_TOOL_IDS = frozenset({"slice_stl_to_gcode", "dispatch_to_printer", "pause_print", "emergency_stop"})
 
-# Tools that act on the physical world: dana.api.server asks the human before
-# EVERY call — never skipped by session auto-approve, the always-approved
-# list, or an earlier approval of the same tool this session (one approved
-# print must not silently approve the next, with the last part still on the
-# bed).
-ALWAYS_PROMPT_TOOL_IDS: frozenset[str] = frozenset({"dispatch_to_printer"})
+# Tools that act on the physical world, or run arbitrary code: dana.api.server
+# asks the human before EVERY call — never skipped by session auto-approve,
+# the always-approved list, or an earlier approval of the same tool this
+# session (one approved print must not silently approve the next, with the
+# last part still on the bed; one approved script must not approve the next,
+# different one). execute_freecad_script runs any Python inside FreeCADCmd
+# with this process's environment, and modify_existing_freecad_document runs
+# a script against a document on disk.
+ALWAYS_PROMPT_TOOL_IDS: frozenset[str] = frozenset(
+    {"dispatch_to_printer", "execute_freecad_script", "modify_existing_freecad_document"}
+)
 
 # The reverse: physical actions that only ever STOP a machine. dana.api.server
 # runs them with no approval prompt at all — a stop that waits for a human
@@ -6211,6 +6216,7 @@ def list_user_skills() -> dict[str, dict[str, Any]]:
 
 def _wrap_plugin_handler(
     fn: Callable[..., dict[str, Any]],
+    spec: ToolSpec | None = None,
 ) -> Callable[[dict[str, Any], Any, Any], dict[str, Any]]:
     """Adapts a manifest.json plugin's entrypoint to ``TOOL_HANDLERS``'s
     uniform ``(arguments, engine, control_plane)`` signature — identical
@@ -6256,6 +6262,17 @@ def _wrap_plugin_handler(
         takes_single_args_dict = False
 
     def _handler(args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+        # dispatch_tool_call's schema check only covers native (tools.json)
+        # specs, so a guessed key here used to surface as Python's bare
+        # "got an unexpected keyword argument 'code'" — which never names
+        # the REAL parameter. A live run burned all 50 ReAct iterations
+        # cycling code/script/script_text/code_str against
+        # execute_freecad_script that way. validate_tool_arguments names
+        # both the bad key and the missing required one.
+        if spec is not None:
+            schema_error = validate_tool_arguments(spec, args)
+            if schema_error is not None:
+                raise TypeError(schema_error)
         result = fn(args) if takes_single_args_dict else fn(**args)
         # dana.plugins.freecad.engine's functions (e.g. modify_existing_document,
         # execute_freecad_script — the two manifest.json tool ids that don't
@@ -6346,7 +6363,7 @@ def refresh_plugin_tools() -> dict[str, Any]:
                     spec.id,
                 )
                 continue
-            TOOL_HANDLERS[spec.id] = _wrap_plugin_handler(fn)
+            TOOL_HANDLERS[spec.id] = _wrap_plugin_handler(fn, spec)
             _PLUGIN_TOOL_SCHEMAS[spec.id] = to_openai_function_schema(spec)
             if not spec.read_only:
                 _PLUGIN_MUTATING_TOOL_IDS.add(spec.id)

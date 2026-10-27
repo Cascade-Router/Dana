@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -56,8 +57,27 @@ _BLUEPRINT_PROMPT = (
 )
 
 
+def _dana_gui_pid() -> int | None:
+    """PID of the FreeCAD GUI Dana itself launched, if it is still running.
+    Read from sys.modules rather than imported: if the FreeCAD plugin was
+    never loaded, Dana cannot have launched a GUI."""
+    engine = sys.modules.get("dana.plugins.freecad.engine")
+    proc = getattr(engine, "_dana_gui_proc", None)
+    if proc is None or proc.poll() is not None:
+        return None
+    return int(proc.pid)
+
+
 def _find_cad_window() -> dict[str, Any] | None:
-    for win in get_active_windows():
+    """Dana's own FreeCAD window first, so verification never screenshots a
+    FreeCAD window the user opened themselves; any CAD process otherwise."""
+    windows = get_active_windows()
+    dana_pid = _dana_gui_pid()
+    if dana_pid is not None:
+        for win in windows:
+            if int(win["pid"]) == dana_pid:
+                return win
+    for win in windows:
         if _process_exe_name(int(win["pid"])) in _CAD_WINDOW_PROCESS_NAMES:
             return win
     return None

@@ -50,3 +50,34 @@ def test_process_exe_name_is_lowercased() -> None:
 def test_process_exe_name_returns_empty_string_when_process_is_gone() -> None:
     with patch("psutil.Process", side_effect=Exception("no such process")):
         assert _process_exe_name(999999) == ""
+
+
+def test_find_cad_window_prefers_the_freecad_gui_dana_launched(monkeypatch) -> None:
+    """With the user's own FreeCAD open too, verification must screenshot the
+    window of the GUI Dana launched (engine._dana_gui_proc), not whichever
+    freecad.exe window enumerates first."""
+    from dana.plugins.freecad import engine
+
+    class _Proc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    windows = [
+        {"hwnd": 1, "title": "FreeCAD 1.1 - users_own_part.FCStd", "pid": 200},
+        {"hwnd": 2, "title": "FreeCAD 1.1 - Session_Active.FCStd", "pid": 4242},
+    ]
+    monkeypatch.setattr(engine, "_dana_gui_proc", _Proc())
+    with (
+        patch("dana.tools.cad_vision.get_active_windows", return_value=windows),
+        patch("psutil.Process", return_value=_fake_process("freecad.exe")),
+    ):
+        assert _find_cad_window() == windows[1]
+
+    monkeypatch.setattr(engine, "_dana_gui_proc", None)
+    with (
+        patch("dana.tools.cad_vision.get_active_windows", return_value=windows),
+        patch("psutil.Process", return_value=_fake_process("freecad.exe")),
+    ):
+        assert _find_cad_window() == windows[0]  # no tracked GUI: any FreeCAD

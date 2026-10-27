@@ -113,12 +113,15 @@ def test_bom_bills_only_the_boolean_result(call, driver: str, members: list[str]
     assert [r[0] for r in rows] == ["DrilledBlock"]
 
 
-def test_mock_refuses_a_boolean_that_never_ran(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Without manifold3d the mock's cut silently returns the uncut base; the
-    BOM must refuse it rather than bill the whole block."""
+def test_mock_boolean_without_a_backend_fails_instead_of_returning_the_uncut_base(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without manifold3d the mock's cut used to report success with the
+    uncut base mesh (so a BOM would bill the whole block). It must fail, and
+    say how to fix it."""
     import trimesh
 
-    from dana.platform.mock import MockControlPlane, MockFreeCADEngine
+    from dana.platform.mock import MockControlPlane, MockFreeCADEngine, _mock_object_registry
 
     def _no_backend(*_args: Any, **_kwargs: Any):
         raise ImportError("manifold3d")
@@ -132,17 +135,19 @@ def test_mock_refuses_a_boolean_that_never_ran(monkeypatch: pytest.MonkeyPatch, 
         for tool_id, args in [
             ("create_freecad_box", {"name": "Block", "length": 20, "width": 20, "height": 10}),
             ("create_freecad_cylinder", {"name": "Drill", "radius": 5, "height": 20}),
-            ("perform_freecad_boolean", {"operation": "cut", "base_object": "Block", "tool_object": "Drill"}),
-            ("create_freecad_assembly", {"name": "Kit"}),
-            ("add_parts_to_assembly", {"assembly_name": "Kit", "part_names": ["Cut"]}),
         ]:
             assert rd.dispatch_tool_call(ToolCall(tool_id=tool_id, arguments=args), cad, control_plane).ok, tool_id
 
         result = rd.dispatch_tool_call(
-            ToolCall(tool_id="generate_assembly_bom", arguments={"assembly_name": "Kit"}), cad, control_plane
+            ToolCall(
+                tool_id="perform_freecad_boolean",
+                arguments={"operation": "cut", "base_object": "Block", "tool_object": "Drill"},
+            ),
+            cad,
+            control_plane,
         )
         assert not result.ok
         assert "manifold3d" in result.message
-        assert not (tmp_path / "exports").exists()
+        assert "Cut" not in _mock_object_registry()  # no uncut "result" was registered
     finally:
         set_session_id(DEFAULT_SESSION_ID)

@@ -37,6 +37,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from dana.plugins.freecad.engine import (
+    _HEAVY_ANALYSIS_TIMEOUT_S,
     _OK_MARKER,
     _RESOLVE_OBJECT_SNIPPET,
     _error,
@@ -442,7 +443,7 @@ def check_printability(
             data_path=data_path,
             marker=_OK_MARKER,
         )
-        result = _run_freecad_script(script)
+        result = _run_freecad_script(script, timeout=_HEAVY_ANALYSIS_TIMEOUT_S)
         if not result["ok"]:
             tmp_stl.unlink(missing_ok=True)
             return _error(f"check_printability failed: {result['error']}")

@@ -28,11 +28,13 @@ class Recorder:
         unprintable: frozenset[str] = frozenset(),
         needs_reorienting: frozenset[str] = frozenset(),
         fail: frozenset[str] = frozenset(),
+        colliding: bool = False,
     ):
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.unprintable = unprintable
         self.needs_reorienting = needs_reorienting
         self.fail = fail
+        self.colliding = colliding
 
     def results(self, tool_id: str, args: dict[str, Any]) -> dict[str, Any]:
         if tool_id in self.fail:
@@ -50,6 +52,9 @@ class Recorder:
                 "currency": "USD",
             }
         if tool_id == "validate_assembly_collisions":
+            if self.colliding:
+                overlap = {"part_a": "Base", "part_b": "Arm", "overlap_volume": 12.0}
+                return {"ok": True, "collisions": [overlap], "has_collisions": True}
             return {"ok": True, "collisions": [], "has_collisions": False}
         if tool_id == "export_assembly_to_urdf":
             return {"ok": True, "path": "/out/Kit_urdf/Kit.urdf"}
@@ -164,6 +169,27 @@ def test_runs_every_stage_in_order_and_stops_before_printing(monkeypatch: pytest
     }
     assert [r["part"] for r in payload["ready_to_print"]] == ["Base", "Arm"]
     assert "dispatch_to_printer" in payload["next_step"]
+
+
+def test_colliding_assembly_is_never_reported_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every tool call can succeed and every part get G-code while the parts
+    still physically overlap — that build is not finished."""
+    recorder = Recorder(colliding=True)
+    recorder.install(monkeypatch)
+
+    payload = _run(assembly_name="Kit").payload
+
+    assert payload["complete"] is False
+    assert "Base/Arm" in payload["failure_reason"]
+    assert payload["collisions"][0]["overlap_volume"] == 12.0
+    assert "parts collide" in payload["next_step"]
+
+
+def test_complete_run_has_no_failure_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    Recorder().install(monkeypatch)
+    payload = _run(assembly_name="Kit").payload
+    assert payload["complete"] is True
+    assert payload["failure_reason"] is None
 
 
 def test_part_materials_reach_the_bom(monkeypatch: pytest.MonkeyPatch) -> None:

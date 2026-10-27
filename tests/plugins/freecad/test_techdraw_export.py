@@ -174,7 +174,7 @@ def test_dxf_renders_to_a_page_sized_pdf_with_visible_black_strokes(
 
     pdf_path = techdraw_export._render_dxf_to_pdf(str(dxf), "bracket", (297.0, 210.0))
 
-    assert pdf_path == tmp_path / "exports" / "bracket.pdf"
+    assert pdf_path == tmp_path / "exports" / "sessions" / "default" / "bracket.pdf"
     pdf = pdf_path.read_bytes()
     assert pdf.startswith(b"%PDF-") and b"%%EOF" in pdf[-64:]
     # A4 landscape in points (1 mm = 72/25.4 pt).
@@ -188,6 +188,34 @@ def test_dxf_renders_to_a_page_sized_pdf_with_visible_black_strokes(
     # Drawn 1:1 in page millimetres: the hole's centre (x = 90 mm) is at
     # 90 * 72 / 25.4 = 255.118 pt, not stretched to fill the page.
     assert b"255.11811" in content
+
+
+def test_same_named_blueprints_from_two_sessions_never_overwrite_each_other(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stale-file unlink before each write used to run against one flat
+    exports/ folder shared by every session."""
+    import contextvars
+
+    from dana.session_context import set_session_id
+
+    monkeypatch.setattr(techdraw_export, "_EXPORT_DIR", tmp_path / "exports")
+    dxf = tmp_path / "page.dxf"
+    _write_part_dxf(dxf)
+
+    def _render_as(session_id: str) -> Path:
+        def _run() -> Path:
+            set_session_id(session_id)
+            svg_path, _sheet = techdraw_export._render_dxf_to_svg(str(dxf), "bracket", (297.0, 210.0))
+            return svg_path
+
+        return contextvars.copy_context().run(_run)
+
+    first = _render_as("session-a")
+    second = _render_as("session-b")
+    assert first != second
+    assert first.is_file() and second.is_file()
+    assert first.parent.name == "session-a" and second.parent.name == "session-b"
 
 
 def test_dxf_renders_to_svg_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -398,7 +426,7 @@ def test_pipeline_turns_the_freecad_dxf_into_pdf_and_svg_and_cleans_up(
     )
 
     assert result["ok"] is True, result
-    assert Path(result["path"]) == tmp_path / "exports" / "plate.pdf"
+    assert Path(result["path"]) == tmp_path / "exports" / "sessions" / "default" / "plate.pdf"
     assert Path(result["path"]).read_bytes().startswith(b"%PDF-")
     assert Path(result["svg_path"]).is_file()
     assert "Default_Template_A4_Landscape.svg" in seen["script"]

@@ -817,10 +817,14 @@ class ModelProvider:
                 or "gemini-3.6-flash"
             )
         elif provider == "groq":
-            # CLOUD_API_KEY is a generic fallback for whichever cloud
-            # provider DANA_CLOUD_PRIMARY/DANA_CLOUD_PROVIDER selects —
-            # GROQ_API_KEY wins if both happen to be set.
-            key = (os.environ.get("GROQ_API_KEY") or os.environ.get("CLOUD_API_KEY") or "").strip()
+            # A key entered in the app's Secrets menu (BYOK, per session)
+            # wins, like every other provider here. CLOUD_API_KEY is a
+            # generic fallback for whichever cloud provider
+            # DANA_CLOUD_PRIMARY/DANA_CLOUD_PROVIDER selects — GROQ_API_KEY
+            # wins if both happen to be set.
+            key = (
+                self._api_keys.get("groq") or os.environ.get("GROQ_API_KEY") or os.environ.get("CLOUD_API_KEY") or ""
+            ).strip()
             base = (
                 (os.environ.get("GROQ_API_BASE") or "").strip()
                 or "https://api.groq.com/openai/v1"

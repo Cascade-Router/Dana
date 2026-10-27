@@ -50,9 +50,7 @@ from typing import Any, Literal
 
 from dana.plugins.freecad import ir
 
-import psutil
-
-from dana.paths import DANA_WORKSPACE
+from dana.paths import AGENT_WORKSPACE_DIR, DANA_WORKSPACE
 
 from dana.security.dry_run import is_dry_run_enabled
 
@@ -115,6 +113,11 @@ else:
 
 _DEFAULT_TIMEOUT_S = 60.0
 
+# Analysis/export scripts whose cost grows with the assembly (pairwise
+# Shape.common/distToShape, TechDraw hidden-line removal, per-facet
+# printability checks) get a longer ceiling than ordinary modelling calls.
+_HEAVY_ANALYSIS_TIMEOUT_S = float(os.environ.get("DANA_FREECAD_HEAVY_TIMEOUT_S", "180"))
+
 _WINDOW_POLL_TIMEOUT_S = 10.0
 
 _WINDOW_POLL_INTERVAL_S = 0.75
@@ -142,6 +145,8 @@ _COLLISIONS_MARKER = f"{_OK_MARKER}_COLLISIONS"
 _COLLISIONS_RE = re.compile(re.escape(_COLLISIONS_MARKER) + r" (\[.*\])")
 
 _CLEARANCES_RE = re.compile(re.escape(f"{_OK_MARKER}_CLEARANCES") + r" (\[.*\])")
+
+_CHECK_ERRORS_RE = re.compile(re.escape(f"{_OK_MARKER}_CHECK_ERRORS") + r" (\[.*\])")
 
 _TOPOLOGY_MARKER = f"{_OK_MARKER}_TOPOLOGY"
 
@@ -235,20 +240,29 @@ def get_freecadcmd_path(*, force_refresh: bool = False) -> str:
         )
     return path
 
+# The one FreeCAD GUI process Dana itself launched (show_in_freecad_gui), if
+# any. Only this process is ever terminated or searched for windows — a
+# FreeCAD window the user opened themselves (possibly with unsaved work) is
+# never touched.
+_dana_gui_proc: subprocess.Popen[bytes] | None = None
+
+# Dana's GUI instance runs with its own FreeCAD user config (FreeCAD's
+# -u/--user-cfg), so _FIT_VIEW_MACRO's SaveAutoRecovery=False lands there
+# and never in the user's global preferences.
+_GUI_USER_CFG_PATH = _OUTPUT_DIR / "dana_gui_user.cfg"
+
+# Rewritten in place on every launch rather than leaking a new temp file per
+# relaunch; safe because the previous Dana GUI is always closed first.
+_FIT_VIEW_MACRO_PATH = _OUTPUT_DIR / "dana_fit_view.FCMacro"
+
 def _is_freecad_gui_running() -> bool:
-    """True if a FreeCAD.exe GUI process is currently running."""
-    for proc in psutil.process_iter(["name"]):
-        try:
-            if (proc.info.get("name") or "").lower() == "freecad.exe":
-                return True
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    return False
+    """True if the FreeCAD GUI process Dana launched is still running."""
+    return _dana_gui_proc is not None and _dana_gui_proc.poll() is None
 
 def _terminate_freecad_gui(*, timeout: float = 5.0) -> None:
-    """Terminates every running ``FreeCAD.exe`` GUI process and waits
-    (briefly) for it to actually exit before ``show_in_freecad_gui`` spawns
-    its replacement.
+    """Terminates the FreeCAD GUI process Dana launched (never any other
+    ``FreeCAD.exe``) and waits briefly for it to exit before
+    ``show_in_freecad_gui`` spawns its replacement.
 
     FreeCAD has no single-instance IPC (see ``show_in_freecad_gui``'s own
     docstring), so an already-running process can never be told a document
@@ -256,37 +270,24 @@ def _terminate_freecad_gui(*, timeout: float = 5.0) -> None:
     wrote it — or made to re-run ``_FIT_VIEW_MACRO``'s activate/isometric/
     fit-all snippet. Closing it and launching fresh is the only way to
     guarantee the next screenshot reflects current geometry. Graceful
-    ``terminate()`` first, escalating to ``kill()`` only for whatever is
-    still alive past ``timeout`` — a plain unsaved-document FreeCAD GUI
-    closes near-instantly, so this rarely reaches the escalation path.
+    ``terminate()`` first, escalating to ``kill()`` only if it is still
+    alive past ``timeout``.
     """
-    procs = []
-    for proc in psutil.process_iter(["name"]):
-        try:
-            if (proc.info.get("name") or "").lower() == "freecad.exe":
-                procs.append(proc)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    if not procs:
+    global _dana_gui_proc
+    proc = _dana_gui_proc
+    _dana_gui_proc = None
+    if proc is None or proc.poll() is not None:
         return
-    for proc in procs:
+    try:
+        proc.terminate()
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
         try:
-            proc.terminate()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            proc.kill()
+        except OSError:
             pass
-    deadline = time.monotonic() + timeout
-    for proc in procs:
-        remaining = max(0.0, deadline - time.monotonic())
-        try:
-            proc.wait(timeout=remaining)
-        except (psutil.NoSuchProcess, psutil.TimeoutExpired):
-            pass
-    for proc in procs:
-        try:
-            if proc.is_running():
-                proc.kill()
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
+    except OSError:
+        pass
 
 def get_freecad_gui_path(*, force_refresh: bool = False) -> str:
     """Resolve the FreeCAD GUI binary — lives next to FreeCADCmd in the same ``bin/``."""
@@ -302,11 +303,21 @@ def get_freecad_gui_path(*, force_refresh: bool = False) -> str:
     )
 
 def _find_freecad_window() -> dict[str, Any] | None:
+    """The top-level window owned by the FreeCAD GUI process Dana launched.
+
+    Matched by process id, never by title: a title substring used to match
+    unrelated windows such as "engine.py - dana/plugins/freecad - Visual
+    Studio Code" (same false positive dana.tools.cad_vision and
+    dana.platform.win32 already fixed), and the user's own FreeCAD windows
+    must not be moved either."""
+    proc = _dana_gui_proc
+    if proc is None:
+        return None
     try:
         from dana.tools.os_control import get_active_windows
 
         for win in get_active_windows():
-            if "freecad" in str(win.get("title") or "").lower():
+            if int(win.get("pid") or -1) == proc.pid:
                 return win
     except Exception:  # noqa: BLE001
         pass
@@ -361,11 +372,12 @@ import FreeCADGui as Gui
 # FreeCAD's own crash-recovery heuristic's point of view, that's
 # indistinguishable from an actual crash, so without this it pops a
 # "Recover Document" dialog on nearly every relaunch. This is a
-# persistent, on-disk preference (User parameter:BaseApp/Preferences/
-# Document), not per-process state, so setting it here also takes effect
-# for every later launch, not just this one; unconditional (runs even when
-# doc is None) since the dialog itself would otherwise still fire before
-# any document-dependent code below ever got a chance to run.
+# persistent, on-disk preference, so setting it here also takes effect for
+# every later launch; unconditional (runs even when doc is None) since the
+# dialog itself would otherwise still fire before any document-dependent
+# code below ever got a chance to run. It is only ever written to Dana's
+# private user config (show_in_freecad_gui launches with -u
+# _GUI_USER_CFG_PATH), never the user's own FreeCAD preferences.
 #
 # The explicit App.saveParameter() is NOT optional: confirmed live (via
 # FreeCADCmd, mimicking psutil.Process.terminate()'s abrupt
@@ -430,7 +442,8 @@ if doc is not None:
 """
 
 def _write_fit_view_macro() -> str:
-    """Write the one-shot "make objects visible + fit view" macro to a temp file.
+    """Write the one-shot "make objects visible + fit view" macro to
+    ``_FIT_VIEW_MACRO_PATH`` (one fixed file, overwritten per launch).
 
     FreeCAD executes any ``.FCMacro``/``.py`` file passed alongside a
     document on its command line — this is the only way to get a
@@ -440,18 +453,17 @@ def _write_fit_view_macro() -> str:
     (no stored visibility/camera state) until the real GUI creates default
     ones on open — and those defaults aren't guaranteed visible.
     """
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".FCMacro", delete=False, encoding="utf-8"
-    ) as tmp:
-        tmp.write(_FIT_VIEW_MACRO)
-        return tmp.name
+    _FIT_VIEW_MACRO_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _FIT_VIEW_MACRO_PATH.write_text(_FIT_VIEW_MACRO, encoding="utf-8")
+    return str(_FIT_VIEW_MACRO_PATH)
 
 def show_in_freecad_gui(filepath: str) -> str:
     """Open ``filepath`` in a FRESH FreeCAD GUI process on the secondary
     monitor — NEVER stealing OS focus.
 
-    ALWAYS terminates any already-running ``FreeCAD.exe`` first (via
-    ``_terminate_freecad_gui``) and launches a new one against ``filepath``.
+    ALWAYS terminates the GUI process Dana itself launched last time (via
+    ``_terminate_freecad_gui``; FreeCAD windows the user opened are never
+    touched) and launches a new one against ``filepath``.
     This used to reuse an already-running instance instead — but FreeCAD
     has no single-instance IPC, so that process could never be told a
     document had changed on disk (a separate ``FreeCADCmd`` subprocess is
@@ -497,9 +509,12 @@ def show_in_freecad_gui(filepath: str) -> str:
         gui_path = get_freecad_gui_path()
     except FreeCADNotFoundError as exc:
         return _error(str(exc))
+    global _dana_gui_proc
     try:
         macro_path = _write_fit_view_macro()
-        subprocess.Popen([gui_path, str(path), macro_path])  # noqa: S603
+        _dana_gui_proc = subprocess.Popen(  # noqa: S603
+            [gui_path, "-u", str(_GUI_USER_CFG_PATH), str(path), macro_path]
+        )
     except OSError as exc:
         return _error(f"show_in_freecad_gui: failed to launch FreeCAD GUI: {exc}")
 
@@ -512,10 +527,10 @@ def show_in_freecad_gui(filepath: str) -> str:
     while time.monotonic() < deadline and window is None:
         time.sleep(_WINDOW_POLL_INTERVAL_S)
         window = _find_freecad_window()
-    # Every prior instance was just terminated above, so any FreeCAD window
-    # found now can only be the one just spawned for `path` — no need to
-    # additionally match its title (a slow title-bar update during a cold
-    # workbench-loading start would otherwise be mistaken for "wrong file").
+    # _find_freecad_window matches the just-spawned process by pid, so any
+    # window found is the one for `path` — no need to additionally match its
+    # title (a slow title-bar update during a cold workbench-loading start
+    # would otherwise be mistaken for "wrong file").
     title_matches = window is not None
 
     moved = False
@@ -716,6 +731,61 @@ except BaseException as _dana_exc:
 """
 
 
+def _session_save_target(script_text: str) -> Path | None:
+    """This session's ``Session_Active.FCStd`` if ``script_text`` opens AND
+    saves it (every session-document script binds ``_session_path`` the
+    same way — ``_SESSION_OPEN_SNIPPET``, ``universal_ir.py.jinja2``), else
+    ``None``. Read-only scripts that open the document without saving
+    don't need a backup."""
+    try:
+        path = _session_document_path()
+    except Exception:  # noqa: BLE001 — no session context; nothing to protect
+        return None
+    if f"_session_path = {str(path)!r}" not in script_text:
+        return None
+    if "doc.save()" not in script_text and "saveAs(_session_path)" not in script_text:
+        return None
+    return path
+
+
+def _backup_session_document(path: Path) -> Path | None:
+    """Copies a non-empty session document to ``<name>.bak`` before a
+    mutating run; ``None`` when there's nothing worth keeping yet."""
+    try:
+        if not path.is_file() or path.stat().st_size == 0:
+            return None
+        backup = path.with_name(path.name + ".bak")
+        shutil.copy2(path, backup)
+        return backup
+    except OSError:
+        return None
+
+
+def _rollback_session_document(path: Path, backup: Path | None) -> bool:
+    """Puts the session document back the way it was before a failed run:
+    the backup if there was one, otherwise no file at all (so the next call
+    starts a fresh document instead of opening a half-written one)."""
+    try:
+        if backup is not None:
+            shutil.copy2(backup, path)
+        elif path.exists():
+            path.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _session_document_damaged(path: Path, backup: Path | None) -> bool:
+    """A run that reported success but left the document missing or empty
+    (only meaningful when a good copy existed before it)."""
+    if backup is None:
+        return False
+    try:
+        return not path.is_file() or path.stat().st_size == 0
+    except OSError:
+        return True
+
+
 def _run_freecad_script(
     script_text: str,
     *,
@@ -746,11 +816,19 @@ def _run_freecad_script(
     ``HOME``/``XDG_*_HOME`` override (see ``_freecad_subprocess_home``),
     since that platform is the one where a container's real ``$HOME`` can't
     be trusted to be writable.
+
+    A script that saves this session's ``Session_Active.FCStd`` gets a
+    ``.bak`` copy of it first; a timeout, a failed run, or a "successful"
+    run that left the document missing/empty restores that copy, so one
+    bad tool call can never corrupt the whole session build.
     """
     try:
         cmd_path = get_freecadcmd_path()
     except FreeCADNotFoundError as exc:
         return {"ok": False, "error": str(exc), "stdout": "", "stderr": ""}
+
+    session_target = _session_save_target(script_text)
+    session_backup = _backup_session_document(session_target) if session_target is not None else None
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, encoding="utf-8"
@@ -782,11 +860,14 @@ def _run_freecad_script(
                 env=env,
             )
     except subprocess.TimeoutExpired as exc:
+        restored = session_target is not None and _rollback_session_document(session_target, session_backup)
         return {
             "ok": False,
-            "error": f"FreeCADCmd timed out after {timeout}s",
+            "error": f"FreeCADCmd timed out after {timeout}s"
+            + (" (session document restored to its state before this call)" if restored else ""),
             "stdout": exc.stdout or "",
             "stderr": exc.stderr or "",
+            "session_restored": restored,
         }
     finally:
         try:
@@ -801,8 +882,18 @@ def _run_freecad_script(
         and _FREECAD_INTERNAL_EXCEPTION_BANNER not in (proc.stderr or "")
     )
     fail_msg = proc.stderr.strip() or proc.stdout.strip() or "FreeCADCmd reported failure"
+    restored = False
+    if session_target is not None:
+        if ok and _session_document_damaged(session_target, session_backup):
+            ok = False
+            fail_msg = "FreeCADCmd reported success but left the session document missing or empty"
+        if not ok:
+            restored = _rollback_session_document(session_target, session_backup)
+            if restored:
+                fail_msg += " (session document restored to its state before this call)"
     return {
         "ok": ok,
+        "session_restored": restored,
         "error": None if ok else fail_msg,
         "stdout": proc.stdout,
         "stderr": proc.stderr,
@@ -4001,17 +4092,18 @@ _collisions = []
 # 0.0 when the solids touch or overlap -- the caller builds the clearance
 # report from these, since only it knows which pairs are mated.
 _clearances = []
+# Pairs whose intersection or distance OCCT could not compute (non-solid or
+# degenerate geometry). Recorded, never skipped: an unverifiable pair must
+# not be reported as collision-free.
+_check_errors = []
 _epsilon = {epsilon!r}
 for _i in range(len(_members)):
     for _j in range(_i + 1, len(_members)):
         _a, _b = _members[_i], _members[_j]
         try:
             _overlap_volume = _a.Shape.common(_b.Shape).Volume
-        except Exception:
-            # Non-solid/degenerate geometry can't be intersected -- skipped
-            # rather than failing the whole audit over one bad pair; a
-            # genuinely broken shape shows up via inspect_spatial_properties
-            # instead, which is what that tool exists for.
+        except Exception as _exc:
+            _check_errors.append(dict(part_a=_a.Name, part_b=_b.Name, stage="intersection", error=str(_exc)))
             continue
         if _overlap_volume > _epsilon:
             _collisions.append(dict(part_a=_a.Name, part_b=_b.Name, overlap_volume=_overlap_volume))
@@ -4019,12 +4111,14 @@ for _i in range(len(_members)):
         else:
             try:
                 _distance = float(_a.Shape.distToShape(_b.Shape)[0])
-            except Exception:
+            except Exception as _exc:
+                _check_errors.append(dict(part_a=_a.Name, part_b=_b.Name, stage="distance", error=str(_exc)))
                 continue
         _clearances.append(dict(part_a=_a.Name, part_b=_b.Name, distance_mm=_distance))
 
 print("{marker}_COLLISIONS " + str(_collisions))
 print("{marker}_CLEARANCES " + json.dumps(_clearances))
+print("{marker}_CHECK_ERRORS " + json.dumps(_check_errors))
 print("{marker}_CHECKED " + str(len(_members)))
 print("{marker} ok")
 """)
@@ -4176,10 +4270,11 @@ def validate_assembly_collisions(assembly_name: str) -> str:
     dicts, empty if none found) and ``has_collisions``/``checked_members``
     alongside it, plus ``clearances``: every checked pair's true minimum
     distance (``{"part_a", "part_b", "distance_mm"}``, 0.0 when touching or
-    overlapping). A pair whose actual boolean intersection can't be
-    computed (degenerate/non-solid geometry) is silently skipped rather
-    than failing the whole audit — a broken shape shows up via
-    ``inspect_spatial_properties`` instead.
+    overlapping). A pair whose boolean intersection or distance can't be
+    computed (degenerate/non-solid geometry) fails the validation
+    (``ok: false``) and is listed in ``collision_check_errors`` — the
+    collisions/clearances that WERE computed are still included — so broken
+    geometry is never reported as collision-free.
     """
     assembly = (assembly_name or "").strip()
     if not assembly:
@@ -4201,13 +4296,35 @@ def validate_assembly_collisions(assembly_name: str) -> str:
         session_doc_name=_SESSION_DOCUMENT_NAME,
         marker=_OK_MARKER,
     )
-    result = _run_freecad_script(script, require_marker=True)
+    result = _run_freecad_script(script, require_marker=True, timeout=_HEAVY_ANALYSIS_TIMEOUT_S)
     if not result["ok"]:
         return _error(f"validate_assembly_collisions failed: {result['error']}")
     collisions = _extract_collisions(result["stdout"]) or []
     checked = _extract_checked_count(result["stdout"]) or 0
     m = _CLEARANCES_RE.search(result["stdout"] or "")
     clearances = json.loads(m.group(1)) if m else []
+    errors_match = _CHECK_ERRORS_RE.search(result["stdout"] or "")
+    check_errors = json.loads(errors_match.group(1)) if errors_match else []
+    if check_errors:
+        pairs = ", ".join(f"{e['part_a']}/{e['part_b']}" for e in check_errors)
+        return json.dumps(
+            {
+                "ok": False,
+                "error": (
+                    f"validate_assembly_collisions could not check {len(check_errors)} part pair(s) "
+                    f"({pairs}): their geometry is not a valid solid, so the assembly cannot be "
+                    "confirmed collision-free. Inspect those parts with inspect_spatial_properties "
+                    "and fix or rebuild them, then validate again."
+                ),
+                "name": assembly,
+                "collisions": collisions,
+                "has_collisions": bool(collisions),
+                "collision_check_errors": check_errors,
+                "checked_members": checked,
+                "clearances": clearances,
+                "path": str(session_path),
+            }
+        )
     return _ok(
         name=assembly,
         collisions=collisions,
@@ -5791,6 +5908,28 @@ _MODIFY_POSTAMBLE = (
     'print("{marker} path=" + {in_path!r} + " objects=" + str(len(doc.Objects)))\n'
 )
 
+def _workspace_document_path(filepath: str) -> Path | None:
+    """``filepath`` resolved (symlinks and ``..`` collapsed), if it names a
+    ``.FCStd`` file under Dana's own CAD output or the agent workspace —
+    the only documents an LLM-chosen path may open and overwrite."""
+    raw = (filepath or "").strip()
+    if not raw:
+        return None
+    try:
+        candidate = Path(raw).resolve()
+        roots = [_OUTPUT_DIR.resolve(), AGENT_WORKSPACE_DIR.resolve()]
+    except OSError:
+        return None
+    if candidate.suffix.lower() != ".fcstd":
+        return None
+    for root in roots:
+        try:
+            candidate.relative_to(root)
+            return candidate
+        except ValueError:
+            continue
+    return None
+
 def modify_existing_document(filepath: str, modification_script: str) -> str:
     """Open an existing ``.FCStd`` document, run ``modification_script``
     against it, and save back to the SAME path — the "Modify Existing"
@@ -5805,7 +5944,13 @@ def modify_existing_document(filepath: str, modification_script: str) -> str:
     ``.FCStd`` per operation — those three always start a brand-new
     document, by design, since their job is "give me one clean primitive."
     """
-    path = Path(filepath)
+    path = _workspace_document_path(filepath)
+    if path is None:
+        return _error(
+            f"modify_existing_document: {filepath!r} is not a .FCStd document inside Dana's workspace "
+            f"({_OUTPUT_DIR} or {AGENT_WORKSPACE_DIR}); only documents Dana created or that were "
+            "copied into the agent workspace can be modified"
+        )
     if not path.is_file():
         return _error(f"modify_existing_document: file not found: {filepath}")
     text = (modification_script or "").strip()
@@ -5831,6 +5976,10 @@ def execute_freecad_script(python_script_str: str) -> str:
     subprocess return code alone (no ``DANA_FREECAD_OK`` marker required)
     — the caller's own script defines what "success" means. Prefer the
     parametric helpers when they cover the need.
+
+    CRITICAL: the script must arrive under the exact parameter name
+    ``python_script_str`` — the only one this function accepts. The
+    LLM-facing wording of this rule lives in ``manifest.json``.
     """
     text = (python_script_str or "").strip()
     if not text:
@@ -5872,11 +6021,9 @@ __all__ = (
 
 
 # --- restored from HEAD (excluded refactor did not touch these) ---
-
-_COMMON_INSTALL_GLOBS: tuple[str, ...] = (
-    r"C:\Program Files\FreeCAD*\bin\FreeCADCmd.exe",
-    r"C:\Program Files (x86)\FreeCAD*\bin\FreeCADCmd.exe",
-)
+# (_COMMON_INSTALL_GLOBS used to be re-declared here with the Windows-only
+# paths, silently overwriting the per-OS darwin/Linux globs at the top of
+# this module. The per-OS definition there is the only one.)
 
 _EXPORT_STL_SCRIPT = """\
 import FreeCAD as App

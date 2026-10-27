@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from dana.plugins.freecad import engine, techdraw_export
-from dana.session_context import DEFAULT_SESSION_ID, set_session_id
+from dana.session_context import DEFAULT_SESSION_ID, get_session_id, set_session_id
 
 pytestmark = [
     pytest.mark.e2e,
@@ -75,7 +75,7 @@ def test_a_box_becomes_a_valid_pdf_in_the_export_directory(tmp_path: Path, captu
     result = _ok(techdraw_export.generate_2d_blueprint(box["path"], views=["Top"], filename="plate"))
 
     pdf = Path(result["path"])
-    assert pdf == tmp_path / "exports" / "plate.pdf"
+    assert pdf == tmp_path / "exports" / "sessions" / get_session_id() / "plate.pdf"
     data = pdf.read_bytes()
     assert data.startswith(b"%PDF-") and len(data) > 1000
     assert Path(result["svg_path"]).is_file()

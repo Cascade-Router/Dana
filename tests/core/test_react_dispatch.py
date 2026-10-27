@@ -1884,6 +1884,22 @@ def test_execute_freecad_script_end_to_end_through_tool_handlers_dispatch(monkey
     assert script_arg == "import FreeCAD as App"
 
 
+def test_plugin_tool_wrong_parameter_name_error_names_the_real_one() -> None:
+    """A live run burned all 50 ReAct iterations guessing code/script/
+    script_text/code_str for execute_freecad_script, because the only
+    feedback was Python's bare "unexpected keyword argument 'code'". The
+    rejection must now name the real parameter so the next call can fix it."""
+    result = rd.dispatch_tool_call(
+        ToolCall(tool_id="execute_freecad_script", arguments={"code": "print(1)"}),
+        None,
+        None,
+        raw_user_text="run this python script",
+    )
+    assert result.ok is False
+    assert "'code'" in result.payload["reason"]
+    assert "'python_script_str' (required)" in result.payload["reason"]
+
+
 def test_freecad_manifest_colliding_tool_ids_still_use_native_handler() -> None:
     """create_freecad_box/cylinder/extrusion are declared in BOTH the
     manifest (under a different underlying function name) and as native

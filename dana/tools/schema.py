@@ -347,7 +347,16 @@ def validate_tool_arguments(spec: ToolSpec, arguments: dict[str, Any]) -> str | 
                 problems.append(f"unexpected parameter '{loc}' is not part of {spec.id}'s schema")
             else:
                 problems.append(f"'{loc}': {err['msg']}")
-        return f"{spec.id} received invalid arguments — " + "; ".join(problems)
+        message = f"{spec.id} received invalid arguments — " + "; ".join(problems)
+        # Naming only the bad key left the model guessing the real one: a
+        # live run spent its whole iteration budget trying code/script/
+        # script_text/code_str on execute_freecad_script (python_script_str).
+        if any(err["type"] == "extra_forbidden" for err in exc.errors()):
+            valid = ", ".join(
+                f"'{p.name}'" + (" (required)" if p.required else "") for p in spec.parameters
+            )
+            message += f". Valid parameters are exactly: {valid or '(none)'}"
+        return message
     return None
 
 

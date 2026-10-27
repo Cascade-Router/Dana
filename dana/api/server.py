@@ -28,7 +28,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -382,7 +382,7 @@ def _on_voice_state(state: VoiceState, transcript: str) -> None:
         await _broadcast({"type": "voice_state", "state": state, "transcript": transcript})
         if state == "processing" and transcript:
             for ws, session in list(_active_sessions.items()):
-                await _process_user_text(ws, session, transcript)
+                await _start_user_turn(ws, session, transcript)
 
     asyncio.run_coroutine_threadsafe(_emit(), loop)
 
@@ -1190,7 +1190,13 @@ async def _execute_and_continue(
     engine = get_cad_engine()
     control_plane = get_control_plane()
 
-    result = dispatch_tool_call(
+    # Worker thread, not the event loop: a FreeCADCmd call can block for up
+    # to its 60 s subprocess timeout, which used to freeze every session's
+    # receive loop, broadcasts and the suspension sweeper. asyncio.to_thread
+    # copies the current context, so set_session_id above still applies
+    # inside the handler chain.
+    result = await asyncio.to_thread(
+        dispatch_tool_call,
         call,
         engine,
         control_plane,
@@ -1203,6 +1209,11 @@ async def _execute_and_continue(
         # itself declares (a plan, an argument, a prior tool result).
         raw_user_text=_first_user_text(messages),
     )
+    # Stop clicked while the tool ran: the tool itself already happened, so
+    # its result is still recorded below, but the best-effort mesh/STEP/
+    # visual-verification follow-ups (more FreeCAD subprocesses) are skipped
+    # and the turn ends right after the result is appended.
+    aborted_during_dispatch = bool(session.get("abort_requested"))
 
     if result.ok:
         _collapse_resolved_retry(messages, call.tool_id)
@@ -1334,9 +1345,13 @@ async def _execute_and_continue(
         is_geometryless_container = result.payload.get("type") == "App::Part"
         if is_geometryless_container:
             mesh: dict[str, Any] = {"ok": False, "error": "skipped: App::Part has no tessellatable geometry"}
+        elif aborted_during_dispatch:
+            mesh = {"ok": False, "error": "skipped: turn aborted"}
         else:
             try:
-                mesh = engine.export_mesh_stl(result.payload["path"], name=result_name, target_object=result_name)
+                mesh = await asyncio.to_thread(
+                    engine.export_mesh_stl, result.payload["path"], name=result_name, target_object=result_name
+                )
             except Exception as exc:  # noqa: BLE001 — best-effort mesh preview; must never fail the whole turn
                 telemetry.log_error(
                     stage="export_mesh_stl_exception",
@@ -1353,7 +1368,7 @@ async def _execute_and_continue(
             artifacts_registry.register_artifact(
                 mesh["path"], format=mesh_ext, source="generated", session_id=session["session_id"]
             )
-        elif not is_geometryless_container:
+        elif not is_geometryless_container and not aborted_during_dispatch:
             telemetry.log_error(
                 stage="export_mesh_stl_failed",
                 tool_id=call.tool_id,
@@ -1370,8 +1385,16 @@ async def _execute_and_continue(
         # an expected, honest limitation of that driver, not a failure of
         # this turn's actual tool call.
         try:
-            step = engine.export_model(
-                [result.payload["path"]], "step", result_name or "model", target_objects=[result_name]
+            step = (
+                {"ok": False}
+                if aborted_during_dispatch
+                else await asyncio.to_thread(
+                    engine.export_model,
+                    [result.payload["path"]],
+                    "step",
+                    result_name or "model",
+                    target_objects=[result_name],
+                )
             )
         except Exception:  # noqa: BLE001 — best-effort; a driver-level failure here must never fail the turn
             step = {"ok": False}
@@ -1412,7 +1435,9 @@ async def _execute_and_continue(
         # generic "does this look successful?" question with nothing for
         # the model to actually check the screenshot against.
         try:
-            if os.getenv("DANA_HEADLESS", "false").lower() == "true":
+            if aborted_during_dispatch:
+                pass
+            elif os.getenv("DANA_HEADLESS", "false").lower() == "true":
                 # Headless mode: show_in_freecad_gui's own fix (always
                 # terminate + relaunch the GUI fresh, so a stale document
                 # can never taint a screenshot — see engine.py's
@@ -1520,6 +1545,11 @@ async def _execute_and_continue(
         f"[tool_result] {call.tool_id} ok={result.ok}",
         extra=_capped_for_conversation_log(tool_result_message["content"]),
     )
+
+    if session.get("abort_requested"):
+        session["abort_requested"] = False
+        await _finish_turn(websocket, session, messages, "Generation aborted by user.")
+        return
 
     current_failure_key = None if result.ok else (call.tool_id, result.message)
     failure_repeat_count = (
@@ -2211,7 +2241,9 @@ async def _resolve_visual_capture(websocket: WebSocket, session: dict[str, Any],
 
     call = state["call"]
     api_key = (session.get("api_keys") or {}).get("openai")
-    payload = build_visual_inspection_result(response.get("image_b64"), error=response.get("error"), api_key=api_key)
+    payload = await asyncio.to_thread(
+        build_visual_inspection_result, response.get("image_b64"), error=response.get("error"), api_key=api_key
+    )
     message = str(payload.get("summary") or payload.get("note") or payload.get("error") or "ok")
     result = ToolResult(call.tool_id, bool(payload.get("ok")), payload, message, 0)
 
@@ -2334,6 +2366,52 @@ def _split_into_steps(user_text: str) -> list[str]:
     return parts if len(parts) >= 2 else [user_text.strip()]
 
 
+_TURN_BUSY_REPLY = "Please wait for the pending action above to resolve before sending another message."
+
+
+def _log_turn_task_failure(task: asyncio.Task[None]) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None and not isinstance(exc, WebSocketDisconnect):
+        telemetry.log_error(stage="turn_task_exception", exc_type=type(exc).__name__, detail=str(exc))
+
+
+def _spawn_turn(session: dict[str, Any], make_coro: Callable[[], Awaitable[None]]) -> None:
+    """Runs a turn (a new utterance, or resuming a suspended one) as a
+    tracked task instead of awaiting it inside ``ws_chat``'s receive loop,
+    so that loop keeps reading control messages (``abort_turn`` above all)
+    while the turn iterates.
+
+    Every turn source (typed text, voice transcript, HITL/visual-capture
+    resume) goes through here, and each new task first waits for the
+    session's previous one, so a session never runs two ReAct loops at
+    once: a voice transcript arriving mid-turn queues behind it exactly the
+    way a typed message used to queue behind the inline await. A queued
+    utterance that finds the turn suspended on an approval still gets
+    ``_process_user_text``'s "please wait" bounce."""
+    previous = session.get("turn_task")
+
+    async def _run() -> None:
+        if previous is not None and not previous.done():
+            await asyncio.wait({previous})
+        await make_coro()
+
+    task = asyncio.create_task(_run())
+    session["turn_task"] = task
+    pending: set[asyncio.Task[None]] = session.setdefault("turn_tasks", set())
+    pending.add(task)
+    task.add_done_callback(pending.discard)
+    task.add_done_callback(_log_turn_task_failure)
+
+
+async def _start_user_turn(
+    websocket: WebSocket, session: dict[str, Any], user_text: str, attachments: list[str] | None = None
+) -> None:
+    """Entry point for a NEW utterance, typed or voice."""
+    _spawn_turn(session, lambda: _process_user_text(websocket, session, user_text, attachments=attachments))
+
+
 async def _process_user_text(
     websocket: WebSocket, session: dict[str, Any], user_text: str, attachments: list[str] | None = None
 ) -> None:
@@ -2367,12 +2445,7 @@ async def _process_user_text(
     # below included) already sees the right session from the start.
     set_session_id(session["session_id"])
     if session.get("react_state") is not None or session.get("visual_state") is not None:
-        await websocket.send_json(
-            {
-                "type": "assistant_message",
-                "content": "Please wait for the pending action above to resolve before sending another message.",
-            }
-        )
+        await websocket.send_json({"type": "assistant_message", "content": _TURN_BUSY_REPLY})
         return
     telemetry.log_request(session_id=session.get("session_id"), text=user_text)
     conversation_logger.log_conversation("User", user_text, extra=f"session={session.get('session_id')}")
@@ -2576,6 +2649,9 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
         # abort_turn that arrived just after its turn already finished
         # can never bleed into wrongly cancelling the NEXT, unrelated turn.
         "abort_requested": False,
+        # The asyncio.Task running this session's current turn, if any —
+        # see _spawn_turn/_turn_in_flight.
+        "turn_task": None,
         # Session-scoped HITL allowlist — tool_ids the user has already
         # approved once this session (see _run_react_loop's is_mutating_tool
         # check and _resolve_react_hitl, which adds to this on approval).
@@ -2676,14 +2752,18 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
                 session["auto_approve"] = bool(payload.get("enabled", False))
                 continue
 
+            # Resuming a suspended turn continues the ReAct loop, so it runs
+            # as a turn task too (queued behind the task that suspended it,
+            # in case that one hasn't fully returned yet). Stale or unknown
+            # request_ids are still ignored inside the resolvers.
             if msg_type == "hitl_response":
                 payload = data.get("payload") or {}
-                await _resolve_react_hitl(websocket, session, payload)
+                _spawn_turn(session, lambda payload=payload: _resolve_react_hitl(websocket, session, payload))
                 continue
 
             if msg_type == "visual_capture_response":
                 payload = data.get("payload") or {}
-                await _resolve_visual_capture(websocket, session, payload)
+                _spawn_turn(session, lambda payload=payload: _resolve_visual_capture(websocket, session, payload))
                 continue
 
             if msg_type == "export_python_script":
@@ -2712,11 +2792,16 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
                 if desktop_capture is not None:
                     attachments = [*(attachments or []), desktop_capture]
 
-            await _process_user_text(websocket, session, user_text, attachments=attachments)
+            await _start_user_turn(websocket, session, user_text, attachments=attachments)
     except WebSocketDisconnect:
         pass
     finally:
         _active_sessions.pop(websocket, None)
+        # A turn still iterating has no socket left to report to. Cancelling
+        # stops it at its next await; a tool already running in a worker
+        # thread finishes on its own (FreeCADCmd saves are never cut short).
+        for turn_task in list(session.get("turn_tasks", ())):
+            turn_task.cancel()
         if not _active_sessions:
             # Idle Flush — the last open connection (this app may have
             # several, e.g. multiple Tauri windows) just closed. See

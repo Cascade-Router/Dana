@@ -85,8 +85,8 @@ _MOCK_KINEMATIC_JOINTS: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
 # "applied": bool}. generate_assembly_bom reads it to leave consumed
 # operands out (the real engine's consumed-operand filter, which reads the
 # same thing off Part::Cut's Base/Tool links) and to refuse a result whose
-# boolean never ran ("applied": False — the trimesh boolean backend,
-# manifold3d, wasn't installed, so the "result" is the uncut base mesh).
+# boolean never ran ("applied": False). apply_boolean now fails outright
+# instead of recording such a result, so that check is only a backstop.
 _MOCK_BOOLEAN_RESULTS: dict[str, dict[str, dict[str, Any]]] = {}
 
 
@@ -493,17 +493,23 @@ class MockFreeCADEngine(BaseCADEngine):
             mesh = meshes[0]
             for other in meshes[1:]:
                 mesh = getattr(mesh, mesh_ops[op])(other)
-            engine_note = _MOCK_NOTE_CAD
-            applied = True
-        except BaseException:  # noqa: BLE001 — boolean engine unavailable in this container
-            mesh = meshes[0]
-            engine_note = f"{_MOCK_NOTE_CAD}; boolean engine unavailable, returned base unmodified"
-            applied = False
+        except Exception as exc:  # noqa: BLE001 — trimesh raises various types when no boolean backend is installed
+            # This used to return ok=True with the base mesh unmodified, so a
+            # "successful" cut silently left the part uncut. trimesh's
+            # booleans need the manifold3d backend (requirements.txt).
+            return {
+                "ok": False,
+                "error": (
+                    f"apply_boolean: the mock CAD driver could not compute the {op} "
+                    f"({type(exc).__name__}: {exc}). Mesh booleans need the manifold3d package; "
+                    "install it with `pip install manifold3d`."
+                ),
+            }
 
         out_path = _mesh_output_path(resolved_name)
         mesh.export(out_path)
         _mock_object_registry()[resolved_name] = str(out_path)
-        _mock_boolean_registry()[resolved_name] = {"operands": object_names, "applied": applied}
+        _mock_boolean_registry()[resolved_name] = {"operands": object_names, "applied": True}
         return {
             "ok": True,
             "name": resolved_name,
@@ -513,7 +519,7 @@ class MockFreeCADEngine(BaseCADEngine):
             "path": str(out_path),
             "gui_shown": False,
             "driver": "mock",
-            "note": engine_note,
+            "note": _MOCK_NOTE_CAD,
         }
 
     def apply_edge_operation(

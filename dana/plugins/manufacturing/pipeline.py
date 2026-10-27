@@ -106,7 +106,8 @@ def execute_manufacturing_pipeline(
     prints don't depend on each other, and the result stays ``ok: True`` so
     the artifacts that were made reach the agent (dispatch_tool_call reduces
     a failed result to its error message). ``complete`` is true only when
-    every step succeeded and every part has G-code. A part is sliced if
+    every step succeeded, no parts collide, and every part has G-code;
+    otherwise ``failure_reason`` says why. A part is sliced if
     check_printability calls it printable, or if ``auto_orient`` turned it
     into a pose that fits the bed.
     """
@@ -198,7 +199,18 @@ def execute_manufacturing_pipeline(
     ready = [{"part": p["name"], "gcode_filepath": p["gcode_path"]} for p in parts if p["gcode_path"]]
     not_ready = [p["name"] for p in parts if not p["gcode_path"]]
     failed_steps = [s["step"] for s in steps if not s["ok"]]
-    complete = not failed_steps and not not_ready
+    colliding = collisions.get("collisions") or []
+    # A colliding assembly is not a finished build even when every tool call
+    # succeeded: the parts physically overlap, so its prints won't assemble.
+    failure_reasons: list[str] = []
+    if colliding:
+        pairs = ", ".join(f"{c['part_a']}/{c['part_b']}" for c in colliding)
+        failure_reasons.append(f"parts collide: {pairs}")
+    if failed_steps:
+        failure_reasons.append(f"failed steps: {failed_steps}")
+    if not_ready:
+        failure_reasons.append(f"parts without G-code: {not_ready}")
+    complete = not failure_reasons
     next_step = (
         "Nothing has been printed. To print, call dispatch_to_printer(printer_ip, gcode_filepath) once per "
         "entry in ready_to_print; the user approves each print."
@@ -207,8 +219,8 @@ def execute_manufacturing_pipeline(
     )
     if not complete:
         next_step += (
-            f" Incomplete: failed steps {failed_steps}, parts without G-code {not_ready}; "
-            "see steps and parts for the errors and printability warnings."
+            f" Incomplete: {'; '.join(failure_reasons)}; "
+            "see collisions, steps and parts for the details and printability warnings."
         )
     auto_oriented = [p["name"] for p in parts if "applied_orientation" in p]
     if auto_oriented:
@@ -241,6 +253,7 @@ def execute_manufacturing_pipeline(
     return {
         "ok": True,
         "complete": complete,
+        "failure_reason": "; ".join(failure_reasons) or None,
         "failed_steps": failed_steps,
         "name": assembly,
         "artifacts": {
@@ -263,7 +276,7 @@ def execute_manufacturing_pipeline(
                 "stability_warning",
             )
         },
-        "collisions": collisions.get("collisions") or [],
+        "collisions": colliding,
         "clearance_warnings": clearance_warnings,
         "parts": parts,
         "orientation_hints": orientation_hints,

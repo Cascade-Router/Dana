@@ -47,6 +47,7 @@ from typing import Any
 
 from dana.plugins.freecad.engine import (
     _EXPORT_DIR,
+    _HEAVY_ANALYSIS_TIMEOUT_S,
     _OK_MARKER,
     _RESOLVE_OBJECT_SNIPPET,
     _object_lookup_snippet,
@@ -58,6 +59,7 @@ from dana.plugins.freecad.engine import (
 )
 from dana.platform.factory import IS_HF_SPACE
 from dana.security.dry_run import is_dry_run_enabled
+from dana.session_context import session_scoped_dir
 
 # Direction = viewing direction (camera -> object); XDirection = which way
 # is "page-right" in 3D for that view. Slot = (x, y) as a FRACTION of the
@@ -522,6 +524,14 @@ def _sheet_figure(sheet: _Sheet, page_size_mm: tuple[float, float]) -> Any:
     return fig
 
 
+def _blueprint_dir() -> Path:
+    """``exports/sessions/<session_id>/`` (same layout as
+    ``engine._export_dir``), so the stale-file ``unlink`` below can only
+    ever remove THIS session's own earlier blueprint of the same name,
+    never another session's."""
+    return session_scoped_dir(_EXPORT_DIR)
+
+
 def _render_dxf_to_pdf(
     dxf_path: str,
     name: str,
@@ -539,8 +549,7 @@ def _render_dxf_to_pdf(
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
 
-    _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = _EXPORT_DIR / f"{_safe_name(name)}.pdf"
+    out_path = _blueprint_dir() / f"{_safe_name(name)}.pdf"
     # A retry/re-generation with the same name must never attempt to
     # overwrite a file left over from a prior run in place — observed
     # live to trip a "ios_base::failbit set: iostream stream error"
@@ -640,8 +649,7 @@ def _render_dxf_to_svg(
     )
     svg_text = _svg_labels(svg_text, sheet.labels, page_size_mm)
 
-    _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = _EXPORT_DIR / f"{_safe_name(name)}.svg"
+    out_path = _blueprint_dir() / f"{_safe_name(name)}.svg"
     # Same stale-file guard as _render_dxf_to_pdf's own out_path — see that
     # function's comment for the exact failure this prevents.
     out_path.unlink(missing_ok=True)
@@ -823,7 +831,7 @@ def generate_2d_blueprint(
         )
         if sheets_dir:
             script += _PART_SHEETS_SCRIPT.format(sheets_dir=sheets_dir)
-        result = _run_freecad_script(script)
+        result = _run_freecad_script(script, timeout=_HEAVY_ANALYSIS_TIMEOUT_S)
         if not result["ok"]:
             return _error(f"generate_2d_blueprint failed: {result['error']}")
 

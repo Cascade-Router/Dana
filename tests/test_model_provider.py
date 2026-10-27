@@ -105,6 +105,15 @@ def test_resolve_openai_endpoint_session_key_does_not_leak_to_other_providers(
     assert key == "groq-env-key"
 
 
+def test_resolve_openai_endpoint_groq_prefers_session_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Groq used to read only GROQ_API_KEY/CLOUD_API_KEY, ignoring a key the
+    user entered in the app's Secrets menu."""
+    monkeypatch.setenv("GROQ_API_KEY", "groq-env-key")
+    provider = ModelProvider(api_keys={"groq": "groq-session-key"})
+    key, _base, _model, _headers, _fallback_models = provider._resolve_openai_endpoint("groq")
+    assert key == "groq-session-key"
+
+
 def test_resolve_openai_endpoint_raises_without_any_key(monkeypatch: pytest.MonkeyPatch) -> None:
     # This repo's .env has a real OPENAI_API_KEY for local dev — silence
     # ensure_dotenv_loaded() too, or it would just reload the var right

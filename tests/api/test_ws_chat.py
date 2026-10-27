@@ -410,6 +410,29 @@ def test_hitl_whitelist_never_covers_script_execution_tools(
             assert "Cancelled" in assistant["content"]
 
 
+def test_script_tools_still_prompt_with_auto_approve_on(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """execute_freecad_script/modify_existing_freecad_document are in
+    ALWAYS_PROMPT_TOOL_IDS: the Settings auto-approve toggle must not let an
+    arbitrary script run unseen."""
+    for tool_id, arguments in (
+        ("execute_freecad_script", {"python_script_str": "print('hi')"}),
+        ("modify_existing_freecad_document", {"filepath": "C:/tmp/whatever.FCStd", "modification_script": "pass"}),
+    ):
+        _mock_llm(monkeypatch, [ToolCall(tool_id=tool_id, arguments=arguments)])
+        with client.websocket_connect("/ws/chat") as ws:
+            ws.receive_json()  # ready
+            _activate_freecad(ws)
+            ws.send_json({"type": "set_auto_approve", "payload": {"enabled": True}})
+            ws.send_json({"text": "run this python script"})
+
+            approval = _drain_until(ws, "hitl_approval_required")
+            assert approval["payload"]["action_name"] == tool_id
+            ws.send_json(
+                {"type": "hitl_response", "payload": {"request_id": approval["payload"]["request_id"], "approved": False}}
+            )
+            _drain_until(ws, "assistant_message")
+
+
 def test_hitl_session_allowlist_skips_approval_on_repeat_tool(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1000,15 +1023,11 @@ def test_tool_failure_injects_system_override_directive_for_next_turn(
 
 
 # --------------------------------------------------------------------------
-# Global Abort — "abort_turn". This server processes one websocket frame
-# at a time on a single task per connection (ws_chat's own `while True:
-# await websocket.receive_json()` loop) — a client CANNOT interleave a new
-# message into the MIDDLE of an uninterrupted chain of non-mutating tool
-# calls, since the server isn't back at receive_json() until that whole
-# chain finishes. The one point where control genuinely returns to the
-# receive loop mid-turn is a HITL/visual-capture suspension — so that's
-# the realistic, concurrency-correct scenario these tests exercise for
-# "abort mid-loop, prevents the next tool call from ever dispatching".
+# Global Abort — "abort_turn". Each turn runs as its own task (see
+# dana.api.server._spawn_turn), so ws_chat's receive loop keeps reading
+# frames while a turn iterates: an abort lands either on a suspended turn
+# (HITL/visual capture, cancelled directly) or on a running one (flag
+# checked after each LLM call and each tool dispatch).
 # --------------------------------------------------------------------------
 
 
@@ -1080,6 +1099,88 @@ def test_hitl_response_after_aborted_turn_is_ignored_as_stale(
         ws.send_json({"text": "hi again"})
         assistant = _drain_until(ws, "assistant_message")
         assert assistant["content"] == "All good."
+
+
+def test_abort_turn_lands_while_a_tool_is_still_running(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The tool dispatch blocks until the server has actually received the
+    abort_turn frame — which is only possible if the receive loop keeps
+    running while the tool executes (it used to be stuck awaiting the whole
+    turn inline). The turn must then stop right after that tool's result,
+    without a second LLM-proposed dispatch."""
+    import time
+
+    real_dispatch = server_module.dispatch_tool_call
+
+    def _dispatch_until_abort(*args: Any, **kwargs: Any) -> Any:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if any(s.get("abort_requested") for s in server_module._active_sessions.values()):
+                break
+            time.sleep(0.01)
+        return real_dispatch(*args, **kwargs)
+
+    monkeypatch.setattr(server_module, "dispatch_tool_call", _dispatch_until_abort)
+    _mock_llm(
+        monkeypatch,
+        [ToolCall(tool_id="system_state", arguments={})],
+        [ToolCall(tool_id="system_state", arguments={"again": True})],
+        "This should never be reached.",
+    )
+    with client.websocket_connect("/ws/chat") as ws:
+        ws.receive_json()  # ready
+        ws.send_json({"text": "system status"})
+        _drain_until(ws, "tool_dispatch_start")
+        ws.send_json({"type": "abort_turn"})
+
+        events = _drain_turn(ws)
+        assert events[-1]["content"] == "Generation aborted by user."
+        assert not any(m["type"] == "tool_dispatch_start" for m in events)
+
+
+def test_spawned_turns_never_overlap_within_a_session() -> None:
+    """A voice transcript arriving while a typed turn is still running must
+    queue behind it, never start a second ReAct loop in parallel."""
+    import asyncio
+
+    active = 0
+    max_active = 0
+    order: list[str] = []
+
+    async def _fake_turn(label: str) -> None:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.02)
+        order.append(label)
+        active -= 1
+
+    async def _main() -> None:
+        session: dict[str, Any] = {}
+        server_module._spawn_turn(session, lambda: _fake_turn("typed"))
+        server_module._spawn_turn(session, lambda: _fake_turn("voice"))
+        await session["turn_task"]
+
+    asyncio.run(_main())
+    assert max_active == 1
+    assert order == ["typed", "voice"]
+
+
+def test_disconnect_cancels_queued_and_running_turns() -> None:
+    import asyncio
+
+    async def _main() -> dict[str, Any]:
+        session: dict[str, Any] = {}
+        server_module._spawn_turn(session, lambda: asyncio.sleep(30))
+        server_module._spawn_turn(session, lambda: asyncio.sleep(30))
+        tasks = set(session["turn_tasks"])
+        await asyncio.sleep(0)
+        for task in list(session["turn_tasks"]):
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        return {"all_cancelled": all(t.cancelled() for t in tasks), "remaining": len(session["turn_tasks"])}
+
+    outcome = asyncio.run(_main())
+    assert outcome == {"all_cancelled": True, "remaining": 0}
 
 
 def _capture_provider_messages(monkeypatch: pytest.MonkeyPatch, *, tool_calls: list[ToolCall] | None = None) -> dict[str, Any]:
