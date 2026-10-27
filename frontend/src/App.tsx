@@ -121,6 +121,7 @@ function AppShell() {
     liveActivity,
     turnActive,
     isThinking,
+    streamingText,
     sessionId,
     autoApprove,
     sendMessage,
@@ -337,6 +338,7 @@ function AppShell() {
                 liveActivity={liveActivity}
                 turnActive={turnActive}
                 isThinking={isThinking}
+                streamingText={streamingText}
                 onSend={sendMessage}
                 onAbort={abortTurn}
                 onHitlRespond={respondHitl}

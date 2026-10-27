@@ -450,6 +450,80 @@ app.include_router(_cad_router)
 app.include_router(_models_router)
 
 
+class _DeltaStreamer:
+    """Live token streaming for one parse step: receives content chunks on
+    the LLM worker thread (``on_delta``) and forwards them to the client as
+    ``assistant_delta`` events, batched (every ~50 ms or 64 chars) so a fast
+    model doesn't send one WebSocket frame per token. ``reset()`` (provider
+    fallback, self-correction retry, content turned into a tool call, abort)
+    discards what was streamed with one ``assistant_delta_reset``. The final
+    ``assistant_message`` stays authoritative: the client replaces the stream
+    buffer with it, since the server may still rewrite the reply."""
+
+    _FLUSH_INTERVAL_S = 0.05
+    _FLUSH_CHARS = 64
+
+    def __init__(self, websocket: WebSocket, node_id: str) -> None:
+        self._websocket = websocket
+        self._node_id = node_id
+        self._loop = asyncio.get_running_loop()
+        self._lock = threading.Lock()
+        self._buffer: list[str] = []
+        self._buffered_chars = 0
+        self._last_flush = time.monotonic()
+        self._streamed = False
+        self._closed = False
+
+    def __call__(self, text: str) -> None:
+        with self._lock:
+            if self._closed or not text:
+                return
+            self._buffer.append(text)
+            self._buffered_chars += len(text)
+            if (
+                self._buffered_chars < self._FLUSH_CHARS
+                and time.monotonic() - self._last_flush < self._FLUSH_INTERVAL_S
+            ):
+                return
+            chunk = self._take_buffer()
+        self._send({"type": "assistant_delta", "node_id": self._node_id, "text": chunk})
+
+    def reset(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._take_buffer()
+            streamed, self._streamed = self._streamed, False
+        if streamed:
+            self._send({"type": "assistant_delta_reset", "node_id": self._node_id})
+
+    def close(self, *, discard: bool) -> None:
+        """Ends the stream. ``discard`` resets what was shown (the step did
+        not end in a reply); otherwise any buffered tail is flushed."""
+        if discard:
+            self.reset()
+        else:
+            with self._lock:
+                chunk = self._take_buffer() if not self._closed else ""
+            if chunk:
+                self._send({"type": "assistant_delta", "node_id": self._node_id, "text": chunk})
+        with self._lock:
+            self._closed = True
+
+    def _take_buffer(self) -> str:
+        chunk = "".join(self._buffer)
+        self._buffer.clear()
+        self._buffered_chars = 0
+        self._last_flush = time.monotonic()
+        if chunk:
+            self._streamed = True
+        return chunk
+
+    def _send(self, event: dict[str, Any]) -> None:
+        # Thread-safe from the LLM worker thread and from the event loop alike.
+        asyncio.run_coroutine_threadsafe(self._websocket.send_json(event), self._loop)
+
+
 # Tool id -> result payload keys naming a deliverable file it wrote.
 _DELIVERABLE_PATH_KEYS: dict[str, tuple[str, ...]] = {
     "generate_2d_blueprint": ("path", "svg_path"),
@@ -1908,6 +1982,8 @@ async def _run_react_loop(
     await _dag_start(websocket, node_id, "Parse intent", "agent", {"step": loop_count})
     parse_start = time.perf_counter()
     raw_text = _first_user_text(messages)
+    streamer = _DeltaStreamer(websocket, node_id)
+    session["active_stream"] = streamer
     turn = await next_react_turn(
         messages,
         session.get("active_selection"),
@@ -1923,7 +1999,10 @@ async def _run_react_loop(
         # freshly (re)connected session's first turn.
         session_id=session["session_id"],
         provider_override=session.get("active_provider"),
+        on_delta=streamer,
     )
+    session["active_stream"] = None
+    streamer.close(discard=turn.kind != "final" or bool(session.get("abort_requested")))
     parse_ms = int((time.perf_counter() - parse_start) * 1000)
 
     if turn.usage_info:
@@ -2656,6 +2735,9 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
         # The asyncio.Task running this session's current turn, if any —
         # see _spawn_turn/_turn_in_flight.
         "turn_task": None,
+        # The _DeltaStreamer of the LLM call in flight, if any (abort_turn
+        # resets it immediately).
+        "active_stream": None,
         # Session-scoped HITL allowlist — tool_ids the user has already
         # approved once this session (see _run_react_loop's is_mutating_tool
         # check and _resolve_react_hitl, which adds to this on approval).
@@ -2795,6 +2877,10 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
                     await _finish_turn(websocket, session, pending["messages"], "Generation aborted by user.")
                 else:
                     session["abort_requested"] = True
+                    # Text still streaming from the LLM is void the moment Stop is hit.
+                    stream = session.get("active_stream")
+                    if stream is not None:
+                        stream.close(discard=True)
                 continue
 
             if msg_type == "set_auto_approve":

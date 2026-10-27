@@ -37,6 +37,7 @@ from dana.core.context_manager import (
     prune_tool_output_history,
 )
 from dana.core.model_provider import ModelProvider, tool_calling_provider
+from dana.core.openai_tool_bridge import DeltaCallback, reset_stream
 from dana.core.routing_config import cloud_allowed
 from dana.core.skill_loader import delete_skill, load_user_skills, read_skill_source, save_skill
 from dana.core.tool_retrieval import narrow_tool_ids_by_query
@@ -7873,6 +7874,28 @@ def _sticky_tool_ids_from_messages(messages: list[dict[str, Any]], raw_text: str
     return frozenset(ids)
 
 
+class _GuardedStream:
+    """Wraps a turn's ``on_delta`` sink for ONE LLM call so it can be closed:
+    after ``close()`` the call's thread may keep producing chunks, but they
+    are dropped."""
+
+    def __init__(self, sink: DeltaCallback) -> None:
+        self._sink = sink
+        self._open = True
+
+    def __call__(self, text: str) -> None:
+        if self._open:
+            self._sink(text)
+
+    def reset(self) -> None:
+        if self._open:
+            reset_stream(self._sink)
+
+    def close(self) -> None:
+        self.reset()
+        self._open = False
+
+
 async def _call_llm_once(
     messages: list[dict[str, Any]],
     *,
@@ -7886,6 +7909,7 @@ async def _call_llm_once(
     provider_override: str | None = None,
     is_planning_phase: bool = False,
     state_overlay: str = "",
+    on_delta: DeltaCallback | None = None,
 ) -> dict[str, Any]:
     """One raw LLM turn against the running ``messages`` history, via the
     existing OpenAI-tool-calling bridge (``dana.core.model_provider.
@@ -8124,15 +8148,25 @@ async def _call_llm_once(
         # its own call site, not several layers removed — see dana.config's
         # own docstring for why this was raised from 1024 to 4096.
         return provider.complete_with_tool_calls(
-            pruned_messages, tools=tools, provider=call_provider, num_predict=LLM_MAX_OUTPUT_TOKENS
+            pruned_messages,
+            tools=tools,
+            provider=call_provider,
+            num_predict=LLM_MAX_OUTPUT_TOKENS,
+            on_delta=stream,
         )
 
+    # The worker thread outlives a timeout (wait_for cannot stop it), so the
+    # stream is closed on timeout: late chunks from the abandoned call must
+    # never land in the bubble of whatever answers next.
+    stream = _GuardedStream(on_delta) if on_delta is not None else None
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(_run_completion),
             timeout=_LOCAL_TOOL_CALL_TIMEOUT_SEC,
         )
     except (TimeoutError, asyncio.TimeoutError):
+        if stream is not None:
+            stream.close()
         telemetry.log_error(
             stage="model_call_timeout",
             provider=target_provider,
@@ -8541,6 +8575,7 @@ async def next_react_turn(
     phase_violation_retried: bool = False,
     empty_completion_retried: bool = False,
     final_exit_retried: bool = False,
+    on_delta: DeltaCallback | None = None,
 ) -> ReactTurn:
     """One step of the multi-step ReAct loop: given the full running
     ``messages`` history (system + user + any prior assistant/tool turns
@@ -8733,6 +8768,7 @@ async def next_react_turn(
             provider_override=provider_override,
             is_planning_phase=is_planning_phase,
             state_overlay=_format_object_registry_overlay(session_id),
+            on_delta=on_delta,
         )
     except Exception as exc:  # noqa: BLE001 — Ollama unreachable/model missing surfaces as an error turn
         # str(exc) is all the UI-facing "error" turn carries onward (server.py
@@ -8846,6 +8882,7 @@ async def next_react_turn(
                             "has been triggered and essential tools are now unlocked. Please continue."
                         ),
                     }
+                    reset_stream(on_delta)  # self-correction retry: discard streamed text
                     return await next_react_turn(
                         messages + [nudge],
                         active_selection,
@@ -8856,6 +8893,7 @@ async def next_react_turn(
                         session_id=session_id,
                         provider_override=provider_override,
                         empty_completion_retried=True,
+                        on_delta=on_delta,
                     )
         elif not final_exit_retried and _get_fsm_state(session_id) == "executing":
             # Premature Conversational Exit: a real, non-empty "final"
@@ -8879,6 +8917,7 @@ async def next_react_turn(
                         "to find it."
                     ),
                 }
+                reset_stream(on_delta)  # self-correction retry: discard streamed text
                 return await next_react_turn(
                     messages + [assistant_msg, nudge],
                     active_selection,
@@ -8889,6 +8928,7 @@ async def next_react_turn(
                     session_id=session_id,
                     provider_override=provider_override,
                     final_exit_retried=True,
+                    on_delta=on_delta,
                 )
         telemetry.debug("[ReAct] LLM finished with final response (no tool call)")
         return ReactTurn("final", content=final_content, usage_info=usage_info)
@@ -8993,6 +9033,7 @@ async def next_react_turn(
                     "tool_call_id": call_id,
                     "content": json.dumps(phase_error_payload),
                 }
+                reset_stream(on_delta)  # self-correction retry: discard streamed text
                 return await next_react_turn(
                     messages + [assistant_msg, tool_result_msg],
                     active_selection,
@@ -9003,6 +9044,7 @@ async def next_react_turn(
                     session_id=session_id,
                     provider_override=provider_override,
                     phase_violation_retried=True,
+                    on_delta=on_delta,
                 )
             return ReactTurn("final", content=result.get("content") or "", usage_info=usage_info)
         call = retry_call

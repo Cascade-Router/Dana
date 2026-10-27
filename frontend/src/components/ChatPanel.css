@@ -558,3 +558,27 @@
   background: #dc2626;
   color: white;
 }
+
+/* Live token stream (assistant_delta) — replaced by the final message. */
+
+.chat-panel__stream-caret {
+  display: inline-block;
+  width: 0.45em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: #a78bfa;
+  animation: chat-panel-caret 1s steps(1) infinite;
+}
+
+@keyframes chat-panel-caret {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-panel__stream-caret {
+    animation: none;
+  }
+}

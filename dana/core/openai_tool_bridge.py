@@ -20,6 +20,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from typing import Any
 
 
@@ -44,6 +45,19 @@ _USER_AGENT = "Dana-Agent/1.0 (+https://github.com/; Python urllib)"
 # _complete_openai_with_tools_once's HTTPError handling, and
 # ModelProvider.complete_with_tool_calls's own Ollama fallback for what
 # happens next.
+
+
+# Live token streaming: an optional ``on_delta(text)`` callback receives each
+# content chunk as it arrives. If the callback object also has a ``reset()``
+# method, it is called whenever text already streamed must be discarded (the
+# reply turned into a tool call, or a fallback provider starts over).
+DeltaCallback = Callable[[str], None]
+
+
+def reset_stream(on_delta: DeltaCallback | None) -> None:
+    reset = getattr(on_delta, "reset", None)
+    if callable(reset):
+        reset()
 
 
 def build_image_content_part(image_b64: str, *, mime_type: str = "image/png") -> dict[str, Any]:
@@ -163,6 +177,7 @@ def _complete_openai_with_tools_once(
     timeout: float = 600.0,
     extra_headers: dict[str, str] | None = None,
     fallback_models: list[str] | None = None,
+    on_delta: DeltaCallback | None = None,
 ) -> dict[str, Any]:
     """Stream one ``/chat/completions`` turn; return the assembled ``message``.
 
@@ -283,10 +298,14 @@ def _complete_openai_with_tools_once(
                     if ttft_ms is None:
                         ttft_ms = (time.perf_counter() - start) * 1000.0
                     content_parts.append(piece)
+                    if on_delta is not None and not tool_call_parts:
+                        on_delta(piece)
 
                 for tc_delta in delta.get("tool_calls") or []:
                     if ttft_ms is None:
                         ttft_ms = (time.perf_counter() - start) * 1000.0
+                    if not tool_call_parts and content_parts:
+                        reset_stream(on_delta)  # the streamed text was a preamble to a tool call
                     idx = int(tc_delta.get("index") or 0)
                     entry = tool_call_parts.setdefault(
                         idx, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
@@ -343,6 +362,7 @@ def _complete_openai_with_tools_once(
         tool_calls = _fallback_tool_calls_from_content(content)
         if tool_calls:
             content = ""  # it was a function call, not a reply meant for the user
+            reset_stream(on_delta)
     return {
         "content": content,
         "tool_calls": tool_calls,
@@ -365,6 +385,7 @@ def complete_openai_with_tools(
     timeout: float = 600.0,
     extra_headers: dict[str, str] | None = None,
     fallback_models: list[str] | None = None,
+    on_delta: DeltaCallback | None = None,
 ) -> dict[str, Any]:
     """Public entry point every caller (``dana.core.model_provider``)
     actually uses. A plain passthrough to ``_complete_openai_with_tools_once``
@@ -393,6 +414,7 @@ def complete_openai_with_tools(
         timeout=timeout,
         extra_headers=extra_headers,
         fallback_models=fallback_models,
+        on_delta=on_delta,
     )
 
 
@@ -441,6 +463,7 @@ def complete_ollama_native_with_tools(
     num_gpu: int | None = None,
     temperature: float = 0.1,
     timeout: float = 600.0,
+    on_delta: DeltaCallback | None = None,
 ) -> dict[str, Any]:
     """Ollama's NATIVE ``/api/chat`` surface — distinct from the OpenAI-
     compat ``/v1/chat/completions`` bridge above. Exists for one reason:
@@ -531,10 +554,14 @@ def complete_ollama_native_with_tools(
                     if ttft_ms is None:
                         ttft_ms = (time.perf_counter() - start) * 1000.0
                     content_parts.append(piece)
+                    if on_delta is not None and not tool_calls:
+                        on_delta(piece)
                 chunk_tool_calls = message.get("tool_calls")
                 if chunk_tool_calls:
                     if ttft_ms is None:
                         ttft_ms = (time.perf_counter() - start) * 1000.0
+                    if not tool_calls and content_parts:
+                        reset_stream(on_delta)
                     tool_calls.extend(chunk_tool_calls)
                 if chunk.get("done"):
                     finish_reason = chunk.get("done_reason") or ("tool_calls" if tool_calls else "stop")
@@ -572,6 +599,7 @@ def complete_ollama_native_with_tools(
         tool_calls = _fallback_tool_calls_from_content(content)
         if tool_calls:
             content = ""  # it was a function call, not a reply meant for the user
+            reset_stream(on_delta)
     return {
         "content": content,
         "tool_calls": tool_calls,
@@ -582,6 +610,8 @@ def complete_ollama_native_with_tools(
 
 
 __all__ = (
+    "DeltaCallback",
+    "reset_stream",
     "build_image_content_part",
     "build_multimodal_messages",
     "complete_ollama_native_with_tools",

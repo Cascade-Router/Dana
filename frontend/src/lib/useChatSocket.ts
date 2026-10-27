@@ -64,6 +64,12 @@ export type ServerEvent =
     }
   | { type: "user_message"; content: string }
   | { type: "assistant_message"; content: string }
+  // Live token streaming (dana/api/server.py's _DeltaStreamer): text chunks
+  // of the reasoning step `node_id` ("parse-N"), and a reset that discards
+  // what was streamed (fallback, self-correction retry, tool call, abort).
+  // The final "assistant_message" always replaces the streamed text.
+  | { type: "assistant_delta"; node_id: string; text: string }
+  | { type: "assistant_delta_reset"; node_id: string }
   // Out-of-turn notice from the server, e.g. a resumed session whose CAD
   // document had to be resynced (dana.api.session_state). Shown in the chat
   // without touching turn state.
@@ -337,6 +343,15 @@ export function useChatSocket(
   // and the next tool call starting, with no signal that the model was
   // still working during that gap versus stalled/disconnected.
   const [isThinking, setIsThinking] = useState(false);
+  // Live token stream of the current reasoning step — transient, never part
+  // of `messages`. Keyed by node_id so a late chunk of an earlier step can't
+  // append to a newer one.
+  const streamRef = useRef<{ nodeId: string; text: string } | null>(null);
+  const [streamingText, setStreamingText] = useState("");
+  const clearStream = useCallback(() => {
+    streamRef.current = null;
+    setStreamingText("");
+  }, []);
   // Settings toggle: mirrors dana/api/server.py's session["auto_approve"].
   // Local UI state only (the server never echoes it back) — reset to false
   // below on every (re)connect since each new websocket connection gets a
@@ -389,6 +404,7 @@ export function useChatSocket(
       liveActivityRef.current = [];
       setTurnActive(false);
       setIsThinking(false);
+      clearStream();
       // Terminal History isolation: `log` (server_log/tool_dispatch_start/
       // tool_dispatch_end/etc. WS events) is genuinely per-session data — without swapping it
       // out here it kept accumulating across a chat switch, so the Terminal
@@ -446,7 +462,7 @@ export function useChatSocket(
       // consumed into its own state below), and was crowding real tool
       // activity out of the capped buffer on a long session with several
       // reconnects.
-      if (data.type !== "ready") {
+      if (data.type !== "ready" && data.type !== "assistant_delta" && data.type !== "assistant_delta_reset") {
         setLog((prev) => [...prev, data].slice(-MAX_LOG_LINES));
       }
 
@@ -472,7 +488,18 @@ export function useChatSocket(
             logCacheRef.current[data.session_id] = data.terminal_log;
           }
           break;
+        case "assistant_delta": {
+          const current = streamRef.current;
+          const text = current && current.nodeId === data.node_id ? current.text + data.text : data.text;
+          streamRef.current = { nodeId: data.node_id, text };
+          setStreamingText(text);
+          break;
+        }
+        case "assistant_delta_reset":
+          if (streamRef.current?.nodeId === data.node_id) clearStream();
+          break;
         case "assistant_message": {
+          clearStream();
           const imageUrl = pendingImageUrlRef.current ?? undefined;
           pendingImageUrlRef.current = null;
           // Drain this turn's live activity feed onto the finished message
@@ -497,6 +524,7 @@ export function useChatSocket(
           if (data.node_type === "agent") {
             setTurnActive(true);
             setIsThinking(true);
+            clearStream(); // a new reasoning step starts a new stream
           }
           break;
         }
@@ -516,6 +544,7 @@ export function useChatSocket(
           // tool_name/args_summary fields instead of a separate message.
           setTurnActive(true);
           setIsThinking(false); // a tool call is a MORE specific signal than "thinking" — supersede it
+          clearStream();
           const entry: AgentActivity = {
             id: `${data.tool_name}-${liveActivityRef.current.length}-${Math.random().toString(36).slice(2)}`,
             toolName: data.tool_name,
@@ -687,7 +716,8 @@ export function useChatSocket(
     if (socketRef.current?.readyState !== WebSocket.OPEN) return;
     socketRef.current.send(JSON.stringify({ type: "abort_turn" }));
     setTurnActive(false);
-  }, []);
+    clearStream();
+  }, [clearStream]);
 
   // AssistiveOrb click/hotkey entry points — see dana/services/voice_service.py's
   // push-to-talk docstring. "listen" is a no-op backend-side unless
@@ -765,6 +795,7 @@ export function useChatSocket(
     liveActivity,
     turnActive,
     isThinking,
+    streamingText,
     sessionId,
     autoApprove,
     sendMessage,

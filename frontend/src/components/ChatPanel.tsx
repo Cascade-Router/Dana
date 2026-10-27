@@ -261,6 +261,8 @@ type Props = {
   liveActivity: AgentActivity[];
   turnActive: boolean;
   isThinking: boolean;
+  /** Live token stream of the current reasoning step ("" when none). */
+  streamingText?: string;
   onSend: (text: string, attachments?: string[], includeDesktopContext?: boolean) => void;
   onAbort: () => void;
   onHitlRespond: (requestId: string, approved: boolean, parameters?: Record<string, unknown>) => void;
@@ -272,6 +274,7 @@ export function ChatPanel({
   liveActivity,
   turnActive,
   isThinking,
+  streamingText = "",
   onSend,
   onAbort,
   onHitlRespond,
@@ -360,7 +363,12 @@ export function ChatPanel({
             </div>
           )
         )}
-        {isThinking && (
+        {streamingText ? (
+          <div className="chat-panel__bubble chat-panel__bubble--assistant chat-panel__bubble--streaming" aria-live="polite">
+            {streamingText}
+            <span className="chat-panel__stream-caret" aria-hidden="true" />
+          </div>
+        ) : isThinking && (
           <div className="chat-panel__bubble chat-panel__bubble--assistant chat-panel__bubble--activity-live">
             <div className="chat-panel__thinking" role="status">
               <span className="chat-panel__thinking-spinner" aria-hidden="true" />

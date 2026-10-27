@@ -14,9 +14,11 @@ import requests
 from dana.config import LLM_MAX_OUTPUT_TOKENS
 from dana.core.openai_tool_bridge import (
     _USER_AGENT,
+    DeltaCallback,
     build_multimodal_messages,
     complete_ollama_native_with_tools,
     complete_openai_with_tools,
+    reset_stream,
 )
 from dana.core.pricing import estimate_cost_usd
 from dana.system_health import llm_lock
@@ -924,8 +926,13 @@ class ModelProvider:
         tool_choice: str | dict[str, Any] | None = None,
         num_predict: int = LLM_MAX_OUTPUT_TOKENS,
         temperature: float = 0.1,
+        on_delta: DeltaCallback | None = None,
     ) -> dict[str, Any]:
         """OpenAI-schema tool-calling turn against a cloud or local-Ollama endpoint.
+
+        ``on_delta`` streams content chunks as they arrive (see
+        ``openai_tool_bridge.DeltaCallback``); it is reset before any
+        fallback attempt starts over.
 
         Returns ``{"content": str, "tool_calls": list[ToolCall], "provider": str,
         "model": str, "usage": {"prompt_tokens": int, "completion_tokens": int},
@@ -984,6 +991,7 @@ class ModelProvider:
                     num_predict=num_predict,
                     temperature=temperature,
                     chain=chain,
+                    on_delta=on_delta,
                 )
 
         # No explicit provider and no fleet chain: use the same resolver the
@@ -1020,6 +1028,7 @@ class ModelProvider:
                         num_ctx=ollama_num_ctx(),
                         num_gpu=ollama_num_gpu(),
                         temperature=temperature,
+                        on_delta=on_delta,
                     )
                 else:
                     raw = complete_openai_with_tools(
@@ -1033,6 +1042,7 @@ class ModelProvider:
                         temperature=temperature,
                         extra_headers=extra_headers,
                         fallback_models=fallback_models,
+                        on_delta=on_delta,
                     )
             effective_provider = resolved_provider
         except Exception as exc:  # noqa: BLE001 — any cloud failure falls back to local Ollama below
@@ -1053,6 +1063,7 @@ class ModelProvider:
             # 404 ("model not found") on a machine that never pulled it,
             # defeating the entire point of a "seamless" fallback.
             fb_model = (os.environ.get("OLLAMA_FALLBACK_MODEL") or "").strip() or fb_model
+            reset_stream(on_delta)  # the cloud attempt's partial text is void
             try:
                 with llm_lock:
                     raw = complete_ollama_native_with_tools(
@@ -1064,6 +1075,7 @@ class ModelProvider:
                         num_ctx=ollama_num_ctx(),
                         num_gpu=ollama_num_gpu(),
                         temperature=temperature,
+                        on_delta=on_delta,
                     )
             except Exception as fallback_exc:  # noqa: BLE001 — see docstring: this replaces exc, deliberately
                 raise RuntimeError(
@@ -1171,6 +1183,7 @@ class ModelProvider:
         num_predict: int,
         temperature: float,
         chain: "list[Any]",
+        on_delta: DeltaCallback | None = None,
     ) -> dict[str, Any]:
         """Walk ``chain`` (dana.core.llm_router.resolve_chain's output, a
         list of ``FleetEntry``) in order, advancing to the next entry on ANY
@@ -1209,8 +1222,10 @@ class ModelProvider:
                         temperature=temperature,
                         extra_headers=extra_headers,
                         fallback_models=fallback_models,
+                        on_delta=on_delta,
                     )
             except Exception as exc:  # noqa: BLE001 — advance to the next chain entry
+                reset_stream(on_delta)
                 errors.append(f"{entry.id} ({entry.provider}/{entry.model}): {exc}")
                 print(
                     f"[LLM Router] {entry.id} failed, advancing to next fleet entry: {exc}",
@@ -1270,6 +1285,7 @@ class ModelProvider:
                     detail="Caught raw JSON from Ollama, escalating to next provider",
                 )
                 llm_router.report_fleet_entry_failure(entry, RuntimeError(reason))
+                reset_stream(on_delta)
                 continue
 
             _log_ttft(entry.model, raw.get("ttft_ms"), tools_schema_bytes=len(json.dumps(tools)) if tools else 0)

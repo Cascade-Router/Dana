@@ -147,6 +147,8 @@ export function useGradioChat(
     // "thinking" indicator from, so this is always false rather than
     // faking a signal this transport can't actually provide.
     isThinking: false,
+    // No token streaming over the Gradio polling transport.
+    streamingText: "",
     sessionId: null,
     // Always true here: app.py's _GradioSocket already auto-approves every
     // hitl_approval_required unconditionally server-side (see its own
