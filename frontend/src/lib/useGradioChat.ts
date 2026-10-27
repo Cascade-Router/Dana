@@ -164,5 +164,9 @@ export function useGradioChat(
     setAutoApprove: noop,
     // No WebSocket to ask for a macro export on this transport.
     exportPythonScript: undefined,
+    // No parametric rebuild over this transport (no FreeCAD on the Space).
+    parameters: { params: [], unsupported: [], reason: null },
+    rebuildStatus: { state: "idle" as const },
+    rebuild: undefined,
   };
 }

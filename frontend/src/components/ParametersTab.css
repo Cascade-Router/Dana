@@ -1,0 +1,144 @@
+.parameters-tab {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.parameters-tab__empty {
+  padding: 16px 14px;
+  color: #888;
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.parameters-tab__notice {
+  margin: 8px 12px 0;
+  padding: 6px 8px;
+  border: 1px solid #5b4a1a;
+  background: #2a2412;
+  color: #fbbf24;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.parameters-tab__list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 10px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.parameters-tab__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 4px 0;
+}
+
+.parameters-tab__label {
+  color: #ccc;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.parameters-tab__warning {
+  margin-left: 6px;
+  color: #fbbf24;
+  cursor: help;
+}
+
+.parameters-tab__field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.parameters-tab__input {
+  width: 84px;
+  background: #151515;
+  border: 1px solid #303030;
+  border-radius: 5px;
+  color: #eee;
+  font-size: 12px;
+  padding: 4px 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.parameters-tab__input:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 1px;
+}
+
+.parameters-tab__input--dirty {
+  border-color: #3b82f6;
+}
+
+.parameters-tab__input--error {
+  border-color: #f87171;
+}
+
+.parameters-tab__input:disabled {
+  opacity: 0.55;
+}
+
+.parameters-tab__unit {
+  width: 34px;
+  color: #888;
+  font-size: 11px;
+}
+
+.parameters-tab__error {
+  grid-column: 1 / -1;
+  justify-self: end;
+  color: #f87171;
+  font-size: 11px;
+}
+
+.parameters-tab__actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid #2a2a2a;
+}
+
+.parameters-tab__apply,
+.parameters-tab__reset {
+  background: #1c1c1c;
+  border: 1px solid #303030;
+  color: #ddd;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.parameters-tab__apply {
+  flex: 1;
+  background: #1e3a8a;
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+.parameters-tab__apply:disabled {
+  background: #1c1c1c;
+  border-color: #303030;
+  color: #888;
+  cursor: default;
+}
+
+.parameters-tab__status {
+  margin: 0 10px 8px;
+  color: #4ade80;
+  font-size: 12px;
+}
+
+.parameters-tab__status--error {
+  color: #f87171;
+}

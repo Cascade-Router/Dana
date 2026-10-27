@@ -132,6 +132,9 @@ function AppShell() {
     cancelListen,
     setAutoApprove,
     exportPythonScript,
+    parameters,
+    rebuildStatus,
+    rebuild,
   } = useChat(apiKeys, activePlugins, requestedSessionId, initialMessages);
 
   const activePlugin = plugins.find((p) => p.id === activePluginId) ?? null;
@@ -358,6 +361,9 @@ function AppShell() {
                 plan={planState}
                 sessionId={sessionId}
                 onExportMacro={exportPythonScript}
+                parameters={parameters}
+                rebuildStatus={rebuildStatus}
+                onRebuild={rebuild}
               />
             </Suspense>
           </div>

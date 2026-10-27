@@ -725,6 +725,103 @@ _CAD_CREATE_TOOLS = frozenset(
 )
 
 
+# Every tool that changes a session's geometry, for the parametric rebuild
+# (dana.plugins.freecad.rebuild): one of these in the call log with no IR
+# replay makes the model non-rebuildable rather than silently dropped.
+_REBUILD_GEOMETRY_TOOLS = _CAD_CREATE_TOOLS | frozenset(
+    {
+        "execute_freecad_script",
+        "modify_existing_freecad_document",
+        "modify_placement",
+        "add_parts_to_assembly",
+        "position_assembly_part",
+        "anchor_assembly_root",
+        "apply_assembly_constraint",
+        "define_kinematic_joint",
+        "generate_3d_from_image",
+    }
+)
+
+
+def _parameters_event(session: dict[str, Any]) -> dict[str, Any]:
+    from dana.plugins.freecad.rebuild import parameter_table
+
+    call_log = session.get("call_log")
+    table = parameter_table(call_log.records if call_log else [], _REBUILD_GEOMETRY_TOOLS)
+    if table["params"] and _is_mock_engine(get_cad_engine()):
+        table["reason"] = "Rebuild needs real FreeCAD; the headless preview engine can't replay the model."
+    return {"type": "parameters", **table}
+
+
+def _is_mock_engine(engine: Any) -> bool:
+    from dana.platform.mock import MockFreeCADEngine
+
+    return isinstance(engine, MockFreeCADEngine)
+
+
+async def _run_rebuild(websocket: WebSocket, session: dict[str, Any], overrides: dict[str, Any]) -> None:
+    """Zero-token parametric rebuild (no LLM call). Queued like a turn
+    (_spawn_turn), so it never races a running ReAct turn's FreeCAD calls."""
+    from dana.plugins.freecad import engine as freecad_engine
+    from dana.plugins.freecad.rebuild import rebuild
+
+    engine = get_cad_engine()
+    call_log = session.get("call_log")
+    if _is_mock_engine(engine) or call_log is None:
+        await websocket.send_json(
+            {"type": "rebuild_result", "ok": False, "error": "Rebuild needs real FreeCAD (not available here)."}
+        )
+        return
+    set_session_id(session["session_id"])
+    session_path = freecad_engine._session_document_path()
+    started = time.perf_counter()
+    result = await asyncio.to_thread(
+        rebuild,
+        call_log,
+        overrides,
+        session_path=session_path,
+        geometry_tool_ids=_REBUILD_GEOMETRY_TOOLS,
+        run_script=freecad_engine._run_freecad_script,
+        ok_marker=freecad_engine._OK_MARKER,
+        backup=freecad_engine._backup_session_document,
+        timeout=freecad_engine._HEAVY_ANALYSIS_TIMEOUT_S,
+    )
+    mesh_url: str | None = None
+    if result.get("ok"):
+        name = result.get("name")
+        try:
+            mesh = await asyncio.to_thread(engine.export_mesh_stl, result["path"], name=name, target_object=name)
+        except Exception as exc:  # noqa: BLE001 — the model is rebuilt; a preview failure must not hide that
+            mesh = {"ok": False, "error": str(exc)}
+        if mesh.get("ok"):
+            mesh_ext = Path(mesh["path"]).suffix.lstrip(".").lower() or "glb"
+            mesh_url = f"/api/mesh/{_register_mesh(mesh['path'])}.{mesh_ext}"
+            artifacts_registry.register_artifact(
+                mesh["path"], format=mesh_ext, source="generated", session_id=session["session_id"]
+            )
+        try:
+            step = await asyncio.to_thread(engine.export_model, [result["path"]], "step", name or "model", target_objects=[name])
+        except Exception:  # noqa: BLE001 — best-effort, same as the per-tool STEP sibling
+            step = {"ok": False}
+        if step.get("ok"):
+            artifacts_registry.register_artifact(
+                step["path"], format="step", source="generated", session_id=session["session_id"]
+            )
+        if session.get("session_title") is not None:
+            await asyncio.to_thread(_save_session_record, session)  # the call log changed
+    event = {
+        "type": "rebuild_result",
+        "ok": bool(result.get("ok")),
+        "error": result.get("error"),
+        "applied": result.get("applied", {}),
+        "mesh_url": mesh_url,
+        "duration_ms": int((time.perf_counter() - started) * 1000),
+    }
+    await websocket.send_json(event)
+    _log_terminal_event(session, event)
+    await websocket.send_json(_parameters_event(session))
+
+
 def _node_type_for(tool_id: str) -> str:
     if tool_id in ("execute_vision_analysis", "take_canvas_screenshot"):
         return "vision"
@@ -1630,6 +1727,10 @@ async def _execute_and_continue(
                 )
 
     await _send_tool_dispatch_end(websocket, session, node_id, call, result, mesh_url)
+
+    if result.ok and call.tool_id in _REBUILD_GEOMETRY_TOOLS:
+        # Keep the Parameters tab in step with the model it would rebuild.
+        await websocket.send_json(_parameters_event(session))
 
     if call.tool_id == "manipulate_camera" and result.ok:
         await websocket.send_json(
@@ -2905,6 +3006,20 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
             if msg_type == "visual_capture_response":
                 payload = data.get("payload") or {}
                 _spawn_turn(session, lambda payload=payload: _resolve_visual_capture(websocket, session, payload))
+                continue
+
+            if msg_type == "list_parameters":
+                await websocket.send_json(_parameters_event(session))
+                continue
+
+            if msg_type == "rebuild":
+                overrides = data.get("overrides")
+                if not isinstance(overrides, dict) or not overrides:
+                    await websocket.send_json(
+                        {"type": "rebuild_result", "ok": False, "error": "rebuild needs at least one changed value"}
+                    )
+                    continue
+                _spawn_turn(session, lambda overrides=overrides: _run_rebuild(websocket, session, overrides))
                 continue
 
             if msg_type == "export_python_script":

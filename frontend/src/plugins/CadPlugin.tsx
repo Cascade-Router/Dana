@@ -5,6 +5,7 @@ import { DeliverablesBar } from "../components/DeliverablesBar";
 import { TopologyTab } from "../components/DAGMonitor";
 import { InspectorDock, type InspectorTab } from "../components/InspectorDock";
 import { MeshHistoryPicker } from "../components/MeshHistoryPicker";
+import { ParametersTab } from "../components/ParametersTab";
 import { PlanTab } from "../components/PlanTab";
 import { TerminalTab } from "../components/TerminalTab";
 import { Viewer3D } from "../components/Viewer3D";
@@ -26,6 +27,9 @@ export default function CadPlugin({
   plan,
   sessionId,
   onExportMacro,
+  parameters,
+  rebuildStatus,
+  onRebuild,
 }: PluginComponentProps) {
   // Active Plan / Topology / Terminal used to be three independent floating
   // cards fighting for the same space over the viewport — now they're tabs
@@ -51,6 +55,19 @@ export default function CadPlugin({
         content: <TopologyTab graph={topologyGraph} />,
       },
       {
+        id: "parameters",
+        label: "Parameters",
+        glyph: "⚙",
+        badge: parameters?.params.length || undefined,
+        content: (
+          <ParametersTab
+            table={parameters ?? { params: [], unsupported: [], reason: null }}
+            status={rebuildStatus ?? { state: "idle" }}
+            onRebuild={onRebuild}
+          />
+        ),
+      },
+      {
         id: "terminal",
         label: "Terminal",
         glyph: "▥",
@@ -58,7 +75,7 @@ export default function CadPlugin({
         content: <TerminalTab log={log} />,
       },
     ],
-    [plan, topologyGraph, log]
+    [plan, topologyGraph, log, parameters, rebuildStatus, onRebuild]
   );
 
   // Lifted here (not fetched separately inside CadToolbar/MeshHistoryPicker)
@@ -70,7 +87,10 @@ export default function CadPlugin({
   // tool that wrote them finishes, not only when the Export menu is opened.
   const lastEvent = log.length ? log[log.length - 1] : undefined;
   const deliverableEvent =
-    lastEvent && (lastEvent.type === "tool_dispatch_end" || lastEvent.type === "python_script_exported")
+    lastEvent &&
+    (lastEvent.type === "tool_dispatch_end" ||
+      lastEvent.type === "python_script_exported" ||
+      lastEvent.type === "rebuild_result")
       ? lastEvent
       : undefined;
   useEffect(() => {

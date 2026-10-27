@@ -1,5 +1,13 @@
 import type { ComponentType, LazyExoticComponent } from "react";
-import type { CameraTarget, CanvasSelection, PlanState, ServerEvent, TopologyGraph } from "../lib/useChatSocket";
+import type {
+  CameraTarget,
+  CanvasSelection,
+  ParameterTable,
+  PlanState,
+  RebuildStatus,
+  ServerEvent,
+  TopologyGraph,
+} from "../lib/useChatSocket";
 
 export type PluginId = "cad" | "workspace" | "coder";
 
@@ -39,6 +47,11 @@ export type PluginComponentProps = {
    * tokens); the result arrives in `log` as "python_script_exported".
    * Absent where there is no live socket (Gradio mode, spawned windows). */
   onExportMacro?: () => void;
+  /** The model's editable dimensions (CadPlugin's Parameters tab). */
+  parameters?: ParameterTable;
+  rebuildStatus?: RebuildStatus;
+  /** Zero-token rebuild with the given overrides; absent without a socket. */
+  onRebuild?: (overrides: Record<string, number>) => void;
 };
 
 export type PluginDefinition = {

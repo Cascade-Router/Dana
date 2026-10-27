@@ -27,6 +27,32 @@ export type TopologyGraph = { nodes: Record<string, TopologyNode>; edges: Topolo
 
 const INITIAL_TOPOLOGY_GRAPH: TopologyGraph = { nodes: {}, edges: [] };
 
+export type ModelParameter = {
+  /** "<call-log index>.<field>" — the key a rebuild override is sent under. */
+  id: string;
+  label: string;
+  value: number;
+  unit: "mm" | "deg" | "count" | "";
+  /** Smallest allowed value (exclusive for sizes, inclusive for counts); null = any. */
+  min: number | null;
+  /** Set when a downstream fillet/chamfer picks its edges by position. */
+  warning?: string;
+};
+
+export type ParameterTable = {
+  params: ModelParameter[];
+  unsupported: string[];
+  /** Why rebuilding isn't possible right now, if it isn't. */
+  reason: string | null;
+};
+
+export type RebuildStatus =
+  | { state: "idle" }
+  | { state: "running" }
+  | { state: "done"; ok: boolean; error: string | null; durationMs?: number };
+
+const EMPTY_PARAMETERS: ParameterTable = { params: [], unsupported: [], reason: null };
+
 // Mirrors the JSON shapes dana/api/server.py's `/ws/chat` sends —
 // keep these two in sync by hand (no shared schema generation yet).
 export type ServerEvent =
@@ -148,6 +174,17 @@ export type ServerEvent =
   // Reply to exportPythonScript(): the session's replayable FreeCAD macro.
   // `download_url` is dana.api.cad's session-scoped download route.
   | { type: "python_script_exported"; path: string; filename: string; download_url: string }
+  // Zero-token parametric rebuild (dana/plugins/freecad/rebuild.py): the
+  // model's editable dimensions, refreshed after every geometry change.
+  | ({ type: "parameters" } & ParameterTable)
+  | {
+      type: "rebuild_result";
+      ok: boolean;
+      error: string | null;
+      applied?: Record<string, number>;
+      mesh_url?: string | null;
+      duration_ms?: number;
+    }
   | {
       type: "usage_update";
       model: string;
@@ -311,6 +348,8 @@ export function useChatSocket(
   const [memoryState, setMemoryState] = useState<MemoryState>(INITIAL_MEMORY_STATE);
   const [topologyGraph, setTopologyGraph] = useState<TopologyGraph>(INITIAL_TOPOLOGY_GRAPH);
   const [meshUrl, setMeshUrl] = useState<string | null>(null);
+  const [parameters, setParameters] = useState<ParameterTable>(EMPTY_PARAMETERS);
+  const [rebuildStatus, setRebuildStatus] = useState<RebuildStatus>({ state: "idle" });
   const [cameraTarget, setCameraTarget] = useState<CameraTarget | null>(null);
   const [voiceState, setVoiceState] = useState<{ state: VoiceState; transcript: string }>({
     state: "idle",
@@ -420,6 +459,8 @@ export function useChatSocket(
       // surprising, not helpful.
       setLog(requestedSessionId ? logCacheRef.current[requestedSessionId] ?? [] : []);
       setMeshUrl(null);
+      setParameters(EMPTY_PARAMETERS);
+      setRebuildStatus({ state: "idle" });
       setDriverState(null);
       setCameraTarget(null);
       setCostState(INITIAL_COST_STATE);
@@ -448,6 +489,7 @@ export function useChatSocket(
       // effects below re-send once they have.
       socket.send(JSON.stringify({ type: "update_secrets", keys: apiKeysRef.current }));
       socket.send(JSON.stringify({ type: "update_context", active_plugins: activePluginsRef.current }));
+      socket.send(JSON.stringify({ type: "list_parameters" }));
     };
     socket.onclose = () => setConnection("closed");
 
@@ -462,7 +504,10 @@ export function useChatSocket(
       // consumed into its own state below), and was crowding real tool
       // activity out of the capped buffer on a long session with several
       // reconnects.
-      if (data.type !== "ready" && data.type !== "assistant_delta" && data.type !== "assistant_delta_reset") {
+      // Streaming chunks and the parameters table are state, not activity.
+      const transient =
+        data.type === "assistant_delta" || data.type === "assistant_delta_reset" || data.type === "parameters";
+      if (data.type !== "ready" && !transient) {
         setLog((prev) => [...prev, data].slice(-MAX_LOG_LINES));
       }
 
@@ -585,6 +630,13 @@ export function useChatSocket(
           if (typeof imageUrl === "string") pendingImageUrlRef.current = resolveApiUrl(imageUrl);
           break;
         }
+        case "parameters":
+          setParameters({ params: data.params, unsupported: data.unsupported, reason: data.reason });
+          break;
+        case "rebuild_result":
+          if (data.mesh_url) setMeshUrl(resolveMeshUrl(data.mesh_url));
+          setRebuildStatus({ state: "done", ok: data.ok, error: data.error, durationMs: data.duration_ms });
+          break;
         case "camera_animate":
           setCameraTarget({ position: data.position, target: data.target });
           break;
@@ -769,6 +821,15 @@ export function useChatSocket(
     socketRef.current.send(JSON.stringify({ type: "export_python_script" }));
   }, []);
 
+  // Zero-token parametric rebuild: re-runs the session's recorded CAD steps
+  // with new dimensions in FreeCAD, no LLM call. The reply is a
+  // "rebuild_result" event followed by a refreshed "parameters" table.
+  const rebuild = useCallback((overrides: Record<string, number>) => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    setRebuildStatus({ state: "running" });
+    socketRef.current.send(JSON.stringify({ type: "rebuild", overrides }));
+  }, []);
+
   // Settings toggle: bypasses HITL approval for every mutating tool call for
   // the rest of THIS session — see dana/api/server.py's "set_auto_approve"
   // handler and the session["auto_approve"] check in _run_react_loop. No
@@ -805,7 +866,10 @@ export function useChatSocket(
     requestListen,
     cancelListen,
     setAutoApprove,
-    // Typed optional so transports without a socket (useGradioChat) can omit it.
+    // Typed optional so transports without a socket (useGradioChat) can omit them.
     exportPythonScript: exportPythonScript as (() => void) | undefined,
+    parameters,
+    rebuildStatus,
+    rebuild: rebuild as ((overrides: Record<string, number>) => void) | undefined,
   };
 }
