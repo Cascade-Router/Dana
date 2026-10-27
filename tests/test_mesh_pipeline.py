@@ -111,6 +111,7 @@ def _isolated_cad_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(engine, "_EXPORT_DIR", tmp_path / "exports")
     monkeypatch.setattr(cad_module, "_FREECAD_OUTPUT_DIR", tmp_path / "freecad_output")
     monkeypatch.setattr(cad_module, "_FREECAD_EXPORT_DIR", tmp_path / "exports")
+    monkeypatch.setattr(cad_module, "_AGENT_EXPORT_DIR", tmp_path / "agent_exports")
     monkeypatch.setenv("DANA_HEADLESS", "true")
     monkeypatch.delenv("DANA_OS_DRY_RUN", raising=False)
 

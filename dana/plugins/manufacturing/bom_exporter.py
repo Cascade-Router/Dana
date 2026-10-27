@@ -22,11 +22,14 @@ from typing import Any
 
 from dana.paths import AGENT_WORKSPACE_DIR
 from dana.plugins.manufacturing.stability import stability_report
+from dana.session_context import session_scoped_dir
 
 _MATERIALS_PATH = Path(__file__).with_name("materials.json")
 
 # Inside the agent's sandboxed workspace (not freecad_output/exports) so the
-# agent can read the CSV back with read_file after generating it.
+# agent can read the CSV back with read_file after generating it. Each CSV
+# goes under exports/sessions/<session_id>/ so two chats exporting the same
+# assembly name never overwrite each other.
 _EXPORT_DIR = AGENT_WORKSPACE_DIR / "exports"
 
 CSV_HEADER = ("Part Name", "Volume (cm3)", "Mass (g)", "Material", "Density (g/cm3)", "Cost")
@@ -158,8 +161,7 @@ def build_bom(
                 weighted_center = [w + mass_g * c for w, c in zip(weighted_center, center)]
 
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", assembly_name).strip("_") or "assembly"
-    _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    path = _EXPORT_DIR / f"{safe}_bom.csv"
+    path = session_scoped_dir(_EXPORT_DIR) / f"{safe}_bom.csv"
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(CSV_HEADER)

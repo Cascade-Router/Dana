@@ -139,6 +139,9 @@ export type ServerEvent =
   | { type: "voice_state"; state: VoiceState; transcript: string }
   | { type: "assistant_audio"; audio_url: string }
   | { type: "server_log"; stream: "stdout" | "stderr"; line: string }
+  // Reply to exportPythonScript(): the session's replayable FreeCAD macro.
+  // `download_url` is dana.api.cad's session-scoped download route.
+  | { type: "python_script_exported"; path: string; filename: string; download_url: string }
   | {
       type: "usage_update";
       model: string;
@@ -729,6 +732,13 @@ export function useChatSocket(
     []
   );
 
+  // Deliverables bar: renders this session's CadCallLog into a FreeCAD macro
+  // server-side (no LLM call); the reply is a "python_script_exported" event.
+  const exportPythonScript = useCallback(() => {
+    if (socketRef.current?.readyState !== WebSocket.OPEN) return;
+    socketRef.current.send(JSON.stringify({ type: "export_python_script" }));
+  }, []);
+
   // Settings toggle: bypasses HITL approval for every mutating tool call for
   // the rest of THIS session — see dana/api/server.py's "set_auto_approve"
   // handler and the session["auto_approve"] check in _run_react_loop. No
@@ -764,5 +774,7 @@ export function useChatSocket(
     requestListen,
     cancelListen,
     setAutoApprove,
+    // Typed optional so transports without a socket (useGradioChat) can omit it.
+    exportPythonScript: exportPythonScript as (() => void) | undefined,
   };
 }

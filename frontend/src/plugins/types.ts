@@ -35,6 +35,10 @@ export type PluginComponentProps = {
    * CAD artifacts, never another chat's. `null` before the very first
    * WebSocket "ready" event of a brand-new chat. */
   sessionId: string | null;
+  /** Asks the backend to render this session's FreeCAD macro (0 LLM
+   * tokens); the result arrives in `log` as "python_script_exported".
+   * Absent where there is no live socket (Gradio mode, spawned windows). */
+  onExportMacro?: () => void;
 };
 
 export type PluginDefinition = {

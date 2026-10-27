@@ -21,8 +21,8 @@ both the API and the static React app.
 from __future__ import annotations
 
 import asyncio
-import logging
 import json
+import logging
 import os
 import re
 import sys
@@ -33,6 +33,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -447,6 +448,18 @@ app.include_router(_sessions_router)
 app.include_router(_system_router)
 app.include_router(_cad_router)
 app.include_router(_models_router)
+
+
+# Tool id -> result payload keys naming a deliverable file it wrote.
+_DELIVERABLE_PATH_KEYS: dict[str, tuple[str, ...]] = {
+    "generate_2d_blueprint": ("path", "svg_path"),
+    "generate_assembly_bom": ("path",),
+}
+
+
+def _artifact_download_url(session_id: str, filename: str) -> str:
+    """dana.api.cad's session-scoped download route for ``filename``."""
+    return f"/api/cad/artifacts/{quote(filename)}/download?session_id={quote(session_id)}"
 
 
 def _register_mesh(path: str) -> str:
@@ -1528,6 +1541,19 @@ async def _execute_and_continue(
             )
             token = _register_mesh(path)
             mesh_url = f"/api/mesh/{token}.{mesh_format}"
+
+    if result.ok and call.tool_id in _DELIVERABLE_PATH_KEYS:
+        # Deliverables (blueprint PDF/SVG, BOM CSV) — registered so the
+        # Deliverables bar can list and download them like any CAD artifact.
+        for key in _DELIVERABLE_PATH_KEYS[call.tool_id]:
+            path = result.payload.get(key)
+            if isinstance(path, str) and path:
+                artifacts_registry.register_artifact(
+                    path,
+                    format=Path(path).suffix.lstrip(".").lower(),
+                    source="exported",
+                    session_id=session["session_id"],
+                )
 
     await _send_tool_dispatch_end(websocket, session, node_id, call, result, mesh_url)
 
@@ -2805,8 +2831,24 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
                         }
                     )
                     continue
-                path = write_macro_script(call_log, filename=str(data.get("filename") or "dana_session_macro"))
-                await websocket.send_json({"type": "python_script_exported", "path": path})
+                path = await asyncio.to_thread(
+                    write_macro_script,
+                    call_log,
+                    filename=str(data.get("filename") or "dana_session_macro"),
+                    session_id=session["session_id"],
+                )
+                artifacts_registry.register_artifact(
+                    path, format="py", source="exported", session_id=session["session_id"]
+                )
+                filename = Path(path).name
+                await websocket.send_json(
+                    {
+                        "type": "python_script_exported",
+                        "path": path,
+                        "filename": filename,
+                        "download_url": _artifact_download_url(session["session_id"], filename),
+                    }
+                )
                 continue
 
             user_text = str(data.get("text") or "").strip()

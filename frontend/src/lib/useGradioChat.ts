@@ -160,5 +160,7 @@ export function useGradioChat(
     requestListen: noop,
     cancelListen: noop,
     setAutoApprove: noop,
+    // No WebSocket to ask for a macro export on this transport.
+    exportPythonScript: undefined,
   };
 }

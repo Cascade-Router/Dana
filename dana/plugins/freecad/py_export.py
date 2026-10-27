@@ -55,6 +55,7 @@ from dana.plugins.freecad.engine import (
 # Same reuse rationale — the blueprint step's view directions/positions and
 # template file paths must match techdraw_export.py's own layout exactly.
 from dana.plugins.freecad.techdraw_export import _PAGE_TEMPLATES, _VIEW_LAYOUT
+from dana.session_context import session_scoped_dir
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _TEMPLATE_NAME = "macro_export.py.jinja2"
@@ -442,12 +443,18 @@ def render_macro_script(log: CadCallLog, *, document_name: str = "DanaModel") ->
 
 
 def write_macro_script(
-    log: CadCallLog, filename: str = "dana_session_macro", *, document_name: str = "DanaModel"
+    log: CadCallLog,
+    filename: str = "dana_session_macro",
+    *,
+    document_name: str = "DanaModel",
+    session_id: str | None = None,
 ) -> str:
-    """Render ``log`` and write it to ``DANA_WORKSPACE/exports/<filename>.py``."""
-    _EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    """Render ``log`` and write it to
+    ``DANA_WORKSPACE/exports/sessions/<session_id>/<filename>.py`` — the
+    session's own export directory, where the CAD artifact download route
+    finds it. ``session_id`` defaults to the ambient one."""
     safe_name = _SAFE_FILENAME_RE.sub("_", filename or "dana_session_macro").strip("_") or "dana_session_macro"
-    out_path = _EXPORT_DIR / f"{safe_name}.py"
+    out_path = session_scoped_dir(_EXPORT_DIR, session_id) / f"{safe_name}.py"
     out_path.write_text(render_macro_script(log, document_name=document_name), encoding="utf-8")
     return str(out_path)
 

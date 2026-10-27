@@ -130,6 +130,7 @@ function AppShell() {
     requestListen,
     cancelListen,
     setAutoApprove,
+    exportPythonScript,
   } = useChat(apiKeys, activePlugins, requestedSessionId, initialMessages);
 
   const activePlugin = plugins.find((p) => p.id === activePluginId) ?? null;
@@ -354,6 +355,7 @@ function AppShell() {
                 topologyGraph={topologyGraph}
                 plan={planState}
                 sessionId={sessionId}
+                onExportMacro={exportPythonScript}
               />
             </Suspense>
           </div>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { BlueprintViewer } from "../components/BlueprintViewer";
 import { CadToolbar } from "../components/CadToolbar";
+import { DeliverablesBar } from "../components/DeliverablesBar";
 import { TopologyTab } from "../components/DAGMonitor";
 import { InspectorDock, type InspectorTab } from "../components/InspectorDock";
 import { MeshHistoryPicker } from "../components/MeshHistoryPicker";
@@ -24,6 +25,7 @@ export default function CadPlugin({
   topologyGraph,
   plan,
   sessionId,
+  onExportMacro,
 }: PluginComponentProps) {
   // Active Plan / Topology / Terminal used to be three independent floating
   // cards fighting for the same space over the viewport — now they're tabs
@@ -64,6 +66,17 @@ export default function CadPlugin({
   // redundant fetches of the same data.
   const { artifacts, refresh: refreshArtifacts } = useCadArtifacts(sessionId);
 
+  // New deliverables (blueprint, BOM CSV, macro, STEP) appear as soon as the
+  // tool that wrote them finishes, not only when the Export menu is opened.
+  const lastEvent = log.length ? log[log.length - 1] : undefined;
+  const deliverableEvent =
+    lastEvent && (lastEvent.type === "tool_dispatch_end" || lastEvent.type === "python_script_exported")
+      ? lastEvent
+      : undefined;
+  useEffect(() => {
+    if (deliverableEvent) refreshArtifacts();
+  }, [deliverableEvent, refreshArtifacts]);
+
   // Mesh History: the live chat feed only ever carries the SINGLE
   // most-recently-touched object's mesh (dana.api.server scopes
   // export_mesh_stl to target_object=result_name, by design), so several
@@ -92,6 +105,13 @@ export default function CadPlugin({
         sessionId={sessionId}
         artifacts={artifacts}
         onRefreshArtifacts={refreshArtifacts}
+      />
+      <DeliverablesBar
+        sessionId={sessionId}
+        artifacts={artifacts}
+        log={log}
+        onExportMacro={onExportMacro}
+        onShowBlueprint={() => setViewportMode("2d")}
       />
       <div className={`cad-plugin__viewport cad-plugin__viewport--${viewportMode}`}>
         <div className="cad-plugin__mode-toggle">

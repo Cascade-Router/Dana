@@ -32,15 +32,22 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from dana.api import artifacts_registry
-from dana.paths import DANA_WORKSPACE
+from dana.paths import AGENT_WORKSPACE_DIR, DANA_WORKSPACE
 from dana.session_context import sanitize_session_id, session_scoped_dir
 
 router = APIRouter(prefix="/api/cad", tags=["cad"])
 
 _FREECAD_OUTPUT_DIR = DANA_WORKSPACE / "freecad_output"
 _FREECAD_EXPORT_DIR = DANA_WORKSPACE / "exports"
+# dana.plugins.manufacturing.bom_exporter writes BOM CSVs inside the agent's
+# sandbox (so the agent can read them back), session-scoped the same way.
+_AGENT_EXPORT_DIR = AGENT_WORKSPACE_DIR / "exports"
 
-_ARTIFACT_EXTENSIONS = frozenset({".step", ".stp", ".stl", ".fcstd", ".urdf", ".glb", ".obj", ".svg"})
+# Lowercase (matched against suffix.lower()). .pdf/.svg: 2D blueprints;
+# .csv: BOM; .py/.fcmacro: the session's replayable FreeCAD macro.
+_ARTIFACT_EXTENSIONS = frozenset(
+    {".step", ".stp", ".stl", ".fcstd", ".urdf", ".glb", ".obj", ".svg", ".pdf", ".csv", ".py", ".fcmacro"}
+)
 
 # Throwaway-intermediate marker: dana.plugins.freecad.engine.export_mesh_stl
 # writes its per-call temp files (``{name}__tmp_{unique}.glb/.stl``,
@@ -64,16 +71,19 @@ def _is_throwaway_temp_file(filename: str) -> bool:
     return any(marker in filename for marker in _TEMP_FILE_MARKERS)
 
 
-def _artifact_dirs(session_id: str | None) -> tuple[Path, Path]:
-    """This session's own ``(freecad_output, exports)`` subdirectory pair —
-    only these two dirs, only ``_ARTIFACT_EXTENSIONS``, is what makes an
-    artifact "download by filename" route (built from user-controlled
-    input) structurally safe from path traversal, same guarantee the old
-    flat ``_ARTIFACT_DIRS`` tuple gave, just session-scoped now."""
+def _artifact_dirs(session_id: str | None) -> tuple[Path, Path, Path]:
+    """This session's own ``(freecad_output, exports, agent exports)``
+    subdirectories — only these dirs, only ``_ARTIFACT_EXTENSIONS``, is what
+    makes an artifact "download by filename" route (built from
+    user-controlled input) structurally safe from path traversal, same
+    guarantee the old flat ``_ARTIFACT_DIRS`` tuple gave, just session-scoped
+    now. The first is the "generated" source, the others "exported"."""
     sid = sanitize_session_id(session_id)
     return (
         session_scoped_dir(_FREECAD_OUTPUT_DIR, sid),
         session_scoped_dir(_FREECAD_EXPORT_DIR, sid),
+        # Not created here: only bom_exporter writes into it.
+        _AGENT_EXPORT_DIR / "sessions" / sid,
     )
 
 
@@ -86,18 +96,21 @@ _MEDIA_TYPES = {
     # generate_3d_from_image's own output formats (dana.tools.image_to_3d).
     ".glb": "model/gltf-binary",
     ".obj": "model/obj",
-    # dana.plugins.freecad.techdraw_export.generate_2d_blueprint's SVG
-    # sibling output to its .pdf (not added here — out of scope for this
-    # change; the PDF path has its own pre-existing gap in both dicts).
+    # dana.plugins.freecad.techdraw_export.generate_2d_blueprint's output.
     ".svg": "image/svg+xml",
+    ".pdf": "application/pdf",
+    ".csv": "text/csv",
+    ".py": "text/x-python",
+    ".fcmacro": "text/x-python",
 }
 
 
 def _list_artifacts(session_id: str | None) -> list[dict[str, Any]]:
     sid = sanitize_session_id(session_id)
-    output_dir, export_dir = _artifact_dirs(sid)
+    dirs = _artifact_dirs(sid)
+    output_dir = dirs[0]
     out: list[dict[str, Any]] = []
-    for directory in (output_dir, export_dir):
+    for directory in dirs:
         if not directory.is_dir():
             continue
         for path in directory.iterdir():
@@ -221,7 +234,7 @@ def print_artifact(filename: str, session_id: str | None = None) -> dict[str, An
 
 
 def _newest_fcstd(session_id: str | None) -> Path | None:
-    output_dir, _export_dir = _artifact_dirs(session_id)
+    output_dir = _artifact_dirs(session_id)[0]
     candidates = [p for p in output_dir.glob("*.FCStd") if p.is_file()] if output_dir.is_dir() else []
     if not candidates:
         return None

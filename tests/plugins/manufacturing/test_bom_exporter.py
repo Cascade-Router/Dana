@@ -19,7 +19,7 @@ import pytest
 from dana.core import react_dispatch as rd
 from dana.plugins.freecad import engine as fc_engine
 from dana.plugins.manufacturing import bom_exporter
-from dana.session_context import DEFAULT_SESSION_ID, set_session_id
+from dana.session_context import DEFAULT_SESSION_ID, get_session_id, set_session_id
 from dana.tools.schema import ToolCall
 
 PLA = bom_exporter.load_materials()["materials"]["PLA"]
@@ -69,7 +69,7 @@ def test_one_cm3_pla_cube_mass_and_cost(mock_call, tmp_path: Path) -> None:
     expected_cost = 1.24 / 1000.0 * PLA["cost_per_kg"]
 
     path = Path(payload["path"])
-    assert path == tmp_path / "exports" / "Kit_bom.csv"
+    assert path == tmp_path / "exports" / "sessions" / get_session_id() / "Kit_bom.csv"
     rows = _read_csv(str(path))
     assert rows[0] == list(bom_exporter.CSV_HEADER)
     assert len(rows) == 2
