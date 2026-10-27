@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import copy
 import inspect
 import json
 import math
@@ -9838,6 +9839,78 @@ def summarize_result(call: ToolCall, result: ToolResult) -> str:
     return f"`{call.tool_id}` completed: {payload}"
 
 
+# Session persistence (dana.api.session_state): the per-session registries
+# that make up a session's engine state across a server restart. Turn-scoped
+# ones (_OUTPUT_TRUNCATED_BY_SESSION) are deliberately absent. Values may hold
+# sets/tuples; dana.api.session_state's codec round-trips those exactly.
+_PERSISTED_SESSION_REGISTRIES: dict[str, dict[str, Any]] = {
+    "object_paths": _OBJECT_PATH_REGISTRY,
+    "assembly_state": _ASSEMBLY_STATE_REGISTRY,
+    "topology_dag": _TOPOLOGY_DAG_REGISTRY,
+    "plan_state": _PLAN_STATE_REGISTRY,
+    "introspection_streak": _INTROSPECTION_STREAK_REGISTRY,
+    "bbox_measured": _BOUNDING_BOX_MEASURED_BY_SESSION,
+    "collisions_validated": _COLLISIONS_VALIDATED_BY_SESSION,
+    "plan_gate": _PLAN_GATE_REGISTRY,
+}
+
+
+def session_state_is_empty(session_id: str) -> bool:
+    """True when this process holds no engine state for ``session_id`` — the
+    only case in which a restore from disk may overwrite memory."""
+    return not any(registry.get(session_id) for registry in _PERSISTED_SESSION_REGISTRIES.values())
+
+
+def snapshot_session_state(session_id: str) -> dict[str, Any]:
+    """This session's slice of every persisted registry (absent ones omitted)."""
+    return {
+        key: copy.deepcopy(registry[session_id])
+        for key, registry in _PERSISTED_SESSION_REGISTRIES.items()
+        if session_id in registry
+    }
+
+
+def restore_session_state(session_id: str, data: Any) -> None:
+    """Inverse of ``snapshot_session_state``. Unknown keys are ignored, so a
+    snapshot from a newer/older build degrades instead of failing."""
+    if not isinstance(data, dict):
+        return
+    for key, registry in _PERSISTED_SESSION_REGISTRIES.items():
+        if key in data:
+            registry[session_id] = copy.deepcopy(data[key])
+
+
+def prune_session_objects(session_id: str, existing: set[str], document_path: str | None) -> list[str]:
+    """Resyncs this session's object registry and topology DAG to the objects
+    that really exist (``existing``: names and labels from the document, or the
+    mock driver's registry). Returns the names that were dropped. Objects the
+    document has but the registry lacks are added, mapped to ``document_path``."""
+    lowered = {name.lower() for name in existing}
+    objects = _OBJECT_PATH_REGISTRY.setdefault(session_id, {})
+    dropped = sorted(name for name in objects if name.lower() not in lowered)
+    for name in dropped:
+        objects.pop(name, None)
+    if document_path:
+        known = {name.lower() for name in objects}
+        for name in sorted(existing):
+            if name.lower() not in known:
+                objects[name] = document_path
+                known.add(name.lower())
+
+    dag = _TOPOLOGY_DAG_REGISTRY.get(session_id)
+    if dag:
+        gone = [name for name in dag.get("nodes", {}) if name.lower() not in lowered]
+        for name in gone:
+            dag["nodes"].pop(name, None)
+        dag["edges"] = [
+            edge
+            for edge in dag.get("edges", [])
+            if edge.get("source") in dag["nodes"] and edge.get("target") in dag["nodes"]
+        ]
+        dropped = sorted(set(dropped) | set(gone))
+    return dropped
+
+
 def driver_state(engine: Any | None = None, control_plane: Any | None = None) -> dict[str, Any]:
     engine = engine or get_cad_engine()
     control_plane = control_plane or get_control_plane()
@@ -9904,8 +9977,12 @@ __all__ = (
     "next_react_turn",
     "parse_utterance",
     "plugin_registry_view",
+    "prune_session_objects",
     "refresh_plugin_tools",
     "refresh_user_skills",
     "resolve_living_leaf",
+    "restore_session_state",
+    "session_state_is_empty",
+    "snapshot_session_state",
     "summarize_result",
 )

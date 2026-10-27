@@ -21,6 +21,7 @@ both the API and the static React app.
 from __future__ import annotations
 
 import asyncio
+import logging
 import json
 import os
 import re
@@ -62,6 +63,7 @@ from dana.api import artifacts_registry  # noqa: E402
 from dana.api.cad import router as _cad_router  # noqa: E402
 from dana.api.models import router as _models_router  # noqa: E402
 from dana.api.sessions import derive_title, is_valid_session_id, load_session, new_session_id, save_session  # noqa: E402
+from dana.api.session_state import capture_session_state, restore_session_state  # noqa: E402
 from dana.api.sessions import router as _sessions_router  # noqa: E402
 from dana.api.system import router as _system_router  # noqa: E402
 from dana.api.workspace import load_mounted_directories  # noqa: E402
@@ -428,6 +430,8 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # from.
         _flush_local_ollama_model()
 
+
+_log = logging.getLogger(__name__)
 
 app = FastAPI(title="Dana API", lifespan=_lifespan)
 
@@ -1681,13 +1685,27 @@ def _persist_turn(session: dict[str, Any], user_text: str, assistant_text: str) 
     history.append({"role": "assistant", "content": assistant_text})
     if session.get("session_title") is None:
         session["session_title"] = derive_title(user_text)
+    _save_session_record(session)
+
+
+def _save_session_record(session: dict[str, Any]) -> None:
+    """Writes this session's transcript AND its engine state
+    (dana.api.session_state) to disk. A failure to capture the engine state
+    is logged and the transcript is still saved — persistence must never
+    break a turn the user has already been answered for."""
+    try:
+        state: dict[str, Any] | None = capture_session_state(session, get_cad_engine())
+    except Exception:  # noqa: BLE001
+        _log.exception("session %s: capturing engine state failed", session["session_id"])
+        state = None
     record = save_session(
         session["session_id"],
         title=session["session_title"],
         created_at=session.get("session_created_at"),
-        messages=history,
+        messages=session.get("chat_history", []),
         working_memory=session.get("working_memory"),
         terminal_log=session.get("terminal_log"),
+        state=state,
     )
     # Pins the ORIGINAL created_at from here on — save_session only stamps
     # a fresh "now" when it receives None, so this must be captured back
@@ -2529,46 +2547,6 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
     await websocket.accept()
     resolved_session_id = session_id if (session_id and is_valid_session_id(session_id)) else new_session_id()
     stored = load_session(resolved_session_id)
-    await websocket.send_json(
-        {
-            "type": "ready",
-            "session_id": resolved_session_id,
-            "driver_state": driver_state(),
-            "plugins": plugin_registry_view(),
-            # PlanChecklist's initial seed: THIS session's own plan
-            # (dana.plugins.planning.task_board, session-scoped — see that
-            # module's own docstring) — a reconnect/page-refresh mid-plan
-            # must see it immediately here, not wait for the next
-            # create_plan/mark_task_completed mutation's own "plan_update"
-            # broadcast (_broadcast_plan_update). Explicit session_id, not
-            # the ambient default: this runs on WS connect, before this
-            # session's first tool dispatch has ever called set_session_id.
-            "active_plan": _tb_get_active_plan(session_id=resolved_session_id),
-            # MemoryViewer's initial seed: Core Memory is a single GLOBAL
-            # store (dana.plugins.memory.core_memory), not per-session —
-            # a reconnect/page-refresh must see the current state immediately
-            # here, not wait for the next update_core_memory mutation's own
-            # "memory_update" broadcast (_broadcast_memory_update).
-            "core_memory": read_core_memory(),
-            # DAG Monitor's initial seed: the Topological Lineage Graph is
-            # per-SESSION (unlike active_plan/core_memory above), so a
-            # reconnect/page-refresh needs THIS session's own accumulated
-            # graph immediately here, not wait for the next mutating CAD
-            # tool's own "topology_update" broadcast
-            # (_broadcast_topology_update). Only reflects geometry built
-            # since this process started — dana.core.react_dispatch's
-            # topology_dag registry is in-memory, like _OBJECT_PATH_REGISTRY,
-            # not persisted to dana.api.sessions.
-            "topology_dag": get_topology_dag(resolved_session_id),
-            # Session-Specific Terminal History: this session's persisted
-            # log (dana.api.sessions' "terminal_log"), empty for a brand-new
-            # session — lets the frontend's Terminal History panel populate
-            # with THIS session's own past activity on connect/resume,
-            # instead of either staying empty or carrying over whatever a
-            # PREVIOUSLY connected session happened to leave in its live feed.
-            "terminal_log": list(stored["terminal_log"]) if stored else [],
-        }
-    )
     session: dict[str, Any] = {
         "active_selection": None,
         "react_state": None,
@@ -2672,6 +2650,57 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
         # exactly as before regardless.
         "auto_approve": _default_auto_approve(),
     }
+    # Session persistence (dana.api.session_state): rehydrate the engine's
+    # plan/object/DAG state before "ready", so the seeds below already show
+    # the resumed session. May run one read-only FreeCADCmd call, hence
+    # to_thread. Must never fail the connection.
+    restore_note: str | None = None
+    if stored and stored.get("state"):
+        try:
+            restore_note = await asyncio.to_thread(restore_session_state, session, stored["state"], get_cad_engine())
+        except Exception:  # noqa: BLE001
+            _log.exception("session %s: restoring engine state failed", resolved_session_id)
+    await websocket.send_json(
+        {
+            "type": "ready",
+            "session_id": resolved_session_id,
+            "driver_state": driver_state(),
+            "plugins": plugin_registry_view(),
+            # PlanChecklist's initial seed: THIS session's own plan
+            # (dana.plugins.planning.task_board, session-scoped — see that
+            # module's own docstring) — a reconnect/page-refresh mid-plan
+            # must see it immediately here, not wait for the next
+            # create_plan/mark_task_completed mutation's own "plan_update"
+            # broadcast (_broadcast_plan_update). Explicit session_id, not
+            # the ambient default: this runs on WS connect, before this
+            # session's first tool dispatch has ever called set_session_id.
+            "active_plan": _tb_get_active_plan(session_id=resolved_session_id),
+            # MemoryViewer's initial seed: Core Memory is a single GLOBAL
+            # store (dana.plugins.memory.core_memory), not per-session —
+            # a reconnect/page-refresh must see the current state immediately
+            # here, not wait for the next update_core_memory mutation's own
+            # "memory_update" broadcast (_broadcast_memory_update).
+            "core_memory": read_core_memory(),
+            # DAG Monitor's initial seed: the Topological Lineage Graph is
+            # per-SESSION (unlike active_plan/core_memory above), so a
+            # reconnect/page-refresh needs THIS session's own accumulated
+            # graph immediately here, not wait for the next mutating CAD
+            # tool's own "topology_update" broadcast
+            # (_broadcast_topology_update). Restored from the session's
+            # on-disk state above when resuming in a fresh process
+            # (dana.api.session_state).
+            "topology_dag": get_topology_dag(resolved_session_id),
+            # Session-Specific Terminal History: this session's persisted
+            # log (dana.api.sessions' "terminal_log"), empty for a brand-new
+            # session — lets the frontend's Terminal History panel populate
+            # with THIS session's own past activity on connect/resume,
+            # instead of either staying empty or carrying over whatever a
+            # PREVIOUSLY connected session happened to leave in its live feed.
+            "terminal_log": list(stored["terminal_log"]) if stored else [],
+        }
+    )
+    if restore_note:
+        await websocket.send_json({"type": "status_note", "content": restore_note})
     _active_sessions[websocket] = session
     try:
         while True:
@@ -2802,6 +2831,11 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
         # thread finishes on its own (FreeCADCmd saves are never cut short).
         for turn_task in list(session.get("turn_tasks", ())):
             turn_task.cancel()
+        if session.get("session_title") is not None:
+            try:
+                _save_session_record(session)
+            except Exception:  # noqa: BLE001
+                _log.exception("session %s: save on disconnect failed", session["session_id"])
         if not _active_sessions:
             # Idle Flush — the last open connection (this app may have
             # several, e.g. multiple Tauri windows) just closed. See

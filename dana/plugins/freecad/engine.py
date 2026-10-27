@@ -54,7 +54,7 @@ from dana.paths import AGENT_WORKSPACE_DIR, DANA_WORKSPACE
 
 from dana.security.dry_run import is_dry_run_enabled
 
-from dana.session_context import session_scoped_dir
+from dana.session_context import sanitize_session_id, session_scoped_dir
 
 from dana.tools.geometry_analyzer import query_geometry_properties  # noqa: F401
 
@@ -971,6 +971,45 @@ def _session_document_path() -> Path:
     ``freecad_output/`` every other artifact used to share — see
     ``_session_dir``'s own docstring for why."""
     return _session_dir() / f"{_SESSION_DOCUMENT_NAME}.FCStd"
+
+def session_document_path_for(session_id: str) -> Path:
+    """``_session_document_path`` for an explicit session id — for callers
+    outside a turn's contextvar chain (dana.api.session_state on connect).
+    Pure path arithmetic: unlike ``session_scoped_dir`` it never creates the
+    directory, so probing a session that never built anything leaves no trace."""
+    return _OUTPUT_DIR / "sessions" / sanitize_session_id(session_id) / f"{_SESSION_DOCUMENT_NAME}.FCStd"
+
+
+_LIST_OBJECTS_SCRIPT = """\
+import json
+import FreeCAD as App
+
+doc = App.openDocument({path!r})
+print({marker!r} + " " + json.dumps([[o.Name, o.Label] for o in doc.Objects]))
+App.closeDocument(doc.Name)
+print({ok!r})
+"""
+_LIST_OBJECTS_MARKER = "DANA_DOC_OBJECTS"
+
+
+def list_document_objects(path: Path) -> set[str] | None:
+    """Every object Name and Label in the ``.FCStd`` at ``path``, via one
+    read-only FreeCADCmd run (it never saves). None if FreeCAD is unavailable
+    or the document cannot be opened."""
+    result = _run_freecad_script(
+        _LIST_OBJECTS_SCRIPT.format(path=str(path), marker=_LIST_OBJECTS_MARKER, ok=_OK_MARKER)
+    )
+    if not result.get("ok"):
+        return None
+    for line in (result.get("stdout") or "").splitlines():
+        if line.startswith(_LIST_OBJECTS_MARKER + " "):
+            try:
+                pairs = json.loads(line[len(_LIST_OBJECTS_MARKER) + 1 :])
+            except ValueError:
+                return None
+            return {str(part) for pair in pairs for part in pair}
+    return None
+
 
 _SESSION_OPEN_SNIPPET = """\
 import os

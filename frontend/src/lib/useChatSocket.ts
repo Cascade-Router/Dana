@@ -64,6 +64,10 @@ export type ServerEvent =
     }
   | { type: "user_message"; content: string }
   | { type: "assistant_message"; content: string }
+  // Out-of-turn notice from the server, e.g. a resumed session whose CAD
+  // document had to be resynced (dana.api.session_state). Shown in the chat
+  // without touching turn state.
+  | { type: "status_note"; content: string }
   | { type: "camera_animate"; position: [number, number, number]; target: [number, number, number] }
   | {
       // Still used ONLY for a "parse-N" node (the LLM's own reasoning step,
@@ -480,6 +484,9 @@ export function useChatSocket(
           setMessages((prev) => [...prev, { role: "assistant", content: data.content, imageUrl, activity }]);
           break;
         }
+        case "status_note":
+          setMessages((prev) => [...prev, { role: "assistant", content: data.content }]);
+          break;
         case "dag_node_start": {
           // Live "Thinking" Indicator — only the agent's own reasoning
           // node; a tool/vision node here would just duplicate what

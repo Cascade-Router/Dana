@@ -10,6 +10,7 @@ real actuation, mirroring the labeling convention already used in
 
 from __future__ import annotations
 
+import copy
 import math
 import os
 import tempfile
@@ -2285,4 +2286,39 @@ class MockFreeCADEngine(BaseCADEngine):
         }
 
 
-__all__ = ("MockControlPlane", "MockFreeCADEngine")
+# Session persistence (dana.api.session_state): the mock driver's per-session
+# state, so a restarted mock server (HF Space, CI) keeps a resumed session's
+# objects. Meshes are files on disk; restore keeps only objects whose mesh
+# file still exists.
+_PERSISTED_MOCK_REGISTRIES: dict[str, dict[str, Any]] = {
+    "objects": _MOCK_OBJECT_REGISTRY,
+    "sketches": _MOCK_SKETCH_GEOMETRY,
+    "body_tip": _MOCK_BODY_TIP,
+    "assemblies": _MOCK_ASSEMBLY_MEMBERS,
+    "joints": _MOCK_KINEMATIC_JOINTS,
+    "booleans": _MOCK_BOOLEAN_RESULTS,
+}
+
+
+def snapshot_mock_session(session_id: str) -> dict[str, Any]:
+    return {
+        key: copy.deepcopy(registry[session_id])
+        for key, registry in _PERSISTED_MOCK_REGISTRIES.items()
+        if session_id in registry
+    }
+
+
+def restore_mock_session(session_id: str, data: Any) -> set[str]:
+    """Restores ``snapshot_mock_session`` output and returns the names of the
+    objects that survived (their mesh file still exists)."""
+    if isinstance(data, dict):
+        for key, registry in _PERSISTED_MOCK_REGISTRIES.items():
+            if isinstance(data.get(key), dict):
+                registry[session_id] = copy.deepcopy(data[key])
+    objects = _MOCK_OBJECT_REGISTRY.get(session_id, {})
+    for name in [n for n, mesh in objects.items() if not (isinstance(mesh, str) and Path(mesh).is_file())]:
+        objects.pop(name)
+    return set(objects)
+
+
+__all__ = ("MockControlPlane", "MockFreeCADEngine", "restore_mock_session", "snapshot_mock_session")

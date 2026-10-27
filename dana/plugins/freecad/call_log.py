@@ -14,7 +14,7 @@ for code generation.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -68,6 +68,33 @@ class CadCallLog:
 
     def clear(self) -> None:
         self._records.clear()
+
+    def replace(self, records: list[CadCallRecord]) -> None:
+        self._records = list(records)
+
+    def to_payload(self) -> list[dict[str, Any]]:
+        """Plain dicts, for dana.api.session_state's on-disk snapshot."""
+        return [asdict(rec) for rec in self._records]
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> CadCallLog:
+        """Inverse of ``to_payload``; malformed entries are skipped, never
+        raised on, since this runs while hydrating a session on connect."""
+        log = cls()
+        for raw in payload if isinstance(payload, list) else []:
+            if not isinstance(raw, dict) or not isinstance(raw.get("tool_id"), str):
+                continue
+            log._records.append(
+                CadCallRecord(
+                    tool_id=raw["tool_id"],
+                    arguments=dict(raw.get("arguments") or {}),
+                    ok=bool(raw.get("ok")),
+                    result=dict(raw.get("result") or {}),
+                    error=raw.get("error") if isinstance(raw.get("error"), str) else None,
+                    timestamp=float(raw.get("timestamp") or 0.0),
+                )
+            )
+        return log
 
     def __len__(self) -> int:
         return len(self._records)

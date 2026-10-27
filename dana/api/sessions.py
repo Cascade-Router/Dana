@@ -22,12 +22,21 @@ per-session distilled summary (``{"summary": str, "turn": int}``) — so a
 session resumed on a fresh ``/ws/chat`` connection (or a fresh server
 process) picks its distilled context back up instead of starting cold, the
 same way its message history already does.
+
+And ``state`` — the ReAct engine's per-session registries (plan, object
+paths, topology DAG, CAD call log, ...; see ``dana.api.session_state``) —
+opaque to this module, which only stores and returns it. A file saved before
+it existed loads with ``state: None`` (a clean no-op restore). Writes are
+atomic (temp file + ``os.replace``) so a crash mid-save can never leave a
+truncated ``<session_id>.json`` behind.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -152,6 +161,7 @@ def load_session(session_id: str) -> dict[str, Any] | None:
         "messages": messages,
         "working_memory": _sanitize_working_memory(data.get("working_memory")),
         "terminal_log": _sanitize_terminal_log(data.get("terminal_log")),
+        "state": data["state"] if isinstance(data.get("state"), dict) else None,
     }
 
 
@@ -163,6 +173,7 @@ def save_session(
     messages: list[dict[str, str]],
     working_memory: dict[str, Any] | None = None,
     terminal_log: list[dict[str, Any]] | None = None,
+    state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Overwrites ``session_id``'s on-disk file with the given
     title/messages/working_memory/terminal_log — the ONE write path, used by
@@ -185,9 +196,25 @@ def save_session(
         "working_memory": working_memory if working_memory is not None else dict(_EMPTY_WORKING_MEMORY),
         "terminal_log": terminal_log if terminal_log is not None else [],
     }
+    if state is not None:
+        record["state"] = state
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    _session_path(session_id).write_text(json.dumps(record, indent=2), encoding="utf-8")
+    _atomic_write_text(_session_path(session_id), json.dumps(record, indent=2))
     return record
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write to a temp file in the same directory, then ``os.replace`` it
+    over ``path`` — readers see either the old file or the new one, never a
+    half-written one."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def delete_session(session_id: str) -> bool:
@@ -240,6 +267,9 @@ def get_session(session_id: str) -> dict[str, Any]:
     session = load_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"session not found: {session_id!r}")
+    # The engine state is server-side resume data, not something the sidebar
+    # renders — keep it out of the REST payload.
+    session.pop("state", None)
     return {"ok": True, "session": session}
 
 

@@ -27,11 +27,9 @@ was still sitting in this one global slot. Each ``session_id`` now gets
 its own independent scratchpad (``_PLANS_BY_SESSION``, keyed exactly like
 ``dana.plugins.freecad.engine``'s own per-session ``Session_Active.FCStd``
 already is), created lazily on first touch and never seen by any other
-session. Still deliberately IN-MEMORY only, not persisted to disk (same
-choice ``dana.plugins.os.background_services`` made for its own
-``_ACTIVE_PROCESSES``): a server restart clearing every session's current
-plan is an acceptable trade for the simplicity of not needing a second
-on-disk format to keep in sync with this module's own in-memory shape.
+session. In memory while the server runs; ``snapshot_plan``/``restore_plan``
+let dana.api.session_state carry a session's plan across a server restart
+inside that session's own on-disk record.
 
 Tool schemas are deliberately minimal (a list of plain strings for
 ``create_plan``, two integers for ``mark_task_completed``) — the LLM never
@@ -41,6 +39,7 @@ has to construct or edit a nested JSON task object itself; every ``id``/
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Literal
 
 from dana.session_context import get_session_id
@@ -508,8 +507,22 @@ def mark_task_completed(
     return result
 
 
+def snapshot_plan(session_id: str) -> dict[str, Any] | None:
+    """A copy of ``session_id``'s plan, or None if it never had one."""
+    plan = _PLANS_BY_SESSION.get(session_id)
+    return copy.deepcopy(plan) if plan is not None else None
+
+
+def restore_plan(session_id: str, data: Any) -> None:
+    """Inverse of ``snapshot_plan``; missing fields fall back to a fresh plan's."""
+    if isinstance(data, dict):
+        _PLANS_BY_SESSION[session_id] = {**_new_plan(), **copy.deepcopy(data)}
+
+
 __all__ = (
     "get_active_plan",
+    "restore_plan",
+    "snapshot_plan",
     "create_plan",
     "mark_task_completed",
     "insert_task",
