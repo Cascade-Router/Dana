@@ -18,8 +18,19 @@ const MAX_ENTRIES = 500;
 let entries: ServerEvent[] = [];
 const listeners = new Set<() => void>();
 
+let notifyQueued = false;
+
+// Deferred to a microtask: a console call made while React is rendering
+// (e.g. inside a state updater) would otherwise update every subscribed
+// component mid-render — React's "Cannot update a component while rendering
+// a different component" error. Bursts of lines coalesce into one update.
 function notify(): void {
-  for (const listener of listeners) listener();
+  if (notifyQueued) return;
+  notifyQueued = true;
+  queueMicrotask(() => {
+    notifyQueued = false;
+    for (const listener of listeners) listener();
+  });
 }
 
 function formatArg(arg: unknown): string {

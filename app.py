@@ -56,6 +56,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -63,7 +64,16 @@ import gradio as gr
 import spaces
 
 from dana.api import artifacts_registry
-from dana.api.server import _MESH_REGISTRY, _process_user_text, _resolve_react_hitl, _resolve_visual_capture
+from dana.api.server import (
+    _MESH_REGISTRY,
+    _NOTHING_TO_EXPORT,
+    _export_session_macro,
+    _parameters_event,
+    _process_user_text,
+    _resolve_react_hitl,
+    _resolve_visual_capture,
+    _run_rebuild,
+)
 from dana.api.sessions import new_session_id
 from dana.core import react_dispatch
 from dana.plugins.freecad.call_log import CadCallLog
@@ -366,6 +376,10 @@ class _GradioSocket:
     ReAct loop was emitting these events into this same _GradioSocket the
     whole time. tool_dispatch_start/camera_animate/... are still
     discarded — no consumer for those on this text-only chat.
+
+    rebuild_result/parameters are kept (latest of each) for the
+    zero-token rebuild endpoint below, which drives the server's own
+    _run_rebuild through this same socket.
     """
 
     def __init__(self, session: dict[str, Any]) -> None:
@@ -373,6 +387,7 @@ class _GradioSocket:
         self.final_reply: str | None = None
         self.mesh_path: str | None = None
         self.dag_events: list[dict[str, Any]] = []
+        self.latest: dict[str, dict[str, Any]] = {}
 
     async def send_json(self, payload: dict[str, Any]) -> None:
         kind = payload.get("type")
@@ -396,6 +411,8 @@ class _GradioSocket:
                     self.mesh_path = str(path)
         elif kind in ("dag_node_start", "dag_node_complete"):
             self.dag_events.append(payload)
+        elif kind in ("rebuild_result", "parameters"):
+            self.latest[kind] = payload
         elif kind == "hitl_approval_required":
             request_id = payload["payload"]["request_id"]
             await _resolve_react_hitl(self, self._session, {"request_id": request_id, "approved": True})
@@ -508,6 +525,42 @@ async def _respond(message: str, chatbot_history: list, session: dict[str, Any] 
     yield reply, mesh_path, final_history, mesh_path, session, _tail_logs(), socket.dag_events
 
 
+def _parameters(session: dict[str, Any] | None) -> dict[str, Any]:
+    """Bound to `api_name="parameters"`: the Parameters tab's table for this
+    tab's session (the same `parameters` event the WebSocket path sends)."""
+    return _parameters_event(session or {})
+
+
+async def _rebuild(overrides: Any, session: dict[str, Any] | None):
+    """Bound to `api_name="rebuild"`: the zero-token parametric rebuild —
+    dana.api.server's own `_run_rebuild` (on the mock engine here, the call
+    log replayed through the mock driver), no LLM call. Returns
+    `(result, mesh_file, session_state)`; `result` is the `rebuild_result`
+    event with the refreshed parameter table under "parameters"."""
+    if session is None:
+        return {"type": "rebuild_result", "ok": False, "error": "Nothing to rebuild yet."}, None, session
+    if not isinstance(overrides, dict) or not overrides:
+        result = {"type": "rebuild_result", "ok": False, "error": "rebuild needs at least one changed value"}
+        return result, None, session
+    socket = _GradioSocket(session)
+    await _run_rebuild(socket, session, overrides)
+    result = dict(socket.latest.get("rebuild_result") or {"type": "rebuild_result", "ok": False, "error": "no result"})
+    result["parameters"] = socket.latest.get("parameters") or _parameters_event(session)
+    mesh_url = result.pop("mesh_url", None)
+    mesh_path = _MESH_REGISTRY.get(Path(mesh_url).stem) if mesh_url else None
+    return result, str(mesh_path) if mesh_path else None, session
+
+
+def _export_macro(session: dict[str, Any] | None):
+    """Bound to `api_name="export_macro"`: writes the session's replayable
+    FreeCAD macro (no LLM call). Returns `(info, macro_file)`; gr.File turns
+    the path into a download URL."""
+    path = _export_session_macro(session) if session else None
+    if path is None:
+        return {"ok": False, "error": _NOTHING_TO_EXPORT}, None
+    return {"ok": True, "filename": Path(path).name, "exported_at": time.time()}, path
+
+
 def _list_artifact_files() -> list[str]:
     """Bound to the hidden "artifacts" api endpoint below — the Gradio-mode
     equivalent of ``dana.api.cad``'s ``GET /api/cad/artifacts``, which the
@@ -602,14 +655,52 @@ with gr.Blocks(css=_CUSTOM_CSS, title="Dānā") as demo:
     # goes earlier in the list, never appended past it.
     _outputs = [text_out, file_out, chatbot, mesh_preview, session_state, logs_out, graph_out]
 
-    msg.submit(_respond, inputs=[msg, chatbot, session_state], outputs=_outputs, api_name="chat").then(
-        lambda: "", None, msg
-    )
+    # One queue (concurrency_id) for everything that touches the session's
+    # CAD state, so a rebuild or macro export never runs mid-turn.
+    msg.submit(
+        _respond,
+        inputs=[msg, chatbot, session_state],
+        outputs=_outputs,
+        api_name="chat",
+        concurrency_id="dana_session",
+    ).then(lambda: "", None, msg)
     # Same handler, same effect — not a second public endpoint (api_name
     # left unset here defaults to hidden/private since this event's inputs
     # match one already registered above under "chat").
-    send_btn.click(_respond, inputs=[msg, chatbot, session_state], outputs=_outputs, api_name=False).then(
-        lambda: "", None, msg
+    send_btn.click(
+        _respond,
+        inputs=[msg, chatbot, session_state],
+        outputs=_outputs,
+        api_name=False,
+        concurrency_id="dana_session",
+    ).then(lambda: "", None, msg)
+
+    # Hidden API endpoints for the Vercel UI's Parameters tab and
+    # Deliverables bar (frontend/src/lib/gradioChatClient.ts) — called by
+    # api_name like "artifacts" below, never clicked. Each takes
+    # session_state, so it acts on the same browser tab's session as "chat".
+    # The input's label is the keyword the JS client passes it under.
+    parameters_trigger = gr.Button(visible=False)
+    parameters_out = gr.JSON(visible=False)
+    parameters_trigger.click(_parameters, [session_state], parameters_out, api_name="parameters")
+
+    rebuild_trigger = gr.Button(visible=False)
+    overrides_in = gr.JSON(label="overrides", visible=False)
+    rebuild_out = gr.JSON(visible=False)
+    rebuild_mesh = gr.File(visible=False)
+    rebuild_trigger.click(
+        _rebuild,
+        [overrides_in, session_state],
+        [rebuild_out, rebuild_mesh, session_state],
+        api_name="rebuild",
+        concurrency_id="dana_session",
+    )
+
+    export_trigger = gr.Button(visible=False)
+    export_out = gr.JSON(visible=False)
+    export_file = gr.File(visible=False)
+    export_trigger.click(
+        _export_macro, [session_state], [export_out, export_file], api_name="export_macro", concurrency_id="dana_session"
     )
 
     # Hidden trigger for the "artifacts" api endpoint — CadToolbar.tsx (via

@@ -575,6 +575,27 @@ def _macro_provenance(session: dict[str, Any], call_log: CadCallLog) -> dict[str
     }
 
 
+_NOTHING_TO_EXPORT = "Nothing to export yet — no FreeCAD tool calls have run this session."
+
+
+def _export_session_macro(session: dict[str, Any], filename: str = "dana_session_macro") -> str | None:
+    """Writes this session's replayable FreeCAD macro (with its provenance
+    header) and registers it as a session artifact; returns its path, or
+    None when no CAD call has run yet. Shared by the WebSocket
+    ``export_python_script`` message and app.py's Gradio endpoint."""
+    call_log = session.get("call_log")
+    if not call_log:
+        return None
+    path = write_macro_script(
+        call_log,
+        filename=filename,
+        session_id=session["session_id"],
+        provenance=_macro_provenance(session, call_log),
+    )
+    artifacts_registry.register_artifact(path, format="py", source="exported", session_id=session["session_id"])
+    return path
+
+
 def _artifact_download_url(session_id: str, filename: str) -> str:
     """dana.api.cad's session-scoped download route for ``filename``."""
     return f"/api/cad/artifacts/{quote(filename)}/download?session_id={quote(session_id)}"
@@ -3131,25 +3152,12 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
                 continue
 
             if msg_type == "export_python_script":
-                call_log = session.get("call_log")
-                if not call_log:
-                    await websocket.send_json(
-                        {
-                            "type": "assistant_message",
-                            "content": "Nothing to export yet — no FreeCAD tool calls have run this session.",
-                        }
-                    )
-                    continue
                 path = await asyncio.to_thread(
-                    write_macro_script,
-                    call_log,
-                    filename=str(data.get("filename") or "dana_session_macro"),
-                    session_id=session["session_id"],
-                    provenance=_macro_provenance(session, call_log),
+                    _export_session_macro, session, str(data.get("filename") or "dana_session_macro")
                 )
-                artifacts_registry.register_artifact(
-                    path, format="py", source="exported", session_id=session["session_id"]
-                )
+                if path is None:
+                    await websocket.send_json({"type": "assistant_message", "content": _NOTHING_TO_EXPORT})
+                    continue
                 filename = Path(path).name
                 await websocket.send_json(
                     {

@@ -1,6 +1,6 @@
 import { Client } from "@gradio/client";
 import { installConsoleCapture } from "./consoleCapture";
-import type { ServerEvent } from "./useChatSocket";
+import type { ParameterTable, ServerEvent } from "./useChatSocket";
 
 // Idempotent — see consoleCapture.ts's own `installed` guard. Called here
 // too (not just from TerminalDrawer.tsx) so this module's own console.log
@@ -180,6 +180,64 @@ export async function sendGradioChatMessage(spaceUrl: string, message: string): 
   const dagEvents = parseDagEvents(graph);
   console.log("[GradioClient] Parsed dagEvents:", dagEvents.length, dagEvents);
   return { text, meshUrl: parseMeshPayload(file, client), dagEvents };
+}
+
+// --- Parameters tab + Deliverables bar ------------------------------------
+// app.py's hidden "parameters", "rebuild" and "export_macro" endpoints act
+// on the same gr.State session as "chat" (same Client, same session_hash),
+// and wrap the very server functions the WebSocket messages call.
+
+export async function fetchGradioParameters(spaceUrl: string): Promise<ParameterTable> {
+  const client = await connectGradioClient(spaceUrl);
+  const result = await client.predict("/parameters", {});
+  const [table] = result.data as [Partial<ParameterTable> | null];
+  return { params: table?.params ?? [], unsupported: table?.unsupported ?? [], reason: table?.reason ?? null };
+}
+
+export type GradioRebuildReply = {
+  ok: boolean;
+  error: string | null;
+  durationMs?: number;
+  zeroTokenRebuilds?: number;
+  parameters: ParameterTable | null;
+  meshUrl: string | null;
+};
+
+export async function sendGradioRebuild(spaceUrl: string, overrides: Record<string, number>): Promise<GradioRebuildReply> {
+  const client = await connectGradioClient(spaceUrl);
+  const result = await client.predict("/rebuild", { overrides });
+  const [event, mesh] = result.data as [Record<string, unknown> | null, unknown];
+  const table = event?.parameters as Partial<ParameterTable> | undefined;
+  return {
+    ok: Boolean(event?.ok),
+    error: (event?.error as string | null | undefined) ?? (event ? null : "No reply from the rebuild endpoint."),
+    durationMs: event?.duration_ms as number | undefined,
+    zeroTokenRebuilds: event?.zero_token_rebuilds as number | undefined,
+    parameters: table
+      ? { params: table.params ?? [], unsupported: table.unsupported ?? [], reason: table.reason ?? null }
+      : null,
+    meshUrl: parseMeshPayload(mesh, client),
+  };
+}
+
+export type GradioMacroExport =
+  | { ok: true; filename: string; downloadUrl: string; exportedAt: number }
+  | { ok: false; error: string };
+
+export async function exportGradioMacro(spaceUrl: string): Promise<GradioMacroExport> {
+  const client = await connectGradioClient(spaceUrl);
+  const result = await client.predict("/export_macro", {});
+  const [info, file] = result.data as [Record<string, unknown> | null, GradioFileData | string | null];
+  const location = typeof file === "string" ? file : file?.url || file?.path;
+  if (!info?.ok || !location) {
+    return { ok: false, error: (info?.error as string | undefined) ?? "The macro export returned no file." };
+  }
+  return {
+    ok: true,
+    filename: String(info.filename ?? "dana_session_macro.py"),
+    downloadUrl: toAbsoluteUrl(client, location),
+    exportedAt: Number(info.exported_at ?? Date.now() / 1000),
+  };
 }
 
 export type GradioArtifact = {

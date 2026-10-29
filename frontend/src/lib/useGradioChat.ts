@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
-import { connectGradioClient, sendGradioChatMessage } from "./gradioChatClient";
+import {
+  connectGradioClient,
+  exportGradioMacro,
+  fetchGradioParameters,
+  sendGradioChatMessage,
+  sendGradioRebuild,
+} from "./gradioChatClient";
 import {
   type ApiKeys,
   type ChatMessage,
   type ConnectionState,
   type MemoryState,
+  type ParameterTable,
+  type RebuildStatus,
   type ServerEvent,
   type TopologyGraph,
   useChatSocket,
@@ -22,6 +30,7 @@ const EMPTY_MEMORY_STATE: MemoryState = {};
 // tool_dispatch_* execution-path events into `log`, which DAGMonitor no
 // longer reads) — permanently empty, same convention as EMPTY_MEMORY_STATE.
 const EMPTY_TOPOLOGY_GRAPH: TopologyGraph = { nodes: {}, edges: [] };
+const EMPTY_PARAMETERS: ParameterTable = { params: [], unsupported: [], reason: null };
 
 // The Gradio-backend counterpart to useChatSocket — same call signature and
 // return shape (see useChat.ts, which picks one or the other ONCE at module
@@ -45,6 +54,12 @@ const EMPTY_TOPOLOGY_GRAPH: TopologyGraph = { nodes: {}, edges: [] };
 // (it renders the deterministic Topological Lineage Graph instead — see
 // EMPTY_TOPOLOGY_GRAPH above), but `log` itself is still kept/returned here
 // for TerminalDrawer's sake, which still consumes the raw event stream.
+//
+// The Parameters tab, its zero-token rebuild and the Deliverables bar's
+// macro export are real too: app.py's "parameters"/"rebuild"/"export_macro"
+// endpoints run the same server code as the WebSocket messages (the rebuild
+// replays the call log through the mock CAD driver on the Space). Their
+// results are fed into the same state and `log` events the WS path produces.
 export function useGradioChat(
   _apiKeys: ApiKeys = {},
   _activePlugins: string[] = [],
@@ -56,7 +71,16 @@ export function useGradioChat(
   const [turnActive, setTurnActive] = useState(false);
   const [meshUrl, setMeshUrl] = useState<string | null>(null);
   const [log, setLog] = useState<ServerEvent[]>([]);
+  const [parameters, setParameters] = useState<ParameterTable>(EMPTY_PARAMETERS);
+  const [rebuildStatus, setRebuildStatus] = useState<RebuildStatus>({ state: "idle" });
+  const [zeroTokenRebuilds, setZeroTokenRebuilds] = useState(0);
   const spaceUrl = import.meta.env.VITE_HF_SPACE_URL as string;
+
+  const refreshParameters = useCallback(() => {
+    fetchGradioParameters(spaceUrl)
+      .then(setParameters)
+      .catch((err) => console.warn("[useGradioChat] parameters unavailable:", err));
+  }, [spaceUrl]);
 
   useEffect(() => {
     let cancelled = false;
@@ -96,11 +120,10 @@ export function useGradioChat(
           // path's `log` only ever grows across a session.
           console.log("[useGradioChat] reply.dagEvents received:", reply.dagEvents.length, reply.dagEvents);
           if (reply.dagEvents.length > 0) {
-            setLog((prev) => {
-              const next = [...prev, ...reply.dagEvents];
-              console.log("[useGradioChat] log state updated:", prev.length, "->", next.length);
-              return next;
-            });
+            // No logging inside the updater: React runs it during render.
+            setLog((prev) => [...prev, ...reply.dagEvents]);
+            // A turn that ran tools may have changed the model's dimensions.
+            refreshParameters();
           }
         })
         .catch(() => {
@@ -111,8 +134,66 @@ export function useGradioChat(
         })
         .finally(() => setTurnActive(false));
     },
+    [spaceUrl, refreshParameters]
+  );
+
+  // Same reply shapes as the WS path's rebuild_result / parameters events.
+  const rebuild = useCallback(
+    (overrides: Record<string, number>) => {
+      setRebuildStatus({ state: "running" });
+      sendGradioRebuild(spaceUrl, overrides)
+        .then((reply) => {
+          setRebuildStatus({ state: "done", ok: reply.ok, error: reply.error, durationMs: reply.durationMs });
+          if (reply.parameters) setParameters(reply.parameters);
+          if (reply.meshUrl) setMeshUrl(reply.meshUrl);
+          if (reply.zeroTokenRebuilds !== undefined) setZeroTokenRebuilds(reply.zeroTokenRebuilds);
+          setLog((prev) => [
+            ...prev,
+            {
+              type: "rebuild_result",
+              ok: reply.ok,
+              error: reply.error,
+              applied: {},
+              mesh_url: reply.meshUrl,
+              duration_ms: reply.durationMs,
+              zero_token_rebuilds: reply.zeroTokenRebuilds,
+            },
+          ]);
+        })
+        .catch(() =>
+          setRebuildStatus({ state: "done", ok: false, error: "Couldn't reach the Hugging Face backend." })
+        );
+    },
     [spaceUrl]
   );
+
+  // DeliverablesBar opens download_url once a python_script_exported event
+  // newer than its click arrives — the same event the WS path sends.
+  const exportPythonScript = useCallback(() => {
+    exportGradioMacro(spaceUrl)
+      .then((reply) => {
+        if (reply.ok) {
+          setLog((prev) => [
+            ...prev,
+            {
+              type: "python_script_exported",
+              path: reply.filename,
+              filename: reply.filename,
+              download_url: reply.downloadUrl,
+              exported_at: reply.exportedAt,
+            },
+          ]);
+        } else {
+          setMessages((prev) => [...prev, { role: "assistant", content: reply.error }]);
+        }
+      })
+      .catch(() =>
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: "Couldn't reach the Hugging Face backend — please try again." },
+        ])
+      );
+  }, [spaceUrl]);
 
   // No in-flight turn to interrupt server-side (predict() is a single
   // request/response round trip, not a resumable multi-step loop from the
@@ -126,10 +207,10 @@ export function useGradioChat(
     log,
     driverState: null,
     // No usage/cost telemetry from app.py's bare Gradio "chat" endpoint (no
-    // token/model accounting there at all) — stays permanently empty, same
+    // token/model accounting there at all) — stays empty apart from the zero-token rebuild count, same
     // convention as driverState/cameraTarget above; CostBar's own
     // `!activeModel && segments.length === 0` check renders nothing for it.
-    costState: { activeModel: null, activeProvider: null, sessionTotalUsd: 0, byModel: {}, zeroTokenRebuilds: 0 },
+    costState: { activeModel: null, activeProvider: null, sessionTotalUsd: 0, byModel: {}, zeroTokenRebuilds },
     // No Task Planner telemetry from app.py's bare Gradio "chat" endpoint
     // either — same permanently-empty convention as costState above.
     planState: { objective: "", tasks: [], currentTaskId: null },
@@ -162,11 +243,9 @@ export function useGradioChat(
     requestListen: noop,
     cancelListen: noop,
     setAutoApprove: noop,
-    // No WebSocket to ask for a macro export on this transport.
-    exportPythonScript: undefined,
-    // No parametric rebuild over this transport (no FreeCAD on the Space).
-    parameters: { params: [], unsupported: [], reason: null },
-    rebuildStatus: { state: "idle" as const },
-    rebuild: undefined,
+    exportPythonScript: exportPythonScript as (() => void) | undefined,
+    parameters,
+    rebuildStatus,
+    rebuild: rebuild as ((overrides: Record<string, number>) => void) | undefined,
   };
 }

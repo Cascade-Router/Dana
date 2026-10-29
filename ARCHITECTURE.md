@@ -16,7 +16,7 @@ This file is also what the agent's `read_system_architecture` tool returns
 |---|---|---|
 | API server | FastAPI + one WebSocket per chat (`/ws/chat`) | `scripts/launchers/launch_api_server.py` → `dana/api/server.py` |
 | Desktop UI | Tauri 2 + React; CAD viewport, Inspector dock, Deliverables bar | `frontend/` |
-| Hosted demo | Gradio app on a Hugging Face Space, mock CAD engine | `app.py`, `deploy/` |
+| Hosted demo | Gradio app on a Hugging Face Space, mock CAD engine; API endpoints `chat`, `artifacts`, `parameters`, `rebuild`, `export_macro` for the Vercel UI | `app.py`, `deploy/` |
 | ReAct core | Prompt + tool selection + one LLM step per call | `dana/core/react_dispatch.py` |
 | LLM access | Cloud (OpenRouter by default) or local Ollama, OpenAI tool schema | `dana/core/model_provider.py`, `openai_tool_bridge.py`, `llm_router.py` |
 | CAD | FreeCAD plugin + Universal CAD IR | `dana/plugins/freecad/` |
