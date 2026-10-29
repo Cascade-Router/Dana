@@ -1,10 +1,10 @@
 """FreeCAD native-Python CAD operator — subprocess ``FreeCADCmd``, no COM.
 
-Unlike AutoCAD (``dana.operators.autocad_engine``), FreeCAD has no
-persistent COM/RPC server to attach to on Windows — every operation here
-launches a fresh ``FreeCADCmd`` process against a short, disposable Python
-script that calls FreeCAD's own ``FreeCAD``/``Part`` modules directly. No
-mouse/pixel actuation, same determinism guardrail as the AutoCAD engine.
+FreeCAD has no persistent COM/RPC server to attach to, so every operation
+here launches a fresh ``FreeCADCmd`` process against a short, disposable
+Python script that calls FreeCAD's own ``FreeCAD``/``Part`` modules directly
+and saves the session document. No mouse/pixel actuation: the result is
+deterministic and never depends on what is on screen.
 
 All public functions return a JSON string (``{"ok": bool, ...}``) so they
 drop straight into the tool broker's string-observation contract — see
@@ -4102,14 +4102,27 @@ _clearances = []
 # not be reported as collision-free.
 _check_errors = []
 _epsilon = {epsilon!r}
+# Bounding-box broadphase: solids whose axis-aligned boxes don't meet can't
+# share volume, so the B-Rep boolean is skipped for them (their clearance
+# still comes from distToShape below). A box that can't be read never
+# skips: the pair goes through common() as before.
+_bbox_skipped = 0
 for _i in range(len(_members)):
     for _j in range(_i + 1, len(_members)):
         _a, _b = _members[_i], _members[_j]
         try:
-            _overlap_volume = _a.Shape.common(_b.Shape).Volume
-        except Exception as _exc:
-            _check_errors.append(dict(part_a=_a.Name, part_b=_b.Name, stage="intersection", error=str(_exc)))
-            continue
+            _boxes_meet = _a.Shape.BoundBox.intersect(_b.Shape.BoundBox)
+        except Exception:
+            _boxes_meet = True
+        if not _boxes_meet:
+            _bbox_skipped += 1
+            _overlap_volume = 0.0
+        else:
+            try:
+                _overlap_volume = _a.Shape.common(_b.Shape).Volume
+            except Exception as _exc:
+                _check_errors.append(dict(part_a=_a.Name, part_b=_b.Name, stage="intersection", error=str(_exc)))
+                continue
         if _overlap_volume > _epsilon:
             _collisions.append(dict(part_a=_a.Name, part_b=_b.Name, overlap_volume=_overlap_volume))
             _distance = 0.0
@@ -4124,6 +4137,7 @@ for _i in range(len(_members)):
 print("{marker}_COLLISIONS " + str(_collisions))
 print("{marker}_CLEARANCES " + json.dumps(_clearances))
 print("{marker}_CHECK_ERRORS " + json.dumps(_check_errors))
+print("{marker}_BBOX_SKIPPED " + str(_bbox_skipped))
 print("{marker}_CHECKED " + str(len(_members)))
 print("{marker} ok")
 """)
@@ -4243,7 +4257,9 @@ def validate_assembly_collisions(assembly_name: str) -> str:
     every member pair's real ``Shape.common(...).Volume`` via FreeCAD's
     native OCCT boolean intersection, not a bounding-box overlap (see
     ``analyze_bounding_box_collisions`` for that cheaper, pairwise,
-    box-only check) — so a wheel whose bounding box merely brushes the
+    box-only check; here bounding boxes are only a broadphase: a pair whose
+    boxes don't meet skips the boolean, since it can't share volume) — so a
+    wheel whose bounding box merely brushes the
     chassis's but whose actual curved geometry doesn't touch it reports NO
     collision, while a wheel whose axle genuinely clips through the
     chassis body (mounted to the wrong face, or positioned before the

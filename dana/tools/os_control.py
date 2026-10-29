@@ -4,10 +4,6 @@ Tools:
   capture_and_analyze_screen — mss screenshot → Cascade MoA vision summary
   execute_os_keystrokes      — hardware scan-code SendInput via ctypes (no pyautogui/pynput)
 
-Closed-loop upgrade (Stage 6.1):
-  ``dana.operators.ghost_typist.GhostTypistOperator`` / ``type_stealth_text``
-  wraps this SendInput backend with chunked Sense-Evaluate-Act visual guards.
-
 Safety:
   - DANA_OS_DRY_RUN=1 skips real input.
   - Keystroke bursts are rate-limited (chars/sec + cooldown).

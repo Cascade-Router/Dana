@@ -231,12 +231,12 @@ class RealFreeCADEngine(BaseCADEngine):
     ) -> dict[str, Any]:
         from dana.plugins.freecad import printability
 
+        try:
+            printer = printability.printer_profile(build_volume_mm)
+        except ValueError as exc:
+            return {"ok": False, "error": f"check_printability: {exc}"}
         return json.loads(
-            printability.check_printability(
-                object_name,
-                printer=printability.printer_profile(build_volume_mm),
-                max_overhang_deg=max_overhang_deg,
-            )
+            printability.check_printability(object_name, printer=printer, max_overhang_deg=max_overhang_deg)
         )
 
     def create_pipe(

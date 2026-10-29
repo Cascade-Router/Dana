@@ -34,6 +34,7 @@ import os
 import tempfile
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 from dana.plugins.freecad.engine import (
@@ -58,8 +59,11 @@ class PrinterProfile:
     z_mm: float
 
 
-# Prusa MK4 / i3-class bed — the spec's default.
+# Prusa MK4 / i3-class bed — the fallback when nothing is configured (see
+# configured_printer).
 DEFAULT_PRINTER = PrinterProfile("Prusa MK4", 250.0, 210.0, 220.0)
+# "x,y,z" in mm, e.g. "250,210,220"; wins over a slicer profile.
+PRINTER_BED_ENV = "DANA_PRINTER_BED_MM"
 DEFAULT_MAX_OVERHANG_DEG = 45.0
 # Overhang area below this (mm²) is tessellation noise (a sliver facet on a
 # curved edge), not something a slicer would generate support for.
@@ -414,14 +418,20 @@ print({marker!r})
 def check_printability(
     object_name: str | None = None,
     *,
-    printer: PrinterProfile = DEFAULT_PRINTER,
+    printer: PrinterProfile | None = None,
     max_overhang_deg: float = DEFAULT_MAX_OVERHANG_DEG,
 ) -> str:
     """Run the pre-print check on ``object_name`` (default: the session's last
-    PartDesign Body, else its last visible top-level solid). Read-only — the
-    session document isn't saved. Returns the engine's usual JSON string."""
+    PartDesign Body, else its last visible top-level solid) against
+    ``printer`` (default: ``configured_printer()``). Read-only — the session
+    document isn't saved. Returns the engine's usual JSON string."""
     if not 0.0 < float(max_overhang_deg) < 90.0:
         return _error("check_printability: max_overhang_deg must be between 0 and 90")
+    if printer is None:
+        try:
+            printer = configured_printer()
+        except ValueError as exc:
+            return _error(f"check_printability: {exc}")
     session_path = _session_document_path()
     if not session_path.is_file():
         return _error("check_printability: no session document yet — build a part first")
@@ -470,10 +480,59 @@ def check_printability(
     return _ok(**report, stl_path=stl_path)
 
 
+def profile_from_slicer_ini(path: Path) -> PrinterProfile | None:
+    """The build volume a PrusaSlicer config export describes: the extent of
+    its ``bed_shape`` polygon (``"0x0,250x0,250x210,0x210"``) and its
+    ``max_print_height``. ``None`` if the file lacks either; ``ValueError``
+    if they're malformed."""
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        key, sep, value = line.partition("=")
+        if sep and not line.lstrip().startswith("#"):
+            values[key.strip()] = value.strip()
+    if "bed_shape" not in values or "max_print_height" not in values:
+        return None
+    try:
+        points = [tuple(float(v) for v in point.split("x")) for point in values["bed_shape"].split(",")]
+        xs, ys = [pt[0] for pt in points], [pt[1] for pt in points]
+        height = float(values["max_print_height"])
+    except (ValueError, IndexError) as exc:
+        raise ValueError(f"{path.name}: unreadable bed_shape/max_print_height ({exc})") from exc
+    if any(len(pt) != 2 for pt in points) or min(max(xs) - min(xs), max(ys) - min(ys), height) <= 0:
+        raise ValueError(f"{path.name}: bed_shape/max_print_height don't describe a build volume")
+    return PrinterProfile(f"{path.stem} (PrusaSlicer profile)", max(xs) - min(xs), max(ys) - min(ys), height)
+
+
+def configured_printer() -> PrinterProfile:
+    """The printer to check against when the caller names no build volume:
+    ``DANA_PRINTER_BED_MM`` ("x,y,z" mm), else the bed in the slicer profile
+    slice_stl_to_gcode loads by default (``slicer_profiles/mk4_default.ini``,
+    if the user exported one), else ``DEFAULT_PRINTER``. A malformed setting
+    raises ``ValueError`` rather than quietly checking the wrong bed."""
+    raw = (os.environ.get(PRINTER_BED_ENV) or "").strip()
+    if raw:
+        try:
+            x, y, z = (float(v) for v in raw.replace("x", ",").split(","))
+        except ValueError:
+            raise ValueError(f"{PRINTER_BED_ENV}={raw!r}: expected three numbers in mm, e.g. 250,210,220") from None
+        if min(x, y, z) <= 0:
+            raise ValueError(f"{PRINTER_BED_ENV}={raw!r}: values must be positive")
+        return PrinterProfile(f"configured printer ({PRINTER_BED_ENV})", x, y, z)
+
+    from dana.plugins.hardware import slicer
+
+    ini = slicer.profile_dir() / f"{slicer.DEFAULT_PROFILE}.ini"
+    if ini.is_file():
+        profile = profile_from_slicer_ini(ini)
+        if profile is not None:
+            return profile
+    return DEFAULT_PRINTER
+
+
 def printer_profile(build_volume_mm: Sequence[float] | None) -> PrinterProfile:
-    """``DEFAULT_PRINTER``, or a custom ``[x, y, z]`` build volume."""
+    """``configured_printer()``, or a custom ``[x, y, z]`` build volume."""
     if not build_volume_mm:
-        return DEFAULT_PRINTER
+        return configured_printer()
     x, y, z = (float(v) for v in build_volume_mm)
     if min(x, y, z) <= 0:
         raise ValueError("build_volume_mm values must be positive")
@@ -487,8 +546,10 @@ __all__ = (
     "SolidFacet",
     "build_report",
     "check_printability",
+    "configured_printer",
     "evaluate_orientations",
     "find_overhangs",
     "fit_build_volume",
     "printer_profile",
+    "profile_from_slicer_ini",
 )

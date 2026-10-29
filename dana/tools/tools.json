@@ -692,7 +692,7 @@
           "name": "build_volume_mm",
           "type": "array",
           "required": false,
-          "description_en": "Printer build volume [x, y, z] in mm. Default [250, 210, 220] (Prusa MK4)."
+          "description_en": "Printer build volume [x, y, z] in mm. Default: the configured printer (DANA_PRINTER_BED_MM or the slicer profile), else [250, 210, 220] (Prusa MK4)."
         },
         {
           "name": "max_overhang_deg",

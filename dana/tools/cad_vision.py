@@ -1,11 +1,12 @@
-"""CAD Blueprint capture + Visual QA for the AutoCAD Co-Pilot.
+"""CAD viewport capture + visual QA.
 
-AutoCAD's COM API can tell us what it *thinks* it drew, but not what a
-human actually sees on screen (wrong layer visibility, a failed
-``SendCommand``, a stale viewport). These tools close that loop with a VLM:
-screenshot the AutoCAD viewport, ask a vision model to read the geometry
-back off pixels, and diff that against the spec that drove
-``dana.operators.autocad_engine``.
+A CAD tool's result says what the engine *thinks* it built, not what a human
+sees on screen. These tools close that loop with a VLM: screenshot the CAD
+window (Dana's own FreeCAD GUI first — ``_find_cad_window``), ask a vision
+model to read the geometry back off pixels, and compare that with the
+operation or spec that drove it. ``verify_visual_operation`` is the cheap
+per-geometry-call check ``dana.api.server`` runs after CAD mutations;
+``verify_cad_rendering`` is the on-demand, detailed one.
 """
 
 from __future__ import annotations
