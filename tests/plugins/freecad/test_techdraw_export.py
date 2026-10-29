@@ -86,7 +86,7 @@ def test_empty_views_list_falls_back_to_defaults(existing_path: str):
 # --------------------------------------------------------------------------
 
 
-def test_dispatch_tool_call_generate_2d_blueprint_end_to_end(existing_path: str):
+def test_dispatch_tool_call_generate_2d_blueprint_end_to_end(existing_path: str, monkeypatch: pytest.MonkeyPatch):
     """generate_2d_blueprint bypasses the engine/control_plane driver
     abstraction by design (same as insert_standard_part) — engine=None/
     control_plane=None here proves dispatch never needs them for this
@@ -95,7 +95,12 @@ def test_dispatch_tool_call_generate_2d_blueprint_end_to_end(existing_path: str)
     from dana.core import react_dispatch as rd
     from dana.tools.schema import ToolCall
 
-    rd._object_registry()["BlueprintTestBox"] = existing_path
+    from dana.session_context import get_session_id
+
+    # setitem, not a plain assignment: the default session's registry would
+    # otherwise keep this object and leak a "Current Document Features"
+    # overlay into later tests' prompts.
+    monkeypatch.setitem(rd._OBJECT_PATH_REGISTRY, get_session_id(), {"BlueprintTestBox": existing_path})
 
     result = rd.dispatch_tool_call(
         ToolCall(
