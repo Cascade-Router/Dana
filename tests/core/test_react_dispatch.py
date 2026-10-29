@@ -24,7 +24,7 @@ from unittest.mock import patch
 import pytest
 
 from dana.core import react_dispatch as rd
-from dana.session_context import set_session_id
+from dana.session_context import get_session_id, set_session_id
 from dana.tools.schema import ToolCall
 
 
@@ -994,7 +994,19 @@ def test_describe_tool_call_edge_operation_face_targeted() -> None:
     assert "Chamfer" in description and "selected face" in description
 
 
-def test_dispatch_edge_operation_rejects_unknown_operation() -> None:
+def _register_box(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A known "Box" in this session, so a validation test reaches the check
+    it means to exercise instead of the unknown-object guard (these used to
+    pass only when an earlier test had left a Box behind)."""
+    sid = get_session_id()
+    monkeypatch.setitem(rd._OBJECT_PATH_REGISTRY, sid, {"Box": "Session_Active.FCStd"})
+    monkeypatch.setitem(
+        rd._TOPOLOGY_DAG_REGISTRY, sid, {"nodes": {"Box": {"id": "Box", "label": "Box", "type": "geometry"}}, "edges": []}
+    )
+
+
+def test_dispatch_edge_operation_rejects_unknown_operation(monkeypatch: pytest.MonkeyPatch) -> None:
+    _register_box(monkeypatch)
     call = ToolCall(
         tool_id="perform_freecad_edge_operation",
         arguments={"operation": "bogus", "target_object": "Box", "value": 5},
@@ -1178,7 +1190,8 @@ def test_dispatch_modify_parameter_rejects_unknown_object_name() -> None:
     assert "NeverCreated" in result.message
 
 
-def test_dispatch_modify_parameter_requires_numeric_new_value() -> None:
+def test_dispatch_modify_parameter_requires_numeric_new_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    _register_box(monkeypatch)
     call = ToolCall(
         tool_id="modify_freecad_parameter",
         arguments={"target_object": "Box", "parameter_name": "Height", "new_value": "not-a-number"},

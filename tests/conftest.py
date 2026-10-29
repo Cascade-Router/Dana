@@ -20,11 +20,35 @@ for _sub in ("scripts", "scripts/diagnostics"):
     if Path(_p).is_dir() and _p not in sys.path:
         sys.path.insert(0, _p)
 
-import dana.api.sessions as _sessions_module  # noqa: E402 — needs the sys.path bootstrap above first
-import dana.audio.multi_voice_tts as _multi_voice_tts_module  # noqa: E402
+import dana.audio.multi_voice_tts as _multi_voice_tts_module  # noqa: E402 — needs the sys.path bootstrap above first
 import dana.core.react_dispatch as _react_dispatch_module  # noqa: E402
 import dana.plugins.os.file_system as _file_system_module  # noqa: E402
 import dana.plugins.planning.task_board as _task_board_module  # noqa: E402
+from workspace_isolation import (  # noqa: E402 — tests/ is on sys.path (rootdir conftest)
+    snapshot_real_workspace,
+    workspace_changes,
+    workspace_redirects,
+)
+
+# Every module that copies a workspace directory into a module-level Path,
+# imported up front so _isolate_workspace_dirs redirects it before a test
+# runs rather than missing one a test imports lazily halfway through.
+for _module_name in (
+    "dana.api.artifacts_registry",
+    "dana.api.cad",
+    "dana.api.sessions",
+    "dana.api.workspace",
+    "dana.platform.mock",
+    "dana.plugins.freecad.engine",
+    "dana.plugins.freecad.printability",
+    "dana.plugins.freecad.py_export",
+    "dana.plugins.manufacturing.bom_exporter",
+    "dana.plugins.memory.core_memory",
+    "dana.tools.image_to_3d",
+    "dana.tools.sim_wrapper_generator",
+    "dana.tools.urdf_builder",
+):
+    __import__(_module_name)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -56,36 +80,50 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
         pytest.skip("no audio output device available")
 
 
-@pytest.fixture(autouse=True)
-def _isolate_chat_sessions_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Global safety net: redirects Local Chat Session Persistence's
-    on-disk store (dana.api.sessions.SESSIONS_DIR) to a throwaway per-test
-    directory for EVERY test in this suite, not just the ones that
-    explicitly test it. dana.api.server's _finish_turn auto-saves after
-    every completed ReAct turn (dana.api.server._persist_turn), so any
-    test anywhere that drives a real /ws/chat turn would otherwise write a
-    real session file into the actual AGENT_WORKSPACE_DIR/data/sessions/
-    on disk. A test file that specifically exercises this feature (see
-    tests/api/test_sessions_api.py) may still redirect it again to its own
-    tmp_path via its own fixture — same effective value, harmless.
-    """
-    monkeypatch.setattr(_sessions_module, "SESSIONS_DIR", tmp_path / "sessions")
+_REAL_WORKSPACE_BEFORE: dict[str, tuple[int, int]] = {}
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    _REAL_WORKSPACE_BEFORE.update(snapshot_real_workspace())
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Tripwire behind _isolate_workspace_dirs: the run fails if any test
+    added, removed or modified a file in the real freecad_output/, exports/
+    or agent_workspace/ (all gitignored, so git status would never show it).
+    Catches what the redirect can't, e.g. a plugin hot-reload re-executing a
+    module mid-test and restoring its real paths."""
+    changes = workspace_changes(_REAL_WORKSPACE_BEFORE, snapshot_real_workspace())
+    if not changes:
+        return
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    lines = [f"Tests modified the real workspace ({len(changes)} change(s)):", *changes[:40]]
+    if reporter is not None:
+        reporter.write_sep("!", "real workspace modified", red=True)
+        for line in lines:
+            reporter.write_line(line)
+    else:
+        print("\n".join(lines), file=sys.stderr)
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 @pytest.fixture(autouse=True)
-def _isolate_os_tools_sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Global safety net, same rationale as ``_isolate_chat_sessions_dir``
-    above: redirects the "os_tools" capability domain's real sandbox root
-    (dana.plugins.os.file_system._SANDBOX_ROOT) to a throwaway per-test
-    directory for EVERY test, not just tests/plugins/os/test_file_system.py
-    (which already does this itself, redundantly-but-harmlessly, via its
-    own fixture). Any test anywhere that drives a real /ws/chat turn
-    through a HITL-approved write_file call would otherwise write a real
-    file into the actual AGENT_WORKSPACE_DIR on disk.
+def _isolate_workspace_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Global safety net: every loaded ``dana`` module global that points
+    into the real ``freecad_output/``, ``exports/`` or ``agent_workspace/``
+    (engine._OUTPUT_DIR, py_export._EXPORT_DIR, sessions.SESSIONS_DIR,
+    file_system._SANDBOX_ROOT, ...) is redirected to the same layout under
+    this test's ``tmp_path/workspace`` — found by sweeping the modules (see
+    tests/workspace_isolation.py), so a new module-level path is covered
+    without editing this file. A test that sets its own temp directory
+    still wins: its value is no longer under a real root, so it's left alone.
+    pytest_sessionfinish above fails the run if anything still got through.
     """
-    root = tmp_path / "agent_workspace"
-    root.mkdir(exist_ok=True)
-    monkeypatch.setattr(_file_system_module, "_SANDBOX_ROOT", root)
+    root = tmp_path / "workspace"
+    for module, attr, replacement in list(workspace_redirects(root)):
+        monkeypatch.setattr(module, attr, replacement)
+    # file_system's sandbox root must exist before its first resolve.
+    Path(_file_system_module._SANDBOX_ROOT).mkdir(parents=True, exist_ok=True)
 
 
 @pytest.fixture(autouse=True)
@@ -244,82 +282,44 @@ def _reset_user_skills_registry():
     rd._llm_tools_schema_cached.cache_clear()
 
 
-@pytest.fixture(autouse=True)
-def _reset_task_board_plan():
-    """Global safety net, same rationale as ``_reset_user_skills_registry``
-    above: Task Planner / Executive Function's ``_PLANS_BY_SESSION``
-    (dana.plugins.planning.task_board) is process-wide, mutable, module-
-    level state — a plan created by ANY test (e.g. one driving a real
-    /ws/chat turn that calls ``create_plan``) would otherwise leak into
-    every later test in the WHOLE suite via this shared dict, regardless
-    of which session_id that test happened to use (task_board is now
-    session-scoped, not a single global plan, but this fixture's own job —
-    leave every test a clean slate — doesn't change: it just needs to
-    clear every session's entry, not one fixed set of fields).
-    Teardown-only: the dict is already empty at process start and after
-    any earlier test's own cleanup here, so there's nothing to reset going
-    in.
-    """
-    yield
+def _clear_session_state() -> None:
+    rd = _react_dispatch_module
+    for registry in rd._PERSISTED_SESSION_REGISTRIES.values():
+        registry.clear()
+    rd._OUTPUT_TRUNCATED_BY_SESSION.clear()
     _task_board_module._PLANS_BY_SESSION.clear()
+    mock = sys.modules.get("dana.platform.mock")
+    if mock is not None:
+        for registry in mock._PERSISTED_MOCK_REGISTRIES.values():
+            registry.clear()
+    artifacts = sys.modules.get("dana.api.artifacts_registry")
+    if artifacts is not None:
+        artifacts._artifacts.clear()
+    server = sys.modules.get("dana.api.server")
+    if server is not None:
+        # Per-connection session dicts (CadCallLog, turn queue, HITL state)
+        # and the mesh/audio download tokens.
+        server._active_sessions.clear()
+        server._MESH_REGISTRY.clear()
+        server._AUDIO_REGISTRY.clear()
 
 
 @pytest.fixture(autouse=True)
-def _reset_plan_gate_state():
-    """Global safety net, same rationale as ``_reset_task_board_plan``
-    above — and for a near-identical reason: the Plan-and-Execute
-    Gatekeeper's ``_PLAN_STATE_REGISTRY`` (dana.core.react_dispatch) is
-    process-wide, mutable, module-level state, session-scoped but keyed by
-    whatever session_id happens to be ambient at the time. A plan opened by
-    ANY test (a fixture that pre-opens the gate for its own module's
-    dispatch tests, or a real /ws/chat turn that calls ``create_plan``)
-    would otherwise leak into every later test in the WHOLE suite that
-    reuses the same (often just the ambient default) session_id —
-    including one that specifically asserts ``build_system_prompt()``
-    renders NO active-plan anchor, or one that expects a geometry tool to
-    still be gated. Teardown-only: the registry is empty at process start
-    and after any earlier test's own cleanup here, so there's nothing to
-    reset going in.
+def _reset_session_state():
+    """Global safety net: every per-session, process-wide registry starts
+    and ends each test empty — the plan/FSM gates, object registry,
+    topology DAG, assembly state, measurement/collision gates
+    (react_dispatch._PERSISTED_SESSION_REGISTRIES, the same list session
+    persistence saves), task boards, the mock driver's geometry, the
+    artifact registry, and the server's live sessions (each holding its
+    CadCallLog and turn state). They're keyed by session_id, and most tests
+    share the ambient default one, so anything left behind showed up in an
+    unrelated later test (2f05ca2). Cleared before as well as after, so a
+    test that fails mid-way can't seed the next one either.
     """
+    _clear_session_state()
     yield
-    _react_dispatch_module._PLAN_STATE_REGISTRY.clear()
-
-
-@pytest.fixture(autouse=True)
-def _reset_measurement_gate_state():
-    """Global safety net, same rationale as ``_reset_plan_gate_state``
-    above: the Position-Before-Measurement Gate's
-    ``_BOUNDING_BOX_MEASURED_BY_SESSION`` (dana.core.react_dispatch) is
-    process-wide, mutable, module-level state, session-scoped but keyed by
-    whatever session_id happens to be ambient at the time — a measurement
-    recorded by ANY test would otherwise leak into every later test in the
-    WHOLE suite that reuses the same session_id. Teardown-only: the dict is
-    empty at process start and after any earlier test's own cleanup here.
-    """
-    yield
-    _react_dispatch_module._BOUNDING_BOX_MEASURED_BY_SESSION.clear()
-
-
-@pytest.fixture(autouse=True)
-def _reset_assembly_state():
-    """Same safety net for ``_ASSEMBLY_STATE_REGISTRY`` (per-session assembly
-    membership/mate/joint state), so one test's assemblies never show up in
-    a later test's system prompt."""
-    yield
-    _react_dispatch_module._ASSEMBLY_STATE_REGISTRY.clear()
-
-
-@pytest.fixture(autouse=True)
-def _reset_truncation_nudge_state():
-    """Global safety net, same rationale as ``_reset_measurement_gate_state``
-    above: the Truncation Recovery Nudge's ``_OUTPUT_TRUNCATED_BY_SESSION``
-    (dana.core.react_dispatch) is process-wide, mutable, module-level state,
-    session-scoped but keyed by whatever session_id happens to be ambient at
-    the time. Teardown-only: the dict is empty at process start and after
-    any earlier test's own cleanup here.
-    """
-    yield
-    _react_dispatch_module._OUTPUT_TRUNCATED_BY_SESSION.clear()
+    _clear_session_state()
 
 
 def _cancel_pending_after_events(root: tkinter.Misc) -> None:
