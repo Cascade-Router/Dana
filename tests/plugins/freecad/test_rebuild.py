@@ -280,6 +280,7 @@ def test_rebuild_over_websocket_on_the_mock_engine(client: TestClient, mock_sess
         refreshed = ws.receive_json()
     assert result["type"] == "rebuild_result" and result["ok"] is True, result
     assert result["mesh_url"] and result["applied"] == {"0.length": 75.0}
+    assert result["zero_token_rebuilds"] == 1
     assert refreshed["type"] == "parameters"
     assert next(p for p in refreshed["params"] if p["id"] == "0.length")["value"] == 75.0
 

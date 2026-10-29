@@ -184,6 +184,7 @@ export type ServerEvent =
       applied?: Record<string, number>;
       mesh_url?: string | null;
       duration_ms?: number;
+      zero_token_rebuilds?: number;
     }
   | {
       type: "usage_update";
@@ -193,6 +194,10 @@ export type ServerEvent =
       cost_usd: number | null;
       session_total_usd: number;
       by_model: Record<string, number>;
+      // Session totals, persisted server-side across restarts.
+      session_tokens?: { prompt: number; completion: number };
+      llm_calls?: number;
+      zero_token_rebuilds?: number;
     };
 
 // One session's running LLM cost — mirrors dana/api/server.py's
@@ -210,6 +215,8 @@ export type CostState = {
   activeProvider: string | null;
   sessionTotalUsd: number;
   byModel: Record<string, number>;
+  /** Parametric rebuilds this session — model changes that cost 0 tokens. */
+  zeroTokenRebuilds: number;
 };
 
 const INITIAL_COST_STATE: CostState = {
@@ -217,6 +224,7 @@ const INITIAL_COST_STATE: CostState = {
   activeProvider: null,
   sessionTotalUsd: 0,
   byModel: {},
+  zeroTokenRebuilds: 0,
 };
 
 // Camel-cased convenience shape PlanChecklist actually renders — see
@@ -636,17 +644,22 @@ export function useChatSocket(
         case "rebuild_result":
           if (data.mesh_url) setMeshUrl(resolveMeshUrl(data.mesh_url));
           setRebuildStatus({ state: "done", ok: data.ok, error: data.error, durationMs: data.duration_ms });
+          if (data.zero_token_rebuilds !== undefined) {
+            const rebuilds = data.zero_token_rebuilds;
+            setCostState((prev) => ({ ...prev, zeroTokenRebuilds: rebuilds }));
+          }
           break;
         case "camera_animate":
           setCameraTarget({ position: data.position, target: data.target });
           break;
         case "usage_update":
-          setCostState({
+          setCostState((prev) => ({
             activeModel: data.model,
             activeProvider: data.provider,
             sessionTotalUsd: data.session_total_usd,
             byModel: data.by_model,
-          });
+            zeroTokenRebuilds: data.zero_token_rebuilds ?? prev.zeroTokenRebuilds,
+          }));
           break;
         case "plan_update":
           setPlanState(toPlanState(data.plan));

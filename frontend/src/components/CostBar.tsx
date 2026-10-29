@@ -44,7 +44,7 @@ type Props = {
 // same pattern every other App.tsx-level display (e.g. the model-provider
 // badge) already follows.
 export function CostBar({ cost }: Props) {
-  const { activeModel, activeProvider, sessionTotalUsd, byModel } = cost;
+  const { activeModel, activeProvider, sessionTotalUsd, byModel, zeroTokenRebuilds } = cost;
 
   const segments = useMemo(() => {
     const entries = Object.entries(byModel).filter(([, value]) => value > 0);
@@ -58,7 +58,7 @@ export function CostBar({ cost }: Props) {
   // Nothing to show yet — no turn carrying priced usage has completed this
   // session (a local Ollama-only session, e.g., never populates byModel
   // since dana.core.pricing has no entry for it — see estimate_cost_usd).
-  if (!activeModel && segments.length === 0) return null;
+  if (!activeModel && segments.length === 0 && zeroTokenRebuilds === 0) return null;
 
   const localMode = isLocalInference(activeProvider);
   const isFallback = (activeProvider ?? "").toLowerCase().includes("fallback");
@@ -90,6 +90,11 @@ export function CostBar({ cost }: Props) {
         )}
       </div>
       <span className="cost-bar__total">{formatUsd(sessionTotalUsd)}</span>
+      {zeroTokenRebuilds > 0 && (
+        <span className="cost-bar__rebuilds" title="Parametric rebuilds: model changes made without any LLM call">
+          +{zeroTokenRebuilds} free rebuild{zeroTokenRebuilds === 1 ? "" : "s"}
+        </span>
+      )}
     </div>
   );
 }

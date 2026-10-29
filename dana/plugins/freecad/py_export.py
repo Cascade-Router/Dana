@@ -372,17 +372,48 @@ def build_replay_steps(
     return steps, skipped
 
 
-def render_macro_script(log: CadCallLog, *, document_name: str = "DanaModel") -> str:
-    """Render ``log`` into a standalone FreeCAD macro's full source text."""
+def _one_line(value: Any) -> str:
+    """Header text is emitted inside ``#`` comments: no line breaks."""
+    return " ".join(str(value).split())
+
+
+def render_macro_script(
+    log: CadCallLog, *, document_name: str = "DanaModel", provenance: dict[str, Any] | None = None
+) -> str:
+    """Render ``log`` into a standalone FreeCAD macro's full source text.
+
+    ``provenance`` (session title, export time, the editable parameter
+    table, LLM calls vs. zero-token rebuilds) becomes a comment header."""
     steps, skipped = build_replay_steps(log.records)
     steps, partdesign_preamble = ir.partdesign_render_steps(steps)
     template = _ENV.get_template(_TEMPLATE_NAME)
+    header = None
+    if provenance:
+        header = {
+            "title": _one_line(provenance.get("title") or "Untitled session"),
+            "session_id": _one_line(provenance.get("session_id") or ""),
+            "exported_at": _one_line(provenance.get("exported_at") or ""),
+            "parameters": [
+                {
+                    "id": _one_line(p.get("id")),
+                    "label": _one_line(p.get("label")),
+                    "value": p.get("value"),
+                    "unit": _one_line(p.get("unit") or ""),
+                }
+                for p in provenance.get("parameters") or []
+            ],
+            "llm_calls": int(provenance.get("llm_calls") or 0),
+            "zero_token_rebuilds": int(provenance.get("zero_token_rebuilds") or 0),
+            "total_usd": float(provenance.get("total_usd") or 0.0),
+            "tokens": int(provenance.get("tokens") or 0),
+        }
     return template.render(
         document_name=document_name,
         steps=steps,
         skipped=skipped,
         partdesign_kinds=ir.PARTDESIGN_KINDS,
         partdesign_preamble=partdesign_preamble,
+        provenance=header,
     )
 
 
@@ -392,6 +423,7 @@ def write_macro_script(
     *,
     document_name: str = "DanaModel",
     session_id: str | None = None,
+    provenance: dict[str, Any] | None = None,
 ) -> str:
     """Render ``log`` and write it to
     ``DANA_WORKSPACE/exports/sessions/<session_id>/<filename>.py`` — the
@@ -399,7 +431,9 @@ def write_macro_script(
     finds it. ``session_id`` defaults to the ambient one."""
     safe_name = _SAFE_FILENAME_RE.sub("_", filename or "dana_session_macro").strip("_") or "dana_session_macro"
     out_path = session_scoped_dir(_EXPORT_DIR, session_id) / f"{safe_name}.py"
-    out_path.write_text(render_macro_script(log, document_name=document_name), encoding="utf-8")
+    out_path.write_text(
+        render_macro_script(log, document_name=document_name, provenance=provenance), encoding="utf-8"
+    )
     return str(out_path)
 
 

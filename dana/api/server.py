@@ -554,6 +554,27 @@ _DELIVERABLE_PATH_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _macro_provenance(session: dict[str, Any], call_log: CadCallLog) -> dict[str, Any]:
+    """The header an exported macro carries: where it came from, its
+    editable parameters, and how it was built (LLM calls vs. zero-token
+    rebuilds)."""
+    from datetime import datetime, timezone
+
+    from dana.plugins.freecad.rebuild import parameter_table
+
+    tracking = _cost_tracking(session)
+    return {
+        "title": session.get("session_title") or "Untitled session",
+        "session_id": session["session_id"],
+        "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "parameters": parameter_table(call_log.records, _REBUILD_GEOMETRY_TOOLS)["params"],
+        "llm_calls": tracking["llm_calls"],
+        "zero_token_rebuilds": tracking["zero_token_rebuilds"],
+        "total_usd": tracking["total_usd"],
+        "tokens": tracking["prompt_tokens"] + tracking["completion_tokens"],
+    }
+
+
 def _artifact_download_url(session_id: str, filename: str) -> str:
     """dana.api.cad's session-scoped download route for ``filename``."""
     return f"/api/cad/artifacts/{quote(filename)}/download?session_id={quote(session_id)}"
@@ -837,6 +858,7 @@ async def _run_rebuild(websocket: WebSocket, session: dict[str, Any], overrides:
             artifacts_registry.register_artifact(
                 step["path"], format="step", source="generated", session_id=session["session_id"]
             )
+        _cost_tracking(session)["zero_token_rebuilds"] += 1
         if session.get("session_title") is not None:
             await asyncio.to_thread(_save_session_record, session)  # the call log changed
     event = {
@@ -846,6 +868,7 @@ async def _run_rebuild(websocket: WebSocket, session: dict[str, Any], overrides:
         "applied": result.get("applied", {}),
         "mesh_url": mesh_url,
         "duration_ms": int((time.perf_counter() - started) * 1000),
+        "zero_token_rebuilds": _cost_tracking(session)["zero_token_rebuilds"],
     }
     await websocket.send_json(event)
     _log_terminal_event(session, event)
@@ -967,10 +990,15 @@ async def _broadcast_usage_update(
     """
     model = usage_info.get("model") or "unknown"
     cost_usd = usage_info.get("cost_usd")
-    tracking = session.setdefault("cost_tracking", {"total_usd": 0.0, "by_model": {}})
+    tracking = _cost_tracking(session)
     if cost_usd is not None:
         tracking["total_usd"] += cost_usd
         tracking["by_model"][model] = tracking["by_model"].get(model, 0.0) + cost_usd
+    tracking["llm_calls"] += 1
+    tracking["prompt_tokens"] += int(usage_info.get("prompt_tokens") or 0)
+    tracking["completion_tokens"] += int(usage_info.get("completion_tokens") or 0)
+    tracking["last_model"] = model
+    tracking["last_provider"] = usage_info.get("provider")
     await websocket.send_json(
         {
             "type": "usage_update",
@@ -988,10 +1016,57 @@ async def _broadcast_usage_update(
                 "completion": usage_info.get("completion_tokens", 0),
             },
             "cost_usd": cost_usd,
-            "session_total_usd": tracking["total_usd"],
-            "by_model": dict(tracking["by_model"]),
+            **_usage_totals(tracking),
         }
     )
+
+
+def _cost_tracking(session: dict[str, Any]) -> dict[str, Any]:
+    """This session's running LLM usage. Persisted with the session
+    (dana.api.session_state), so the totals survive a restart; missing keys
+    (a state saved by an older build) start at zero."""
+    tracking = session.setdefault("cost_tracking", {})
+    for key, default in (
+        ("total_usd", 0.0),
+        ("by_model", {}),
+        ("llm_calls", 0),
+        ("prompt_tokens", 0),
+        ("completion_tokens", 0),
+        ("zero_token_rebuilds", 0),
+        ("last_model", None),
+        ("last_provider", None),
+    ):
+        tracking.setdefault(key, default)
+    return tracking
+
+
+def _usage_totals(tracking: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "session_total_usd": tracking["total_usd"],
+        "by_model": dict(tracking["by_model"]),
+        "session_tokens": {"prompt": tracking["prompt_tokens"], "completion": tracking["completion_tokens"]},
+        "llm_calls": tracking["llm_calls"],
+        "zero_token_rebuilds": tracking["zero_token_rebuilds"],
+    }
+
+
+def _restored_usage_event(session: dict[str, Any]) -> dict[str, Any] | None:
+    """A usage_update re-seeding the CostBar for a resumed session (no new
+    LLM call happened, so tokens/cost of "this call" are zero)."""
+    tracking = session.get("cost_tracking")
+    if not tracking:
+        return None
+    tracking = _cost_tracking(session)
+    if not (tracking["llm_calls"] or tracking["zero_token_rebuilds"] or tracking["total_usd"]):
+        return None
+    return {
+        "type": "usage_update",
+        "model": tracking["last_model"] or "unknown",
+        "provider": tracking["last_provider"],
+        "tokens": {"prompt": 0, "completion": 0},
+        "cost_usd": None,
+        **_usage_totals(tracking),
+    }
 
 
 async def _broadcast_plan_update(websocket: WebSocket, plan: dict[str, Any] | None) -> None:
@@ -2940,6 +3015,9 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
     )
     if restore_note:
         await websocket.send_json({"type": "status_note", "content": restore_note})
+    restored_usage = _restored_usage_event(session)
+    if restored_usage is not None:
+        await websocket.send_json(restored_usage)
     _active_sessions[websocket] = session
     try:
         while True:
@@ -3067,6 +3145,7 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
                     call_log,
                     filename=str(data.get("filename") or "dana_session_macro"),
                     session_id=session["session_id"],
+                    provenance=_macro_provenance(session, call_log),
                 )
                 artifacts_registry.register_artifact(
                     path, format="py", source="exported", session_id=session["session_id"]

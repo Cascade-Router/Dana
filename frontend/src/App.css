@@ -193,6 +193,12 @@ body {
   color: #eee;
 }
 
+.cost-bar__rebuilds {
+  color: #4ade80;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 /* Local Mode indicator — active whenever this session's most recent turn
    actually ran against local Ollama (a genuine local-first session, or a
    live cloud->local fallback — see CostBar's isLocalInference). Amber, not

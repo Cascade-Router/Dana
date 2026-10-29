@@ -242,3 +242,28 @@ def test_ws_resume_seeds_ready_with_the_restored_state(monkeypatch: pytest.Monke
     assert ready["type"] == "ready"
     assert set(ready["topology_dag"]["nodes"]) == {"Plate", "Hole"}
     assert ready["active_plan"]["objective"] == "make a plate"
+
+
+def test_cost_totals_survive_a_restart_and_reseed_the_cost_bar(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(server_module, "get_cad_engine", _RealEngine)
+    tracking = {
+        "total_usd": 0.42, "by_model": {"m": 0.42}, "llm_calls": 9, "prompt_tokens": 1000,
+        "completion_tokens": 200, "zero_token_rebuilds": 2, "last_model": "m", "last_provider": "cloud:openrouter",
+    }
+    state = session_state.capture_session_state(_session(cost_tracking=tracking), _RealEngine())
+    sessions.save_session(SID, title="t", created_at=None, messages=[], state=state)
+
+    with TestClient(server_module.app).websocket_connect(f"/ws/chat?session_id={SID}") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        usage = ws.receive_json()
+    assert usage["type"] == "usage_update"
+    assert usage["session_total_usd"] == 0.42 and usage["by_model"] == {"m": 0.42}
+    assert usage["llm_calls"] == 9 and usage["zero_token_rebuilds"] == 2
+    assert usage["session_tokens"] == {"prompt": 1000, "completion": 200}
+    assert usage["model"] == "m" and usage["cost_usd"] is None  # no new LLM call happened
+
+
+def test_a_fresh_session_gets_no_restored_usage_event() -> None:
+    assert server_module._restored_usage_event({"session_id": SID}) is None

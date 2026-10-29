@@ -129,7 +129,7 @@ export function useGradioChat(
     // token/model accounting there at all) — stays permanently empty, same
     // convention as driverState/cameraTarget above; CostBar's own
     // `!activeModel && segments.length === 0` check renders nothing for it.
-    costState: { activeModel: null, activeProvider: null, sessionTotalUsd: 0, byModel: {} },
+    costState: { activeModel: null, activeProvider: null, sessionTotalUsd: 0, byModel: {}, zeroTokenRebuilds: 0 },
     // No Task Planner telemetry from app.py's bare Gradio "chat" endpoint
     // either — same permanently-empty convention as costState above.
     planState: { objective: "", tasks: [], currentTaskId: null },

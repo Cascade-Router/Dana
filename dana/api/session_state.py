@@ -5,8 +5,8 @@ stores next to a session's chat history; ``restore_session_state`` puts it
 back when ``/ws/chat`` resumes that session in a fresh process. It covers the
 ReAct engine's per-session registries (plan, object paths, topology DAG,
 assembly state, gates), the task board plan, the CAD call log, the mock
-driver's objects, and three per-connection fields (capability decay clock,
-hidden tools, turn counter).
+driver's objects, and four per-connection fields (capability decay clock,
+hidden tools, turn counter, LLM usage/cost totals).
 
 Never persisted (security invariant, see ``_PERSISTED_SERVER_FIELDS``): the
 HITL allowlist (``hitl_approved_tools``), ``auto_approve``, ``api_keys`` and
@@ -40,7 +40,7 @@ STATE_VERSION = 1
 # The only per-connection session-dict fields that are persisted. Anything
 # not listed here (hitl_approved_tools, auto_approve, api_keys, react_state,
 # visual_state, ...) never reaches disk.
-_PERSISTED_SERVER_FIELDS = ("capability_unlocked_at_turn", "hidden_tool_ids", "turn_counter")
+_PERSISTED_SERVER_FIELDS = ("capability_unlocked_at_turn", "hidden_tool_ids", "turn_counter", "cost_tracking")
 
 
 # --- codec: JSON with sets, frozensets, tuples and non-str dict keys --------
