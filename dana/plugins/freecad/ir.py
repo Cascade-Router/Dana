@@ -500,6 +500,106 @@ register_ir_kind(
 )
 
 
+def _pyramid_from_args(
+    *, name: str, length: float, width: float, height: float,
+    placement: tuple[float, float, float] = (0.0, 0.0, 0.0), var: str = "obj", index: int = 1,
+) -> dict[str, Any]:
+    return {
+        "kind": "pyramid", "var": var, "name": name,
+        "length": float(length), "width": float(width), "height": float(height),
+        "placement": tuple(float(v) for v in placement),
+        "index": index, "tool_id": "create_freecad_pyramid",
+    }
+
+
+def _pyramid_from_record(rec: Any, index: int) -> dict[str, Any]:
+    name = str(rec.result.get("name", "Pyramid"))
+    dims = rec.result.get("dimensions") or {}
+    return _pyramid_from_args(
+        name=name, length=dims.get("length", 0.0), width=dims.get("width", 0.0), height=dims.get("height", 0.0),
+        placement=_placement_of(rec.result), var=safe_var_name(name, index), index=index,
+    )
+
+
+register_ir_kind(
+    IRKindSpec(
+        kind="pyramid", tool_id="create_freecad_pyramid",
+        from_args=_pyramid_from_args, from_record=_pyramid_from_record,
+    )
+)
+
+# An arc pipe's bend radius has no schema parameter of its own: it follows
+# the pipe radius (never tighter than the minimum), so it is re-derived
+# whenever pipe_radius changes (see pipe_arc_radius / dana.plugins.freecad.rebuild).
+PIPE_ARC_BEND_RADIUS_MULTIPLIER = 3.0
+PIPE_ARC_MIN_BEND_RADIUS = 20.0
+
+
+def pipe_arc_radius(pipe_radius: float) -> float:
+    return max(float(pipe_radius) * PIPE_ARC_BEND_RADIUS_MULTIPLIER, PIPE_ARC_MIN_BEND_RADIUS)
+
+
+def _pipe_from_args(
+    *, name: str, pipe_radius: float, path_type: str, length_or_angle: float,
+    placement: tuple[float, float, float] = (0.0, 0.0, 0.0), var: str = "obj", index: int = 1,
+) -> dict[str, Any]:
+    return {
+        "kind": "pipe", "var": var, "name": name,
+        "path_type": str(path_type).strip().lower(),
+        "pipe_radius": float(pipe_radius), "length_or_angle": float(length_or_angle),
+        "arc_radius": pipe_arc_radius(pipe_radius),
+        "placement": tuple(float(v) for v in placement),
+        "index": index, "tool_id": "create_freecad_pipe",
+    }
+
+
+def _pipe_from_record(rec: Any, index: int) -> dict[str, Any]:
+    name = str(rec.result.get("name", "Pipe"))
+    dims = rec.result.get("dimensions") or {}
+    return _pipe_from_args(
+        name=name, pipe_radius=dims.get("pipe_radius", 0.0), path_type=dims.get("path_type", "straight"),
+        length_or_angle=dims.get("length_or_angle", 0.0),
+        placement=_placement_of(rec.result), var=safe_var_name(name, index), index=index,
+    )
+
+
+register_ir_kind(
+    IRKindSpec(kind="pipe", tool_id="create_freecad_pipe", from_args=_pipe_from_args, from_record=_pipe_from_record)
+)
+
+
+def _helix_from_args(
+    *, name: str, coil_radius: float, pitch: float, height: float, pipe_radius: float,
+    angle_offset: float = 0.0, placement: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    var: str = "obj", index: int = 1,
+) -> dict[str, Any]:
+    return {
+        "kind": "helix", "var": var, "name": name,
+        "coil_radius": float(coil_radius), "pitch": float(pitch), "height": float(height),
+        "pipe_radius": float(pipe_radius), "angle_offset": float(angle_offset),
+        "placement": tuple(float(v) for v in placement),
+        "index": index, "tool_id": "create_freecad_helix",
+    }
+
+
+def _helix_from_record(rec: Any, index: int) -> dict[str, Any]:
+    name = str(rec.result.get("name", "Helix"))
+    dims = rec.result.get("dimensions") or {}
+    return _helix_from_args(
+        name=name, coil_radius=dims.get("coil_radius", 0.0), pitch=dims.get("pitch", 0.0),
+        height=dims.get("height", 0.0), pipe_radius=dims.get("pipe_radius", 0.0),
+        angle_offset=dims.get("angle_offset", 0.0),
+        placement=_placement_of(rec.result), var=safe_var_name(name, index), index=index,
+    )
+
+
+register_ir_kind(
+    IRKindSpec(
+        kind="helix", tool_id="create_freecad_helix", from_args=_helix_from_args, from_record=_helix_from_record
+    )
+)
+
+
 def _boolean_from_args(
     *, name: str, operation: str, feature_type: str, base_object: str = "", tool_object: str = "",
     objects: list[str] | None = None, var: str = "obj", index: int = 1,

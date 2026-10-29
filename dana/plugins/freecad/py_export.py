@@ -44,16 +44,8 @@ from dana.paths import DANA_WORKSPACE
 from dana.plugins.freecad import ir
 from dana.plugins.freecad.call_log import CadCallLog, CadCallRecord
 
-# Reused so the exported script's pipe-elbow bend radius always matches
-# whatever the live engine actually built — duplicating these two floats
-# instead of importing would silently drift the day engine.py's tuning changes.
-from dana.plugins.freecad.engine import (
-    _PIPE_ARC_BEND_RADIUS_MULTIPLIER as _ARC_BEND_MULTIPLIER,
-    _PIPE_ARC_MIN_BEND_RADIUS as _ARC_MIN_RADIUS,
-)
-
-# Same reuse rationale — the blueprint step's view directions/positions and
-# template file paths must match techdraw_export.py's own layout exactly.
+# Imported, not duplicated: the blueprint step's view directions/positions
+# and template file paths must match techdraw_export.py's own layout exactly.
 from dana.plugins.freecad.techdraw_export import _PAGE_TEMPLATES, _VIEW_LAYOUT
 from dana.session_context import session_scoped_dir
 
@@ -112,20 +104,6 @@ def _build_cylinder(rec: CadCallRecord, index: int) -> dict[str, Any]:
     }
 
 
-def _build_pyramid(rec: CadCallRecord, index: int) -> dict[str, Any]:
-    dims = rec.result.get("dimensions") or {}
-    name = str(rec.result.get("name", "Pyramid"))
-    return {
-        "kind": "pyramid",
-        "var": _safe_var_name(name, index),
-        "name": name,
-        "length": float(dims.get("length", 0.0)),
-        "width": float(dims.get("width", 0.0)),
-        "height": float(dims.get("height", 0.0)),
-        "placement": _placement(rec.result),
-    }
-
-
 def _build_star_prism(rec: CadCallRecord, index: int) -> dict[str, Any]:
     dims = rec.result.get("dimensions") or {}
     name = str(rec.result.get("name", "StarPrism"))
@@ -175,37 +153,6 @@ def _build_extrusion(rec: CadCallRecord, index: int) -> dict[str, Any]:
         "name": name,
         "points": [[float(p[0]), float(p[1])] for p in profile],
         "height": float(dims.get("height", rec.arguments.get("height", 0.0))),
-    }
-
-
-def _build_pipe(rec: CadCallRecord, index: int) -> dict[str, Any]:
-    dims = rec.result.get("dimensions") or {}
-    radius = float(dims.get("pipe_radius", 0.0))
-    name = str(rec.result.get("name", "Pipe"))
-    return {
-        "kind": "pipe",
-        "var": _safe_var_name(name, index),
-        "name": name,
-        "path_type": str(dims.get("path_type", "straight")),
-        "pipe_radius": radius,
-        "length_or_angle": float(dims.get("length_or_angle", 0.0)),
-        "arc_radius": max(radius * _ARC_BEND_MULTIPLIER, _ARC_MIN_RADIUS),
-        "placement": _placement(rec.result),
-    }
-
-
-def _build_helix(rec: CadCallRecord, index: int) -> dict[str, Any]:
-    dims = rec.result.get("dimensions") or {}
-    name = str(rec.result.get("name", "Helix"))
-    return {
-        "kind": "helix",
-        "var": _safe_var_name(name, index),
-        "name": name,
-        "coil_radius": float(dims.get("coil_radius", 0.0)),
-        "pitch": float(dims.get("pitch", 0.0)),
-        "height": float(dims.get("height", 0.0)),
-        "pipe_radius": float(dims.get("pipe_radius", 0.0)),
-        "placement": _placement(rec.result),
     }
 
 
@@ -344,12 +291,9 @@ def _build_export(rec: CadCallRecord, index: int) -> dict[str, Any]:
 _STEP_BUILDERS: dict[str, Callable[[CadCallRecord, int], dict[str, Any]]] = {
     "create_freecad_box": _build_box,
     "create_freecad_cylinder": _build_cylinder,
-    "create_freecad_pyramid": _build_pyramid,
     "create_freecad_star_prism": _build_star_prism,
     "create_freecad_polygon": _build_polygon,
     "create_freecad_extrusion": _build_extrusion,
-    "create_freecad_pipe": _build_pipe,
-    "create_freecad_helix": _build_helix,
     "perform_freecad_boolean": _build_boolean,
     "perform_freecad_edge_operation": _build_edge_operation,
     "modify_freecad_parameter": _build_modify_parameter,

@@ -1070,33 +1070,6 @@ obj.Shape = solid
 doc.recompute()
 """ + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT)
 
-_PYRAMID_SCRIPT = ("""\
-import FreeCAD as App
-import Part
-
-""" + _SESSION_OPEN_SNIPPET + """\
-L, W, H = {length}, {width}, {height}
-base_pts = [
-    App.Vector(-L / 2, -W / 2, 0.0),
-    App.Vector(L / 2, -W / 2, 0.0),
-    App.Vector(L / 2, W / 2, 0.0),
-    App.Vector(-L / 2, W / 2, 0.0),
-]
-apex = App.Vector(0.0, 0.0, H)
-
-base_face = Part.Face(Part.makePolygon(base_pts + [base_pts[0]]))
-side_faces = [
-    Part.Face(Part.makePolygon([base_pts[i], base_pts[(i + 1) % 4], apex, base_pts[i]]))
-    for i in range(4)
-]
-solid = Part.Solid(Part.Shell([base_face] + side_faces))
-
-obj = doc.addObject("Part::Feature", {name!r})
-obj.Shape = solid
-""" + _PLACEMENT_SNIPPET + """\
-doc.recompute()
-""" + _SESSION_SAVE_SNIPPET + _SESSION_RESULT_PRINT)
-
 def _auto_show(out_path: Path) -> bool:
     """Best-effort Live Viewport Sync: open ``out_path`` in the FreeCAD GUI.
 
@@ -1369,24 +1342,17 @@ def create_pyramid(
         return _dry_run_result(
             "create_pyramid", name=name, type="Part::Feature", dimensions=dims, placement=list(placement)
         )
-    session_path = _session_document_path()
-    script = _PYRAMID_SCRIPT.format(
-        length=dims["length"],
-        width=dims["width"],
-        height=dims["height"],
-        name=name,
+    result, _steps, session_path = _execute_ir_tool(
+        "create_freecad_pyramid", name=name, length=dims["length"], width=dims["width"], height=dims["height"],
         placement=placement,
-        session_path=str(session_path),
-        session_doc_name=_SESSION_DOCUMENT_NAME,
-        marker=_OK_MARKER,
     )
-    result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"create_pyramid failed: {result['error']}")
     return _ok(
         name=result.get("resolved_name") or name,
         type="Part::Feature",
         bounding_box=result.get("bounding_box"),
+        geometry=result.get("geometry"),
         dimensions=dims,
         placement=list(placement),
         path=str(session_path),
@@ -5544,94 +5510,6 @@ def create_assembly_mate(
         gui_shown=_auto_show(moving),
     )
 
-_PIPE_ARC_BEND_RADIUS_MULTIPLIER = 3.0
-
-_PIPE_ARC_MIN_BEND_RADIUS = 20.0
-
-_PIPE_STRAIGHT_SCRIPT = """\
-import FreeCAD as App
-
-doc = App.newDocument("DanaModel")
-
-profile = doc.addObject("Part::Circle", "Profile")
-profile.Radius = {pipe_radius}
-
-path = doc.addObject("Part::Line", "Path")
-path.X1, path.Y1, path.Z1 = 0.0, 0.0, 0.0
-path.X2, path.Y2, path.Z2 = 0.0, 0.0, {length_or_angle}
-
-doc.recompute()
-
-obj = doc.addObject("Part::Sweep", {name!r})
-obj.Sections = [profile]
-obj.Spine = (path, [])
-obj.Solid = True
-obj.Frenet = False
-""" + _PLACEMENT_SNIPPET + """\
-doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
-
-_PIPE_ARC_SCRIPT = """\
-import FreeCAD as App
-
-doc = App.newDocument("DanaModel")
-
-profile = doc.addObject("Part::Circle", "Profile")
-profile.Radius = {pipe_radius}
-profile.Placement = App.Placement(App.Vector({arc_radius}, 0.0, 0.0), App.Rotation(App.Vector(1, 0, 0), 90))
-
-path = doc.addObject("Part::Circle", "Path")
-path.Radius = {arc_radius}
-path.Angle1 = 0.0
-path.Angle2 = {length_or_angle}
-
-doc.recompute()
-
-obj = doc.addObject("Part::Sweep", {name!r})
-obj.Sections = [profile]
-obj.Spine = (path, [])
-obj.Solid = True
-obj.Frenet = True
-""" + _PLACEMENT_SNIPPET + """\
-doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
-
-_HELIX_SCRIPT = """\
-import FreeCAD as App
-
-doc = App.newDocument("DanaModel")
-
-path = doc.addObject("Part::Helix", "Path")
-path.Pitch = {pitch}
-path.Height = {height}
-path.Radius = {coil_radius}
-path.Angle = 0.0
-
-profile = doc.addObject("Part::Circle", "Profile")
-profile.Radius = {pipe_radius}
-profile.Placement = App.Placement(App.Vector({coil_radius}, 0.0, 0.0), App.Rotation(App.Vector(1, 0, 0), 90))
-
-doc.recompute()
-
-obj = doc.addObject("Part::Sweep", {name!r})
-obj.Sections = [profile]
-obj.Spine = (path, [])
-obj.Solid = True
-obj.Frenet = True
-doc.recompute()
-obj.Placement = App.Placement(App.Vector({px}, {py}, {pz}), App.Rotation({angle_offset}, 0.0, 0.0))
-doc.recompute()
-doc.saveAs({out_path!r})
-""" + _BBOX_PRINT + """\
-print("{marker} path=" + {out_path!r})
-"""
-
 def create_helix(
     coil_radius: float,
     pitch: float,
@@ -5650,11 +5528,8 @@ def create_helix(
     actual start point (``coil_radius``, 0, 0) with a non-degenerate
     orientation, not a perfectly-tangent one.
 
-    Same own-document-per-call precedent as ``create_pipe`` — not yet
-    migrated to the shared session document (see the FreeCAD session
-    document migration note: create_box/cylinder/insert_standard_part/
-    apply_boolean/modify_parameter share ONE Session_Active.FCStd; this
-    tool doesn't yet).
+    Built through the Universal CAD IR (``_execute_ir_tool``) inside the
+    shared session document, like ``create_pipe``.
 
     ``angle_offset`` degrees is a rigid rotation about the GLOBAL Z axis
     applied to the finished coil — NOT FreeCAD's own Part::Helix ``Angle``
@@ -5688,31 +5563,21 @@ def create_helix(
             "create_helix", name=name, type="Part::Sweep", dimensions=dims, placement=list(placement)
         )
 
-    out_path = _output_path(name, ext="FCStd")
-    script = _HELIX_SCRIPT.format(
-        coil_radius=coil_radius_f,
-        pitch=pitch_f,
-        height=height_f,
-        pipe_radius=pipe_radius_f,
-        name=name,
-        px=placement[0],
-        py=placement[1],
-        pz=placement[2],
-        angle_offset=angle_offset_f,
-        out_path=str(out_path),
-        marker=_OK_MARKER,
+    result, _steps, session_path = _execute_ir_tool(
+        "create_freecad_helix", name=name, coil_radius=coil_radius_f, pitch=pitch_f, height=height_f,
+        pipe_radius=pipe_radius_f, angle_offset=angle_offset_f, placement=placement,
     )
-    result = _run_freecad_script(script)
     if not result["ok"]:
         return _error(f"create_helix failed: {result['error']}")
     return _ok(
-        name=name,
+        name=result.get("resolved_name") or name,
         type="Part::Sweep",
         bounding_box=result.get("bounding_box"),
+        geometry=result.get("geometry"),
         dimensions=dims,
         placement=list(placement),
-        path=str(out_path),
-        gui_shown=_auto_show(out_path),
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
     )
 
 def create_pipe(
@@ -5728,8 +5593,12 @@ def create_pipe(
     ``path_type="straight"`` sweeps ``length_or_angle`` mm along a straight
     line (a plain cylindrical pipe). ``path_type="arc"`` sweeps
     ``length_or_angle`` degrees along a circular arc (a curved elbow) with
-    a default bend radius (see ``_PIPE_ARC_BEND_RADIUS_MULTIPLIER`` — the
-    schema has no separate bend-radius parameter of its own).
+    a default bend radius (see ``ir.pipe_arc_radius`` — the schema has no
+    separate bend-radius parameter of its own).
+
+    Built through the Universal CAD IR (``_execute_ir_tool``) inside the
+    shared session document, so later booleans can reference it by name and
+    the parametric rebuild / macro export replay it exactly.
     """
     pt = (path_type or "").strip().lower()
     if pt not in ("straight", "arc"):
@@ -5751,38 +5620,21 @@ def create_pipe(
             "create_pipe", name=name, type="Part::Sweep", dimensions=dims, placement=list(placement)
         )
 
-    out_path = _output_path(name, ext="FCStd")
-    if pt == "straight":
-        script = _PIPE_STRAIGHT_SCRIPT.format(
-            pipe_radius=radius_f,
-            length_or_angle=value_f,
-            name=name,
-            placement=placement,
-            out_path=str(out_path),
-            marker=_OK_MARKER,
-        )
-    else:
-        arc_radius = max(radius_f * _PIPE_ARC_BEND_RADIUS_MULTIPLIER, _PIPE_ARC_MIN_BEND_RADIUS)
-        script = _PIPE_ARC_SCRIPT.format(
-            pipe_radius=radius_f,
-            arc_radius=arc_radius,
-            length_or_angle=value_f,
-            name=name,
-            placement=placement,
-            out_path=str(out_path),
-            marker=_OK_MARKER,
-        )
-    result = _run_freecad_script(script)
+    result, _steps, session_path = _execute_ir_tool(
+        "create_freecad_pipe", name=name, pipe_radius=radius_f, path_type=pt, length_or_angle=value_f,
+        placement=placement,
+    )
     if not result["ok"]:
         return _error(f"create_pipe failed: {result['error']}")
     return _ok(
-        name=name,
+        name=result.get("resolved_name") or name,
         type="Part::Sweep",
         bounding_box=result.get("bounding_box"),
+        geometry=result.get("geometry"),
         dimensions=dims,
         placement=list(placement),
-        path=str(out_path),
-        gui_shown=_auto_show(out_path),
+        path=str(session_path),
+        gui_shown=_auto_show(session_path),
     )
 
 def export_mesh_stl(source_path: str, name: str | None = None, target_object: str | None = None) -> str:

@@ -194,15 +194,105 @@ def test_list_parameters_over_websocket(client: TestClient) -> None:
         event = ws.receive_json()
     assert event["type"] == "parameters"
     assert {"1.length", "2.radius", "4.value"} <= {p["id"] for p in event["params"]}
-    assert "real FreeCAD" in event["reason"]  # the mock engine can list but not rebuild
+    assert event["reason"] is None
 
 
-def test_rebuild_on_the_mock_engine_reports_instead_of_pretending(client: TestClient) -> None:
+def _mock_log(*, plate_length: float = 60.0) -> tuple[CadCallLog, Any]:
+    """A real call log built by dispatching through the mock driver."""
+    from dana.core import react_dispatch as rd
+    from dana.platform.mock import MockFreeCADEngine
+    from dana.tools.schema import ToolCall
+
+    engine = MockFreeCADEngine()
+    log = CadCallLog()
+    for tool, args in (
+        ("create_freecad_box", {"name": "Plate", "length": plate_length, "width": 40, "height": 5}),
+        ("create_freecad_pyramid", {"name": "Spire", "length": 10, "width": 10, "height": 20}),
+        ("create_freecad_pipe", {"name": "Rod", "pipe_radius": 2, "path_type": "straight", "length_or_angle": 30}),
+    ):
+        assert rd.dispatch_tool_call(ToolCall(tool, args), engine, None, call_log=log).ok, tool
+    return log, engine
+
+
+@pytest.fixture
+def mock_session(monkeypatch: pytest.MonkeyPatch):
+    from dana.core import react_dispatch as rd
+    from dana.platform import mock as mock_driver
+    from dana.session_context import DEFAULT_SESSION_ID, set_session_id
+
+    sid = "rebuild-mock"
+    monkeypatch.setattr(rd, "_get_has_plan", lambda *_a, **_k: True)
+    set_session_id(sid)
+    yield sid
+    set_session_id(DEFAULT_SESSION_ID)
+    mock_driver.replace_mock_session(sid, {})
+    for registry in rd._PERSISTED_SESSION_REGISTRIES.values():
+        registry.pop(sid, None)
+
+
+def test_mock_engine_rebuild_replays_the_patched_log(mock_session: str) -> None:
+    from dana.core import react_dispatch as rd
+    from dana.platform import mock as mock_driver
+
+    log, engine = _mock_log()
+    result = rb.rebuild_mock(
+        log, {"0.length": 80, "2.pipe_radius": 3}, session_id=mock_session, engine=engine,
+        handlers=rd.TOOL_HANDLERS, geometry_tool_ids=GEOMETRY,
+    )
+    assert result["ok"] is True, result
+    assert result["name"] == "Rod" and Path(result["path"]).is_file()
+    plate_mesh = mock_driver._MOCK_OBJECT_REGISTRY[mock_session]["Plate"]
+    import trimesh
+
+    assert trimesh.load(plate_mesh).extents[0] == pytest.approx(80.0)
+    params = _params(log)
+    assert params["0.length"]["value"] == 80.0 and params["2.pipe_radius"]["value"] == 3.0
+
+
+def test_mock_engine_rebuild_failure_restores_the_previous_state(mock_session: str) -> None:
+    from dana.core import react_dispatch as rd
+    from dana.platform import mock as mock_driver
+
+    log, engine = _mock_log()
+    before_state = mock_driver.snapshot_mock_session(mock_session)
+    before_log = log.records
+
+    def _broken_pyramid(*_a: Any, **_k: Any) -> dict[str, Any]:
+        return {"ok": False, "error": "mesh boolean failed"}
+
+    handlers = {**rd.TOOL_HANDLERS, "create_freecad_pyramid": _broken_pyramid}
+    result = rb.rebuild_mock(
+        log, {"0.length": 80}, session_id=mock_session, engine=engine, handlers=handlers, geometry_tool_ids=GEOMETRY
+    )
+    assert result["ok"] is False and "model left unchanged" in result["error"]
+    assert mock_driver.snapshot_mock_session(mock_session) == before_state
+    assert log.records == before_log
+
+
+def test_rebuild_over_websocket_on_the_mock_engine(client: TestClient, mock_session: str) -> None:
+    log, _engine = _mock_log()
     with client.websocket_connect("/ws/chat") as ws:
-        _session_for(ws.receive_json())["call_log"] = _log()
-        ws.send_json({"type": "rebuild", "overrides": {"1.length": 80}})
-        event = ws.receive_json()
-    assert event == {"type": "rebuild_result", "ok": False, "error": "Rebuild needs real FreeCAD (not available here)."}
+        session = _session_for(ws.receive_json())
+        session["session_id"] = mock_session  # the session the log was built in
+        session["call_log"] = log
+        ws.send_json({"type": "rebuild", "overrides": {"0.length": 75}})
+        result = ws.receive_json()
+        refreshed = ws.receive_json()
+    assert result["type"] == "rebuild_result" and result["ok"] is True, result
+    assert result["mesh_url"] and result["applied"] == {"0.length": 75.0}
+    assert refreshed["type"] == "parameters"
+    assert next(p for p in refreshed["params"] if p["id"] == "0.length")["value"] == 75.0
+
+
+def test_pipe_bend_radius_follows_an_overridden_pipe_radius() -> None:
+    log = CadCallLog()
+    log.record("create_freecad_pipe", {"pipe_radius": 4, "path_type": "arc", "length_or_angle": 90}, ok=True,
+               result={"name": "Elbow", "dimensions": {"pipe_radius": 4.0, "path_type": "arc", "length_or_angle": 90.0}})
+    plan = rb.plan_rebuild(log.records, GEOMETRY)
+    assert plan.steps[0]["arc_radius"] == 20.0  # 4 * 3 is below the 20 mm minimum
+    rb._apply_overrides(plan, {"0.pipe_radius": 10})
+    assert plan.steps[0]["arc_radius"] == 30.0
+    assert _params(log)["0.length_or_angle"]["unit"] == "deg"
 
 
 def test_rebuild_without_overrides_is_rejected(client: TestClient) -> None:

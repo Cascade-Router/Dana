@@ -84,6 +84,7 @@ from dana.core.model_provider import (  # noqa: E402
 from dana.plugins.planning.task_board import create_plan as _tb_create_plan  # noqa: E402
 from dana.plugins.planning.task_board import get_active_plan as _tb_get_active_plan  # noqa: E402
 from dana.core.react_dispatch import (  # noqa: E402
+    TOOL_HANDLERS,
     ToolResult,
     build_assistant_tool_call_message,
     build_system_prompt,
@@ -770,8 +771,6 @@ def _parameters_event(session: dict[str, Any]) -> dict[str, Any]:
 
     call_log = session.get("call_log")
     table = parameter_table(call_log.records if call_log else [], _REBUILD_GEOMETRY_TOOLS)
-    if table["params"] and _is_mock_engine(get_cad_engine()):
-        table["reason"] = "Rebuild needs real FreeCAD; the headless preview engine can't replay the model."
     return {"type": "parameters", **table}
 
 
@@ -785,29 +784,38 @@ async def _run_rebuild(websocket: WebSocket, session: dict[str, Any], overrides:
     """Zero-token parametric rebuild (no LLM call). Queued like a turn
     (_spawn_turn), so it never races a running ReAct turn's FreeCAD calls."""
     from dana.plugins.freecad import engine as freecad_engine
-    from dana.plugins.freecad.rebuild import rebuild
+    from dana.plugins.freecad.rebuild import rebuild, rebuild_mock
 
     engine = get_cad_engine()
     call_log = session.get("call_log")
-    if _is_mock_engine(engine) or call_log is None:
-        await websocket.send_json(
-            {"type": "rebuild_result", "ok": False, "error": "Rebuild needs real FreeCAD (not available here)."}
-        )
+    if call_log is None:
+        await websocket.send_json({"type": "rebuild_result", "ok": False, "error": "Nothing to rebuild yet."})
         return
     set_session_id(session["session_id"])
-    session_path = freecad_engine._session_document_path()
     started = time.perf_counter()
-    result = await asyncio.to_thread(
-        rebuild,
-        call_log,
-        overrides,
-        session_path=session_path,
-        geometry_tool_ids=_REBUILD_GEOMETRY_TOOLS,
-        run_script=freecad_engine._run_freecad_script,
-        ok_marker=freecad_engine._OK_MARKER,
-        backup=freecad_engine._backup_session_document,
-        timeout=freecad_engine._HEAVY_ANALYSIS_TIMEOUT_S,
-    )
+    if _is_mock_engine(engine):
+        # Headless driver (HF Space, CI): replay the call log through it.
+        result = await asyncio.to_thread(
+            rebuild_mock,
+            call_log,
+            overrides,
+            session_id=session["session_id"],
+            engine=engine,
+            handlers=TOOL_HANDLERS,
+            geometry_tool_ids=_REBUILD_GEOMETRY_TOOLS,
+        )
+    else:
+        result = await asyncio.to_thread(
+            rebuild,
+            call_log,
+            overrides,
+            session_path=freecad_engine._session_document_path(),
+            geometry_tool_ids=_REBUILD_GEOMETRY_TOOLS,
+            run_script=freecad_engine._run_freecad_script,
+            ok_marker=freecad_engine._OK_MARKER,
+            backup=freecad_engine._backup_session_document,
+            timeout=freecad_engine._HEAVY_ANALYSIS_TIMEOUT_S,
+        )
     mesh_url: str | None = None
     if result.get("ok"):
         name = result.get("name")

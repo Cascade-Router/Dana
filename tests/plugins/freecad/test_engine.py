@@ -254,16 +254,10 @@ def test_extrude_script_joins_shared_session_document():
 
 
 def test_pyramid_script_joins_shared_session_document():
-    script = engine._PYRAMID_SCRIPT.format(
-        length=10,
-        width=10,
-        height=10,
-        name="Pyramid",
-        placement=(0.0, 0.0, 0.0),
-        session_path="session.FCStd",
-        session_doc_name="Session_Active",
-        marker="OK",
-    )
+    from dana.plugins.freecad import ir
+
+    step = ir.get_ir_kind("create_freecad_pyramid").from_args(name="Pyramid", length=10, width=10, height=10)
+    script = ir.render_ir_script([step], doc_mode="session", session_path="session.FCStd", marker="OK")
     assert "_session_path = " in script
     assert "App.openDocument" in script
     assert 'App.newDocument("DanaModel")' not in script

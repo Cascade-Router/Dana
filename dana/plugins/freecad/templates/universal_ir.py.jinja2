@@ -32,6 +32,8 @@
    caller needed (compiled-skill parameter substitution, name-collision
    prefixing) before reaching this template — see ir.py's own docstring
    for that separation of concerns. This template only renders. #}
+import math
+
 import FreeCAD as App
 import Part
 import Mesh
@@ -90,6 +92,88 @@ doc.recompute()
 {{ step.var }}.Height = {{ step.height|pyrepr }}
 {% if step.placement != (0.0, 0.0, 0.0) %}
 {{ step.var }}.Placement = App.Placement(App.Vector{{ step.placement|pyrepr }}, App.Rotation())
+{% endif %}
+doc.recompute()
+
+{% elif step.kind == "pyramid" %}
+{# Built from 5 explicit faces (base + 4 sides), never a collapsed
+   Part::Wedge, whose degenerate top edge is fragile in some versions. #}
+_base_pts_{{ step.index }} = [
+    App.Vector(-{{ step.length|pyrepr }} / 2, -{{ step.width|pyrepr }} / 2, 0.0),
+    App.Vector({{ step.length|pyrepr }} / 2, -{{ step.width|pyrepr }} / 2, 0.0),
+    App.Vector({{ step.length|pyrepr }} / 2, {{ step.width|pyrepr }} / 2, 0.0),
+    App.Vector(-{{ step.length|pyrepr }} / 2, {{ step.width|pyrepr }} / 2, 0.0),
+]
+_apex_{{ step.index }} = App.Vector(0.0, 0.0, {{ step.height|pyrepr }})
+_faces_{{ step.index }} = [Part.Face(Part.makePolygon(_base_pts_{{ step.index }} + [_base_pts_{{ step.index }}[0]]))] + [
+    Part.Face(Part.makePolygon([_base_pts_{{ step.index }}[i], _base_pts_{{ step.index }}[(i + 1) % 4], _apex_{{ step.index }}, _base_pts_{{ step.index }}[i]]))
+    for i in range(4)
+]
+{{ step.var }} = doc.addObject("Part::Feature", {{ step.name|pyrepr }})
+{{ step.var }}.Shape = Part.Solid(Part.Shell(_faces_{{ step.index }}))
+{% if step.placement != (0.0, 0.0, 0.0) %}
+{{ step.var }}.Placement = App.Placement(App.Vector{{ step.placement|pyrepr }}, App.Rotation())
+{% endif %}
+doc.recompute()
+
+{% elif step.kind == "pipe" %}
+{# Profile/path helpers are named after the pipe, so several pipes can
+   share one session document. #}
+_profile_{{ step.index }} = doc.addObject("Part::Circle", {{ (step.name ~ "_Profile")|pyrepr }})
+_profile_{{ step.index }}.Radius = {{ step.pipe_radius|pyrepr }}
+{% if step.path_type == "straight" %}
+_path_{{ step.index }} = doc.addObject("Part::Line", {{ (step.name ~ "_Path")|pyrepr }})
+_path_{{ step.index }}.X1, _path_{{ step.index }}.Y1, _path_{{ step.index }}.Z1 = 0.0, 0.0, 0.0
+_path_{{ step.index }}.X2, _path_{{ step.index }}.Y2, _path_{{ step.index }}.Z2 = 0.0, 0.0, {{ step.length_or_angle|pyrepr }}
+{% else %}
+_profile_{{ step.index }}.Placement = App.Placement(App.Vector({{ step.arc_radius|pyrepr }}, 0.0, 0.0), App.Rotation(App.Vector(1, 0, 0), 90))
+_path_{{ step.index }} = doc.addObject("Part::Circle", {{ (step.name ~ "_Path")|pyrepr }})
+_path_{{ step.index }}.Radius = {{ step.arc_radius|pyrepr }}
+_path_{{ step.index }}.Angle1 = 0.0
+_path_{{ step.index }}.Angle2 = {{ step.length_or_angle|pyrepr }}
+{% endif %}
+doc.recompute()
+{{ step.var }} = doc.addObject("Part::Sweep", {{ step.name|pyrepr }})
+{{ step.var }}.Sections = [_profile_{{ step.index }}]
+{{ step.var }}.Spine = (_path_{{ step.index }}, [])
+{{ step.var }}.Solid = True
+{{ step.var }}.Frenet = {{ "False" if step.path_type == "straight" else "True" }}
+{% if step.placement != (0.0, 0.0, 0.0) %}
+{{ step.var }}.Placement = App.Placement(App.Vector{{ step.placement|pyrepr }}, App.Rotation())
+{% endif %}
+doc.recompute()
+
+{% elif step.kind == "helix" %}
+_helix_path_{{ step.index }} = doc.addObject("Part::Helix", {{ (step.name ~ "_HelixPath")|pyrepr }})
+_helix_path_{{ step.index }}.Pitch = {{ step.pitch|pyrepr }}
+_helix_path_{{ step.index }}.Height = {{ step.height|pyrepr }}
+_helix_path_{{ step.index }}.Radius = {{ step.coil_radius|pyrepr }}
+_helix_path_{{ step.index }}.Angle = 0.0
+doc.recompute()
+{# The profile is placed at the path's real start point, perpendicular to
+   its real start tangent, so the sweep never starts twisted. #}
+_spine_{{ step.index }} = _helix_path_{{ step.index }}.Shape.Edges[0]
+_start_{{ step.index }} = _spine_{{ step.index }}.valueAt(_spine_{{ step.index }}.FirstParameter)
+_tangent_{{ step.index }} = _spine_{{ step.index }}.tangentAt(_spine_{{ step.index }}.FirstParameter)
+_profile_{{ step.index }} = doc.addObject("Part::Circle", {{ (step.name ~ "_HelixProfile")|pyrepr }})
+_profile_{{ step.index }}.Radius = {{ step.pipe_radius|pyrepr }}
+_axis_{{ step.index }} = App.Vector(0, 0, 1).cross(_tangent_{{ step.index }})
+if _axis_{{ step.index }}.Length < 1e-9:
+    _profile_{{ step.index }}.Placement = App.Placement(_start_{{ step.index }}, App.Rotation())
+else:
+    _profile_{{ step.index }}.Placement = App.Placement(
+        _start_{{ step.index }}, App.Rotation(_axis_{{ step.index }}, math.degrees(App.Vector(0, 0, 1).getAngle(_tangent_{{ step.index }})))
+    )
+doc.recompute()
+{{ step.var }} = doc.addObject("Part::Sweep", {{ step.name|pyrepr }})
+{{ step.var }}.Sections = [_profile_{{ step.index }}]
+{{ step.var }}.Spine = (_helix_path_{{ step.index }}, [])
+{{ step.var }}.Solid = True
+{{ step.var }}.Frenet = True
+{% if step.placement != (0.0, 0.0, 0.0) or step.angle_offset %}
+{# angle_offset: a rigid rotation about global Z (fanning several coils
+   around one hub), not Part::Helix's own taper Angle. #}
+{{ step.var }}.Placement = App.Placement(App.Vector{{ step.placement|pyrepr }}, App.Rotation({{ step.angle_offset|pyrepr }}, 0.0, 0.0))
 {% endif %}
 doc.recompute()
 

@@ -2308,6 +2308,17 @@ def snapshot_mock_session(session_id: str) -> dict[str, Any]:
     }
 
 
+def replace_mock_session(session_id: str, data: dict[str, Any]) -> None:
+    """Sets this session's mock state to exactly ``data`` (a
+    ``snapshot_mock_session`` result; ``{}`` clears it) — the parametric
+    rebuild's scratch reset and rollback."""
+    for key, registry in _PERSISTED_MOCK_REGISTRIES.items():
+        if key in data:
+            registry[session_id] = copy.deepcopy(data[key])
+        else:
+            registry.pop(session_id, None)
+
+
 def restore_mock_session(session_id: str, data: Any) -> set[str]:
     """Restores ``snapshot_mock_session`` output and returns the names of the
     objects that survived (their mesh file still exists)."""
@@ -2321,4 +2332,10 @@ def restore_mock_session(session_id: str, data: Any) -> set[str]:
     return set(objects)
 
 
-__all__ = ("MockControlPlane", "MockFreeCADEngine", "restore_mock_session", "snapshot_mock_session")
+__all__ = (
+    "MockControlPlane",
+    "MockFreeCADEngine",
+    "replace_mock_session",
+    "restore_mock_session",
+    "snapshot_mock_session",
+)

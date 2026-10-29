@@ -5,6 +5,7 @@ fails without touching the live document."""
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from pathlib import Path
 
@@ -69,3 +70,34 @@ def test_rebuild_with_new_dimensions_and_reject_an_impossible_one() -> None:
     assert hashlib.sha256(live.read_bytes()).hexdigest() == before
     lengths = {p["label"]: p["value"] for p in rb.parameter_table(log.records, GEOMETRY)["params"]}
     assert lengths["Plate.length"] == 80.0 and lengths["Plate top feature.radius"] == 6.0
+
+
+def test_pyramid_pipe_and_helix_build_in_the_session_document_and_rebuild() -> None:
+    from dana.platform.win32 import RealFreeCADEngine
+
+    log = CadCallLog()
+    cad, control = RealFreeCADEngine(), get_control_plane()
+    for tool, args in (
+        ("create_freecad_pyramid", {"name": "Spire", "length": 20, "width": 20, "height": 30}),
+        ("create_freecad_pipe", {"name": "Elbow", "pipe_radius": 4, "path_type": "arc", "length_or_angle": 90,
+                                 "placement_x": 60}),
+        ("create_freecad_helix", {"name": "Coil", "coil_radius": 10, "pitch": 5, "height": 20, "pipe_radius": 1.5,
+                                  "angle_offset": 45, "placement_y": 60}),
+    ):
+        assert rd.dispatch_tool_call(ToolCall(tool, args), cad, control, call_log=log).ok, tool
+
+    live = engine._session_document_path()
+    assert {"Spire", "Elbow", "Coil"} <= (engine.list_document_objects(live) or set())
+    table = rb.parameter_table(log.records, GEOMETRY)
+    assert table["unsupported"] == []
+    ids = {p["label"]: p["id"] for p in table["params"]}
+    result = rb.rebuild(
+        log, {ids["Spire.height"]: 45, ids["Elbow.pipe_radius"]: 6, ids["Coil.pitch"]: 8},
+        session_path=live, geometry_tool_ids=GEOMETRY, run_script=engine._run_freecad_script,
+        ok_marker=engine._OK_MARKER, backup=engine._backup_session_document, timeout=180,
+    )
+    assert result["ok"], result
+    spire = json.loads(engine.get_bounding_box(str(live), "Spire"))
+    elbow = json.loads(engine.get_bounding_box(str(live), "Elbow"))
+    assert spire["z_max"] == pytest.approx(45.0)
+    assert elbow["z_max"] == pytest.approx(6.0)  # the tube is now 6 mm in radius

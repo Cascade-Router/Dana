@@ -35,15 +35,19 @@ from dana.plugins.freecad.py_export import build_replay_steps
 from dana.plugins.freecad.skill_compiler import DEFAULT_PARAMETER_FIELDS, classify_parameters
 
 # Editable fields per step kind: the skill compiler's defaults, plus the
-# create_freecad_feature_on_face profile (radius/width/length/extent/u/v).
+# create_freecad_feature_on_face profile (radius/width/length/extent/u/v)
+# and the swept/faceted primitives.
 _EDITABLE_FIELDS: dict[str, tuple[str, ...]] = {
     **DEFAULT_PARAMETER_FIELDS,
     "face_profile": ("radius", "width", "length", "extent", "u", "v"),
+    "pyramid": ("length", "width", "height"),
+    "pipe": ("pipe_radius", "length_or_angle"),
+    "helix": ("coil_radius", "pitch", "height", "pipe_radius", "angle_offset"),
 }
 
-# Fields that may be zero or negative (positions on a face); every other
-# editable field is a size or count and must be positive.
-_SIGNED_FIELDS = frozenset({"u", "v"})
+# Fields that may be zero or negative (positions on a face, a rotation);
+# every other editable field is a size or count and must be positive.
+_SIGNED_FIELDS = frozenset({"u", "v", "angle_offset"})
 _COUNT_FIELDS = frozenset({"occurrences"})
 
 # Kinds whose edge/face selection is by an absolute centroid captured at the
@@ -107,6 +111,10 @@ def plan_rebuild(records: list[CadCallRecord], geometry_tool_ids: frozenset[str]
 def _unit(step: dict[str, Any], field: str) -> str:
     if field in _COUNT_FIELDS:
         return "count"
+    if field == "angle_offset" or (
+        step["kind"] == "pipe" and field == "length_or_angle" and step.get("path_type") == "arc"
+    ):
+        return "deg"
     if step["kind"] == "modify_parameter":
         name = str(step.get("parameter_name") or "").lower()
         return "deg" if "angle" in name else ("mm" if any(k in name for k in ("length", "width", "height", "radius", "depth")) else "")
@@ -197,6 +205,8 @@ def _apply_overrides(plan: RebuildPlan, overrides: dict[str, Any]) -> dict[tuple
             raise ValueError(f"{param_id}: must be greater than 0")
         for pos in positions:
             plan.steps[pos][field] = value
+            if plan.steps[pos]["kind"] == "pipe" and field == "pipe_radius":
+                plan.steps[pos]["arc_radius"] = ir.pipe_arc_radius(value)  # the bend follows the radius
         applied[(record_index, field)] = value
     return applied
 
@@ -214,6 +224,33 @@ def _write_back(rec: CadCallRecord, field: str, value: float) -> CadCallRecord:
     if field in result:
         result[field] = value
     return replace(rec, arguments=arguments, result=result)
+
+
+def _prepare(
+    records: list[CadCallRecord], overrides: dict[str, Any], geometry_tool_ids: frozenset[str]
+) -> dict[str, Any]:
+    """The checks both rebuild paths share: ``{"plan", "applied"}``, or an
+    ``{"ok": False, "error"}`` result to return as is."""
+    plan = plan_rebuild(records, geometry_tool_ids)
+    if plan.unsupported:
+        return {
+            "ok": False,
+            "error": f"can't rebuild: these steps have no replay ({', '.join(plan.unsupported)})",
+            "unsupported": plan.unsupported,
+        }
+    if not plan.steps:
+        return {"ok": False, "error": "nothing to rebuild yet — no geometry has been created this session"}
+    try:
+        return {"plan": plan, "applied": _apply_overrides(plan, overrides)}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _patched_records(records: list[CadCallRecord], applied: dict[tuple[int, str], float]) -> list[CadCallRecord]:
+    by_record: dict[int, CadCallRecord] = {}
+    for (record_index, field), value in applied.items():
+        by_record[record_index] = _write_back(by_record.get(record_index, records[record_index]), field, value)
+    return [by_record.get(i, rec) for i, rec in enumerate(records)]
 
 
 def rebuild(
@@ -236,19 +273,10 @@ def rebuild(
     ``engine._run_freecad_script`` (one FreeCADCmd subprocess, engine lock).
     """
     records = call_log.records
-    plan = plan_rebuild(records, geometry_tool_ids)
-    if plan.unsupported:
-        return {
-            "ok": False,
-            "error": f"can't rebuild: these steps have no replay ({', '.join(plan.unsupported)})",
-            "unsupported": plan.unsupported,
-        }
-    if not plan.steps:
-        return {"ok": False, "error": "nothing to rebuild yet — no geometry has been created this session"}
-    try:
-        applied = _apply_overrides(plan, overrides)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
+    prepared = _prepare(records, overrides, geometry_tool_ids)
+    if "error" in prepared:
+        return prepared
+    plan, applied = prepared["plan"], prepared["applied"]
 
     scratch = session_path.with_name("Session_Rebuild.FCStd")
     scratch.unlink(missing_ok=True)
@@ -264,10 +292,7 @@ def rebuild(
     backup(session_path)
     os.replace(scratch, session_path)
 
-    by_record: dict[int, CadCallRecord] = {}
-    for (record_index, field), value in applied.items():
-        by_record[record_index] = _write_back(by_record.get(record_index, records[record_index]), field, value)
-    call_log.replace([by_record.get(i, rec) for i, rec in enumerate(records)])
+    call_log.replace(_patched_records(records, applied))
 
     return {
         "ok": True,
@@ -278,4 +303,54 @@ def rebuild(
     }
 
 
-__all__ = ("DRESSUP_WARNING", "RebuildPlan", "parameter_table", "plan_rebuild", "rebuild")
+def rebuild_mock(
+    call_log: CadCallLog,
+    overrides: dict[str, Any],
+    *,
+    session_id: str,
+    engine: Any,
+    handlers: dict[str, Any],
+    geometry_tool_ids: frozenset[str],
+) -> dict[str, Any]:
+    """The headless (trimesh) driver's rebuild — what the Hugging Face Space
+    and CI run. There is no FreeCAD document to re-render, so the patched
+    call log is replayed through the mock driver's own tool ``handlers``
+    (``react_dispatch.TOOL_HANDLERS``) on a cleared mock state for this
+    session. A step that fails restores the previous mock state exactly, so
+    the model and the log are left as they were."""
+    from dana.platform import mock as mock_driver
+
+    records = call_log.records
+    prepared = _prepare(records, overrides, geometry_tool_ids)
+    if "error" in prepared:
+        return prepared
+    plan, applied = prepared["plan"], prepared["applied"]
+    patched = _patched_records(records, applied)
+
+    saved = mock_driver.snapshot_mock_session(session_id)
+    mock_driver.replace_mock_session(session_id, {})
+    last: dict[str, Any] = {}
+    for i in sorted(set(plan.record_of_step)):
+        rec = patched[i]
+        try:
+            last = handlers[rec.tool_id](dict(rec.arguments), engine, None)
+        except Exception as exc:  # noqa: BLE001 — reported, state restored below
+            last = {"ok": False, "error": str(exc)}
+        if not last.get("ok", True):
+            mock_driver.replace_mock_session(session_id, saved)
+            return {
+                "ok": False,
+                "error": f"rebuild failed at {rec.tool_id}, model left unchanged: {last.get('error') or 'failed'}",
+            }
+
+    call_log.replace(patched)
+    return {
+        "ok": True,
+        "path": last.get("path"),
+        "name": last.get("name"),
+        "bounding_box": last.get("bounding_box"),
+        "applied": {f"{i}.{field}": value for (i, field), value in applied.items()},
+    }
+
+
+__all__ = ("DRESSUP_WARNING", "RebuildPlan", "parameter_table", "plan_rebuild", "rebuild", "rebuild_mock")

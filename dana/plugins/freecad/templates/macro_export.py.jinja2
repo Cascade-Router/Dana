@@ -171,8 +171,8 @@ doc.recompute()
 {{ step.var }}.Spine = (helix_path_{{ step.index }}, [])
 {{ step.var }}.Solid = True
 {{ step.var }}.Frenet = True
-{% if step.placement != (0.0, 0.0, 0.0) %}
-{{ step.var }}.Placement = App.Placement(App.Vector{{ step.placement|pyrepr }}, App.Rotation())
+{% if step.placement != (0.0, 0.0, 0.0) or step.angle_offset %}
+{{ step.var }}.Placement = App.Placement(App.Vector{{ step.placement|pyrepr }}, App.Rotation({{ (step.angle_offset or 0.0)|pyrepr }}, 0.0, 0.0))
 {% endif %}
 doc.recompute()
 
