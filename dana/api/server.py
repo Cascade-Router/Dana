@@ -108,6 +108,7 @@ from dana.core.react_dispatch import _TOOL_TOKEN_BUDGET as _TOOL_SCHEMA_TOKEN_BU
 from dana.core.context_distiller import schedule_distillation  # noqa: E402
 from dana.paths import CAPTURES_DIR  # noqa: E402
 from dana.session_context import set_session_id  # noqa: E402
+from dana.core.openai_tool_bridge import interrupt_response  # noqa: E402
 from dana.platform import get_cad_engine, get_control_plane  # noqa: E402
 from dana.platform.factory import IS_HF_SPACE  # noqa: E402
 from dana.plugins.freecad.call_log import CadCallLog  # noqa: E402
@@ -473,6 +474,27 @@ class _DeltaStreamer:
         self._last_flush = time.monotonic()
         self._streamed = False
         self._closed = False
+        self._aborted = False
+        self._response: Any = None
+
+    def should_abort(self) -> bool:
+        """Polled by the bridge between stream lines (openai_tool_bridge)."""
+        return self._aborted
+
+    def bind_response(self, resp: Any) -> None:
+        self._response = resp
+        if self._aborted:
+            interrupt_response(resp)
+
+    def abort(self) -> None:
+        """abort_turn: stop the generation itself, not just the display. The
+        bridge sees should_abort() at its next line; interrupting the
+        response also wakes a read blocked waiting for that line, so the
+        worker thread (and a local model's llm_lock) is freed right away."""
+        self._aborted = True
+        self.close(discard=True)
+        if self._response is not None:
+            interrupt_response(self._response)
 
     def __call__(self, text: str) -> None:
         with self._lock:
@@ -2978,10 +3000,10 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
                     await _finish_turn(websocket, session, pending["messages"], "Generation aborted by user.")
                 else:
                     session["abort_requested"] = True
-                    # Text still streaming from the LLM is void the moment Stop is hit.
+                    # Stop the LLM call itself, not just the text on screen.
                     stream = session.get("active_stream")
                     if stream is not None:
-                        stream.close(discard=True)
+                        stream.abort()
                 continue
 
             if msg_type == "set_auto_approve":

@@ -15,6 +15,7 @@ from dana.config import LLM_MAX_OUTPUT_TOKENS
 from dana.core.openai_tool_bridge import (
     _USER_AGENT,
     DeltaCallback,
+    StreamAborted,
     build_multimodal_messages,
     complete_ollama_native_with_tools,
     complete_openai_with_tools,
@@ -1045,6 +1046,8 @@ class ModelProvider:
                         on_delta=on_delta,
                     )
             effective_provider = resolved_provider
+        except StreamAborted:
+            raise  # the user hit Stop; not an outage to fall back from
         except Exception as exc:  # noqa: BLE001 — any cloud failure falls back to local Ollama below
             if resolved_provider == "ollama" or not ollama_fallback_enabled():
                 raise
@@ -1224,6 +1227,8 @@ class ModelProvider:
                         fallback_models=fallback_models,
                         on_delta=on_delta,
                     )
+            except StreamAborted:
+                raise  # the user hit Stop; don't try the next fleet entry
             except Exception as exc:  # noqa: BLE001 — advance to the next chain entry
                 reset_stream(on_delta)
                 errors.append(f"{entry.id} ({entry.provider}/{entry.model}): {exc}")

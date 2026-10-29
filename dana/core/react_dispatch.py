@@ -37,7 +37,7 @@ from dana.core.context_manager import (
     prune_tool_output_history,
 )
 from dana.core.model_provider import ModelProvider, tool_calling_provider
-from dana.core.openai_tool_bridge import DeltaCallback, reset_stream
+from dana.core.openai_tool_bridge import DeltaCallback, StreamAborted, interrupt_response, reset_stream
 from dana.core.routing_config import cloud_allowed
 from dana.core.skill_loader import delete_skill, load_user_skills, read_skill_source, save_skill
 from dana.core.tool_retrieval import narrow_tool_ids_by_query
@@ -7876,12 +7876,14 @@ def _sticky_tool_ids_from_messages(messages: list[dict[str, Any]], raw_text: str
 
 class _GuardedStream:
     """Wraps a turn's ``on_delta`` sink for ONE LLM call so it can be closed:
-    after ``close()`` the call's thread may keep producing chunks, but they
-    are dropped."""
+    ``close()`` (a timeout) drops any further chunks AND interrupts the HTTP
+    stream, so the abandoned call stops generating instead of holding the
+    connection (and, for local Ollama, ``llm_lock``) until it finishes."""
 
     def __init__(self, sink: DeltaCallback) -> None:
         self._sink = sink
         self._open = True
+        self._response: Any = None
 
     def __call__(self, text: str) -> None:
         if self._open:
@@ -7891,9 +7893,23 @@ class _GuardedStream:
         if self._open:
             reset_stream(self._sink)
 
+    def should_abort(self) -> bool:
+        if not self._open:
+            return True
+        sink_abort = getattr(self._sink, "should_abort", None)
+        return bool(callable(sink_abort) and sink_abort())
+
+    def bind_response(self, resp: Any) -> None:
+        self._response = resp
+        bind = getattr(self._sink, "bind_response", None)
+        if callable(bind):
+            bind(resp)
+
     def close(self) -> None:
         self.reset()
         self._open = False
+        if self._response is not None:
+            interrupt_response(self._response)
 
 
 async def _call_llm_once(
@@ -8770,6 +8786,10 @@ async def next_react_turn(
             state_overlay=_format_object_registry_overlay(session_id),
             on_delta=on_delta,
         )
+    except StreamAborted:
+        # abort_turn interrupted the stream; the caller sees the abort flag
+        # and ends the turn. Not a model failure, so nothing is logged.
+        return ReactTurn("error", content="Generation aborted by user.")
     except Exception as exc:  # noqa: BLE001 — Ollama unreachable/model missing surfaces as an error turn
         # str(exc) is all the UI-facing "error" turn carries onward (server.py
         # replaces it with a generic apology anyway) -- without this print,

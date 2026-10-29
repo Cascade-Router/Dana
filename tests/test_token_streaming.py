@@ -266,12 +266,12 @@ def test_self_correction_retry_resets_the_rejected_reply(monkeypatch: pytest.Mon
     assert sink.text == "Fine, done."
 
 
-def test_abort_resets_a_stream_still_in_flight(ws_client: TestClient) -> None:
+def test_abort_stops_a_stream_still_in_flight(ws_client: TestClient) -> None:
     closed: list[bool] = []
 
     class _Stream:
-        def close(self, *, discard: bool) -> None:
-            closed.append(discard)
+        def abort(self) -> None:
+            closed.append(True)
 
     with ws_client.websocket_connect("/ws/chat") as ws:
         ready = ws.receive_json()
@@ -282,3 +282,139 @@ def test_abort_resets_a_stream_still_in_flight(ws_client: TestClient) -> None:
         ws.receive_json()
     assert closed == [True]
     assert session["abort_requested"] is True
+
+
+# --- true mid-stream abort -----------------------------------------------------
+
+
+class _AbortingSink(_Sink):
+    """Asks to abort right after the first streamed chunk."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.response: Any = None
+
+    def should_abort(self) -> bool:
+        return bool(self.events)
+
+    def bind_response(self, resp: Any) -> None:
+        self.response = resp
+
+
+def test_abort_after_the_first_chunk_stops_reading_the_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    read: list[bytes] = []
+    exited: list[bool] = []
+
+    class _CountingResp(_Resp):
+        def __iter__(self):
+            for line in self._lines:
+                read.append(line)
+                yield line
+
+        def __exit__(self, *_exc: Any) -> None:
+            exited.append(True)
+
+    lines = [_sse({"content": "one"}), _sse({"content": "two"}), _sse({"content": "three"}), b"data: [DONE]\n"]
+    monkeypatch.setattr(bridge.urllib.request, "urlopen", lambda *_a, **_k: _CountingResp(lines))
+    sink = _AbortingSink()
+    with pytest.raises(bridge.StreamAborted):
+        _complete(sink)
+    assert sink.events == [("delta", "one")]
+    assert len(read) == 2  # the line after the abort is read, checked, and nothing more
+    assert exited == [True]  # the HTTP response is closed
+    assert isinstance(sink.response, _CountingResp)
+
+
+def test_abort_interrupts_a_read_blocked_waiting_for_the_model() -> None:
+    """The real case: the model has gone quiet (prefill / slow token) and the
+    worker thread is blocked inside the socket read. Abort must free it now,
+    not when the next chunk eventually arrives."""
+    import http.server
+    import threading
+    import time
+
+    class _SlowModel(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(_sse({"content": "first"}) + b"\n")
+            self.wfile.flush()
+            time.sleep(20)
+
+        def log_message(self, *_a: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _SlowModel)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    class _Sink2(_AbortingSink):
+        def should_abort(self) -> bool:
+            return aborted.is_set()
+
+        def __call__(self, text: str) -> None:
+            super().__call__(text)
+            # Stop is pressed while the model is busy producing the next token.
+            threading.Timer(0.2, lambda: (aborted.set(), bridge.interrupt_response(self.response))).start()
+
+    aborted = threading.Event()
+    sink = _Sink2()
+    started = time.perf_counter()
+    try:
+        with pytest.raises(bridge.StreamAborted):
+            bridge.complete_openai_with_tools(
+                [{"role": "user", "content": "hi"}], api_key="k",
+                base_url=f"http://127.0.0.1:{server.server_address[1]}", model="m", on_delta=sink,
+            )
+    finally:
+        server.shutdown()
+    assert time.perf_counter() - started < 5
+    assert sink.text == "first"
+
+
+def test_abort_never_falls_back_to_another_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    def cloud(*_a: Any, **_k: Any) -> dict[str, Any]:
+        raise bridge.StreamAborted()
+
+    def local(*_a: Any, **_k: Any) -> dict[str, Any]:
+        raise AssertionError("an aborted turn must not be retried on local Ollama")
+
+    monkeypatch.setattr(mp, "complete_openai_with_tools", cloud)
+    monkeypatch.setattr(mp, "complete_ollama_native_with_tools", local)
+    monkeypatch.setattr(mp, "ollama_fallback_enabled", lambda: True)
+    with pytest.raises(bridge.StreamAborted):
+        mp.ModelProvider(api_keys={"openrouter": "k"}).complete_with_tool_calls(
+            [{"role": "user", "content": "hi"}], tools=[], provider="openrouter", on_delta=_Sink()
+        )
+
+
+def test_stop_after_the_first_chunk_ends_the_turn_immediately(
+    monkeypatch: pytest.MonkeyPatch, ws_client: TestClient
+) -> None:
+    import time
+
+    class _Generating:
+        """Streams one chunk, then keeps "generating" until told to stop."""
+
+        def complete_with_tool_calls(self, messages: Any, *, tools: Any, **kwargs: Any) -> dict:
+            on_delta = kwargs["on_delta"]
+            on_delta("x" * 80)  # past the batch threshold: reaches the client now
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if on_delta.should_abort():
+                    raise bridge.StreamAborted()
+                time.sleep(0.01)
+            return {"content": "never", "tool_calls": [], "provider": "test"}
+
+    monkeypatch.setattr(rd, "ModelProvider", lambda **_k: _Generating())
+    with ws_client.websocket_connect("/ws/chat") as ws:
+        ws.receive_json()
+        ws.send_json({"text": "write me an essay"})
+        while ws.receive_json()["type"] != "assistant_delta":
+            pass
+        started = time.monotonic()
+        ws.send_json({"type": "abort_turn"})
+        events = _events_until_reply(ws)
+    assert time.monotonic() - started < 5
+    assert events[-1] == {"type": "assistant_message", "content": "Generation aborted by user."}
+    assert {"type": "assistant_delta_reset", "node_id": "parse-0"} in events

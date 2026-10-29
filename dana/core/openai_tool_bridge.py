@@ -15,12 +15,14 @@ This module has no Dana-internal dependencies besides the tool IR
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
+import socket
 import sys
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 
@@ -58,6 +60,58 @@ def reset_stream(on_delta: DeltaCallback | None) -> None:
     reset = getattr(on_delta, "reset", None)
     if callable(reset):
         reset()
+
+
+class StreamAborted(Exception):
+    """The caller stopped this generation mid-stream (abort_turn). Never a
+    provider failure: callers must not fall back to another provider on it."""
+
+
+def _stream_aborted(on_delta: DeltaCallback | None) -> bool:
+    should_abort = getattr(on_delta, "should_abort", None)
+    return bool(callable(should_abort) and should_abort())
+
+
+def _bind_response(on_delta: DeltaCallback | None, resp: Any) -> None:
+    """Hands the live HTTP response to a callback that can interrupt it
+    (``bind_response``), so an abort can stop a read that is blocked waiting
+    for the model's next chunk instead of waiting for that chunk to arrive."""
+    bind = getattr(on_delta, "bind_response", None)
+    if callable(bind):
+        bind(resp)
+
+
+def interrupt_response(resp: Any) -> None:
+    """Unblocks a thread reading ``resp`` from another thread. ``shutdown``
+    wakes a blocked read on Linux/macOS; on Windows only closing the socket
+    handle does, so both are done. Best-effort: anything already closed is
+    ignored."""
+    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+    if sock is None:
+        return
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    try:
+        socket.close(sock.detach())
+    except (OSError, ValueError):
+        pass
+
+
+@contextlib.contextmanager
+def _abortable(on_delta: DeltaCallback | None) -> Iterator[None]:
+    """Turns the error an interrupted read raises into ``StreamAborted``
+    when the stream was aborted on purpose, so it is never mistaken for a
+    provider outage (which would trigger a fallback)."""
+    try:
+        yield
+    except StreamAborted:
+        raise
+    except Exception as exc:
+        if _stream_aborted(on_delta):
+            raise StreamAborted() from exc
+        raise
 
 
 def build_image_content_part(image_b64: str, *, mime_type: str = "image/png") -> dict[str, Any]:
@@ -266,8 +320,11 @@ def _complete_openai_with_tools_once(
     finish_reason: str | None = None
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _abortable(on_delta), urllib.request.urlopen(req, timeout=timeout) as resp:
+            _bind_response(on_delta, resp)
             for raw_line in resp:
+                if _stream_aborted(on_delta):
+                    raise StreamAborted()
                 line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line or not line.startswith("data:"):
                     continue
@@ -539,8 +596,11 @@ def complete_ollama_native_with_tools(
     finish_reason: str | None = None
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _abortable(on_delta), urllib.request.urlopen(req, timeout=timeout) as resp:
+            _bind_response(on_delta, resp)
             for raw_line in resp:
+                if _stream_aborted(on_delta):
+                    raise StreamAborted()
                 line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
@@ -611,6 +671,8 @@ def complete_ollama_native_with_tools(
 
 __all__ = (
     "DeltaCallback",
+    "StreamAborted",
+    "interrupt_response",
     "reset_stream",
     "build_image_content_part",
     "build_multimodal_messages",
