@@ -226,11 +226,14 @@ def test_mock_engine_prunes_objects_whose_mesh_is_gone_without_shelling_out(
     assert set(mock_module._MOCK_OBJECT_REGISTRY[SID]) == {"Plate"}
 
 
-def test_ws_resume_seeds_ready_with_the_restored_state() -> None:
+def test_ws_resume_seeds_ready_with_the_restored_state(monkeypatch: pytest.MonkeyPatch) -> None:
     from fastapi.testclient import TestClient
 
+    # Pinned to the real-engine path: get_cad_engine() is the mock on Linux,
+    # where these seeded objects (no mesh files) would rightly be pruned.
+    monkeypatch.setattr(server_module, "get_cad_engine", _RealEngine)
     _seed_engine_state()
-    state = session_state.capture_session_state(_session(), server_module.get_cad_engine())
+    state = session_state.capture_session_state(_session(), _RealEngine())
     sessions.save_session(SID, title="t", created_at=None, messages=[], state=state)
     _forget_process_state()
 
