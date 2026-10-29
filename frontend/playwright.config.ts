@@ -12,9 +12,10 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: [["list"]],
   use: {
-    // Fixed by frontend/vite.config.ts (Tauri requires a predictable dev
-    // port — see that file's own comment); NOT Vite's usual default 5173.
-    baseURL: "http://localhost:1420",
+    // A dedicated Vite instance (see webServer below), not the usual 1420
+    // dev server, so a running `npm run dev` / `tauri dev` pointed at the
+    // real backend is never reused by mistake.
+    baseURL: "http://localhost:1421",
     trace: "retain-on-failure",
   },
   projects: [
@@ -23,32 +24,27 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  // Both processes this test needs — the real dana.api.server backend (for
-  // a real /ws/chat session_id; no FreeCAD calls are ever made, so no real
-  // FreeCAD install is required for this suite) and the Vite dev server
-  // (frontend/src, live/HMR — the whole point of this suite is asserting
-  // against the actual current source, never a possibly-stale frontend/dist
-  // build). `reuseExistingServer` locally means an already-running `npm run
-  // dev`/backend (e.g. from `npm run tauri dev`) is left alone rather than
-  // fighting over the same port.
+  // The real dana.api.server, but started by tests/e2e/mock_backend.py: the
+  // trimesh mock CAD engine, a scripted LLM (streams slowly, reports token
+  // usage) and a throwaway temp workspace — so a UI test can run whole CAD
+  // turns, rebuilds and exports without FreeCAD, an API key, or ever writing
+  // into the real freecad_output/, exports/ or agent_workspace/. Never
+  // reused: both ports belong to this suite only.
   webServer: [
     {
-      // The project's own .venv, not whatever bare `python` resolves to on
-      // PATH — the backend needs its real installed deps (dotenv, fastapi,
-      // uvicorn, ...), which only live in .venv here.
-      command: ".venv\\Scripts\\python.exe scripts/launchers/launch_api_server.py",
+      command: ".venv\\Scripts\\python.exe tests/e2e/mock_backend.py --port 8765",
       cwd: "..",
-      // No dedicated /health route exists — dana.api.cad's artifact list is
-      // a real, auth-free, always-200 GET (session_id is optional), so it
+      // dana.api.cad's artifact list: auth-free and always 200, so it
       // doubles as a readiness probe.
-      url: "http://127.0.0.1:8000/api/cad/artifacts",
-      reuseExistingServer: !process.env.CI,
-      timeout: 30_000,
+      url: "http://127.0.0.1:8765/api/cad/artifacts",
+      reuseExistingServer: false,
+      timeout: 60_000,
     },
     {
-      command: "npm run dev",
-      url: "http://localhost:1420",
-      reuseExistingServer: !process.env.CI,
+      command: "npm run dev -- --port 1421",
+      url: "http://localhost:1421",
+      env: { VITE_API_BASE: "http://127.0.0.1:8765" },
+      reuseExistingServer: false,
       timeout: 30_000,
     },
   ],

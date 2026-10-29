@@ -26,7 +26,13 @@
   min-height: 0;
 }
 
-.cad-plugin__viewport > .blueprint-viewer {
+/* BlueprintViewer renders a bare .blueprint-viewer__placeholder (no
+   .blueprint-viewer wrapper) when there's no blueprint yet or it failed to
+   load, so every rule for the 2D view covers both. Without that the
+   placeholder text showed in 3D mode, across the canvas and the Inspector
+   dock. */
+.cad-plugin__viewport > .blueprint-viewer,
+.cad-plugin__viewport > .blueprint-viewer__placeholder {
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -39,7 +45,8 @@
   display: none;
 }
 
-.cad-plugin__viewport--3d > .blueprint-viewer {
+.cad-plugin__viewport--3d > .blueprint-viewer,
+.cad-plugin__viewport--3d > .blueprint-viewer__placeholder {
   display: none;
 }
 

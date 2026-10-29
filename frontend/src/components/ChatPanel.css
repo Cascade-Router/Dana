@@ -348,6 +348,8 @@
 
 .chat-panel__composer input {
   flex: 1;
+  /* Shrink instead of pushing Send out of the panel when space is tight. */
+  min-width: 0;
   padding: 0.5rem 0.75rem;
   border-radius: 0.4rem;
   border: 1px solid #3a3a3a;

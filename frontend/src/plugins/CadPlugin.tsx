@@ -85,16 +85,20 @@ export default function CadPlugin({
 
   // New deliverables (blueprint, BOM CSV, macro, STEP) appear as soon as the
   // tool that wrote them finishes, not only when the Export menu is opened.
-  const lastEvent = log.length ? log[log.length - 1] : undefined;
-  const deliverableEvent =
-    lastEvent &&
-    (lastEvent.type === "tool_dispatch_end" ||
-      lastEvent.type === "python_script_exported" ||
-      lastEvent.type === "rebuild_result")
-      ? lastEvent
-      : undefined;
+  // The newest such event anywhere in the log, not only the very last event:
+  // a turn's final tool_dispatch_end is followed at once by dag/usage/stream
+  // events, and when React batched them into one render the refresh never
+  // fired, so the bar kept saying "No mesh yet" after a successful build.
   // Keyed by content: in a detached window every broadcast carries new objects.
-  const deliverableKey = deliverableEvent ? JSON.stringify(deliverableEvent) : "";
+  const deliverableKey = useMemo(() => {
+    for (let i = log.length - 1; i >= 0; i--) {
+      const e = log[i];
+      if (e.type === "tool_dispatch_end" || e.type === "python_script_exported" || e.type === "rebuild_result") {
+        return `${i}|${JSON.stringify(e)}`;
+      }
+    }
+    return "";
+  }, [log]);
   useEffect(() => {
     if (deliverableKey) refreshArtifacts();
   }, [deliverableKey, refreshArtifacts]);

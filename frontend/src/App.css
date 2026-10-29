@@ -266,7 +266,13 @@ body {
    `flex: 0 0 350px` + explicit width/min-width/max-width all pinned to the
    same value is the most battle-tested "this sidebar physically cannot
    shrink" pattern there is — three separate properties all agreeing, not
-   relying on any one of them (or a percentage calculation) alone. */
+   relying on any one of them (or a percentage calculation) alone.
+   The 350px is pinned on .app__chat-column, not .app__left: .app__left
+   also holds the Chats sidebar (200px when expanded), and pinning the
+   whole column at 350px left the chat itself 149px wide — its input
+   collapsed and the Send button overflowed under the 3D canvas, unclickable
+   (found by tests/e2e/cad-session.spec.ts at 1280x720). The sidebar now
+   adds to the left column's width instead of eating into the chat. */
 .app__body {
   flex: 1;
   min-height: 0;
@@ -278,11 +284,7 @@ body {
 .app__left {
   display: flex;
   flex-direction: row;
-  flex: 0 0 350px;
-  flex-shrink: 0;
-  width: 350px;
-  min-width: 350px;
-  max-width: 350px;
+  flex: 0 0 auto;
   min-height: 0;
   border-right: 1px solid #2a2a2a;
 }
@@ -290,8 +292,10 @@ body {
 .app__chat-column {
   display: flex;
   flex-direction: column;
-  flex: 1;
-  min-width: 0;
+  flex: 0 0 350px;
+  width: 350px;
+  min-width: 350px;
+  max-width: 350px;
   min-height: 0;
 }
 
@@ -304,6 +308,13 @@ body {
   min-width: 0;
   max-width: 900px;
   margin: 0 auto;
+}
+
+.app:not(.app--with-plugin) .app__chat-column {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  max-width: none;
 }
 
 .app__right {

@@ -121,6 +121,9 @@ function GraphCanvas({ nodes, edges, onNodeClick }: GraphCanvasProps) {
       edges={edges}
       onNodeClick={(_e, node) => onNodeClick(node as Node<LineageNodeData>)}
       fitView
+      // Matches the app's dark UI; the light default drew the zoom controls
+      // as a blank white box.
+      colorMode="dark"
       proOptions={{ hideAttribution: true }}
     >
       <Background />
