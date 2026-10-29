@@ -1,140 +1,152 @@
 # Dānā Architecture
 
-Offline voice agent for CAMGRASPER: wake-word → STT → native LangChain tool calling
-(local Ollama) → SecureMemory vault + hybrid vision grounding + optional swarms → TTS.
+Dānā is an agentic CAD and manufacturing engineer. A user describes a part or
+an assembly in chat; an LLM-driven ReAct loop plans it and builds it in real
+FreeCAD (or a headless trimesh stand-in), then verifies, documents and
+prepares it for manufacture: STEP/STL/GLB, 2D blueprints, a costed BOM with
+tip-over stability, printability checks, slicing to G-code, and a replayable
+FreeCAD macro.
 
-**White paper (hardening + OSWorld):** [`docs/WHITE_PAPER.md`](docs/WHITE_PAPER.md)  
-**OSWorld bench:** `pytest tests/evals/test_osworld_bench.py`
+This file is also what the agent's `read_system_architecture` tool returns
+(capped at 24,000 characters), so it is kept short and current.
 
-## Package layout
+## Runtime shape
 
-| Package | Role |
-|---------|------|
-| `dana/` | Core agent, ReAct graph, vision, memory, tools, UI |
-| `dana_jason_loop/` | Jason supervisor / critic loop |
-| `dana_security/` | AST/subprocess security gates + `patch_ledger.md` |
+| Piece | What it is | Entry point |
+|---|---|---|
+| API server | FastAPI + one WebSocket per chat (`/ws/chat`) | `scripts/launchers/launch_api_server.py` → `dana/api/server.py` |
+| Desktop UI | Tauri 2 + React; CAD viewport, Inspector dock, Deliverables bar | `frontend/` |
+| Hosted demo | Gradio app on a Hugging Face Space, mock CAD engine | `app.py`, `deploy/` |
+| ReAct core | Prompt + tool selection + one LLM step per call | `dana/core/react_dispatch.py` |
+| LLM access | Cloud (OpenRouter by default) or local Ollama, OpenAI tool schema | `dana/core/model_provider.py`, `openai_tool_bridge.py`, `llm_router.py` |
+| CAD | FreeCAD plugin + Universal CAD IR | `dana/plugins/freecad/` |
+| Manufacturing | BOM, stability, printability, slicing, printer dispatch | `dana/plugins/manufacturing/`, `dana/plugins/hardware/` |
+| Drivers | Real FreeCAD on Windows, trimesh mock elsewhere | `dana/platform/` (`get_cad_engine`) |
 
-## System overview
+## A chat turn
 
-| Layer | Role | Key modules |
-|-------|------|-------------|
-| Perception | YOLO boxes + screen/camera frames | `vision_tools.py`, tracker in `dana/core_agent.py` |
-| Hybrid grounding | Win32 UIA first → Florence coarse → crop/zoom | `dana/vision/hybrid_grounding.py`, `dana/vision/uia_provider.py` |
-| Spatial compression | Dense `SpatialIR` prompt block | `spatial_context.py` |
-| Cognition | Bound-tools loop (≤3 turns) + language lock; MoA think extract | `dana/agentic.py`, `dana/moa_tool_shim.py`, `dana/prompts/spatial_synthesis.py` |
-| Routing | RapidFuzz mailroom ≥80% before LLM cascade; hydrate → planner supervisor | `dana/cascade_router.py`, `dana/agentic_react_graph.py` |
-| Tooling | EN/FA STT aliases + Tool IR + Pydantic guards + LangChain `@tool`s | `dana/tools/`, `dana/tools/guards.py` |
-| Shadow exec | Transactional staging under `.dana_scratch/` | `dana/exec/shadow_workspace.py` |
-| Self-heal | Critic retries; `FATAL_EXCEPTIONS` → HITL tickets; sub-graph N=2 | `dana/graph/nodes/critic.py`, `dana/graph/subgraph_router.py`, `dana/graph/buffer.py` |
-| Memory | Encrypted vault + SQLite Blackboard + episodic TTL/decay | `dana/secure_memory.py`, `dana/memory/blackboard.py`, `dana/memory/compaction.py` |
-| Handoffs | Structured Swarm `Handoff` (deterministic capability switch) | `dana/schema.py`, `dana/handoff.py` |
-| Background | Research swarm + Watchdog (Jason-supervised) | `dana/swarm/`, `dana_jason_loop/` |
-| Speech | Whisper STT + Piper EN/FA TTS via `TTSManager` | `dana/audio/tts_manager.py`, `dana/core_agent.py` audio workers |
-| Paths | Cwd-independent repo root + logs/docs/execution_jail | `dana/paths.py` (`PROJECT_ROOT`) |
-| Telemetry | Live Trace queue + JSONL tags + Meta-Broker IPC | `dana/telemetry.py`, `dana/graph/meta_broker_process.py` |
-| Web (HF) | Gradio headless bridge (no Tkinter) | `app.py`, `dana/web/headless_bridge.py` |
-| Security | Importable gates (do not modify casually) | `dana_security/` |
+1. **Turn queue.** Every turn (typed, voice, or a HITL/visual-capture reply)
+   runs as a tracked `asyncio.Task` chained per session (`_spawn_turn`), so
+   turns never overlap and the socket keeps reading while one runs. Closing
+   the socket cancels queued and running turns.
+2. **Prompt.** Only `[system_prompt, user_msg]` plus the distilled
+   `working_memory.summary` (≤ 1,200 chars, `context_distiller`) — never a
+   replay of the whole chat history.
+3. **One LLM step** (`next_react_turn`) proposes at most one tool call. The
+   reply streams to the UI as `assistant_delta` chunks; the final
+   `assistant_message` always replaces the streamed text.
+4. **Dispatch.** `dispatch_tool_call` runs in a worker thread
+   (`asyncio.to_thread`), so a 60 s FreeCAD call never blocks other sessions.
+5. **Loop** until the model answers in text, up to `MAX_REACT_ITERATIONS`
+   (30). **Stop** (`abort_turn`) interrupts the LLM stream itself (the HTTP
+   read, and `llm_lock` for local models), not just the display.
 
-## Headless multi-process architecture (current)
+### Plan-and-Execute state machine
 
-| Feature | Behavior | Module |
-|---------|----------|--------|
-| **Isolated Meta-Broker** | Epics run in a spawned `multiprocessing.Process`; parent drains a non-blocking Queue (`put_nowait`, drop-on-full) so GUI/headless never deadlocks | `dana/graph/meta_broker_process.py` |
-| **IPC telemetry** | Child `child_queue_put` → parent `on_event` → Task Tracker + optional TTS notifications | `emit_meta_broker_telemetry`, `TTSManager.notify` |
-| **Zero keep-alive** | `DANA_OLLAMA_KEEP_ALIVE=0` + inter-epic `gc.collect()` reclaim RAM under AST load | `dana/system_health.py`, broker GC hooks |
-| **`manifest.json` contract** | AST `ClassDef` + `FunctionDef` exports written to `.dana_scratch/manifest.json` and prepended to the next epic | `dana/graph/artifact_manifest.py` |
-| **Stdlib-first codegen** | Worker / broker / supervisor prompts require Python stdlib unless the prompt requests third-party packages | `META_BROKER_STDLIB_RULE` |
-| **TTSManager** | One `speech_queue`, one daemon Piper consumer — sequential system-wide voice | `dana/audio/tts_manager.py` |
-| **Gradio HF Space** | `app.py` submits via `HeadlessBrokerBridge` (background thread + poll/stream) | `dana/web/headless_bridge.py` |
+Per session: `planning → executing ⇄ validating → done`
+(`_FSM_TABLE`). Geometry tools are gated until `create_plan` succeeds; each
+task tracks the tools it expected and the tools that actually ran, and
+`mark_task_completed` is refused until they match. A runaway streak of
+introspection calls is blocked. These gates keep small and free models on
+rails.
 
-Headless boot: `python run.py --no-gui` sets `DANA_NO_GUI` / `DANA_HEADLESS` and starts `start_headless_telemetry_drainer`.
+### Tool budget
 
-> **Stage 3 FSM hybrid:** LangGraph state is minimized to `session_id` / `current_agent` / `active_intent`. Full conversational history and DeepSeek `<think>` traces live on `memory/blackboard.db`. See [`docs/architecture.md`](docs/architecture.md).
+At most `_MAX_ACTIVE_TOOLS` = 30 tools and `_TOOL_TOKEN_BUDGET` = 2,000
+tokens of schema per call (`schema_minify.py` keeps first sentences only).
+Tools are found lazily (`search_tool_catalog` / `load_specific_tool`);
+capability domains decay out after a few turns of disuse. Tool retrieval is a
+384-d hash embedding on CPU — no neural embedding model.
 
-## Five hardened capabilities (production)
+### Human in the loop
 
-1. **Transactional Shadow Workspaces** — stage under `.dana_scratch/<session_id>/`; commit on `exit_code == 0`, else rollback.
-2. **Fatal Error Classification** — `FATAL_EXCEPTIONS` bypass Critic and draft HITL tickets.
-3. **Hybrid Win32 UIA + Crop-and-Zoom Florence-2** — UIA first; 15% pad + 2× upscale if edge &lt; 30 (1000-space).
-4. **Zero-Copy State Buffer & Sub-Graph Retries** — full traces in `raw_state_buffer`; local retries N=2 before supervisor escalate.
-5. **Memory Compaction** — spatial TTL **900s**; exponential decay \(W = W_0\exp(-0.05\cdot\Delta h)\).
+Mutating tools ask for approval unless the user enabled auto-approve.
+`ALWAYS_PROMPT_TOOL_IDS` (`execute_freecad_script`,
+`modify_existing_freecad_document`, `dispatch_to_printer`) always ask, even
+with auto-approve on. `modify_existing_freecad_document` only opens `.FCStd`
+files inside Dana's workspace.
 
-## Bilingual tool routing
+## CAD engine
 
-The **Intent Broker** (`dana/tools/broker.py`) maps spoken English into a
-language-agnostic `ToolCall` IR for the STT fast-path and argument validation.
+- **One FreeCADCmd subprocess per call**, serialized by the engine lock, run
+  through `_run_freecad_script` (with `_RUN_ONCE_WRAPPER`: FreeCADCmd would
+  otherwise re-run a failing script as `__main__`).
+- **One document per chat:** `freecad_output/sessions/<session_id>/Session_Active.FCStd`.
+  Objects are resolved by name (Name, then Label, then case-insensitive).
+- **Atomic saves:** a script that saves the session document gets a `.bak`
+  copy first; a timeout, a failed run, or a run that leaves the file
+  missing/empty restores it.
+- **Timeouts:** 60 s per call; 180 s for collision checks, blueprints and
+  printability (`DANA_FREECAD_HEAVY_TIMEOUT_S`).
+- **GUI:** shown only when `DANA_HEADLESS` is not `true` (the default lock is
+  `true`). Dana's FreeCAD window runs with a private `user.cfg` (`-u`) and only
+  the PID Dana launched is ever closed or screenshotted.
 
-1. **Normalize** text (Yeh/Kaf, digits, ZWNJ) via `dana/tools/normalize.py`.
-2. **Alias routing** — longest phrase match across EN/FA alias maps in `tools.json`.
-3. **Validate / self-correct** — enum coerce, fuzzy tool ids, drop hallucinated args.
-4. **Dispatch** — `switch_vision_source` may fast-path; most tools run inside the
-   LangChain loop via `dana.core_agent.execute_tool_call`.
+### Universal CAD IR
 
-LLM tool schemas for the cognitive loop come from `dana/tools/langchain_tools.py`
-(`build_langchain_tools` + native tools like `dispatch_watchdog`).
+`dana/plugins/freecad/ir.py` defines each operation once as a step dict
+(`from_args` for live calls, `from_record` for replay) rendered by one Jinja
+template (`templates/universal_ir.py.jinja2`). Live execution, the macro
+export (`py_export.py`), compiled skills (`skill_compiler.py`) and the
+parametric rebuild all use it. Kinds: box, cylinder, pyramid, pipe, helix,
+boolean, edge operation (fillet/chamfer), parameter/placement edits, mesh
+solidify, pattern, the face-feature composite, and the eight
+Sketcher/PartDesign features.
 
-## Cognitive loop (native bind_tools)
+### Zero-token parametric rebuild
 
-`run_react_loop` in `dana/agentic.py`:
+`dana/plugins/freecad/rebuild.py`. The session's `CadCallLog` is turned back
+into IR steps; the Parameters tab lists their dimensions. A rebuild patches
+the steps and renders them once into a **scratch** document, swapped over
+`Session_Active.FCStd` only on success — a bad value never touches the live
+model. On the mock engine the patched log is replayed through the mock
+driver instead. No LLM call either way. Logs containing raw scripts or
+assembly tools are reported as unsupported rather than rebuilt with
+geometry missing.
 
+## Session persistence
+
+`agent_workspace/data/sessions/<id>.json` (atomic writes) holds the chat,
+the distilled summary, the terminal log, and a `state` payload
+(`dana/api/session_state.py`): plan, object registry, topology DAG, assembly
+state, gates, CAD call log, usage/cost totals. Each save also snapshots the
+document to `freecad_output/sessions/<id>.FCStd` with its SHA-256; on resume
+a mismatched document is restored from that snapshot or, failing that, the
+object list is re-read from the document itself. Approvals, auto-approve,
+API keys and suspended HITL turns are never written to disk.
+
+## Hard constraints
+
+- **8 GB VRAM (RTX 2080 reference).** `ollama_num_ctx()` ≤ 8192; local
+  requests serialize on `llm_lock`; Ollama models unload (`keep_alive: 0`)
+  when the last socket closes. OCR, TTS and tool retrieval stay on CPU; no
+  persistent GPU daemons; torch is not in the base `requirements.txt`.
+- **Token budget.** No full-history replay; the tool budget above; one tool
+  per LLM step; the planning/executing gates.
+- **Process isolation.** One FreeCADCmd subprocess per call;
+  `DANA_HEADLESS=true` by default; the trimesh mock keeps CI and the Space
+  working (mock booleans need `manifold3d`).
+
+## Repository
+
+| Path | Role |
+|---|---|
+| `dana/api/` | Server, REST routers (sessions, CAD artifacts), session state |
+| `dana/core/` | ReAct loop pieces, providers, routing, distillation, telemetry |
+| `dana/plugins/` | Lazy plugins: freecad, manufacturing, hardware, planning, memory, os, web, vision, coder |
+| `dana/platform/` | CAD/OS drivers (win32, darwin, mock) |
+| `dana/tools/` | Tool schema/IR, CAD vision, OS control, misc tools |
+| `frontend/` | Tauri/React app |
+| `tests/` | pytest suite; `tests/e2e/` Playwright |
+| `scripts/ci/` | Boundary and dead-code gates, coverage floor |
+
+## Verifying a change
+
+```bash
+DANA_HEADLESS=true DANA_OS_DRY_RUN=1 .venv/Scripts/python -m pytest tests --timeout=300
+python scripts/ci/check_boundaries.py
+python scripts/ci/check_dead_code_incremental.py --base origin/main
+cd frontend && npm run build && npx playwright test
 ```
-User query → System (SpatialIR + synthesis guide + protocol)
-  → ChatOllama.bind_tools(tools)
-  → AIMessage.tool_calls → execute_fn → ToolMessage
-  → AIMessage (spoken answer) → Piper TTS
-```
 
-- **Cap:** `REACT_MAX_ITERS = 3`.
-- **No** manual `TOOL:` / JSON Initiative text parsing in production.
-- Recency context (`<visual_context>`, `<memory>`, `<active_watchdogs>`) is appended
-  to the latest user message via `format_recency_context_block`.
-
-Production ReAct corridor entry: `START → hydrate_memory → planner → executor → agent`
-(`compile_dana_react_graph` in `dana/agentic_react_graph.py`).
-
-## Background work
-
-| Tool | Behavior |
-|------|----------|
-| `dispatch_research_swarm` | Daemon thread → LangGraph research → TTS summary |
-| `dispatch_watchdog` | Daemon thread → Dana coder ↔ Jason → sandboxed REPL |
-| `kill_watchdog` | Stop a registered Watchdog by ID |
-| Episodic log | `docs/watchdog_history.db` via `experience_logger.py` |
-
-Watchdog scripts run with `cwd=execution_jail/` only (filesystem jail). The importable
-`dana_security` package is separate — AST/subprocess security + `patch_ledger.md`.
-
-## Request lifecycle
-
-```mermaid
-flowchart TD
-  A[Wake word / utterance] --> B[VAD + Whisper STT]
-  B --> C{Intent Broker fast-path}
-  C -->|switch_vision_source| D[Vision tool swap]
-  C -->|other / none| E[SpatialIR + system prompt]
-  D --> E
-  E --> F[ChatOllama.bind_tools]
-  F -->|tool_calls| G[execute_tool_call / plugins]
-  G --> H[ToolMessage]
-  H --> F
-  F -->|spoken AIMessage| I[Piper TTS]
-  G -->|dispatch_watchdog / swarm| J[Background thread]
-  J --> K[enqueue_speech when done]
-```
-
-## Verification
-
-| Script | Purpose |
-|--------|---------|
-| `scripts/diagnostics/verify_agentic.py` | Broker + scripted LangChain loop checks |
-| `test_langchain_tools.py` | Native tool bridge + Watchdog registry |
-| `test_watchdog_graph.py` | Watchdog graph / sandbox cwd |
-| `test_e2e_lifecycle.py` | Lifecycle + resource profiling |
-| `tests/evals/test_osworld_bench.py` | Adversarial OSWorld-style offline bench |
-
-## Operational notes
-
-- Settings in `settings.json`: `{mic_id, speaker_id, enable_dynamic_tool_synthesis}`.
-- Self-awareness: `read_system_architecture` returns this file + tools schema summary.
-- OS typing: production uses real injection; `DANA_OS_DRY_RUN=1` for debug/E2E.
-- Singleton agent lock port `47474`; vault daemon `47475` (or `DANA_VAULT_PORT`).
+Tests marked `e2e` drive real FreeCAD and skip when FreeCADCmd is not found.

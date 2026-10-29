@@ -1,10 +1,10 @@
-Please review the `dana_security/patch_ledger.md` file.
+Dānā is an agentic CAD and manufacturing engineer. Read ARCHITECTURE.md before changing anything; it is the current ground truth.
 
-Your task is to execute ONLY the tickets marked `[PENDING]`.
+Hard constraints — never break these:
+1. 8 GB VRAM (RTX 2080): keep ollama_num_ctx() <= 8192, llm_lock serialization for local Ollama, keep_alive 0 on socket close. OCR, TTS and tool retrieval (384-d hash embeddings) stay on CPU. No neural embedding models, no persistent GPU daemons, no torch in requirements.txt.
+2. Token budget: never replay full chat history (system + user message + working_memory.summary <= 1,200 chars). Keep _TOOL_TOKEN_BUDGET = 2000, _MAX_ACTIVE_TOOLS = 30, schema_minify, capability decay, lazy tool discovery, one tool per LLM step, and the planning/executing FSM gates.
+3. FreeCAD: one FreeCADCmd subprocess per call through _run_freecad_script (_RUN_ONCE_WRAPPER, .FCStd.bak rollback), one Session_Active.FCStd per session, objects resolved by name. New CAD operations go into the Universal CAD IR (dana/plugins/freecad/ir.py + universal_ir.py.jinja2) so live execution, macro export and the parametric rebuild stay identical.
+4. DANA_HEADLESS=true is the default safety lock; never unset it in tests. Keep the trimesh mock engine working (CI and the Hugging Face Space use it).
+5. Approvals, auto_approve and API keys are never persisted. execute_freecad_script, modify_existing_freecad_document and dispatch_to_printer always require approval.
 
-CRITICAL SAFETY RULES:
-1. **Zero Hallucination:** If a ticket's "Context & Instructions" are vague, brief, or lack specific architectural details, DO NOT attempt to write the code. Mark the ticket as `[FAILED]` and write "Instructions too ambiguous" in the receipt.
-2. **Minimal Diffs:** Only modify the exact lines necessary to satisfy the objective. Do not refactor surrounding code, rename variables, or "clean up" the file.
-3. **Pipeline Integrity:** Under no circumstances should you modify ToolForge security gates, the offline routing structure, or `dana/paths.py`.
-
-Once complete, punch the receipt in the ledger by changing the status to `[RESOLVED]` and adding a 1-sentence summary of the exact lines you changed.
+Before committing: pytest (DANA_HEADLESS=true DANA_OS_DRY_RUN=1), scripts/ci/check_boundaries.py, scripts/ci/check_dead_code_incremental.py, and `npm run build` in frontend/. Commit with explicit pathspecs (git commit -- <files>).

@@ -165,7 +165,7 @@ Paths referenced by old docs that **do not exist**: `run.py`, `dana/core_agent.p
   - `frontend`: `npm ci && npm run build`
 
   Not in CI: Playwright e2e, the Tauri/Cargo build, and the website build (it has its own workflow).
-- **Release.** `release.yml`, on `v*` tags, runs tests, builds `dana-engine-<tag>.tar.gz` plus `latest.json`, and publishes a GitHub release. Its comment references the missing `dana/updater/manifest.py`.
+- **Release.** `release.yml`, on `v*` tags, runs the tests (headless, dry-run), builds `dana-engine-<tag>.tar.gz` plus a `.sha256` checksum, and publishes a GitHub release. (The OTA `latest.json` manifest it used to publish was dropped in 2026-10 along with the removed `dana/updater`.)
 - **Packaging.** `build_dana.py` / `Dana.spec` (PyInstaller) build the backend from `scripts/launchers/launch_api_server.py` (§3.1 item 3, resolved).
 
 ---

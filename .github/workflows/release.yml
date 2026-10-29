@@ -1,17 +1,18 @@
-# Automated OTA release pipeline.
-# Triggers on tag push matching v*.*.* (e.g. v0.1.0).
+# Release pipeline. Triggers on tag push matching v*.*.* (e.g. v0.1.0).
 #
 # Publishes:
-#   - dana-engine-<tag>.tar.gz  — dana/ package tree (+ scripts/) excluding
+#   - dana-engine-<tag>.tar.gz         — dana/ package tree (+ scripts/) excluding
 #     __pycache__, .venv, and heavy optional assets (tts_models/*.onnx blobs).
-#   - latest.json               — OTA manifest for OTAManifestManager
-#     (fields: version, url|package_url, sha256; version without leading "v").
+#   - dana-engine-<tag>.tar.gz.sha256  — its checksum.
+#
+# (It used to also publish latest.json, an OTA manifest for dana/updater's
+# OTAManifestManager. That updater was removed and nothing reads the file.)
 #
 # Cut a release:
 #   git tag v0.1.0
 #   git push origin v0.1.0
 
-name: OTA Release
+name: Release
 
 on:
   push:
@@ -23,7 +24,7 @@ permissions:
 
 jobs:
   ota-release:
-    name: Test, package, publish OTA
+    name: Test, package, publish
     runs-on: windows-latest
 
     steps:
@@ -44,7 +45,11 @@ jobs:
           pip install "Pillow>=10,<13"
 
       - name: Run full test suite
-        run: python -m pytest tests/ --tb=short
+        # Same safety locks as the Build workflow: no OS automation, no GUI.
+        env:
+          DANA_OS_DRY_RUN: "1"
+          DANA_HEADLESS: "true"
+        run: python -m pytest tests/ --tb=short -m "not live_ollama" --timeout=300
 
       - name: Derive version metadata
         id: meta
@@ -52,14 +57,10 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
-          OWNER="${GITHUB_REPOSITORY_OWNER}"
-          REPO="${GITHUB_REPOSITORY#*/}"
           ASSET="dana-engine-${TAG}.tar.gz"
-          URL="https://github.com/${OWNER}/${REPO}/releases/download/${TAG}/${ASSET}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "asset=${ASSET}" >> "$GITHUB_OUTPUT"
-          echo "url=${URL}" >> "$GITHUB_OUTPUT"
           echo "Packaging OTA asset=${ASSET} version=${VERSION}"
 
       - name: Package dana engine tarball
@@ -100,28 +101,12 @@ jobs:
           PY
 
 
-      - name: Calculate SHA256 and write latest.json
+      - name: Write SHA256 checksum
         shell: bash
         run: |
           ASSET="${{ steps.meta.outputs.asset }}"
-          SHA256=$(python -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$ASSET")
-          # Align with dana/updater/manifest.py ManifestInfo.from_dict:
-          #   version (no leading v), url|package_url, sha256
-          python - <<PY
-          import json
-          payload = {
-              "version": "${{ steps.meta.outputs.version }}",
-              "url": "${{ steps.meta.outputs.url }}",
-              "package_url": "${{ steps.meta.outputs.url }}",
-              "sha256": "${SHA256}",
-              "release_notes": "Automated OTA Release",
-          }
-          with open("latest.json", "w", encoding="utf-8") as fh:
-              json.dump(payload, fh, indent=2)
-              fh.write("\n")
-          print(json.dumps(payload, indent=2))
-          PY
-          echo "SHA256=${SHA256}"
+          python -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest() + '  ' + sys.argv[1])" "$ASSET" > "$ASSET.sha256"
+          cat "$ASSET.sha256"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -134,12 +119,12 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             ${{ steps.meta.outputs.asset }}
-            latest.json
+            ${{ steps.meta.outputs.asset }}.sha256
           body: |
-            Automated OTA Release `${{ steps.meta.outputs.version }}`.
+            Release `${{ steps.meta.outputs.version }}`.
 
             Assets:
             - `${{ steps.meta.outputs.asset }}` — dana engine package
-            - `latest.json` — OTA manifest (`version`, `url`/`package_url`, `sha256`)
+            - `${{ steps.meta.outputs.asset }}.sha256` — its SHA-256 checksum
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

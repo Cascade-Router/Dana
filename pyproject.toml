@@ -1,10 +1,10 @@
-# Dānā: Open-Source Cybernetic Multi-Agent Control Plane
+# Dānā: Agentic CAD & Manufacturing Engineer
 # See docs/LEGAL_AND_IP.md for branding, Class 009/042 scope, and license posture.
 
 [project]
 name = "dana"
 version = "0.1.0"
-description = "Dānā: Open-Source Cybernetic Multi-Agent Control Plane"
+description = "Dānā: Agentic CAD & Manufacturing Engineer — plans, builds and verifies parts in FreeCAD from chat"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "AGPL-3.0-or-later" }
