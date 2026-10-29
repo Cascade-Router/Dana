@@ -112,7 +112,7 @@ export function DeliverablesBar({ sessionId, artifacts, log, onExportMacro, onSh
         className="deliverables-bar__btn"
         disabled={!mesh}
         onClick={() => open(mesh)}
-        title={mesh?.filename}
+        title={mesh ? "Download the latest mesh" : "No mesh yet"}
       >
         {mesh ? mesh.format.toUpperCase() : "STL"}
       </button>
@@ -124,7 +124,7 @@ export function DeliverablesBar({ sessionId, artifacts, log, onExportMacro, onSh
           type="button"
           className="deliverables-bar__btn deliverables-bar__btn--icon"
           disabled={!pdf}
-          title={pdf ? `Download ${pdf.filename}` : "No blueprint PDF yet"}
+          title={pdf ? "Download the latest blueprint PDF" : "No blueprint PDF yet"}
           onClick={() => open(pdf)}
         >
           PDF
