@@ -65,16 +65,24 @@ export function DeliverablesBar({ sessionId, artifacts, log, onExportMacro, onSh
 
   // Download the macro only for an export THIS click asked for — never for a
   // python_script_exported event replayed from a restored log.
-  // Compared by identity, not count: the log is capped, so counts can stall.
-  const seenMacroEvent = useRef<ServerEvent | undefined>(undefined);
+  // Keyed by the server's exported_at stamp, not object identity: events
+  // relayed to a detached window are new objects on every broadcast.
+  const latestExport = useMemo(() => {
+    for (let i = log.length - 1; i >= 0; i--) {
+      const e = log[i];
+      if (e.type === "python_script_exported") return e;
+    }
+    return undefined;
+  }, [log]);
+  const exportKey = latestExport ? `${latestExport.exported_at ?? ""}|${latestExport.download_url}` : "";
+  const seenExportKey = useRef<string | null>(null);
   useEffect(() => {
-    const latest = [...log].reverse().find((e) => e.type === "python_script_exported");
-    if (macroPending && latest && latest !== seenMacroEvent.current && latest.type === "python_script_exported") {
-      window.open(resolveApiUrl(latest.download_url), "_blank");
+    if (macroPending && latestExport && seenExportKey.current !== null && exportKey !== seenExportKey.current) {
+      window.open(resolveApiUrl(latestExport.download_url), "_blank");
       setMacroPending(false);
     }
-    seenMacroEvent.current = latest;
-  }, [log, macroPending]);
+    if (!macroPending) seenExportKey.current = exportKey;
+  }, [exportKey, latestExport, macroPending]);
 
   // A "Nothing to export yet" reply means no event will come; don't stay stuck.
   useEffect(() => {

@@ -173,7 +173,7 @@ export type ServerEvent =
   | { type: "server_log"; stream: "stdout" | "stderr"; line: string }
   // Reply to exportPythonScript(): the session's replayable FreeCAD macro.
   // `download_url` is dana.api.cad's session-scoped download route.
-  | { type: "python_script_exported"; path: string; filename: string; download_url: string }
+  | { type: "python_script_exported"; path: string; filename: string; download_url: string; exported_at?: number }
   // Zero-token parametric rebuild (dana/plugins/freecad/rebuild.py): the
   // model's editable dimensions, refreshed after every geometry change.
   | ({ type: "parameters" } & ParameterTable)

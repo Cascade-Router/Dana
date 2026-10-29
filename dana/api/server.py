@@ -3070,6 +3070,8 @@ async def ws_chat(websocket: WebSocket, session_id: str | None = None) -> None:
                         "path": path,
                         "filename": filename,
                         "download_url": _artifact_download_url(session["session_id"], filename),
+                        # Distinguishes two exports of the same filename.
+                        "exported_at": time.time(),
                     }
                 )
                 continue

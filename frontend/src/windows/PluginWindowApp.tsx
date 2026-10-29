@@ -5,14 +5,8 @@ import type { PlanState, TopologyGraph } from "../lib/useChatSocket";
 import { usePluginWindowSync } from "./windowSync";
 import "./PluginWindowApp.css";
 
-// Not wired through windowSync.ts's PluginSyncState (same gap `log={[]}`
-// below already has) — a spawned plugin window's DAG Monitor stays empty
-// rather than mirroring the main window's live topology_dag. Worth adding
-// to PluginSyncState if/when a spawned CAD window's DAG Monitor is actually
-// needed live, same follow-up `log` itself is already waiting on.
+// Shown only until the first broadcast for THIS plugin arrives.
 const EMPTY_TOPOLOGY_GRAPH: TopologyGraph = { nodes: {}, edges: [] };
-// Same gap as EMPTY_TOPOLOGY_GRAPH above — a spawned window's InspectorDock
-// "Active Plan" tab stays empty rather than mirroring the main window's plan.
 const EMPTY_PLAN_STATE: PlanState = { objective: "", tasks: [], currentTaskId: null };
 
 // Rendered inside a spawned plugin window (url `/#/plugin/:id`, see
@@ -22,7 +16,7 @@ const EMPTY_PLAN_STATE: PlanState = { objective: "", tasks: [], currentTaskId: n
 // the main window as events. See windowSync.ts for the full contract.
 export function PluginWindowApp({ pluginId }: { pluginId: PluginId }) {
   const plugin = getPlugin(pluginId);
-  const { payload, sendSelect } = usePluginWindowSync();
+  const { payload, sendSelect, sendExportMacro, sendRebuild } = usePluginWindowSync();
 
   if (!plugin) {
     return <div className="plugin-window plugin-window--error">Unknown plugin: {pluginId}</div>;
@@ -41,10 +35,16 @@ export function PluginWindowApp({ pluginId }: { pluginId: PluginId }) {
           meshUrl={pluginState?.meshUrl ?? null}
           cameraTarget={pluginState?.cameraTarget ?? null}
           onSelect={sendSelect}
-          log={[]}
-          topologyGraph={EMPTY_TOPOLOGY_GRAPH}
-          plan={EMPTY_PLAN_STATE}
+          // A compact log (latest BOM / macro export / rebuild result), not
+          // the main window's full event history — see deliverablesLog().
+          log={pluginState?.log ?? []}
+          topologyGraph={pluginState?.topologyGraph ?? EMPTY_TOPOLOGY_GRAPH}
+          plan={pluginState?.plan ?? EMPTY_PLAN_STATE}
           sessionId={pluginState?.sessionId ?? null}
+          parameters={pluginState?.parameters}
+          rebuildStatus={pluginState?.rebuildStatus}
+          onExportMacro={pluginState?.canExportMacro ? sendExportMacro : undefined}
+          onRebuild={pluginState?.canRebuild ? sendRebuild : undefined}
         />
       </Suspense>
     </div>

@@ -93,9 +93,11 @@ export default function CadPlugin({
       lastEvent.type === "rebuild_result")
       ? lastEvent
       : undefined;
+  // Keyed by content: in a detached window every broadcast carries new objects.
+  const deliverableKey = deliverableEvent ? JSON.stringify(deliverableEvent) : "";
   useEffect(() => {
-    if (deliverableEvent) refreshArtifacts();
-  }, [deliverableEvent, refreshArtifacts]);
+    if (deliverableKey) refreshArtifacts();
+  }, [deliverableKey, refreshArtifacts]);
 
   // Mesh History: the live chat feed only ever carries the SINGLE
   // most-recently-touched object's mesh (dana.api.server scopes

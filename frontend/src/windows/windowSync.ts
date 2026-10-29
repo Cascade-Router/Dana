@@ -3,7 +3,16 @@ import { isTauri } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { PluginDefinition, PluginId } from "../plugins/types";
-import type { CameraTarget, CanvasSelection, VoiceState } from "../lib/useChatSocket";
+import type {
+  CameraTarget,
+  CanvasSelection,
+  ParameterTable,
+  PlanState,
+  RebuildStatus,
+  ServerEvent,
+  TopologyGraph,
+  VoiceState,
+} from "../lib/useChatSocket";
 import type { SecretRecord } from "../secrets/types";
 
 // Every exported function here is guarded with `if (!isTauri()) return` —
@@ -29,13 +38,45 @@ const SYNC_EVENT = "dana://sync";
 const CHILD_READY_EVENT = "dana://child-ready";
 const CAD_SELECT_EVENT = "dana://cad-select";
 const ORB_ACTIVATE_EVENT = "dana://orb-activate";
+const CAD_EXPORT_MACRO_EVENT = "dana://cad-export-macro";
+const CAD_REBUILD_EVENT = "dana://cad-rebuild";
 
 type PluginSyncState = {
   pluginId: PluginId;
   meshUrl: string | null;
   cameraTarget: CameraTarget | null;
   sessionId: string | null;
+  plan: PlanState;
+  topologyGraph: TopologyGraph;
+  parameters: ParameterTable;
+  rebuildStatus: RebuildStatus;
+  /** Not the full event log (up to 500 events, re-sent on every change):
+   * only what the CAD plugin derives state from — see deliverablesLog(). */
+  log: ServerEvent[];
+  /** Whether the main window can act on Macro export / rebuild requests. */
+  canExportMacro: boolean;
+  canRebuild: boolean;
 };
+
+/** The few events a detached CAD window needs: the latest BOM result,
+ * macro export and rebuild result (DeliverablesBar), plus the last event
+ * (CadPlugin's artifact refresh trigger). Order preserved. */
+export function deliverablesLog(log: ServerEvent[]): ServerEvent[] {
+  const keep = new Set<ServerEvent>();
+  const latest = (match: (e: ServerEvent) => boolean) => {
+    for (let i = log.length - 1; i >= 0; i--) {
+      if (match(log[i])) {
+        keep.add(log[i]);
+        return;
+      }
+    }
+  };
+  latest((e) => e.type === "tool_dispatch_end" && e.tool_id === "generate_assembly_bom" && e.status === "success");
+  latest((e) => e.type === "python_script_exported");
+  latest((e) => e.type === "rebuild_result");
+  if (log.length) keep.add(log[log.length - 1]);
+  return log.filter((e) => keep.has(e));
+}
 
 export type VoiceSyncState = {
   state: VoiceState;
@@ -113,8 +154,40 @@ export function useForwardedPluginSelect(onSelect: (selection: CanvasSelection) 
   }, [onSelect]);
 }
 
+/**
+ * Main-window hook: carries out the CAD actions a *spawned* plugin window
+ * asks for (Macro export, parametric rebuild) on the main window's socket.
+ */
+export function useForwardedPluginActions(
+  onExportMacro: (() => void) | undefined,
+  onRebuild: ((overrides: Record<string, number>) => void) | undefined
+): void {
+  useEffect(() => {
+    if (!isTauri()) return;
+    const unlistens: UnlistenFn[] = [];
+    let disposed = false;
+    const keep = (fn: UnlistenFn) => {
+      if (disposed) fn();
+      else unlistens.push(fn);
+    };
+    if (onExportMacro) listen(CAD_EXPORT_MACRO_EVENT, () => onExportMacro()).then(keep);
+    if (onRebuild) {
+      listen<Record<string, number>>(CAD_REBUILD_EVENT, (event) => onRebuild(event.payload)).then(keep);
+    }
+    return () => {
+      disposed = true;
+      unlistens.forEach((fn) => fn());
+    };
+  }, [onExportMacro, onRebuild]);
+}
+
 /** Plugin-window hook: mirrors whatever the main window last broadcast. */
-export function usePluginWindowSync(): { payload: SyncPayload | null; sendSelect: (s: CanvasSelection) => void } {
+export function usePluginWindowSync(): {
+  payload: SyncPayload | null;
+  sendSelect: (s: CanvasSelection) => void;
+  sendExportMacro: () => void;
+  sendRebuild: (overrides: Record<string, number>) => void;
+} {
   const [payload, setPayload] = useState<SyncPayload | null>(null);
 
   useEffect(() => {
@@ -132,7 +205,17 @@ export function usePluginWindowSync(): { payload: SyncPayload | null; sendSelect
     emit(CAD_SELECT_EVENT, selection).catch(() => {});
   }, []);
 
-  return { payload, sendSelect };
+  const sendExportMacro = useCallback(() => {
+    if (!isTauri()) return;
+    emit(CAD_EXPORT_MACRO_EVENT).catch(() => {});
+  }, []);
+
+  const sendRebuild = useCallback((overrides: Record<string, number>) => {
+    if (!isTauri()) return;
+    emit(CAD_REBUILD_EVENT, overrides).catch(() => {});
+  }, []);
+
+  return { payload, sendSelect, sendExportMacro, sendRebuild };
 }
 
 /**

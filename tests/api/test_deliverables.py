@@ -87,6 +87,7 @@ def test_export_python_script_returns_a_download_url(client: TestClient) -> None
     assert event["type"] == "python_script_exported"
     assert Path(event["path"]).parent.name == SID  # session-scoped, and "path" kept for old clients
     assert event["filename"] == "dana_session_macro.py"
+    assert isinstance(event["exported_at"], float)
     assert event["download_url"] == f"/api/cad/artifacts/dana_session_macro.py/download?session_id={SID}"
     resp = client.get(event["download_url"])
     assert resp.status_code == 200 and "Plate" in resp.text

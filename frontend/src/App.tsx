@@ -19,6 +19,8 @@ import type { ChatMessage } from "./lib/useChatSocket";
 import { useOrbActivation } from "./lib/useOrbActivation";
 import {
   useForwardedOrbActivate,
+  deliverablesLog,
+  useForwardedPluginActions,
   useForwardedPluginSelect,
   useSyncBroadcaster,
   type SyncPayload,
@@ -198,16 +200,48 @@ function AppShell() {
   // Single broadcast point: any plugin/orb window currently open re-renders
   // from this payload the instant it changes. Nothing downstream reaches
   // back into the socket or the secrets store directly.
+  // Only re-broadcast when a deliverable-relevant event changes, not on
+  // every log line (see deliverablesLog).
+  const syncedLog = useMemo(() => deliverablesLog(log), [log]);
   const syncPayload: SyncPayload = useMemo(
     () => ({
       secrets: Object.fromEntries(entries.map((e) => [e.id, e])),
-      plugin: activePluginId ? { pluginId: activePluginId, meshUrl, cameraTarget, sessionId } : null,
+      plugin: activePluginId
+        ? {
+            pluginId: activePluginId,
+            meshUrl,
+            cameraTarget,
+            sessionId,
+            plan: planState,
+            topologyGraph,
+            parameters,
+            rebuildStatus,
+            log: syncedLog,
+            canExportMacro: Boolean(exportPythonScript),
+            canRebuild: Boolean(rebuild),
+          }
+        : null,
       voice: { state: voiceState.state, transcript: voiceState.transcript },
     }),
-    [entries, activePluginId, meshUrl, cameraTarget, sessionId, voiceState]
+    [
+      entries,
+      activePluginId,
+      meshUrl,
+      cameraTarget,
+      sessionId,
+      voiceState,
+      planState,
+      topologyGraph,
+      parameters,
+      rebuildStatus,
+      syncedLog,
+      exportPythonScript,
+      rebuild,
+    ]
   );
   useSyncBroadcaster(syncPayload);
   useForwardedPluginSelect(sendSelection);
+  useForwardedPluginActions(exportPythonScript, rebuild);
 
   // One activation policy shared by the dedicated always-on-top orb
   // window's clicks (relayed over Tauri IPC — see useForwardedOrbActivate)
