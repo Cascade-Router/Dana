@@ -6,8 +6,8 @@ Needed because ``dana.api.cad``'s directory scan (``freecad_output/``/
 ``exports/`` under ``DANA_WORKSPACE``) only ever finds files a REAL FreeCAD
 engine writes there. ``dana.platform.mock.MockFreeCADEngine`` — used
 whenever ``dana.platform.factory.IS_HF_SPACE`` (i.e. on the actual deployed
-Hugging Face Space) — writes every mesh to an arbitrary system-temp path via
-``tempfile.mkstemp`` instead, which that directory scan never sees. Recording
+Hugging Face Space) — writes every mesh to a uniquely named file in the
+session's ``mock/`` subfolder instead, which that top-level scan skips. Recording
 each artifact HERE, at the moment ``dana.api.server``'s auto-export hook (or
 an explicit ``export_freecad_model`` call) produces one, makes both surfaces
 correct for both engines instead of only the real one.
@@ -34,9 +34,8 @@ def register_artifact(path: str, *, format: str, source: str, session_id: str) -
     ``session["session_id"]`` in scope) is what ``list_artifacts`` filters
     on, so one chat session's Scoped Mini-Explorer never lists a mesh
     another session generated — this registry is the ONLY per-artifact
-    metadata store for the mock-engine path (arbitrary tempfile.mkstemp
-    paths, never under a per-session directory a plain scan could isolate
-    on its own).
+    metadata store for the mock-engine path (its meshes sit in a
+    subfolder the per-session directory scan doesn't descend into).
     """
     p = Path(path)
     try:

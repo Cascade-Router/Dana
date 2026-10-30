@@ -250,9 +250,9 @@ def test_tool_rejects_bad_arguments(args: dict[str, Any]) -> None:
     assert result["ok"] is False and "check_printability" in result["error"]
 
 
-def test_mock_engine_says_it_cannot_check_rather_than_guessing() -> None:
+def test_mock_engine_refuses_when_nothing_is_built() -> None:
     result = rd._tool_check_printability({}, MockFreeCADEngine(), None)
-    assert result["ok"] is False and "real FreeCAD engine is required" in result["error"]
+    assert result["ok"] is False and "nothing built" in result["error"]
 
 
 # -- orientation analysis ---------------------------------------------------------------

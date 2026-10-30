@@ -131,9 +131,9 @@ def _list_artifacts(session_id: str | None) -> list[dict[str, Any]]:
     seen_filenames = {a["filename"] for a in out}
     # dana.api.artifacts_registry covers what this directory scan structurally
     # can't: MockFreeCADEngine (dana.platform.mock, used whenever
-    # dana.platform.factory.IS_HF_SPACE) writes every generated mesh to an
-    # arbitrary system-temp path via tempfile.mkstemp, never under either
-    # directory above. Registry entries win no priority over a same-named
+    # dana.platform.factory.IS_HF_SPACE) writes every generated mesh to a
+    # uniquely named file in the session's mock/ subfolder, which the
+    # top-level scan above skips. Registry entries win no priority over a same-named
     # on-disk file — just fill in whatever the scan didn't already find.
     # Filtered to THIS session_id — see artifacts_registry.list_artifacts's
     # own docstring.
@@ -150,7 +150,7 @@ def _resolve_artifact(filename: str, session_id: str | None) -> Path:
     """Only a bare filename (no path separators) matching either a file that
     ACTUALLY exists directly inside one of THIS session's own artifact
     directories, or one already recorded in ``artifacts_registry`` under
-    THIS session_id (the mock engine's arbitrary temp-path outputs — see
+    THIS session_id (the mock engine's mock/ subfolder outputs — see
     ``_list_artifacts``), is ever returned — never resolved relative to an
     arbitrary/absolute caller path, so ``../../whatever`` or an absolute
     path never matches anything; the registry lookup is likewise a match

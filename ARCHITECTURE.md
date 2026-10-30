@@ -78,6 +78,14 @@ files inside Dana's workspace.
   missing/empty restores it.
 - **Timeouts:** 60 s per call; 180 s for collision checks, blueprints and
   printability (`DANA_FREECAD_HEAVY_TIMEOUT_S`).
+- **Mock engine** (`dana/platform/mock.py`: the Space, CI, non-Windows): one
+  trimesh mesh per object under `freecad_output/sessions/<id>/mock/`.
+  `query_topology` reports the mesh's smooth regions as faces (same schema;
+  its own stable numbering), `check_printability` runs the real
+  `build_report` on the mesh, and `validate_assembly_collisions` uses
+  manifold3d for overlap volume and clearance. Pipes and helices are real
+  sweeps, and `position_assembly_part` moves the mesh. STEP and URDF export
+  still need FreeCAD.
 - **GUI:** shown only when `DANA_HEADLESS` is not `true` (the default lock is
   `true`). Dana's FreeCAD window runs with a private `user.cfg` (`-u`) and only
   the PID Dana launched is ever closed or screenshotted.

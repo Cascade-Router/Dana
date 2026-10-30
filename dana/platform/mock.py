@@ -90,6 +90,13 @@ _MOCK_KINEMATIC_JOINTS: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
 # instead of recording such a result, so that check is only a backstop.
 _MOCK_BOOLEAN_RESULTS: dict[str, dict[str, dict[str, Any]]] = {}
 
+# The placement each object's mesh is currently baked at, per session:
+# name -> [x, y, z, yaw, pitch, roll]. Mock meshes are stored already
+# transformed, so position_assembly_part needs the old placement to move a
+# mesh to a new one (absolute, like the real Placement). Objects without an
+# entry are at the origin.
+_MOCK_PLACEMENTS: dict[str, dict[str, list[float]]] = {}
+
 
 def _mock_sketch_registry() -> dict[str, list[dict[str, Any]]]:
     """THIS session's own slice of ``_MOCK_SKETCH_GEOMETRY``."""
@@ -109,6 +116,11 @@ def _mock_assembly_registry() -> dict[str, list[str]]:
 def _mock_boolean_registry() -> dict[str, dict[str, Any]]:
     """THIS session's own slice of ``_MOCK_BOOLEAN_RESULTS``."""
     return _MOCK_BOOLEAN_RESULTS.setdefault(get_session_id(), {})
+
+
+def _mock_placement_registry() -> dict[str, list[float]]:
+    """THIS session's own slice of ``_MOCK_PLACEMENTS``."""
+    return _MOCK_PLACEMENTS.setdefault(get_session_id(), {})
 
 
 def _mock_kinematic_joints_registry() -> dict[str, dict[str, dict[str, Any]]]:
@@ -245,8 +257,20 @@ def _mesh_output_path(name: str, *, ext: str = "glb") -> Path:
     default back to a genuine ``.stl`` — that's a real 3D-printing/CAD
     interchange file a caller asked for by name, not a preview, and must
     never silently become a ``.glb`` instead.
+
+    Written under the session's own ``freecad_output/sessions/<id>/mock/``
+    (not the system temp dir), so deleting the session removes them and a
+    restarted server still finds a resumed session's meshes. Each call gets
+    a fresh file: the rebuild's rollback restores registry entries that
+    point at the previous ones. The ``mock/`` subfolder keeps these
+    intermediate meshes out of the session's artifact listing, which only
+    scans the top level.
     """
-    fd, raw_path = tempfile.mkstemp(suffix=f".{ext}", prefix=f"dana_mock_{name}_")
+    from dana.plugins.freecad import engine
+
+    out_dir = engine._session_dir() / "mock"
+    out_dir.mkdir(exist_ok=True)
+    fd, raw_path = tempfile.mkstemp(suffix=f".{ext}", prefix=f"dana_mock_{engine._safe_name(name)}_", dir=out_dir)
     os.close(fd)
     return Path(raw_path)
 
@@ -317,6 +341,314 @@ def _regular_polygon_vertices(sides: int, radius: float) -> list[list[float]]:
     ]
 
 
+# --- mesh analysis shared by query_topology / check_printability / collisions ---
+
+# Adjacent triangles closer than this (dihedral angle) belong to the same
+# face. A trimesh cylinder's 32 sections are 11.25° apart, so its side is one
+# curved face; a box's 90° edges keep its six faces apart. A prism with 24 or
+# more sides reads as curved, which is also how a slicer would see it.
+_MOCK_SMOOTH_ANGLE_RAD = math.radians(15.0)
+# All of a planar face's triangle normals agree to within ~0.5°.
+_MOCK_PLANAR_DOT = 0.99996
+# Collision overlap below this (mm³) is float32 noise on coincident faces in
+# manifold3d's boolean, not an interpenetration.
+_MOCK_COLLISION_VOLUME_EPSILON = 1e-3
+_MOCK_CURVED_FACE_WARNING = (
+    "face is not planar ({surface_type}) -- a single normal vector is not well-defined across a "
+    "curved surface; use a Concentric-style axis/center reference (apply_assembly_constraint's "
+    "'Concentric') instead of this face's normal"
+)
+_MOCK_TOPOLOGY_NOTE = (
+    "mock topology: faces are the mesh's smooth regions (triangles meeting at under 15°), so face "
+    "and edge numbering is stable for this mesh but not FreeCAD's own Face/Edge numbering"
+)
+
+
+def _union_find_labels(count: int, pairs: Any) -> list[int]:
+    """Connected-component label per node: a pure-Python union-find (scipy and
+    networkx aren't base requirements, so trimesh.graph isn't usable here)."""
+    parent = list(range(count))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for a, b in pairs:
+        ra, rb = find(int(a)), find(int(b))
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+    return [find(i) for i in range(count)]
+
+
+def _axis_label(vector: Any) -> str | None:
+    """"+Z", "-X", ... when ``vector`` is a world axis (within ~0.5°)."""
+    for i, axis in enumerate("XYZ"):
+        if abs(float(vector[i])) >= _MOCK_PLANAR_DOT:
+            return ("+" if vector[i] > 0 else "-") + axis
+    return None
+
+
+def _mesh_topology(mesh: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Faces and edges of a triangle mesh, in query_topology's face schema.
+
+    Faces are the connected smooth regions; a region whose triangle normals
+    all agree is planar (``Part::GeomPlane``, with the real tool's normal and
+    u/v span fields), one whose normals are all perpendicular to a common
+    axis is reported as ``Part::GeomCylinder``, anything else as
+    ``Part::GeomBSplineSurface``. Edges are the creases between two faces.
+    Ordering is canonical: planar faces by normal axis (-X, +X, -Y, +Y, -Z,
+    +Z, as on a FreeCAD Part::Box) then position, then curved faces by area.
+    """
+    import numpy as np
+
+    count = len(mesh.faces)
+    adjacency = np.asarray(mesh.face_adjacency)
+    angles = np.asarray(mesh.face_adjacency_angles)
+    labels = _union_find_labels(count, adjacency[angles < _MOCK_SMOOTH_ANGLE_RAD]) if count else []
+    groups: dict[int, list[int]] = {}
+    for tri, label in enumerate(labels):
+        groups.setdefault(label, []).append(tri)
+
+    normals = np.asarray(mesh.face_normals)
+    areas = np.asarray(mesh.area_faces)
+    centers = np.asarray(mesh.triangles_center)
+    regions = []
+    for label, tris in groups.items():
+        idx = np.asarray(tris)
+        weights = areas[idx]
+        area = float(weights.sum())
+        if area <= 0.0:
+            continue
+        centroid = (centers[idx] * weights[:, None]).sum(axis=0) / area
+        mean_normal = (normals[idx] * weights[:, None]).sum(axis=0)
+        norm = float(np.linalg.norm(mean_normal))
+        unit = mean_normal / norm if norm > 0 else mean_normal
+        planar = norm > 0 and bool((normals[idx] @ unit >= _MOCK_PLANAR_DOT).all())
+        region: dict[str, Any] = {"label": label, "area": area, "centroid": centroid, "is_planar": planar}
+        if planar:
+            # u = the first world axis not parallel to the normal, projected
+            # into the plane; v = normal x u. Spans are the face's vertex
+            # extent along each.
+            ref = next(np.eye(3)[i] for i in range(3) if abs(unit[i]) < 0.9)
+            u_dir = ref - (ref @ unit) * unit
+            u_dir /= np.linalg.norm(u_dir)
+            v_dir = np.cross(unit, u_dir)
+            points = mesh.vertices[np.unique(mesh.faces[idx])]
+            u_proj, v_proj = points @ u_dir, points @ v_dir
+            region.update(
+                surface_type="Part::GeomPlane",
+                normal=unit,
+                direction=_axis_label(unit),
+                u_span=float(u_proj.max() - u_proj.min()),
+                v_span=float(v_proj.max() - v_proj.min()),
+                u_dir=u_dir,
+                v_dir=v_dir,
+            )
+        else:
+            # Normals all perpendicular to one axis -> the normal matrix has
+            # a (near-)zero singular value along that axis.
+            singular = np.linalg.svd(normals[idx], compute_uv=False)
+            cylindrical = len(singular) == 3 and singular[2] <= 0.02 * singular[0]
+            region["surface_type"] = "Part::GeomCylinder" if cylindrical else "Part::GeomBSplineSurface"
+        regions.append(region)
+
+    def order(region: dict[str, Any]) -> tuple:
+        c = [round(float(v), 6) for v in region["centroid"]]
+        if region["is_planar"]:
+            axis = int(np.argmax(np.abs(region["normal"])))
+            return (0, axis, 0 if region["normal"][axis] < 0 else 1, c[axis], c)
+        return (1, -round(region["area"], 6), 0, 0.0, c)
+
+    regions.sort(key=order)
+    face_names = {r["label"]: f"Face{i + 1}" for i, r in enumerate(regions)}
+
+    faces = []
+    for region in regions:
+        planar = region["is_planar"]
+        faces.append(
+            {
+                "face_index": face_names[region["label"]],
+                "area": region["area"],
+                "is_planar": planar,
+                "surface_type": region["surface_type"],
+                "normal": [float(v) for v in region["normal"]] if planar else None,
+                "normal_warning": None
+                if planar
+                else _MOCK_CURVED_FACE_WARNING.format(surface_type=region["surface_type"]),
+                "centroid": [float(v) for v in region["centroid"]],
+                "direction": region.get("direction"),
+                "u_span_physical_mm": region["u_span"] if planar else None,
+                "v_span_physical_mm": region["v_span"] if planar else None,
+                "u_direction_vector": [float(v) for v in region["u_dir"]] if planar else None,
+                "v_direction_vector": [float(v) for v in region["v_dir"]] if planar else None,
+            }
+        )
+
+    crease_segments: dict[tuple[str, str], list[Any]] = {}
+    edge_vertices = np.asarray(mesh.face_adjacency_edges)
+    for (fa, fb), verts in zip(adjacency, edge_vertices):
+        a, b = face_names.get(labels[fa]), face_names.get(labels[fb])
+        if a is None or b is None or a == b:
+            continue
+        key = tuple(sorted((a, b), key=lambda n: int(n[4:])))
+        crease_segments.setdefault(key, []).append(verts)
+    edges = []
+    for key in sorted(crease_segments, key=lambda k: (int(k[0][4:]), int(k[1][4:]))):
+        segments = np.asarray(crease_segments[key])
+        points = mesh.vertices[np.unique(segments)]
+        length = float(np.linalg.norm(mesh.vertices[segments[:, 0]] - mesh.vertices[segments[:, 1]], axis=1).sum())
+        center = points.mean(axis=0)
+        spread = np.linalg.svd(points - center, compute_uv=False) if len(points) > 1 else np.zeros(1)
+        straight = len(points) == 2 or (len(spread) > 1 and spread[1] <= 1e-6 * max(spread[0], 1e-12))
+        edge: dict[str, Any] = {
+            "edge_index": f"Edge{len(edges) + 1}",
+            "faces": list(key),
+            "kind": "line" if straight else "curve",
+            "length": length,
+            "center": [float(v) for v in center],
+        }
+        if straight:
+            direction = points[-1] - points[0]
+            direction /= np.linalg.norm(direction) or 1.0
+            proj = (points - center) @ direction
+            edge["start"] = [float(v) for v in center + direction * proj.min()]
+            edge["end"] = [float(v) for v in center + direction * proj.max()]
+        edges.append(edge)
+    return faces, edges
+
+
+def _mesh_edge_use(mesh: Any) -> Any:
+    """How many triangles use each unique edge (2 everywhere on a closed
+    manifold; 1 on an open edge; 3+ on a non-manifold one)."""
+    import numpy as np
+
+    return np.bincount(np.asarray(mesh.edges_unique_inverse), minlength=len(mesh.edges_unique))
+
+
+def _to_manifold(mesh: Any) -> Any:
+    """``mesh`` as a manifold3d solid; ``ValueError`` if it isn't one (open
+    or non-manifold), the mock's equivalent of OCCT refusing a bad shape."""
+    import manifold3d
+    import numpy as np
+
+    solid = manifold3d.Manifold(
+        manifold3d.Mesh(
+            vert_properties=np.asarray(mesh.vertices, dtype=np.float32),
+            tri_verts=np.asarray(mesh.faces, dtype=np.uint32),
+        )
+    )
+    status = solid.status()
+    if status != manifold3d.Error.NoError:
+        raise ValueError(f"not a closed manifold solid ({status.name})")
+    return solid
+
+
+def _sweep_circle(
+    path: Sequence[Sequence[float]], tangents: Sequence[Sequence[float]], radius: float, *, sections: int = 24
+) -> Any:
+    """A solid tube: a circle of ``radius`` swept along the polyline ``path``
+    (``tangents``: the path's exact direction at each point, so the end caps
+    sit square to it), capped at both ends — what Part::Sweep with Solid=True
+    builds from a Part::Circle profile. Rotation-minimizing frames (double
+    reflection), so the cross-section never twists along a helix."""
+    import numpy as np
+    import trimesh
+
+    points = np.asarray(path, dtype=float)
+    n = len(points)
+    tangents = np.asarray(tangents, dtype=float)
+    tangents /= np.linalg.norm(tangents, axis=1)[:, None]
+    ref = np.array([0.0, 0.0, 1.0]) if abs(tangents[0][2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    normal = ref - (ref @ tangents[0]) * tangents[0]
+    frames = [normal / np.linalg.norm(normal)]
+    for i in range(n - 1):
+        step = points[i + 1] - points[i]
+        c1 = step @ step
+        r_l = frames[i] - (2.0 / c1) * (step @ frames[i]) * step
+        t_l = tangents[i] - (2.0 / c1) * (step @ tangents[i]) * step
+        v2 = tangents[i + 1] - t_l
+        c2 = v2 @ v2
+        frames.append(r_l - (2.0 / c2) * (v2 @ r_l) * v2 if c2 > 1e-18 else r_l)
+    normals = np.asarray(frames)
+    binormals = np.cross(tangents, normals)
+
+    theta = np.linspace(0.0, 2.0 * math.pi, sections, endpoint=False)
+    ring = np.cos(theta)[None, :, None] * normals[:, None, :] + np.sin(theta)[None, :, None] * binormals[:, None, :]
+    vertices = (points[:, None, :] + radius * ring).reshape(-1, 3)
+    start, end = len(vertices), len(vertices) + 1
+    vertices = np.vstack([vertices, points[0], points[-1]])
+
+    faces = []
+    for i in range(n - 1):
+        for j in range(sections):
+            a, b = i * sections + j, i * sections + (j + 1) % sections
+            c, d = a + sections, b + sections
+            faces += [[a, b, d], [a, d, c]]
+    last = (n - 1) * sections
+    for j in range(sections):
+        k = (j + 1) % sections
+        faces.append([start, k, j])
+        faces.append([end, last + j, last + k])
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=True)
+    if mesh.volume < 0:
+        mesh.invert()
+    return mesh
+
+
+def _placement_matrix(x: float, y: float, z: float, yaw: float, pitch: float, roll: float) -> Any:
+    """4x4 for FreeCAD's ``App.Placement(App.Vector(x, y, z),
+    App.Rotation(yaw, pitch, roll))``: Rz(yaw) · Ry(pitch) · Rx(roll), then
+    the translation."""
+    import trimesh
+
+    tf = trimesh.transformations
+    matrix = (
+        tf.rotation_matrix(math.radians(yaw), [0, 0, 1])
+        @ tf.rotation_matrix(math.radians(pitch), [0, 1, 0])
+        @ tf.rotation_matrix(math.radians(roll), [1, 0, 0])
+    )
+    matrix[:3, 3] = [x, y, z]
+    return matrix
+
+
+def _rebuild_assembly_mesh(assembly: str) -> tuple[Any, Path]:
+    """Re-renders an assembly's preview mesh as the concatenation of its
+    CURRENT members' meshes (idempotent: a part added twice is listed once)."""
+    import trimesh
+
+    meshes = []
+    for member_name in _mock_assembly_registry().get(assembly, []):
+        member_path = _mock_object_registry().get(member_name)
+        if member_path and Path(member_path).is_file():
+            meshes.append(trimesh.load(member_path, force="mesh"))
+    combined = trimesh.util.concatenate(meshes) if len(meshes) > 1 else meshes[0]
+    out_path = _mesh_output_path(assembly)
+    combined.export(out_path)
+    _mock_object_registry()[assembly] = str(out_path)
+    return combined, out_path
+
+
+def _resolve_mock_name(name: str | None) -> str | None:
+    """The registered object ``name`` refers to: exact match, else a unique
+    case-insensitive match (the real engine also falls back to Label and
+    case-insensitive Name)."""
+    wanted = (name or "").strip()
+    registry = _mock_object_registry()
+    if wanted in registry:
+        return wanted
+    matches = [n for n in registry if n.lower() == wanted.lower()]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _register_mock_object(name: str, path: Path, placement: Sequence[float] = (0.0, 0.0, 0.0), yaw: float = 0.0) -> None:
+    """Records a freshly created object and the placement its mesh was baked
+    at, so position_assembly_part can move it later."""
+    _mock_object_registry()[name] = str(path)
+    _mock_placement_registry()[name] = [*(float(v) for v in placement), float(yaw), 0.0, 0.0]
+
+
 class MockControlPlane(BaseControlPlane):
     def resync_workspace(self) -> dict[str, Any]:
         moved = [
@@ -373,7 +705,7 @@ def _mock_pattern_sources(op: str, feature_name: Any) -> tuple[list[str], list[P
 class MockFreeCADEngine(BaseCADEngine):
     """Headless stand-in for :class:`dana.platform.win32.RealFreeCADEngine`.
 
-    Every ``path`` returned is a real ``.stl`` file on disk (so a
+    Every ``path`` returned is a real ``.glb`` mesh on disk (so a
     ``gr.Model3D`` viewer can load it), backed by ``trimesh`` primitives
     instead of an actual ``.FCStd`` FreeCAD document — each object still gets
     its OWN ``.stl`` file (unlike the real engine's shared session document),
@@ -398,7 +730,7 @@ class MockFreeCADEngine(BaseCADEngine):
         mesh.apply_translation(placement)
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
-        _mock_object_registry()[name] = str(out_path)
+        _register_mock_object(name, out_path, placement)
         return {
             "ok": True,
             "name": name,
@@ -427,7 +759,7 @@ class MockFreeCADEngine(BaseCADEngine):
         mesh.apply_translation(placement)
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
-        _mock_object_registry()[name] = str(out_path)
+        _register_mock_object(name, out_path, placement)
         return {
             "ok": True,
             "name": name,
@@ -581,6 +913,7 @@ class MockFreeCADEngine(BaseCADEngine):
         dims = {"height": float(height), "profile_points": len(profile_points)}
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
+        _register_mock_object(name, out_path)
         return {
             "ok": True,
             "name": name,
@@ -627,6 +960,7 @@ class MockFreeCADEngine(BaseCADEngine):
         dims = {"length": length_f, "width": width_f, "height": height_f}
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
+        _register_mock_object(name, out_path, placement)
         return {
             "ok": True,
             "name": name,
@@ -663,6 +997,7 @@ class MockFreeCADEngine(BaseCADEngine):
         }
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
+        _register_mock_object(name, out_path, placement)
         return {
             "ok": True,
             "name": name,
@@ -693,6 +1028,7 @@ class MockFreeCADEngine(BaseCADEngine):
         dims = {"sides": int(sides), "radius": float(radius), "height": float(height)}
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
+        _register_mock_object(name, out_path, placement)
         return {
             "ok": True,
             "name": name,
@@ -846,22 +1182,56 @@ class MockFreeCADEngine(BaseCADEngine):
         }
 
     def query_topology(self, part_name: str) -> dict[str, Any]:
-        # Same "no honest partial stub" reasoning as validate_assembly_
-        # collisions above: per-face topology needs real BRep Face/Surface
-        # data (Surface.TypeId, ParameterRange, a per-face normal) that
-        # this driver's flat trimesh-primitive registry (triangulated mesh
-        # geometry, no parametric surfaces at all) has nothing genuine to
-        # offer for — unlike inspect_spatial_properties's whole-mesh volume/
-        # area (a reasonable trimesh approximation), there is no honest
-        # per-face planar/curved distinction to fake here.
+        """The real tool's per-face schema, measured on the object's mesh
+        (see ``_mesh_topology``), plus ``edges`` and whole-solid properties
+        (``bounding_box``, ``volume``, ``area``, ``center_of_mass``,
+        ``is_watertight``)."""
+        import trimesh
+
+        resolved = _resolve_mock_name(part_name)
+        if resolved is None:
+            return {"ok": False, "error": f"query_topology: no object named {part_name!r} in this session"}
+        path = Path(_mock_object_registry()[resolved])
+        if not path.is_file():
+            return {"ok": False, "error": f"query_topology: mesh for {resolved!r} not found: {path}"}
+        mesh = trimesh.load(path, force="mesh")
+        faces, edges = _mesh_topology(mesh)
+        x_min, y_min, z_min, x_max, y_max, z_max = _bbox(mesh)
+        watertight = bool(mesh.is_watertight)
+        # "part_name", never "name": see the real engine's query_topology —
+        # dispatch would otherwise register this read as a new object.
         return {
-            "ok": False,
-            "error": (
-                "query_topology is not supported by the mock CAD driver (no FreeCADCmd binary "
-                "available) — a real FreeCAD engine is required for real per-face BRep topology."
-            ),
+            "ok": True,
+            "part_name": resolved,
+            "path": str(path),
+            "face_count": len(faces),
+            "faces": faces,
+            "edge_count": len(edges),
+            "edges": edges,
+            "bounding_box": {
+                "x_min": x_min, "y_min": y_min, "z_min": z_min,
+                "x_max": x_max, "y_max": y_max, "z_max": z_max,
+                "xlen": x_max - x_min, "ylen": y_max - y_min, "zlen": z_max - z_min,
+            },
+            "volume": abs(float(mesh.volume)) if watertight else None,
+            "area": float(mesh.area),
+            "center_of_mass": [float(v) for v in (mesh.center_mass if watertight else mesh.centroid)],
+            "is_watertight": watertight,
             "driver": "mock",
+            "note": f"{_MOCK_NOTE_CAD}; {_MOCK_TOPOLOGY_NOTE}",
         }
+
+    def _default_print_target(self) -> str | None:
+        """The real engine's default: the session's PartDesign Body if there
+        is one, else the last top-level solid — here the newest registered
+        object that isn't a sketch, an assembly container or a consumed
+        boolean operand."""
+        if _mock_body_tip_registry().get("tip"):
+            return "Body"
+        skip = set(_mock_sketch_registry()) | set(_mock_assembly_registry())
+        skip |= {op for entry in _mock_boolean_registry().values() for op in entry["operands"]}
+        candidates = [n for n in _mock_object_registry() if n not in skip]
+        return candidates[-1] if candidates else None
 
     def check_printability(
         self,
@@ -869,18 +1239,73 @@ class MockFreeCADEngine(BaseCADEngine):
         build_volume_mm: Sequence[float] | None = None,
         max_overhang_deg: float = 45.0,
     ) -> dict[str, Any]:
-        # Same "no honest partial stub" reasoning as query_topology above: the
-        # verdict hinges on the real Body's exported mesh (watertightness,
-        # manifoldness, every facet's normal), which this driver's
-        # one-primitive-per-file registry can't reproduce for a PartDesign
-        # Body. The report logic itself is pure (printability.build_report).
+        """The real report (``printability.build_report``, same schema and
+        orientation analysis) on the object's mesh: trimesh supplies the
+        mesh checks FreeCAD's Mesh module does on the real engine, except
+        self-intersection, which isn't checked here (reported ``None``).
+        The STL lands where the real one does, ready for slice_stl_to_gcode."""
+        import numpy as np
+        import trimesh
+
+        from dana.plugins.freecad import engine, printability
+        from dana.plugins.os import file_system
+        from dana.session_context import session_scoped_dir
+
+        if not 0.0 < float(max_overhang_deg) < 90.0:
+            return {"ok": False, "error": "check_printability: max_overhang_deg must be between 0 and 90"}
+        try:
+            printer = printability.printer_profile(build_volume_mm)
+        except ValueError as exc:
+            return {"ok": False, "error": f"check_printability: {exc}"}
+
+        if (object_name or "").strip():
+            target = _resolve_mock_name(object_name)
+            if target is None:
+                return {"ok": False, "error": f"check_printability: no object named {object_name!r} in this session"}
+            path = _mock_object_registry()[target]
+        else:
+            target = self._default_print_target()
+            if target is None:
+                return {"ok": False, "error": "check_printability: nothing built in this session yet — build a part first"}
+            path = _mock_body_tip_registry()["tip"] if target == "Body" else _mock_object_registry()[target]
+        if not Path(path).is_file():
+            return {"ok": False, "error": f"check_printability: mesh for {target!r} not found: {path}"}
+        mesh = trimesh.load(path, force="mesh")
+
+        edge_use = _mesh_edge_use(mesh)
+        watertight = bool(mesh.is_watertight)
+        checks = {
+            "shape_valid": len(mesh.faces) > 0,
+            "closed_solid": watertight and abs(float(mesh.volume)) > 0.0,
+            "mesh_solid": watertight,
+            "non_manifold": bool((edge_use > 2).any()),
+            "self_intersections": None,
+            "open_edges": int((edge_use == 1).sum()),
+            "components": len(set(_union_find_labels(len(mesh.faces), mesh.face_adjacency))),
+        }
+        triangles = np.asarray(mesh.triangles)
+        lo, hi = triangles.min(axis=1), triangles.max(axis=1)
+        solid = [
+            printability.SolidFacet(tuple(map(float, n)), float(a), tuple(map(float, l)), tuple(map(float, h)))
+            for n, a, l, h in zip(mesh.face_normals, mesh.area_faces, lo, hi)
+        ]
+        report = printability.build_report(
+            target=target,
+            checks=checks,
+            bbox=_bbox(mesh),
+            facets=(printability.Facet(f.normal[2], f.area, f.lo[2], f.hi[2]) for f in solid),
+            printer=printer,
+            max_overhang_deg=float(max_overhang_deg),
+            solid_facets=solid,
+        )
+        stl_path = session_scoped_dir(file_system._SANDBOX_ROOT / "prints") / f"{engine._safe_name(target)}.stl"
+        mesh.export(stl_path)
         return {
-            "ok": False,
-            "error": (
-                "check_printability is not supported by the mock CAD driver (no FreeCADCmd binary "
-                "available) — a real FreeCAD engine is required to export and evaluate the part's mesh."
-            ),
+            "ok": True,
+            **report,
+            "stl_path": str(stl_path),
             "driver": "mock",
+            "note": f"{_MOCK_NOTE_CAD}; mesh checks by trimesh, self-intersection not checked",
         }
 
     def create_pipe(
@@ -903,51 +1328,40 @@ class MockFreeCADEngine(BaseCADEngine):
             return {"ok": False, "error": "create_pipe: pipe_radius and length_or_angle must be positive numbers"}
 
         dims = {"pipe_radius": radius_f, "path_type": pt, "length_or_angle": value_f}
-        if pt == "straight":
-            # A straight pipe is geometrically just a cylinder — real,
-            # correct mock geometry, not a stub.
-            import trimesh
-
-            mesh = trimesh.creation.cylinder(radius=radius_f, height=value_f, sections=32)
-            mesh.apply_translation([0.0, 0.0, value_f / 2.0])  # base-at-origin, matching the real engine
-            mesh.apply_translation(placement)
-            out_path = _mesh_output_path(name)
-            mesh.export(out_path)
-            return {
-                "ok": True,
-                "name": name,
-                "type": "Part::Sweep",
-                "bounding_box": _bbox(mesh),
-                "dimensions": dims,
-                "placement": list(placement),
-                "path": str(out_path),
-                "gui_shown": False,
-                "driver": "mock",
-                "note": _MOCK_NOTE_CAD,
-            }
-
-        # Safe stub: a partial-torus elbow isn't one of trimesh's built-in
-        # creation primitives, so the curved-arc case isn't simulated
-        # geometrically here — returns a placeholder result under the
-        # ok/path/name/type contract so callers (mesh export, the object
-        # registry, HITL summaries) still work end-to-end.
-        out_path = _mesh_output_path(name)
         import trimesh
 
-        placeholder = trimesh.creation.cylinder(radius=radius_f, height=radius_f * 2, sections=32)
-        placeholder.apply_translation(placement)
-        placeholder.export(out_path)
+        if pt == "straight":
+            # A straight sweep of a circle is exactly a cylinder.
+            mesh = trimesh.creation.cylinder(radius=radius_f, height=value_f, sections=32)
+            mesh.apply_translation([0.0, 0.0, value_f / 2.0])  # base-at-origin, matching the real engine
+        else:
+            # The real engine's arc: the profile circle sits at (bend, 0, 0)
+            # in the XZ plane and sweeps value_f degrees counter-clockwise
+            # around Z, bend radius from ir.pipe_arc_radius.
+            from dana.plugins.freecad.ir import pipe_arc_radius
+
+            bend = pipe_arc_radius(radius_f)
+            angle = math.radians(min(value_f, 360.0))
+            steps = max(8, math.ceil(math.degrees(angle) / 5.0))
+            params = [angle * i / steps for i in range(steps + 1)]
+            path = [[bend * math.cos(t), bend * math.sin(t), 0.0] for t in params]
+            mesh = _sweep_circle(path, [[-math.sin(t), math.cos(t), 0.0] for t in params], radius_f, sections=32)
+            dims["arc_radius"] = bend
+        mesh.apply_translation(placement)
+        out_path = _mesh_output_path(name)
+        mesh.export(out_path)
+        _register_mock_object(name, out_path, placement)
         return {
             "ok": True,
             "name": name,
             "type": "Part::Sweep",
-            "bounding_box": _bbox(placeholder),
+            "bounding_box": _bbox(mesh),
             "dimensions": dims,
             "placement": list(placement),
             "path": str(out_path),
             "gui_shown": False,
             "driver": "mock",
-            "note": f"{_MOCK_NOTE_CAD}; arc sweep not geometrically simulated, returned a placeholder",
+            "note": _MOCK_NOTE_CAD,
         }
 
     def create_helix(
@@ -984,39 +1398,37 @@ class MockFreeCADEngine(BaseCADEngine):
             "turns": height_f / pitch_f,
             "angle_offset": angle_offset_f,
         }
-        # Safe stub, same convention as create_pipe's "arc" case above: a
-        # helical coil sweep isn't one of trimesh's built-in creation
-        # primitives, so it isn't simulated geometrically here — a
-        # correctly-bounded placeholder tube keeps the ok/path/name/type
-        # contract intact for callers (mesh export, object registry, HITL
-        # summaries) end-to-end. angle_offset is applied to the placeholder
-        # anyway (not just accepted-and-discarded) for parity with the real
-        # engine's own result shape, even though a plain cylinder is
-        # rotationally symmetric about its own Z axis and this is currently
-        # a geometric no-op — correct the moment this placeholder ever stops
-        # being a bare cylinder.
+        # Part::Helix's path (right-handed, starting at (coil_radius, 0, 0))
+        # with the pipe's circle swept along it; angle_offset is a rigid
+        # rotation about Z, as in the real engine.
         import trimesh
 
-        placeholder = trimesh.creation.cylinder(radius=coil_radius_f + pipe_radius_f, height=height_f, sections=32)
+        steps = max(16, math.ceil(dims["turns"] * 48))
+        omega = 2.0 * math.pi / pitch_f
+        heights = [height_f * i / steps for i in range(steps + 1)]
+        path = [[coil_radius_f * math.cos(omega * z), coil_radius_f * math.sin(omega * z), z] for z in heights]
+        tangents = [
+            [-coil_radius_f * omega * math.sin(omega * z), coil_radius_f * omega * math.cos(omega * z), 1.0]
+            for z in heights
+        ]
+        mesh = _sweep_circle(path, tangents, pipe_radius_f)
         if angle_offset_f != 0.0:
-            placeholder.apply_transform(
-                trimesh.transformations.rotation_matrix(math.radians(angle_offset_f), [0, 0, 1])
-            )
-        placeholder.apply_translation([0.0, 0.0, height_f / 2.0])
-        placeholder.apply_translation(placement)
+            mesh.apply_transform(trimesh.transformations.rotation_matrix(math.radians(angle_offset_f), [0, 0, 1]))
+        mesh.apply_translation(placement)
         out_path = _mesh_output_path(name)
-        placeholder.export(out_path)
+        mesh.export(out_path)
+        _register_mock_object(name, out_path, placement, yaw=angle_offset_f)
         return {
             "ok": True,
             "name": name,
             "type": "Part::Sweep",
-            "bounding_box": _bbox(placeholder),
+            "bounding_box": _bbox(mesh),
             "dimensions": dims,
             "placement": list(placement),
             "path": str(out_path),
             "gui_shown": False,
             "driver": "mock",
-            "note": f"{_MOCK_NOTE_CAD}; helical coil sweep not geometrically simulated, returned a placeholder",
+            "note": _MOCK_NOTE_CAD,
         }
 
     def align_objects(
@@ -1729,8 +2141,6 @@ class MockFreeCADEngine(BaseCADEngine):
         }
 
     def add_parts_to_assembly(self, assembly_name: str, part_names: list[str]) -> dict[str, Any]:
-        import trimesh
-
         assembly = (assembly_name or "").strip()
         if not assembly:
             return {"ok": False, "error": "add_parts_to_assembly requires assembly_name"}
@@ -1747,19 +2157,7 @@ class MockFreeCADEngine(BaseCADEngine):
             if n not in members:
                 members.append(n)
 
-        # Rebuild the assembly's own placeholder mesh as the concatenation
-        # of every CURRENT member's mesh — idempotent (adding the same part
-        # twice never duplicates it in `members`), and reflects the union of
-        # every add_parts_to_assembly call so far, not just this one's.
-        meshes = []
-        for member_name in members:
-            member_path = _mock_object_registry().get(member_name)
-            if member_path and Path(member_path).is_file():
-                meshes.append(trimesh.load(member_path, force="mesh"))
-        combined = trimesh.util.concatenate(meshes) if len(meshes) > 1 else meshes[0]
-        out_path = _mesh_output_path(assembly)
-        combined.export(out_path)
-        _mock_object_registry()[assembly] = str(out_path)
+        combined, out_path = _rebuild_assembly_mesh(assembly)
         return {
             "ok": True,
             "name": assembly,
@@ -1798,16 +2196,33 @@ class MockFreeCADEngine(BaseCADEngine):
                 "ok": False,
                 "error": "position_assembly_part: placement_x/y/z and yaw/pitch/roll must all be numbers",
             }
-        # Safe stub: a headless mesh has no named Placement property to
-        # reassign onto — same "recorded but not geometrically applied"
-        # contract as modify_parameter's own Placement mock.
+        # Absolute, like the real Placement: undo the placement the mesh is
+        # baked at, then apply the new one, and refresh every assembly
+        # preview that shows this part.
+        import numpy as np
+        import trimesh
+
+        placements = _mock_placement_registry()
+        old = placements.get(target, [0.0] * 6)
+        mesh = trimesh.load(target_path, force="mesh")
+        mesh.apply_transform(
+            _placement_matrix(x, y, z, yaw_f, pitch_f, roll_f) @ np.linalg.inv(_placement_matrix(*old))
+        )
+        out_path = _mesh_output_path(target)
+        mesh.export(out_path)
+        _mock_object_registry()[target] = str(out_path)
+        placements[target] = [x, y, z, yaw_f, pitch_f, roll_f]
+        for assembly, members in _mock_assembly_registry().items():
+            if target in members:
+                _rebuild_assembly_mesh(assembly)
         return {
             "ok": True,
             "name": target,
-            "path": str(target_path),
+            "path": str(out_path),
+            "bounding_box": _bbox(mesh),
             "dimensions": {"placement": [x, y, z], "yaw": yaw_f, "pitch": pitch_f, "roll": roll_f},
             "driver": "mock",
-            "note": f"{_MOCK_NOTE_CAD}; placement not geometrically applied, mesh unmodified",
+            "note": _MOCK_NOTE_CAD,
         }
 
     def apply_assembly_constraint(
@@ -1948,21 +2363,86 @@ class MockFreeCADEngine(BaseCADEngine):
         }
 
     def validate_assembly_collisions(self, assembly_name: str) -> dict[str, Any]:
-        # Same "no honest partial stub" reasoning as export_assembly_to_urdf
-        # below: a real boolean intersection needs real BRep solids, which
-        # this driver's flat trimesh-primitive registry (no group/assembly
-        # structure, no OCCT kernel) has nothing genuine to offer for —
-        # returning a fake "no collisions" would be a worse lie than saying
-        # so outright.
-        return {
-            "ok": False,
-            "error": (
-                "validate_assembly_collisions is not supported by the mock CAD driver (no "
-                "FreeCADCmd binary available) — a real FreeCAD engine is required for a genuine "
-                "solid boolean intersection."
-            ),
+        """The real engine's audit on the members' meshes, same result
+        schema: an axis-aligned bounding-box broadphase, then manifold3d's
+        exact mesh intersection volume for pairs whose boxes meet and its
+        ``min_gap`` for the clearance. Consumed boolean operands are left
+        out, as on the real engine. A member that isn't a closed manifold
+        mesh can't be checked: its pairs go to ``collision_check_errors``
+        and the call fails rather than calling the assembly collision-free."""
+        import numpy as np
+        import trimesh
+
+        assembly = _resolve_mock_name(assembly_name)
+        members = _mock_assembly_registry().get(assembly or "")
+        if members is None:
+            return {"ok": False, "error": f"validate_assembly_collisions: no assembly named {assembly_name!r} in this session"}
+        consumed = {op for entry in _mock_boolean_registry().values() for op in entry["operands"]}
+        registry = _mock_object_registry()
+        names = [m for m in members if m not in consumed and m in registry and Path(registry[m]).is_file()]
+        meshes = {n: trimesh.load(registry[n], force="mesh") for n in names}
+        solids: dict[str, Any] = {}
+        solid_errors: dict[str, str] = {}
+        for n, mesh in meshes.items():
+            try:
+                solids[n] = _to_manifold(mesh)
+            except Exception as exc:  # noqa: BLE001 — manifold3d raises various types on bad input
+                solid_errors[n] = str(exc)
+
+        collisions, clearances, check_errors = [], [], []
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                lo_a, hi_a = meshes[a].bounds
+                lo_b, hi_b = meshes[b].bounds
+                boxes_meet = bool(np.all(lo_a <= hi_b) and np.all(lo_b <= hi_a))
+                bad = solid_errors.get(a) or solid_errors.get(b)
+                if bad:
+                    stage = "intersection" if boxes_meet else "distance"
+                    check_errors.append({"part_a": a, "part_b": b, "stage": stage, "error": bad})
+                    continue
+                overlap = 0.0
+                if boxes_meet:
+                    try:
+                        overlap = float((solids[a] ^ solids[b]).volume())
+                    except Exception as exc:  # noqa: BLE001
+                        check_errors.append({"part_a": a, "part_b": b, "stage": "intersection", "error": str(exc)})
+                        continue
+                if overlap > _MOCK_COLLISION_VOLUME_EPSILON:
+                    collisions.append({"part_a": a, "part_b": b, "overlap_volume": overlap})
+                    distance = 0.0
+                else:
+                    reach = float(np.linalg.norm(np.maximum(hi_a, hi_b) - np.minimum(lo_a, lo_b))) + 1.0
+                    try:
+                        distance = float(solids[a].min_gap(solids[b], reach))
+                    except Exception as exc:  # noqa: BLE001
+                        check_errors.append({"part_a": a, "part_b": b, "stage": "distance", "error": str(exc)})
+                        continue
+                clearances.append({"part_a": a, "part_b": b, "distance_mm": distance})
+
+        result = {
+            "name": assembly,
+            "collisions": collisions,
+            "has_collisions": bool(collisions),
+            "checked_members": len(names),
+            "clearances": clearances,
+            "path": registry.get(assembly, ""),
             "driver": "mock",
+            "note": f"{_MOCK_NOTE_CAD}; overlap and clearance computed on the members' meshes",
         }
+        if check_errors:
+            pairs = ", ".join(f"{e['part_a']}/{e['part_b']}" for e in check_errors)
+            return {
+                "ok": False,
+                "error": (
+                    f"validate_assembly_collisions could not check {len(check_errors)} part pair(s) "
+                    f"({pairs}): their geometry is not a valid solid, so the assembly cannot be "
+                    "confirmed collision-free. Inspect those parts with inspect_spatial_properties "
+                    "and fix or rebuild them, then validate again."
+                ),
+                **result,
+                "collision_check_errors": check_errors,
+            }
+        return {"ok": True, **result}
 
     def export_assembly_to_urdf(
         self,
@@ -2271,10 +2751,12 @@ class MockFreeCADEngine(BaseCADEngine):
 
         meshes = [trimesh.load(p, force="mesh") for p in paths]
         combined = trimesh.util.concatenate(meshes) if len(meshes) > 1 else meshes[0]
-        # ext="stl" explicitly — this is the user-facing "download as STL"
-        # export, not a live-preview mesh, and must stay a genuine .stl
-        # regardless of _mesh_output_path's own (now .glb) default.
-        out_path = _mesh_output_path(filename or "export", ext="stl")
+        # A genuine .stl — this is the user-facing "download as STL" export,
+        # not a live-preview mesh.
+        # Same place and name the real engine's export_model uses.
+        from dana.plugins.freecad import engine
+
+        out_path = engine._export_dir() / f"{engine._safe_name(filename or 'export')}.stl"
         combined.export(out_path)
         return {
             "ok": True,
@@ -2297,6 +2779,7 @@ _PERSISTED_MOCK_REGISTRIES: dict[str, dict[str, Any]] = {
     "assemblies": _MOCK_ASSEMBLY_MEMBERS,
     "joints": _MOCK_KINEMATIC_JOINTS,
     "booleans": _MOCK_BOOLEAN_RESULTS,
+    "placements": _MOCK_PLACEMENTS,
 }
 
 
