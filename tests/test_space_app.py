@@ -5,7 +5,8 @@ app.py is imported in a subprocess: importing it strips tools out of the
 shared registry and tees stdout/stderr, which must not leak into the rest of
 the suite. The subprocess drives one scripted chat turn that builds a box on
 the mock engine, then calls the new endpoints exactly as the Vercel UI does.
-Needs the Space's Gradio major version (5.x, installed in CI) and ``spaces``.
+Runs on Gradio 5.x (the Space's version, installed in CI) and 6.x (local dev
+venvs); app.py shims the differences. Needs ``spaces``.
 """
 
 from __future__ import annotations
@@ -22,7 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 gradio = pytest.importorskip("gradio")
 pytest.importorskip("spaces")
 pytestmark = pytest.mark.skipif(
-    not gradio.__version__.startswith("5."), reason=f"app.py targets the Space's Gradio 5.x, not {gradio.__version__}"
+    gradio.__version__.split(".", 1)[0] not in ("5", "6"),
+    reason=f"app.py supports Gradio 5.x and 6.x, not {gradio.__version__}",
 )
 
 _DRIVER = r'''

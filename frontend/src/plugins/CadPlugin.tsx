@@ -39,7 +39,7 @@ export default function CadPlugin({
     () => [
       {
         id: "plan",
-        label: "Active Plan",
+        label: "Plan",
         glyph: "▤",
         badge:
           plan.tasks.length > 0

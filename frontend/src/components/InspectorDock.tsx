@@ -18,6 +18,12 @@ type Props = {
 
 const COLLAPSE_KEY = "dana:inspectorDock:collapsed";
 
+// The Terminal badge counts log lines (up to 500); capping every count keeps
+// the four tabs inside the dock however long a session runs.
+function badgeText(badge: string | number): string | number {
+  return typeof badge === "number" && badge > 99 ? "99+" : badge;
+}
+
 function readCollapsed(): boolean {
   try {
     return localStorage.getItem(COLLAPSE_KEY) === "1";
@@ -66,7 +72,7 @@ export function InspectorDock({ tabs, defaultTabId }: Props) {
             <span className="inspector-dock__glyph" aria-hidden="true">
               {tab.glyph}
             </span>
-            {tab.badge !== undefined && <span className="inspector-dock__badge">{tab.badge}</span>}
+            {tab.badge !== undefined && <span className="inspector-dock__badge">{badgeText(tab.badge)}</span>}
           </button>
         ))}
       </div>
@@ -83,11 +89,10 @@ export function InspectorDock({ tabs, defaultTabId }: Props) {
             className={`inspector-dock__tab ${activeId === tab.id ? "inspector-dock__tab--active" : ""}`}
             onClick={() => setActiveId(tab.id)}
           >
-            <span className="inspector-dock__glyph" aria-hidden="true">
-              {tab.glyph}
-            </span>
+            {/* No glyph here: with it, four labelled tabs overflowed the
+                dock at 1280x720. The collapsed rail still uses it. */}
             {tab.label}
-            {tab.badge !== undefined && <span className="inspector-dock__tab-badge">{tab.badge}</span>}
+            {tab.badge !== undefined && <span className="inspector-dock__tab-badge">{badgeText(tab.badge)}</span>}
           </button>
         ))}
         <button

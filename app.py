@@ -592,7 +592,16 @@ footer {display: none !important;}
 .gradio-container {padding: 0 !important; margin: 0 !important; max-width: 900px !important;}
 """
 
-with gr.Blocks(css=_CUSTOM_CSS, title="Dānā") as demo:
+# The Space runs Gradio 5.49.1 (deploy/space_README.md); local dev venvs may
+# have Gradio 6, which moved css from Blocks() to launch() and removed
+# Chatbot(type=...) (messages became the only format). Everything else here
+# is the same on both.
+_GRADIO_MAJOR = int(gr.__version__.split(".", 1)[0])
+_BLOCKS_STYLE_KWARGS: dict[str, Any] = {"css": _CUSTOM_CSS} if _GRADIO_MAJOR < 6 else {}
+_LAUNCH_STYLE_KWARGS: dict[str, Any] = {"css": _CUSTOM_CSS} if _GRADIO_MAJOR >= 6 else {}
+_CHATBOT_MESSAGES_KWARGS: dict[str, Any] = {"type": "messages"} if _GRADIO_MAJOR < 6 else {}
+
+with gr.Blocks(title="Dānā", **_BLOCKS_STYLE_KWARGS) as demo:
     gr.Markdown(
         "# ⚙️ Dana AI Copilot (Headless Backend)\n\n"
         "⚠️ **Demo Purposes Only:** This interface is the headless backend for Dana. "
@@ -611,7 +620,7 @@ with gr.Blocks(css=_CUSTOM_CSS, title="Dānā") as demo:
     # messages-format became the only option, which is exactly how this
     # went unnoticed in local testing — dev and the deployed Space were on
     # different major versions the whole time.
-    chatbot = gr.Chatbot(label="Dānā", height=420, type="messages")
+    chatbot = gr.Chatbot(label="Dānā", height=420, **_CHATBOT_MESSAGES_KWARGS)
     # Label says both formats now: this still serves the mock engine's
     # plain .stl by default, but prefers a freshly-converted .glb instead
     # whenever a real STEP artifact exists AND headless FreeCAD is actually
@@ -715,4 +724,4 @@ with gr.Blocks(css=_CUSTOM_CSS, title="Dānā") as demo:
     demo.load(_dummy_gpu_function)
 
 if __name__ == "__main__":
-    demo.queue().launch(server_name="0.0.0.0", server_port=7860, ssr_mode=False)
+    demo.queue().launch(server_name="0.0.0.0", server_port=7860, ssr_mode=False, **_LAUNCH_STYLE_KWARGS)

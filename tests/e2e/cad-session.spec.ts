@@ -56,6 +56,24 @@ async function send(page: Page, text: string): Promise<void> {
   await page.getByRole("button", { name: "Send" }).click();
 }
 
+// At 1280x720 the Terminal tab used to be clipped off the dock's right edge
+// (reachable only by scrolling the tab bar). Run once the Plan and Parameters
+// badges are showing, which is when the tabs are widest.
+async function expectInspectorTabsFit(page: Page): Promise<void> {
+  const tabbar = page.locator(".inspector-dock__tabbar");
+  expect(await tabbar.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0);
+  const bar = (await tabbar.boundingBox())!;
+  const viewport = page.viewportSize()!;
+  for (const label of ["Topology", "Plan", "Parameters", "Terminal"]) {
+    const tab = page.locator(".inspector-dock__tab", { hasText: label });
+    const box = (await tab.boundingBox())!;
+    expect(box.x, label).toBeGreaterThanOrEqual(bar.x);
+    expect(box.x + box.width, label).toBeLessThanOrEqual(Math.min(bar.x + bar.width, viewport.width));
+    await tab.click();
+    await expect(tab).toHaveClass(/inspector-dock__tab--active/);
+  }
+}
+
 function expectNoConsoleErrors(errors: string[]): void {
   expect(errors, `unexpected console errors: ${JSON.stringify(errors, null, 2)}`).toEqual([]);
 }
@@ -106,6 +124,8 @@ test("a plate session streams its reply, fills the CostBar, exports a macro and 
   expect(macroText).toContain("import FreeCAD");
   expect(macroText).toContain("Plate");
   await expect(bar.getByRole("button", { name: "Macro .py" })).toBeEnabled();
+
+  await expectInspectorTabsFit(page);
 
   // --- Parameters tab: units, dressup warning, edit, Apply & Rebuild ---
   await page.getByRole("button", { name: /Parameters/ }).first().click();
