@@ -96,8 +96,9 @@ files inside Dana's workspace.
   its own stable numbering), `check_printability` runs the real
   `build_report` on the mesh, and `validate_assembly_collisions` uses
   manifold3d for overlap volume and clearance. Pipes and helices are real
-  sweeps, and `position_assembly_part` moves the mesh. STEP and URDF export
-  still need FreeCAD.
+  sweeps, `position_assembly_part` moves the mesh, and
+  `export_assembly_to_urdf` writes per-link meshes with exact mass
+  properties. STEP export still needs FreeCAD.
 - **GUI:** shown only when `DANA_HEADLESS` is not `true` (the default lock is
   `true`). Dana's FreeCAD window runs with a private `user.cfg` (`-u`) and only
   the PID Dana launched is ever closed or screenshotted.

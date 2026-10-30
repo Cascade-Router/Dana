@@ -282,7 +282,9 @@ def build_report(
     """The agent-facing report. ``checks`` holds the mesh/shape flags:
     ``shape_valid``, ``closed_solid``, ``mesh_solid`` (watertight),
     ``non_manifold`` (bool), ``self_intersections`` (bool),
-    ``open_edges`` (count), ``components`` (count). ``bbox`` is
+    ``open_edges`` (count), ``components`` (count), and optionally
+    ``winding_consistent``/``positive_volume`` (bool) and
+    ``degenerate_faces`` (count), which only the mock engine reports. ``bbox`` is
     ``[x_min, y_min, z_min, x_max, y_max, z_max]``. With ``solid_facets``
     (the same facets in full 3D) the report also carries
     ``evaluate_orientations``' fields."""
@@ -307,6 +309,15 @@ def build_report(
     if checks.get("self_intersections"):
         blocking = True
         warnings.append("The mesh intersects itself.")
+    # Reported by the mock engine's trimesh checks only; absent means "not checked".
+    if checks.get("winding_consistent") is False:
+        blocking = True
+        warnings.append("The mesh's facet winding is inconsistent (some normals point inward).")
+    if checks.get("positive_volume") is False and checks.get("mesh_solid", True):
+        blocking = True
+        warnings.append("The mesh encloses no positive volume (it is inside out or flat).")
+    if checks.get("degenerate_faces"):
+        warnings.append(f"The mesh has {checks['degenerate_faces']} degenerate (zero-area) facet(s).")
     if (checks.get("components") or 1) > 1:
         warnings.append(f"The part is {checks['components']} separate bodies; each prints as its own island.")
     mesh_ok = not blocking  # everything so far is a defect no rotation can fix

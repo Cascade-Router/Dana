@@ -11,6 +11,7 @@ geometry worked out by hand, not just ``ok``.
 from __future__ import annotations
 
 import math
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from dana.platform.mock import MockControlPlane, MockFreeCADEngine
 from dana.plugins.freecad import engine as fc_engine
 from dana.plugins.freecad.ir import pipe_arc_radius
 from dana.plugins.freecad.printability import build_report
+from dana.tools.urdf_builder import ROOT_LINK_NAME
 from dana.tools.schema import ToolCall
 
 # Every key the real engine's query_topology reports per face.
@@ -325,3 +327,70 @@ def test_mock_outputs_live_under_the_session_directory(cad: MockFreeCADEngine) -
     assert mesh_path.parent == fc_engine._session_dir() / "mock"
     exported = Path(cad.export_model([str(mesh_path)], "stl", "cube")["path"])
     assert exported == fc_engine._export_dir() / "cube.stl" and exported.is_file()
+
+
+def test_printability_rejects_an_inside_out_mesh(cad: MockFreeCADEngine) -> None:
+    flipped = trimesh.creation.box(extents=[10, 10, 10])
+    flipped.invert()
+    path = fc_engine._session_dir() / "flipped.glb"
+    flipped.export(path)
+    mock._mock_object_registry()["Flipped"] = str(path)
+    report = cad.check_printability("Flipped")
+    assert report["checks"]["positive_volume"] is False
+    assert report["printable"] is False and any("no positive volume" in w for w in report["warnings"])
+
+
+def test_printability_reports_the_new_mesh_checks_on_a_clean_part(cad: MockFreeCADEngine) -> None:
+    cad.create_box(10, 10, 10, name="Cube")
+    checks = cad.check_printability("Cube")["checks"]
+    assert checks["winding_consistent"] is True and checks["positive_volume"] is True
+    assert checks["degenerate_faces"] == 0
+
+
+def test_build_report_blocks_inconsistent_winding_and_warns_on_degenerate_faces() -> None:
+    clean = {"shape_valid": True, "closed_solid": True, "mesh_solid": True, "non_manifold": False,
+             "self_intersections": False, "open_edges": 0, "components": 1}
+    bbox = [0, 0, 0, 10, 10, 10]
+    assert build_report(target="x", checks=clean, bbox=bbox, facets=[])["printable"] is True  # keys absent: unchecked
+    bad = build_report(target="x", checks={**clean, "winding_consistent": False}, bbox=bbox, facets=[])
+    assert bad["printable"] is False and "winding" in bad["warnings"][0]
+    sliver = build_report(target="x", checks={**clean, "degenerate_faces": 3}, bbox=bbox, facets=[])
+    assert sliver["printable"] is True and "3 degenerate" in sliver["warnings"][0]
+
+
+# --- export_assembly_to_urdf ---------------------------------------------------------------
+
+
+def test_mock_urdf_export_writes_links_meshes_and_inertia(cad: MockFreeCADEngine) -> None:
+    cad.create_box(40, 40, 10, name="Base")
+    cad.create_cylinder(5, 30, name="Post")
+    cad.create_assembly("Stand")
+    cad.add_parts_to_assembly("Stand", ["Base", "Post"])
+    cad.position_assembly_part("Post", placement_z=21)
+    cad.define_kinematic_joint("Stand", "Post", "Base", "revolute", axis=[0, 0, 1])
+    result = cad.export_assembly_to_urdf("Stand")
+    assert result["ok"] is True, result
+    urdf = Path(result["path"])
+    assert urdf.is_file() and urdf.parent == fc_engine._export_dir() / "Stand_urdf"
+    root = ET.parse(urdf).getroot()
+    links = {link.get("name"): link for link in root.findall("link")}
+    # Base is the only root, so no synthetic base_link; Post hangs off Base.
+    assert set(links) == {"Base", "Post"} and ROOT_LINK_NAME not in links
+    joint = root.find("joint")
+    assert (joint.get("type"), joint.find("parent").get("link"), joint.find("child").get("link")) == (
+        "revolute", "Base", "Post")
+    assert [float(v) for v in joint.find("origin").get("xyz").split()] == pytest.approx([0, 0, 0.021])
+
+    for name in ("Base", "Post"):
+        mesh_file = links[name].find("visual/geometry/mesh").get("filename")
+        local = trimesh.load(urdf.parent / mesh_file, force="mesh")
+        assert local.centroid == pytest.approx([0, 0, 0], abs=1e-6)  # written in the part's own frame
+    # Base: 40 x 40 x 10 mm of the default density (2,700 kg/m³ aluminium).
+    mass = float(links["Base"].find("inertial/mass").get("value"))
+    assert mass == pytest.approx(2700 * 16_000e-9, rel=1e-3)
+    izz = float(links["Base"].find("inertial/inertia").get("izz"))
+    assert izz == pytest.approx(mass * (0.04**2 + 0.04**2) / 12, rel=1e-3)
+
+
+def test_mock_urdf_export_refuses_an_unknown_assembly(cad: MockFreeCADEngine) -> None:
+    assert cad.export_assembly_to_urdf("Nope")["ok"] is False

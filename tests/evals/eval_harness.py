@@ -506,6 +506,26 @@ def _task4_checks(run: Run) -> list[Check]:
         _close("BOM: Base 16 cm³ of PLA = 19.84 g", masses.get("Base"), 19.84, abs_tol=0.01),
         _close("BOM: Post π·5²·30 mm³ of PLA", masses.get("Post"), math.pi * 25 * 30 * _POLYGON_32 / 1000 * 1.24, rel=1e-3),
         Check("both parts printable on the MK4", len(prints) == 2 and all(p.get("printable") for p in prints)),
+        *_urdf_checks(run.last_output("export_assembly_to_urdf")),
+    ]
+
+
+def _urdf_checks(result: dict[str, Any]) -> list[Check]:
+    import xml.etree.ElementTree as ET
+
+    path = Path(result.get("path") or "")
+    if not path.is_file():
+        return [Check("URDF exported", False, str(result.get("error") or result)[:120])]
+    root = ET.parse(path).getroot()
+    links = root.findall("link")
+    meshes = [path.parent / m.get("filename") for m in root.iter("mesh")]
+    return [
+        Check("URDF exported", root.tag == "robot", path.name),
+        Check("URDF links: base_link, Base, Post", sorted(link.get("name") for link in links) == ["Base", "Post", "base_link"],
+              str([link.get("name") for link in links])),
+        Check("every link mesh exists", bool(meshes) and all(m.is_file() for m in meshes), f"{len(meshes)} meshes"),
+        Check("links carry inertial mass", all(link.find("inertial/mass") is not None for link in links
+                                               if link.get("name") != "base_link")),
     ]
 
 
@@ -592,6 +612,7 @@ SCENARIOS: list[Scenario] = [
             {"description": "Lift the post clear of the base",
              "expected_tools": ["get_freecad_bounding_box", "position_assembly_part"]},
             {"description": "Re-check the stand for collisions", "expected_tools": ["validate_assembly_collisions"]},
+            {"description": "Export the stand as a URDF", "expected_tools": ["export_assembly_to_urdf"]},
             {"description": "Cost the stand", "expected_tools": ["generate_assembly_bom"]},
             {"description": "Check the base prints", "expected_tools": ["check_printability"]},
             {"description": "Check the post prints", "expected_tools": ["check_printability"]},
@@ -607,6 +628,7 @@ SCENARIOS: list[Scenario] = [
             Step("get_freecad_bounding_box", {"target_object": "Base"}),
             Step("position_assembly_part", {"part_name": "Post", "placement_z": 21}),
             Step("validate_assembly_collisions", {"assembly_name": "Stand"}),
+            Step("export_assembly_to_urdf", {"assembly_name": "Stand"}),
             Step("generate_assembly_bom", {"assembly_name": "Stand"}),
             Step("check_printability", {"object_name": "Base"}),
             Step("check_printability", {"object_name": "Post"}),

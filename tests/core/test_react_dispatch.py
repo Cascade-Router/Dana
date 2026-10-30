@@ -3472,13 +3472,12 @@ def test_export_assembly_to_urdf_blocked_until_collisions_validated_this_session
     rd._mark_collision_validation_done("validate_assembly_collisions", {"assembly_name": "rig"}, sid)
     assert "rig" in rd._COLLISIONS_VALIDATED_BY_SESSION.get(sid, set())
 
-    # GATE NO LONGER BLOCKS — reaches the engine, which fails for its OWN
-    # unrelated, pre-existing reason (mock has no real BRep solids).
+    # GATE NO LONGER BLOCKS — reaches the engine, which exports the URDF.
     past_gate = rd.dispatch_tool_call(
         ToolCall(tool_id="export_assembly_to_urdf", arguments={"assembly_name": "rig"}), engine, control_plane
     )
-    assert past_gate.ok is False
-    assert "not supported by the mock CAD driver" in json.dumps(past_gate.payload)
+    assert past_gate.ok is True
+    assert past_gate.payload["path"].endswith("rig.urdf")
 
 
 def test_tool_apply_assembly_constraint_hard_blocks_uv_tensor() -> None:

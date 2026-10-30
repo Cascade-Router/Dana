@@ -11,6 +11,7 @@ real actuation, mirroring the labeling convention already used in
 from __future__ import annotations
 
 import copy
+import json
 import math
 import os
 import tempfile
@@ -1282,6 +1283,10 @@ class MockFreeCADEngine(BaseCADEngine):
             "self_intersections": None,
             "open_edges": int((edge_use == 1).sum()),
             "components": len(set(_union_find_labels(len(mesh.faces), mesh.face_adjacency))),
+            # Mesh-only checks (FreeCAD's shape check covers these on the real engine).
+            "winding_consistent": bool(mesh.is_winding_consistent),
+            "positive_volume": watertight and float(mesh.volume) > 0.0,
+            "degenerate_faces": int((~mesh.nondegenerate_faces()).sum()),
         }
         triangles = np.asarray(mesh.triangles)
         lo, hi = triangles.min(axis=1), triangles.max(axis=1)
@@ -1305,7 +1310,8 @@ class MockFreeCADEngine(BaseCADEngine):
             **report,
             "stl_path": str(stl_path),
             "driver": "mock",
-            "note": f"{_MOCK_NOTE_CAD}; mesh checks by trimesh, self-intersection not checked",
+            "note": f"{_MOCK_NOTE_CAD}; mesh checks by trimesh (winding, volume sign, degenerate "
+            "faces, edges); self-intersection not checked",
         }
 
     def create_pipe(
@@ -2356,10 +2362,7 @@ class MockFreeCADEngine(BaseCADEngine):
             "name": assembly,
             "dimensions": {"parent_link": parent, "child_link": child, "joint_type": jtype, "axis": axis_vec},
             "driver": "mock",
-            "note": (
-                f"{_MOCK_NOTE_CAD}; joint recorded but export_assembly_to_urdf is unavailable "
-                "under this driver, so it is never read back into an actual URDF"
-            ),
+            "note": f"{_MOCK_NOTE_CAD}; joint recorded, used by export_assembly_to_urdf",
         }
 
     def validate_assembly_collisions(self, assembly_name: str) -> dict[str, Any]:
@@ -2450,22 +2453,97 @@ class MockFreeCADEngine(BaseCADEngine):
         export_directory: str | None = None,
         density_kg_m3: float | None = None,
     ) -> dict[str, Any]:
-        # Unlike position_assembly_part/apply_assembly_constraint above,
-        # there is no honest partial stub here: a URDF export's entire
-        # value is real tessellated mesh files + real relative Placements,
-        # neither of which this driver has anything genuine to offer for
-        # (it has no real BRep shapes, only trimesh primitives keyed by a
-        # flat name->path registry with no group/assembly structure at
-        # all) — returning a fake "ok" with no actual .urdf/.stl on disk
-        # would be a worse lie than just saying so.
+        """The real engine's export on the members' meshes: each member's
+        mesh is written in its own local frame (its placement undone) to
+        ``<out>/meshes/<name>.stl``, its placement relative to its joint
+        parent (define_kinematic_joint, else the assembly) becomes the link
+        origin, and its exact mesh volume, center of mass and inertia tensor
+        (about the center of mass, unit density, like FreeCAD's
+        MatrixOfInertia) give the ``<inertial>``. The XML is written by the
+        same ``urdf_builder.export_assembly_parts_to_urdf`` the real engine
+        calls. Consumed boolean operands are left out, as there."""
+        import numpy as np
+        import trimesh
+
+        from dana.plugins.freecad import engine
+        from dana.tools.urdf_builder import ROOT_LINK_NAME, export_assembly_parts_to_urdf
+
+        assembly = _resolve_mock_name(assembly_name)
+        members = _mock_assembly_registry().get(assembly or "")
+        if members is None:
+            return {"ok": False, "error": f"export_assembly_to_urdf: no assembly named {assembly_name!r} in this session"}
+        safe = engine._safe_name(assembly)
+        out_dir = Path(export_directory) if (export_directory or "").strip() else engine._export_dir() / f"{safe}_urdf"
+        meshes_dir = out_dir / "meshes"
+        meshes_dir.mkdir(parents=True, exist_ok=True)
+
+        consumed = {op for entry in _mock_boolean_registry().values() for op in entry["operands"]}
+        registry = _mock_object_registry()
+        placements = _mock_placement_registry()
+        joints = _mock_kinematic_joints_registry().get(assembly, {})
+
+        def world(name: str) -> Any:
+            return _placement_matrix(*placements.get(name, [0.0] * 6))
+
+        parts = []
+        for name in members:
+            path = registry.get(name)
+            if name in consumed or not path or not Path(path).is_file():
+                continue
+            mesh = trimesh.load(path, force="mesh")
+            mesh.apply_transform(np.linalg.inv(world(name)))
+            mesh.export(meshes_dir / f"{name}.stl")
+            jdef = joints.get(name, {})
+            parent = jdef.get("parent") or ROOT_LINK_NAME
+            if parent != ROOT_LINK_NAME and parent not in registry:
+                return {
+                    "ok": False,
+                    "error": f"export_assembly_to_urdf: {name!r} has a joint to unknown parent {parent!r}",
+                }
+            relative = world(name) if parent == ROOT_LINK_NAME else np.linalg.inv(world(parent)) @ world(name)
+            roll, pitch, yaw = trimesh.transformations.euler_from_matrix(relative, "sxyz")
+            part: dict[str, Any] = {
+                "name": name,
+                "mesh_file": f"meshes/{name}.stl",
+                "origin_xyz": [float(v) for v in relative[:3, 3]],
+                "origin_rpy": [float(roll), float(pitch), float(yaw)],
+                "joint_parent": parent,
+                "joint_type": jdef.get("type") or "fixed",
+                "joint_axis": jdef.get("axis") or [0.0, 0.0, 1.0],
+                "joint_name": jdef.get("joint_name"),
+                "limit_lower": jdef.get("limit_lower"),
+                "limit_upper": jdef.get("limit_upper"),
+                "limit_effort": jdef.get("limit_effort"),
+                "limit_velocity": jdef.get("limit_velocity"),
+            }
+            if mesh.is_watertight and mesh.volume > 0:
+                inertia = mesh.moment_inertia
+                part.update(
+                    volume=float(mesh.volume),
+                    center_of_mass=[float(v) for v in mesh.center_mass],
+                    inertia={
+                        "ixx": float(inertia[0][0]), "ixy": float(inertia[0][1]), "ixz": float(inertia[0][2]),
+                        "iyy": float(inertia[1][1]), "iyz": float(inertia[1][2]), "izz": float(inertia[2][2]),
+                    },
+                )
+            parts.append(part)
+        if not parts:
+            return {"ok": False, "error": f"export_assembly_to_urdf: assembly {assembly!r} has no parts with geometry"}
+
+        density_kwargs = {"density_kg_m3": float(density_kg_m3)} if density_kg_m3 is not None else {}
+        result = json.loads(export_assembly_parts_to_urdf(assembly, parts, str(out_dir), **density_kwargs))
+        if not result.get("ok"):
+            return {"ok": False, "error": f"export_assembly_to_urdf: {result.get('error')}"}
         return {
-            "ok": False,
-            "error": (
-                "export_assembly_to_urdf is not supported by the mock CAD driver (no FreeCADCmd "
-                "binary available) — a real FreeCAD engine is required to tessellate meshes and "
-                "extract real Placements."
-            ),
+            "ok": True,
+            "name": result.get("name") or safe,
+            "type": "urdf",
+            "path": result.get("path"),
+            "link_count": result.get("link_count"),
+            "joint_count": result.get("joint_count"),
+            "meshes_dir": str(meshes_dir),
             "driver": "mock",
+            "note": f"{_MOCK_NOTE_CAD}; links and inertia from the members' meshes",
         }
 
     def generate_assembly_bom(
