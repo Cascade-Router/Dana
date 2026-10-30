@@ -34,11 +34,27 @@ def minification_enabled() -> bool:
     return raw not in {"0", "false", "off"}
 
 
+# A ". " that ends one of these isn't a sentence end. Cutting there used to
+# leave descriptions like create_plan's "Breaks a complex, long-horizon
+# goal (e.g." on the wire.
+_ABBREVIATIONS = ("e.g", "i.e", "etc", "vs", "approx")
+
+
+def _first_sentence_end(text: str) -> int:
+    """Index of the period ending ``text``'s first sentence, or -1."""
+    start = 0
+    while (index := text.find(". ", start)) != -1:
+        if not text[:index].lower().endswith(_ABBREVIATIONS):
+            return index
+        start = index + 2
+    return -1
+
+
 def _condense(text: str, *, max_chars: int = _MAX_DESCRIPTION_CHARS) -> str:
     text = _WHITESPACE_RE.sub(" ", (text or "")).strip()
     if len(text) <= max_chars:
         return text
-    first_period = text.find(". ")
+    first_period = _first_sentence_end(text)
     if 0 < first_period <= max_chars:
         return text[: first_period + 1]
     return text[:max_chars].rstrip() + "…"

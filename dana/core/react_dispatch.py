@@ -5780,6 +5780,27 @@ _CORE_TOOL_IDS = frozenset(
     }
 )
 
+# Core tools that only act on an EXISTING, unfinished plan. Before a plan
+# exists (PLANNING) and once it is done they can only fail, so neither
+# allow-list offers them; together they were ~880 tokens of every planning
+# turn's schema. compile_plan_as_skill needs a finished plan, so it is
+# left out of PLANNING only.
+_ACTIVE_PLAN_TOOL_IDS = frozenset({"insert_task", "mark_task_completed", "cancel_pending_task", "cancel_active_task"})
+_PLANNING_EXCLUDED_TOOL_IDS = _ACTIVE_PLAN_TOOL_IDS | {"compile_plan_as_skill"}
+
+# Read-only checks and deliverables still worth offering after a plan is
+# done (the wrap-up turn), budget permitting. Anything else is one
+# load_specific_tool away.
+_POST_PLAN_TOOL_IDS = frozenset(
+    {
+        "query_topology",
+        "validate_assembly_collisions",
+        "generate_assembly_bom",
+        "generate_2d_blueprint",
+        "check_printability",
+    }
+)
+
 _FREECAD_TOOL_IDS = frozenset(
     {
         "create_freecad_box",
@@ -6720,6 +6741,28 @@ def _rank_by_relevance(tool_ids: Iterable[str], query: str) -> list[str]:
         return ranked
     except Exception:  # noqa: BLE001 — ranking is a pure optimization, never worth failing a turn over
         return sorted(pool)
+
+
+def _post_plan_tools_schema(
+    candidates: frozenset[str], query: str, *, hidden_tool_ids: frozenset[str] = frozenset()
+) -> list[dict[str, Any]]:
+    """The wrap-up turn's tools once a CAD plan is done: the core tools
+    (minus the ones that need an unfinished plan) always, then
+    ``candidates`` (the post-plan checks and the tools this chain already
+    used), most relevant first, while ``_TOOL_TOKEN_BUDGET`` lasts. This
+    used to fall through to the neutral path, which offers the whole loaded
+    CAD domain uncut (narrowing-exempt): 41-46 tools, ~10k tokens, more than
+    a local model's whole 8k context."""
+    if is_headless():
+        hidden_tool_ids = hidden_tool_ids | HEADLESS_PRUNED_TOOL_IDS
+    core = (_CORE_TOOL_IDS - _ACTIVE_PLAN_TOOL_IDS) - hidden_tool_ids
+    wanted = core | (candidates - hidden_tool_ids)
+    schemas = list(_llm_tools_schema_cached(frozenset(wanted)))
+    schemas.extend(schema for tool_id, schema in _PLUGIN_TOOL_SCHEMAS.items() if tool_id in wanted)
+    minified = minify_tool_schemas(schemas)
+    if should_strip_tool_schemas(tool_calling_provider()):
+        minified = strip_tool_schemas(minified)
+    return _cap_schemas_by_token_budget(minified, query, must_keep=frozenset(core))
 
 
 def _cap_schemas_by_token_budget(
@@ -7922,6 +7965,7 @@ async def _call_llm_once(
     narrowing_query: str | None = None,
     task_tool_ids: frozenset[str] = frozenset(),
     hard_restrict_to: frozenset[str] | None = None,
+    post_plan: bool = False,
     provider_override: str | None = None,
     is_planning_phase: bool = False,
     state_overlay: str = "",
@@ -8066,6 +8110,12 @@ async def _call_llm_once(
     # "the Planner cannot see a geometry tool at all."
     if hard_restrict_to is not None:
         tools = _llm_tools_schema(active_plugins, hidden_tool_ids=hidden_tool_ids, hard_restrict_to=hard_restrict_to)
+    elif post_plan:
+        tools = _post_plan_tools_schema(
+            _POST_PLAN_TOOL_IDS | _sticky_tool_ids_from_messages(messages, raw_text),
+            raw_text,
+            hidden_tool_ids=hidden_tool_ids,
+        )
     else:
         force_include_ids = _sticky_tool_ids_from_messages(messages, raw_text) | _anchor_suggested_tool_ids(raw_text)
         sticky_ids = force_include_ids | _keyword_suggested_tool_ids(raw_text)
@@ -8709,6 +8759,7 @@ async def next_react_turn(
     # narrow "Turn 0" window that's safe to hard-block without also
     # disabling Ollama for every later turn.
     is_planning_phase = False
+    post_plan = False
     freecad_domain_active = effective_plugins is not None and bool(
         effective_plugins & {"freecad", "freecad_essential", "freecad_full"}
     )
@@ -8717,7 +8768,10 @@ async def next_react_turn(
             # PLANNING: no geometry tool is even offered -- see _llm_tools_
             # schema's hard_restrict_to docstring for why this is a hard
             # allow-list, not a narrowing bias.
-            hard_restrict_to = _CORE_TOOL_IDS | {"search_tool_catalog", "check_plugin_registry"}
+            hard_restrict_to = (_CORE_TOOL_IDS - _PLANNING_EXCLUDED_TOOL_IDS) | {
+                "search_tool_catalog",
+                "check_plugin_registry",
+            }
             is_planning_phase = True
         elif _get_fsm_state(session_id) == "executing":
             active_task = _active_task(session_id)
@@ -8737,7 +8791,9 @@ async def next_react_turn(
                     # signature) still falls through to the soft-narrowed
                     # neutral default below, exactly like _fsm_out_of_order_
                     # check's own permissiveness for that case.
-                    hard_restrict_to = task_tool_ids | _CORE_TOOL_IDS
+                    # compile_plan_as_skill needs a finished plan, so it is
+                    # left out until then (see _PLANNING_EXCLUDED_TOOL_IDS).
+                    hard_restrict_to = task_tool_ids | (_CORE_TOOL_IDS - {"compile_plan_as_skill"})
                     if active_task.get("tool_escape_hatch"):
                         # Wrong-Tool Escape Hatch: the Planner's declared
                         # tool for this task has failed repeatedly (see
@@ -8749,10 +8805,13 @@ async def next_react_turn(
                         # id that keeps failing. _fsm_out_of_order_check
                         # mirrors this same widened set at dispatch time.
                         hard_restrict_to = hard_restrict_to | _FREECAD_ESSENTIAL_TOOL_IDS
+        elif _get_fsm_state(session_id) == "done":
+            # Plan finished: the wrap-up turn gets a small, capped set (see
+            # _post_plan_tools_schema), not the whole loaded CAD domain.
+            post_plan = True
         # "validating" (a task with no expected_tool_ids, parked awaiting a
-        # manual mark_task_completed) and "done" (plan finished, ad-hoc
-        # cleanup) both fall through to the neutral defaults above --
-        # exactly today's full-domain, whole-objective-narrowed behavior.
+        # manual mark_task_completed) falls through to the neutral defaults
+        # above -- the full-domain, whole-objective-narrowed behavior.
 
     # Context-Footprint Ground Truth: a plain, dependency-free stand-in for
     # a real tokenizer count (~4 chars/token is the usual rough-order-of-
@@ -8781,6 +8840,7 @@ async def next_react_turn(
             narrowing_query=narrowing_query,
             task_tool_ids=task_tool_ids,
             hard_restrict_to=hard_restrict_to,
+            post_plan=post_plan,
             provider_override=provider_override,
             is_planning_phase=is_planning_phase,
             state_overlay=_format_object_registry_overlay(session_id),
@@ -9004,6 +9064,7 @@ async def next_react_turn(
             narrowing_query=narrowing_query,
             task_tool_ids=task_tool_ids,
             hard_restrict_to=hard_restrict_to,
+            post_plan=post_plan,
             provider_override=provider_override,
             is_planning_phase=is_planning_phase,
             session_id=session_id,
@@ -9086,6 +9147,7 @@ async def _retry_after_unknown_tool_id(
     narrowing_query: str | None = None,
     task_tool_ids: frozenset[str] = frozenset(),
     hard_restrict_to: frozenset[str] | None = None,
+    post_plan: bool = False,
     provider_override: str | None = None,
     is_planning_phase: bool = False,
     session_id: str | None = None,
@@ -9143,6 +9205,7 @@ async def _retry_after_unknown_tool_id(
             narrowing_query=narrowing_query,
             task_tool_ids=task_tool_ids,
             hard_restrict_to=hard_restrict_to,
+            post_plan=post_plan,
             provider_override=provider_override,
             is_planning_phase=is_planning_phase,
             state_overlay=_format_object_registry_overlay(session_id),

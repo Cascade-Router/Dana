@@ -3256,6 +3256,64 @@ def test_next_react_turn_hard_restricts_tools_during_planning(monkeypatch: pytes
     assert "check_plugin_registry" in offered_tool_ids
 
 
+def test_planning_offers_no_tool_that_needs_an_existing_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """insert_task, mark_task_completed, the cancels and compile_plan_as_skill
+    can only fail before a plan exists; leaving them out keeps the planning
+    schema under _TOOL_TOKEN_BUDGET (it was 2,826 tokens)."""
+    sid = "planning-no-plan-tools"
+    set_session_id(sid)
+    fake = _mock_llm(monkeypatch, tool_calls=[], content="ok")
+    asyncio.run(
+        rd.next_react_turn(
+            [{"role": "system", "content": "sys"}, {"role": "user", "content": "build a box"}],
+            None,
+            raw_text="build a box",
+            active_plugins=frozenset({"freecad_essential"}),
+            session_id=sid,
+        )
+    )
+    tools = fake.calls[-1]["tools"]
+    offered = {t["function"]["name"] for t in tools}
+    assert not offered & rd._PLANNING_EXCLUDED_TOOL_IDS
+    assert {"create_plan", "load_capability", "load_specific_tool"} <= offered
+    assert rd._count_tokens(json.dumps(tools)) <= rd._TOOL_TOKEN_BUDGET
+
+
+def test_finished_plan_offers_a_capped_wrap_up_set_not_the_whole_cad_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the plan is done the wrap-up turn used to fall through to the
+    neutral path and offer all of freecad_full uncut (41-46 tools, ~10k
+    tokens, more than a local model's 8k context)."""
+    sid = "post-plan-wrap-up"
+    set_session_id(sid)
+    rd._PLAN_STATE_REGISTRY[sid] = {"has_plan": True, "plan_text": "done plan", "tasks": [], "fsm_state": "done"}
+    fake = _mock_llm(monkeypatch, tool_calls=[], content="All done.")
+    asyncio.run(
+        rd.next_react_turn(
+            [{"role": "system", "content": "sys"}, {"role": "user", "content": "summarize the plate"}],
+            None,
+            raw_text="summarize the plate",
+            active_plugins=frozenset({"freecad", "freecad_full"}),
+            session_id=sid,
+        )
+    )
+    tools = fake.calls[-1]["tools"]
+    offered = {t["function"]["name"] for t in tools}
+    allowed = (rd._CORE_TOOL_IDS - rd._ACTIVE_PLAN_TOOL_IDS) | rd._POST_PLAN_TOOL_IDS
+    assert offered <= allowed, offered - allowed
+    assert {"search_tool_catalog", "load_specific_tool", "create_plan"} <= offered
+    assert not offered & rd._ACTIVE_PLAN_TOOL_IDS
+    assert rd._count_tokens(json.dumps(tools)) <= rd._TOOL_TOKEN_BUDGET
+
+
+def test_post_plan_set_keeps_tools_this_chain_used_when_they_fit() -> None:
+    schemas = rd._post_plan_tools_schema(frozenset({"query_topology"}), "check the plate")
+    offered = {s["function"]["name"] for s in schemas}
+    assert "query_topology" in offered
+    assert rd._count_tokens(json.dumps(schemas)) <= rd._TOOL_TOKEN_BUDGET
+
+
 def test_position_assembly_part_blocked_until_measured_this_session() -> None:
     """Position-Before-Measurement Gate (Rule 14 Hard Enforcement): confirmed
     live (dana_conversation.log, session f9f6fb1d) that the prompt-only

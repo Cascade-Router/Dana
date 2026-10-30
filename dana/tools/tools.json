@@ -34,14 +34,14 @@
           "type": "array",
           "items_type": "number",
           "required": false,
-          "description_en": "[x, y, z] anchor point, ONLY when the user refers to a previously clicked/selected point ('this', 'here') — copy it verbatim from the active canvas selection given in the system prompt."
+          "description_en": "[x, y, z] of the active canvas selection, copied verbatim; only when the user says 'this' or 'here'."
         },
         {
           "name": "target_normal",
           "type": "array",
           "items_type": "number",
           "required": false,
-          "description_en": "[nx, ny, nz] surface normal at the selected point, copied verbatim from the active canvas selection when relevant."
+          "description_en": "[nx, ny, nz] normal of the active canvas selection, copied verbatim."
         },
         {
           "name": "placement_x",
@@ -90,14 +90,14 @@
           "type": "array",
           "items_type": "number",
           "required": false,
-          "description_en": "[x, y, z] anchor point, ONLY when the user refers to a previously clicked/selected point ('this', 'here') — copy it verbatim from the active canvas selection given in the system prompt."
+          "description_en": "[x, y, z] of the active canvas selection, copied verbatim; only when the user says 'this' or 'here'."
         },
         {
           "name": "target_normal",
           "type": "array",
           "items_type": "number",
           "required": false,
-          "description_en": "[nx, ny, nz] surface normal at the selected point, copied verbatim from the active canvas selection when relevant."
+          "description_en": "[nx, ny, nz] normal of the active canvas selection, copied verbatim."
         },
         {
           "name": "placement_x",
@@ -134,14 +134,14 @@
           "type": "array",
           "items_type": "number",
           "required": true,
-          "description_en": "[x, y, z] anchor point — copy verbatim from the active canvas selection given in the system prompt. Do not invent coordinates."
+          "description_en": "[x, y, z] of the active canvas selection, copied verbatim; only when the user says 'this' or 'here'."
         },
         {
           "name": "target_normal",
           "type": "array",
           "items_type": "number",
           "required": true,
-          "description_en": "[nx, ny, nz] surface normal at the selected point — copy verbatim from the active canvas selection given in the system prompt."
+          "description_en": "[nx, ny, nz] normal of the active canvas selection, copied verbatim."
         }
       ]
     },
@@ -1662,7 +1662,7 @@
     {
       "id": "load_capability",
       "read_only": true,
-      "description_en": "Dynamically unlocks a capability domain's tools for the rest of this conversation, when the user's request needs something outside your current tool set. NEVER tell the user to manually enable a plugin/domain themselves — call this FIRST instead, then call the newly-unlocked tool in a later turn; a domain's tools never appear until this has been called for it. Available domains: 'freecad' (the 7 essential CAD primitives — create a box/cylinder, one boolean op, one edge op, a parameter tweak, a bounding-box check, export — covers most basic modeling requests at low token cost), 'freecad_full' (all 24 FreeCAD tools, including patterns, assembly mates, 2D blueprints, standard-parts lookup, and camera control — only load this if 'freecad' genuinely isn't enough, since it costs far more tokens per turn), 'os_tools' (sandboxed filesystem operations and Python script execution), 'web_tools' (web search and webpage reading, for unfamiliar APIs, current facts, or documentation not in your local knowledge), 'vision_tools' (VLM analysis of an image file in the sandboxed workspace, e.g. verifying a chart you just generated, or of the live FreeCAD viewport via execute_vision_analysis), 'hardware' (slice a model into G-code with PrusaSlicer, and send G-code to a networked Klipper/Moonraker 3D printer to start the print), 'user_skills' (every permanent skill you've previously taught yourself via save_new_skill). Pass 'tool_id' INSTEAD of 'domain' to unhide one specific tool a prior unload_capability(tool_id=...) call hid.",
+      "description_en": "Unlocks a capability domain's tools (or one hidden tool_id) for this conversation. Dynamically unlocks a capability domain's tools for the rest of this conversation, when the user's request needs something outside your current tool set. NEVER tell the user to manually enable a plugin/domain themselves — call this FIRST instead, then call the newly-unlocked tool in a later turn; a domain's tools never appear until this has been called for it. Available domains: 'freecad' (the 7 essential CAD primitives — create a box/cylinder, one boolean op, one edge op, a parameter tweak, a bounding-box check, export — covers most basic modeling requests at low token cost), 'freecad_full' (all 24 FreeCAD tools, including patterns, assembly mates, 2D blueprints, standard-parts lookup, and camera control — only load this if 'freecad' genuinely isn't enough, since it costs far more tokens per turn), 'os_tools' (sandboxed filesystem operations and Python script execution), 'web_tools' (web search and webpage reading, for unfamiliar APIs, current facts, or documentation not in your local knowledge), 'vision_tools' (VLM analysis of an image file in the sandboxed workspace, e.g. verifying a chart you just generated, or of the live FreeCAD viewport via execute_vision_analysis), 'hardware' (slice a model into G-code with PrusaSlicer, and send G-code to a networked Klipper/Moonraker 3D printer to start the print), 'user_skills' (every permanent skill you've previously taught yourself via save_new_skill). Pass 'tool_id' INSTEAD of 'domain' to unhide one specific tool a prior unload_capability(tool_id=...) call hid.",
       "parameters": [
         {
           "name": "domain",
@@ -1678,20 +1678,20 @@
             "hardware",
             "user_skills"
           ],
-          "description_en": "The capability domain to load: 'software_engineering' (read/edit/refactor/debug code — search_codebase, analyze_codebase, execute_code_task, run_verification_command to verify), 'freecad' (CAD modeling — essential tools; only use 'freecad_full' if a heavier tool is genuinely needed), 'os_tools' (filesystem/shell access), 'web_tools' (web search/page fetch), 'vision_tools' (image and CAD-viewport analysis), 'hardware' (slicing and 3D printer dispatch), 'user_skills' (previously self-taught skills). Omit if passing 'tool_id' instead."
+          "description_en": "Domain to unlock."
         },
         {
           "name": "tool_id",
           "type": "string",
           "required": false,
-          "description_en": "Instead of 'domain': the exact tool_id to unhide again after an unload_capability(tool_id=...) call hid it (e.g. 'create_freecad_cylinder'). Omit if passing 'domain' instead."
+          "description_en": "Instead of domain: a tool_id hidden by unload_capability to show again."
         }
       ]
     },
     {
       "id": "unload_capability",
       "read_only": true,
-      "description_en": "Explicitly drops a capability domain you unlocked via load_capability once you're done with it THIS turn or task, instead of leaving it active for several more turns waiting for it to decay out on its own. Use this right after finishing a task that needed a domain you don't expect to need again soon (e.g. you just used 'os_tools' for a one-off file read and the rest of the conversation is unrelated) — it keeps the next turn's tool list smaller and avoids blowing a free-tier model's token budget. Never call this on a domain the FRONTEND itself activated (an open CAD/Coder tab) — it has no effect there; that stays under the user's own tab control. If you unload something you turn out to still need, just call load_capability again. Pass 'tool_id' INSTEAD of 'domain' to hide one SPECIFIC tool while its domain stays fully active — e.g. hide 'create_freecad_cylinder' to force yourself to use batch_pattern_array for a repeated-feature request instead of dispatching the same create call several times in a row.",
+      "description_en": "Drops a domain you loaded (or hides one tool_id) once you're done with it. Explicitly drops a capability domain you unlocked via load_capability once you're done with it THIS turn or task, instead of leaving it active for several more turns waiting for it to decay out on its own. Use this right after finishing a task that needed a domain you don't expect to need again soon (e.g. you just used 'os_tools' for a one-off file read and the rest of the conversation is unrelated) — it keeps the next turn's tool list smaller and avoids blowing a free-tier model's token budget. Never call this on a domain the FRONTEND itself activated (an open CAD/Coder tab) — it has no effect there; that stays under the user's own tab control. If you unload something you turn out to still need, just call load_capability again. Pass 'tool_id' INSTEAD of 'domain' to hide one SPECIFIC tool while its domain stays fully active — e.g. hide 'create_freecad_cylinder' to force yourself to use batch_pattern_array for a repeated-feature request instead of dispatching the same create call several times in a row.",
       "parameters": [
         {
           "name": "domain",
@@ -1707,51 +1707,51 @@
             "hardware",
             "user_skills"
           ],
-          "description_en": "The capability domain to unload — same domain names load_capability accepts. Omit if passing 'tool_id' instead."
+          "description_en": "Domain to drop."
         },
         {
           "name": "tool_id",
           "type": "string",
           "required": false,
-          "description_en": "Instead of 'domain': the exact tool_id to hide from your own tool list starting next turn, even though its domain stays active (e.g. 'create_freecad_cylinder'). Omit if passing 'domain' instead."
+          "description_en": "Instead of domain: one tool_id to hide from your tool list."
         }
       ]
     },
     {
       "id": "search_tool_catalog",
       "read_only": true,
-      "description_en": "Searches the ENTIRE global tool registry (every tool across every plugin/domain, including ones not currently in your tool set and not covered by load_capability's fixed domain list) for a plain-language query. Returns only a lightweight list of matching tool_ids with a one-sentence description each — never full schemas, so a broad discovery search never itself costs meaningful token budget. Use this when a request needs a capability you don't currently see and load_capability's domains don't obviously cover it; call load_specific_tool afterward with the matching tool_id to actually make it callable.",
+      "description_en": "Searches every tool in every domain, including ones not loaded. Searches the ENTIRE global tool registry (every tool across every plugin/domain, including ones not currently in your tool set and not covered by load_capability's fixed domain list) for a plain-language query. Returns only a lightweight list of matching tool_ids with a one-sentence description each — never full schemas, so a broad discovery search never itself costs meaningful token budget. Use this when a request needs a capability you don't currently see and load_capability's domains don't obviously cover it; call load_specific_tool afterward with the matching tool_id to actually make it callable.",
       "parameters": [
         {
           "name": "query",
           "type": "string",
           "required": true,
-          "description_en": "Plain-language description of the capability you're looking for, e.g. 'convert an image to grayscale' or 'query engineering standards'."
+          "description_en": "What you need, e.g. 'convert an image to grayscale'."
         }
       ]
     },
     {
       "id": "load_specific_tool",
       "read_only": true,
-      "description_en": "Explicitly loads one specific tool_id (as returned by search_tool_catalog or check_plugin_registry) into your available tools starting the NEXT turn, bypassing both the normal capability-domain gate and semantic narrowing — the fine-grained, single-tool counterpart to load_capability's whole-domain unlock. Use this to fetch a tool you discovered via search_tool_catalog that isn't already reachable through an active domain.",
+      "description_en": "Loads one tool_id from search_tool_catalog into your tools from the next turn. Explicitly loads one specific tool_id (as returned by search_tool_catalog or check_plugin_registry) into your available tools starting the NEXT turn, bypassing both the normal capability-domain gate and semantic narrowing — the fine-grained, single-tool counterpart to load_capability's whole-domain unlock. Use this to fetch a tool you discovered via search_tool_catalog that isn't already reachable through an active domain.",
       "parameters": [
         {
           "name": "tool_id",
           "type": "string",
           "required": true,
-          "description_en": "Exact tool_id to load, as returned by search_tool_catalog or check_plugin_registry."
+          "description_en": "Exact tool_id to load."
         }
       ]
     },
     {
       "id": "save_new_skill",
-      "description_en": "Permanently teaches yourself a new tool by saving a Python function as a 'skill' to skills/<skill_name>.py — it becomes a real, dispatchable tool in the NEXT turn (no restart needed), as long as the 'user_skills' capability domain is active (load it first via load_capability if it isn't). Use this once you've worked out a repeatable data transformation or OS task (e.g. via run_python_script) and want to keep it permanently instead of re-deriving it from scratch every time. The Python code must define a top-level 'def run(args: dict) -> dict:' function that returns at least {'ok': True/False, ...} — do NOT include a TOOL_SCHEMA assignment in python_code, that's built automatically from the schema argument. schema.function.name MUST exactly equal skill_name. This is a MUTATING action — the user must explicitly approve the exact Python source before it is ever saved to disk.",
+      "description_en": "Saves a Python function as a new permanent tool (a skill). Permanently teaches yourself a new tool by saving a Python function as a 'skill' to skills/<skill_name>.py — it becomes a real, dispatchable tool in the NEXT turn (no restart needed), as long as the 'user_skills' capability domain is active (load it first via load_capability if it isn't). Use this once you've worked out a repeatable data transformation or OS task (e.g. via run_python_script) and want to keep it permanently instead of re-deriving it from scratch every time. The Python code must define a top-level 'def run(args: dict) -> dict:' function that returns at least {'ok': True/False, ...} — do NOT include a TOOL_SCHEMA assignment in python_code, that's built automatically from the schema argument. schema.function.name MUST exactly equal skill_name. This is a MUTATING action — the user must explicitly approve the exact Python source before it is ever saved to disk.",
       "parameters": [
         {
           "name": "skill_name",
           "type": "string",
           "required": true,
-          "description_en": "Lowercase snake_case identifier for the new tool, e.g. 'convert_csv_to_json'. Must be unique — cannot collide with an existing tool id."
+          "description_en": "Unique snake_case tool id, e.g. 'convert_csv_to_json'."
         },
         {
           "name": "python_code",
@@ -1763,13 +1763,13 @@
           "name": "schema",
           "type": "object",
           "required": true,
-          "description_en": "OpenAI tool-calling schema for this skill: {\"type\": \"function\", \"function\": {\"name\": <must equal skill_name>, \"description\": \"...\", \"parameters\": {\"type\": \"object\", \"properties\": {...}, \"required\": [...]}}}."
+          "description_en": "The skill's OpenAI tool schema; function.name must equal skill_name."
         }
       ]
     },
     {
       "id": "delete_skill",
-      "description_en": "Permanently deletes a previously-saved skill (removes skills/<skill_name>.py) and unloads it — it stops being a dispatchable tool starting the NEXT turn. Use this if you realize a skill you saved via save_new_skill was wrong, buggy, or no longer needed, instead of leaving a broken tool registered. This is a MUTATING action — the user must explicitly approve the deletion first.",
+      "description_en": "Deletes a saved skill and unloads it. Permanently deletes a previously-saved skill (removes skills/<skill_name>.py) and unloads it — it stops being a dispatchable tool starting the NEXT turn. Use this if you realize a skill you saved via save_new_skill was wrong, buggy, or no longer needed, instead of leaving a broken tool registered. This is a MUTATING action — the user must explicitly approve the deletion first.",
       "parameters": [
         {
           "name": "skill_name",
@@ -1782,26 +1782,26 @@
     {
       "id": "read_skill_source",
       "read_only": true,
-      "description_en": "Reads back the exact Python source code of a previously-saved user skill (one you created via save_new_skill). Use this to review a skill's code before fixing it — especially right after a skill call fails and its tool result includes a 'traceback' field: read the source here, find the exact line the traceback points at, then call save_new_skill with the corrected python_code (same skill_name) to overwrite and hot-reload it. Read-only.",
+      "description_en": "Reads a saved skill's Python source. Reads back the exact Python source code of a previously-saved user skill (one you created via save_new_skill). Use this to review a skill's code before fixing it — especially right after a skill call fails and its tool result includes a 'traceback' field: read the source here, find the exact line the traceback points at, then call save_new_skill with the corrected python_code (same skill_name) to overwrite and hot-reload it. Read-only.",
       "parameters": [
         {
           "name": "skill_name",
           "type": "string",
           "required": true,
-          "description_en": "The exact name of the skill whose source to read, e.g. 'convert_csv_to_json'."
+          "description_en": "Name of the skill."
         }
       ]
     },
     {
       "id": "update_core_memory",
       "read_only": true,
-      "description_en": "Saves a durable note to your persistent Core Memory — a small on-disk store that survives a server restart and is shown to you at the top of every future session's system prompt, under '## Persistent Core Memory'. Use this to remember a user preference, an active project's constraints, or a workflow you just learned, so you don't have to be told it again next session. Overwrites any existing content under the same section name. Always available, no capability domain required.",
+      "description_en": "Saves a durable note to Core Memory (survives restarts, shown in every prompt). Saves a durable note to your persistent Core Memory — a small on-disk store that survives a server restart and is shown to you at the top of every future session's system prompt, under '## Persistent Core Memory'. Use this to remember a user preference, an active project's constraints, or a workflow you just learned, so you don't have to be told it again next session. Overwrites any existing content under the same section name. Always available, no capability domain required.",
       "parameters": [
         {
           "name": "section",
           "type": "string",
           "required": true,
-          "description_en": "Short label for what this note is about, e.g. 'user_preferences' or 'active_project'. Reusing an existing section name overwrites it."
+          "description_en": "Short label, e.g. 'user_preferences'; reusing one overwrites it."
         },
         {
           "name": "content",
@@ -1814,13 +1814,13 @@
     {
       "id": "create_plan",
       "read_only": true,
-      "description_en": "Breaks a complex, long-horizon goal (e.g. 'build a full web app from scratch') down into an ordered checklist of tasks, and starts tracking it as your active plan — the plan is then shown back to you at the end of every system prompt as your own anchor, so you never lose track of which step you're on. Use this BEFORE starting a multi-step project, not partway through one. Calling this REPLACES any previously active plan entirely (the first task becomes active immediately). Always available, in any session.",
+      "description_en": "Breaks a multi-step goal into an ordered task checklist and makes it the active plan. Breaks a complex, long-horizon goal (e.g. 'build a full web app from scratch') down into an ordered checklist of tasks, and starts tracking it as your active plan — the plan is then shown back to you at the end of every system prompt as your own anchor, so you never lose track of which step you're on. Use this BEFORE starting a multi-step project, not partway through one. Calling this REPLACES any previously active plan entirely (the first task becomes active immediately). Always available, in any session.",
       "parameters": [
         {
           "name": "objective",
           "type": "string",
           "required": true,
-          "description_en": "The overall goal in one sentence, e.g. 'Build a Flask to-do app with a SQLite backend.'"
+          "description_en": "The overall goal in one sentence."
         },
         {
           "name": "tasks",
@@ -1838,7 +1838,7 @@
               "type": "array",
               "items_type": "string",
               "required": false,
-              "description_en": "The EXACT tool_id(s) you intend to call to complete THIS task — copy the id character-for-character from this list, never invent or guess a name (e.g. 'freecad_create_sketch' and 'create_sketch' are NOT real tool_ids and will be silently dropped from your plan). The real FreeCAD tool_ids are: create_freecad_box, create_freecad_cylinder, create_freecad_sketch, create_freecad_pad, create_freecad_pocket, create_freecad_sweep, create_freecad_polar_pattern, create_freecad_assembly, add_parts_to_assembly, position_assembly_part, create_freecad_helix, perform_freecad_boolean, perform_freecad_edge_operation, modify_freecad_parameter, get_freecad_bounding_box, export_freecad_model, insert_standard_part, import_and_solidify_mesh. Assembly tasks need MULTIPLE of these: creating the container (create_freecad_assembly) does NOT add parts to it or position them — declare add_parts_to_assembly and/or position_assembly_part too for a task that groups and places parts, or that work will silently never happen. You have the real semantic context for what each task needs — declare it explicitly rather than leaving it for a guess. Omit only for a task with no single fixed tool (a pure visual inspection/adjustment step)."
+              "description_en": "Exact tool_id(s) this task calls, copied character-for-character (unknown ids are dropped). FreeCAD ids: create_freecad_box, create_freecad_cylinder, create_freecad_sketch, create_freecad_pad, create_freecad_pocket, create_freecad_sweep, create_freecad_polar_pattern, create_freecad_assembly, add_parts_to_assembly, position_assembly_part, create_freecad_helix, perform_freecad_boolean, perform_freecad_edge_operation, modify_freecad_parameter, get_freecad_bounding_box, export_freecad_model, insert_standard_part, import_and_solidify_mesh. create_freecad_assembly only makes the container: declare add_parts_to_assembly/position_assembly_part too when the task adds or places parts. Omit for a step with no fixed tool."
             }
           ],
           "required": true,
@@ -1848,19 +1848,19 @@
     },
     {
       "id": "compile_plan_as_skill",
-      "description_en": "Compiles every successful FreeCAD tool call since your last create_plan into ONE new, permanently reusable tool, so a future request for the same kind of part is a single call instead of repeating every step again. Call this ONLY after the plan's geometry is actually finished and looks correct — compiling a broken or incomplete build just as permanently saves the broken result. Requires a human's one-time approval, same as save_new_skill, since it creates new executable code.",
+      "description_en": "Compiles this plan's successful FreeCAD calls into one reusable tool. Compiles every successful FreeCAD tool call since your last create_plan into ONE new, permanently reusable tool, so a future request for the same kind of part is a single call instead of repeating every step again. Call this ONLY after the plan's geometry is actually finished and looks correct — compiling a broken or incomplete build just as permanently saves the broken result. Requires a human's one-time approval, same as save_new_skill, since it creates new executable code.",
       "parameters": [
         {
           "name": "skill_name",
           "type": "string",
           "required": true,
-          "description_en": "Lowercase snake_case tool_id for the new tool, e.g. 'create_nema17_bracket'. Must not collide with an existing tool name."
+          "description_en": "Unique snake_case tool id, e.g. 'create_nema17_bracket'."
         },
         {
           "name": "description",
           "type": "string",
           "required": true,
-          "description_en": "One sentence describing what the compiled tool builds — this becomes its own tool description shown to you (or a future turn) when deciding whether to call it."
+          "description_en": "One sentence on what the compiled tool builds."
         },
         {
           "name": "expose_parameters",
@@ -1880,65 +1880,65 @@
           "name": "task_id",
           "type": "integer",
           "required": true,
-          "description_en": "The id of the task that is now complete (see the '## Current Active Plan' block in your own system prompt for the current ids)."
+          "description_en": "Id of the completed task."
         },
         {
           "name": "created_feature_names",
           "type": "array",
           "items_type": "string",
           "required": true,
-          "description_en": "You must provide the exact names of the FreeCAD features you created or modified to fulfill this task, exactly as returned in each tool result's own \"name\" field (FreeCAD may have renamed one, e.g. \"Pocket001\" instead of \"Pocket\", if that name already existed — use the name it actually reported back, not the one you requested). If the task involved creating a pocket and a sweep, list them, e.g. [\"Pocket\", \"Sweep\"]. If no features were created or modified (e.g. this task was just an export, or a pure inspection step), pass [\"none\"] — every name listed here is verified against the live document, and a name that doesn't exist gets this call rejected."
+          "description_en": "Exact names of the features this task created or modified."
         },
         {
           "name": "next_task_id",
           "type": "integer",
           "required": false,
-          "description_en": "The id of the task to promote to active next, if you already know which one that is."
+          "description_en": "Id of the task to activate next, if known."
         }
       ]
     },
     {
       "id": "insert_task",
       "read_only": true,
-      "description_en": "Dynamic FSM Replanning: inserts ONE new task into your active plan when you discover mid-execution that a step is missing (e.g. you forgot to pocket before patterning, or a part needs positioning before its kinematic joint is defined). Use this instead of doing the missing work under the wrong task's name — that leaves your plan's own record out of sync with what you actually built. Give EXACTLY ONE of insert_after_task_id/insert_before_task_id. insert_before_task_id targeting the CURRENTLY ACTIVE task is FSM Recovery / Prerequisite Insertion: the new task is promoted straight to active and the previously-active task is safely demoted back to pending right after it — the one legal way to insert a prerequisite once the FSM has already moved past where it belonged (insert_after_task_id alone cannot reach 'before the active task', since the task before it is already completed history). Limited: at most 3 insert_task/cancel_pending_task/cancel_active_task calls total per plan.",
+      "description_en": "Inserts one missing task into the active plan. Dynamic FSM Replanning: inserts ONE new task into your active plan when you discover mid-execution that a step is missing (e.g. you forgot to pocket before patterning, or a part needs positioning before its kinematic joint is defined). Use this instead of doing the missing work under the wrong task's name — that leaves your plan's own record out of sync with what you actually built. Give EXACTLY ONE of insert_after_task_id/insert_before_task_id. insert_before_task_id targeting the CURRENTLY ACTIVE task is FSM Recovery / Prerequisite Insertion: the new task is promoted straight to active and the previously-active task is safely demoted back to pending right after it — the one legal way to insert a prerequisite once the FSM has already moved past where it belonged (insert_after_task_id alone cannot reach 'before the active task', since the task before it is already completed history). Limited: at most 3 insert_task/cancel_pending_task/cancel_active_task calls total per plan.",
       "parameters": [
         {
           "name": "description",
           "type": "string",
           "required": true,
-          "description_en": "Short plain-text description of the missing step, e.g. 'Position wheel_2 at the right side face of the main body before its kinematic joint is defined.'"
+          "description_en": "Short description of the missing step."
         },
         {
           "name": "insert_after_task_id",
           "type": "integer",
           "required": false,
-          "description_en": "The id of the existing task this new one goes right after (see '## Current Active Plan' for current ids). Must not be a task already marked completed — you cannot insert into finished history, only into what's still open. Mutually exclusive with insert_before_task_id — give exactly one."
+          "description_en": "Id of the task the new one follows."
         },
         {
           "name": "insert_before_task_id",
           "type": "integer",
           "required": false,
-          "description_en": "The id of the existing task this new one goes right before. If that task is the CURRENTLY ACTIVE one, it is demoted back to pending and this new task becomes active immediately instead — use this to insert a prerequisite the FSM already walked past. If that task is merely pending, this just splices the new task ahead of it, no promotion involved. Cannot target an already-completed or cancelled task. Mutually exclusive with insert_after_task_id — give exactly one."
+          "description_en": "Id of the task the new one precedes."
         },
         {
           "name": "expected_tools",
           "type": "array",
           "items_type": "string",
           "required": false,
-          "description_en": "Same meaning as create_plan's own expected_tools: the exact tool_id(s) you intend to call for this new task. Omit only if this step has no single fixed tool."
+          "description_en": "Exact tool_id(s) the new task calls, as in create_plan."
         }
       ]
     },
     {
       "id": "cancel_pending_task",
       "read_only": true,
-      "description_en": "Dynamic FSM Replanning: cancels a task you have NOT started yet and NEVER need — e.g. you realize two remaining tasks are redundant, or the objective changed. Cannot cancel the task currently active (use cancel_active_task for that instead) or one already completed (that's history, not something to remove). Limited: at most 3 insert_task/cancel_pending_task/cancel_active_task calls total per plan.",
+      "description_en": "Cancels a not-yet-started task the plan doesn't need. Dynamic FSM Replanning: cancels a task you have NOT started yet and NEVER need — e.g. you realize two remaining tasks are redundant, or the objective changed. Cannot cancel the task currently active (use cancel_active_task for that instead) or one already completed (that's history, not something to remove). Limited: at most 3 insert_task/cancel_pending_task/cancel_active_task calls total per plan.",
       "parameters": [
         {
           "name": "task_id_to_cancel",
           "type": "integer",
           "required": true,
-          "description_en": "The id of the still-pending (not started, not active) task to cancel."
+          "description_en": "Id of the pending task."
         },
         {
           "name": "reason",
@@ -1951,7 +1951,7 @@
     {
       "id": "cancel_active_task",
       "read_only": true,
-      "description_en": "FSM Recovery: cancels the task you are CURRENTLY ACTIVE on outright, when that task itself turns out to be wrong, redundant, or impossible — not just missing a prerequisite before it (for that, use insert_task with insert_before_task_id instead, which keeps the active task and only delays it). cancel_pending_task cannot touch the active task; this is the dedicated tool for that case. The lowest-id still-pending task (if any) is auto-promoted to active immediately after; with nothing pending left, no task is active and you should insert_task/create_plan to continue. Limited: at most 3 insert_task/cancel_pending_task/cancel_active_task calls total per plan.",
+      "description_en": "Cancels the currently active task when it is wrong or impossible. FSM Recovery: cancels the task you are CURRENTLY ACTIVE on outright, when that task itself turns out to be wrong, redundant, or impossible — not just missing a prerequisite before it (for that, use insert_task with insert_before_task_id instead, which keeps the active task and only delays it). cancel_pending_task cannot touch the active task; this is the dedicated tool for that case. The lowest-id still-pending task (if any) is auto-promoted to active immediately after; with nothing pending left, no task is active and you should insert_task/create_plan to continue. Limited: at most 3 insert_task/cancel_pending_task/cancel_active_task calls total per plan.",
       "parameters": [
         {
           "name": "reason",

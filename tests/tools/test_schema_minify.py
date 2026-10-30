@@ -139,3 +139,16 @@ def test_should_strip_tool_schemas_true_for_ollama(monkeypatch: pytest.MonkeyPat
 def test_should_strip_tool_schemas_forced_via_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DANA_MINIFY_TOOL_SCHEMAS", "true")
     assert should_strip_tool_schemas("openrouter") is True
+
+
+def test_minify_does_not_cut_a_description_at_an_abbreviation() -> None:
+    """The first-sentence cut used to stop at "e.g.", sending create_plan's
+    description as "Breaks a complex, long-horizon goal (e.g." on the wire."""
+    description = (
+        "Breaks a complex goal (e.g. 'build a full web app from scratch') down into an ordered checklist. "
+        "Use this before starting a multi-step project, not partway through one, and only once per goal."
+    )
+    out = minify_tool_schema(_schema(description=description))
+    assert out["function"]["description"] == (
+        "Breaks a complex goal (e.g. 'build a full web app from scratch') down into an ordered checklist."
+    )

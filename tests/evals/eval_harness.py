@@ -45,15 +45,19 @@ SetEnv = Callable[[str, str], None]
 
 MODEL = "eval/scripted-model"
 
-# The largest tools= payload (cl100k tokens) each FSM phase offered across
-# these scenarios when the suite was written (2026-10-30). They are
-# regression ceilings, not targets: _TOOL_TOKEN_BUDGET (2,000) is not met
-# on any turn. The planning allow-list is the core tool set alone (17 tools,
-# create_plan's schema is 503 tokens of it), an executing task adds its own
-# tools to that, and once a plan is done the whole loaded freecad_full
-# domain is offered (narrowing-exempt, so the budget never trims it).
-# Lower a ceiling when a schema shrinks; never raise one to make a run pass.
-TOOL_TOKEN_CEILINGS = {"planning": 2826, "executing": 3382, "done": 10336}
+# The largest tools= payload (cl100k tokens) each FSM phase offers across
+# these scenarios: regression ceilings, ratcheted down whenever a schema
+# shrinks and never raised to make a run pass. History: Phase 5 measured
+# planning 2,826 / executing 3,382 / done 10,336 (the wrap-up turn offered
+# the whole freecad_full domain, more than a local model's 8,192-token
+# context); Phase 6 capped the wrap-up set, dropped plan-dependent tools
+# where they can only fail and tightened the core descriptions.
+# PHASE_TARGETS are the hard limits the ceilings must stay within.
+PHASE_TARGETS = {"planning": 2000, "executing": 3000, "done": 2000}
+# planning and executing are fixed allow-lists, so their ceilings are exact.
+# The wrap-up set fills optional tools by relevance until _TOOL_TOKEN_BUDGET
+# runs out (1,940-1,995 here), so its ceiling is the budget itself.
+TOOL_TOKEN_CEILINGS = {"planning": 1476, "executing": 2559, "done": 2000}
 _ENV = {"DANA_HEADLESS": "true", "DANA_OS_DRY_RUN": "1", "DANA_CONTEXT_DISTILL": "0", "DANA_AUTO_APPROVE": "0"}
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
@@ -345,6 +349,11 @@ def _common_checks(run: Run) -> list[Check]:
             "; ".join(run.ceiling_breaches()) or f"max={run.max_tool_tokens}",
         ),
         Check(f"_TOOL_TOKEN_BUDGET is {rd._TOOL_TOKEN_BUDGET} (<= 2000)", rd._TOOL_TOKEN_BUDGET <= 2000),
+        Check(
+            "phase ceilings within their targets",
+            all(TOOL_TOKEN_CEILINGS[phase] <= limit for phase, limit in PHASE_TARGETS.items()),
+            str(TOOL_TOKEN_CEILINGS),
+        ),
     ]
 
 
@@ -639,7 +648,7 @@ def scorecard(runs: list[Run]) -> str:
     lines.append(
         "Tool-schema tokens are held to per-phase ceilings "
         + ", ".join(f"{phase} {limit:,}" for phase, limit in TOOL_TOKEN_CEILINGS.items())
-        + "; the 2,000-token budget itself is not met yet (see eval_harness.TOOL_TOKEN_CEILINGS)."
+        + " (targets: planning and post-plan within the 2,000-token budget, executing under 3,000)."
     )
     for run in runs:
         failures = [c for c in run.checks if not c.passed]

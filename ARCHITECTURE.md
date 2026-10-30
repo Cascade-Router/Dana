@@ -53,13 +53,19 @@ rails.
 ### Tool budget
 
 `_TOOL_TOKEN_BUDGET` = 2,000 tokens and `_MAX_ACTIVE_TOOLS` = 30 cap the
-optional tools added to a call (`schema_minify.py` keeps first sentences
-only). They don't bound the whole payload: the core tools, an FSM
-allow-list (planning, or an executing task's own tools) and a
-narrowing-exempt domain such as `freecad_full` are never cut. Measured by
-the offline evals (`tests/evals/`): planning 2,826 tokens (the 17 core
-tools), executing up to 3,382, and up to 10,336 once a plan is done and the
-whole CAD domain is offered. The evals fail if any phase grows past that.
+optional tools added to a call (`schema_minify.py` sends each description's
+first sentence only). In a CAD session the FSM picks the set:
+
+- **planning:** the core tools minus those that need an existing plan;
+- **executing a task:** the core tools plus that task's declared tools;
+- **plan done:** the core tools (minus the active-plan ones), then the
+  read-only checks (`query_topology`, collisions, BOM, blueprint,
+  printability) and tools this turn already used, while the budget lasts.
+
+The offline evals (`tests/evals/`) measure every turn: planning 1,476
+tokens, executing up to 2,559, plan done at most 2,000 (it was 10,336 when
+the whole `freecad_full` domain was offered, more than a local model's
+8,192-token context). They fail if a phase grows past that.
 Tools are found lazily (`search_tool_catalog` / `load_specific_tool`);
 capability domains decay out after a few turns of disuse. Tool retrieval is a
 384-d hash embedding on CPU — no neural embedding model.
