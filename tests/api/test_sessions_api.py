@@ -452,3 +452,114 @@ def test_bounced_pending_action_message_is_not_persisted(client: TestClient, mon
 
     # Nothing was ever saved — the turn is still pending, never completed.
     assert sessions_module.load_session(session_id) is None
+
+
+# --------------------------------------------------------------------------
+# Deleting a session removes what it left behind (disk and memory)
+# --------------------------------------------------------------------------
+
+
+def _build_session_leftovers(session_id: str) -> list[Path]:
+    """A box built in ``session_id`` on the mock engine (registries, plan,
+    mesh files, an artifact entry), plus one file in each other folder a
+    session writes to. Returns the session's folders/files."""
+    import dana.core.react_dispatch as rd
+    from dana.api import artifacts_registry, session_state
+    from dana.plugins.planning import task_board
+    from dana.session_context import set_session_id
+
+    set_session_id(session_id)
+    try:
+        rd._set_has_plan(True, "test plan")
+        task_board.create_plan("make a box", ["build the box"], session_id=session_id)
+        built = rd.dispatch_tool_call(
+            ToolCall(tool_id="create_freecad_box", arguments={"name": "Box", "length": 5, "width": 5, "height": 5}),
+            MockFreeCADEngine(),
+            MockControlPlane(),
+        )
+        assert built.ok is True
+        artifacts_registry.register_artifact(built.payload["path"], format="glb", source="generated", session_id=session_id)
+    finally:
+        set_session_id("default")
+    paths = session_state.session_disk_paths(session_id)
+    for path in paths:
+        if path.suffix == ".FCStd":
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"snapshot")
+        else:
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "leftover.txt").write_text("x", encoding="utf-8")
+    return paths
+
+
+def _session_memory(session_id: str) -> dict[str, Any]:
+    import dana.core.react_dispatch as rd
+    from dana.api import artifacts_registry
+    from dana.platform import mock
+    from dana.plugins.planning import task_board
+
+    return {
+        "react": rd.snapshot_session_state(session_id),
+        "plan": task_board.snapshot_plan(session_id),
+        "mock": mock.snapshot_mock_session(session_id),
+        "artifacts": artifacts_registry.list_artifacts(session_id=session_id),
+    }
+
+
+def test_deleting_a_session_removes_its_folders_and_memory(client: TestClient) -> None:
+    paths = _build_session_leftovers("doomed")
+    _build_session_leftovers("keeper")
+    sessions_module.save_session("doomed", title="T", created_at=None, messages=[])
+    memory = _session_memory("doomed")
+    assert memory["react"] and memory["plan"] and memory["mock"]["objects"] and memory["artifacts"]
+    assert (paths[0] / "mock").is_dir()  # the mock engine's meshes
+
+    assert client.delete("/api/sessions/doomed").json() == {"ok": True, "deleted": True}
+
+    assert sessions_module.load_session("doomed") is None
+    assert [p for p in paths if p.exists()] == []
+    assert _session_memory("doomed") == {"react": {}, "plan": None, "mock": {}, "artifacts": []}
+    # Another session's folders and state are untouched.
+    from dana.api import session_state
+
+    assert all(p.exists() for p in session_state.session_disk_paths("keeper"))
+    assert _session_memory("keeper")["mock"]["objects"]
+
+
+def test_cleanup_runs_even_when_the_json_is_already_gone(client: TestClient) -> None:
+    paths = _build_session_leftovers("orphan")
+    assert client.delete("/api/sessions/orphan").json() == {"ok": True, "deleted": False}
+    assert [p for p in paths if p.exists()] == []
+
+
+def test_clear_all_sessions_cleans_up_every_session(client: TestClient) -> None:
+    paths = _build_session_leftovers("one") + _build_session_leftovers("two")
+    for sid in ("one", "two"):
+        sessions_module.save_session(sid, title=sid, created_at=None, messages=[])
+    assert client.delete("/api/sessions").json() == {"ok": True, "deleted": 2}
+    assert [p for p in paths if p.exists()] == []
+
+
+def test_delete_refuses_ids_that_could_escape_the_sessions_folder(client: TestClient) -> None:
+    from dana.plugins.freecad import engine
+
+    outside = engine._OUTPUT_DIR / "sessions" / "a.b"
+    outside.mkdir(parents=True)
+    assert client.delete("/api/sessions/a.b").status_code == 400
+    assert sessions_module.delete_session("..") is False
+    assert outside.is_dir() and engine._OUTPUT_DIR.is_dir()
+
+
+def test_open_connection_does_not_write_a_deleted_session_back(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sidebar deletes the open chat, then switches to a new one: the
+    old socket closes after the DELETE and used to save the session again."""
+    _mock_llm(monkeypatch, "Hello.")
+    with client.websocket_connect("/ws/chat") as ws:
+        session_id = ws.receive_json()["session_id"]
+        ws.send_json({"text": "hi"})
+        _drain_until(ws, "assistant_message")
+        assert sessions_module.load_session(session_id) is not None
+        assert client.delete(f"/api/sessions/{session_id}").json()["deleted"] is True
+    assert sessions_module.load_session(session_id) is None

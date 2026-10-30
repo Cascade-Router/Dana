@@ -75,4 +75,9 @@ def list_artifacts(session_id: str | None = None) -> list[dict[str, Any]]:
     )
 
 
-__all__ = ("list_artifacts", "register_artifact")
+def forget_session(session_id: str) -> None:
+    """Drops every entry recorded for ``session_id`` (a deleted session)."""
+    _artifacts[:] = [a for a in _artifacts if a.get("session_id") != session_id]
+
+
+__all__ = ("forget_session", "list_artifacts", "register_artifact")

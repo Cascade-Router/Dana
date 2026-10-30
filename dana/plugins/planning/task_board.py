@@ -513,6 +513,11 @@ def snapshot_plan(session_id: str) -> dict[str, Any] | None:
     return copy.deepcopy(plan) if plan is not None else None
 
 
+def forget_plan(session_id: str) -> None:
+    """Drops ``session_id``'s plan (a deleted session)."""
+    _PLANS_BY_SESSION.pop(session_id, None)
+
+
 def restore_plan(session_id: str, data: Any) -> None:
     """Inverse of ``snapshot_plan``; missing fields fall back to a fresh plan's."""
     if isinstance(data, dict):
@@ -520,6 +525,7 @@ def restore_plan(session_id: str, data: Any) -> None:
 
 
 __all__ = (
+    "forget_plan",
     "get_active_plan",
     "restore_plan",
     "snapshot_plan",

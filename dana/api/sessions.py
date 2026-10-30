@@ -217,20 +217,37 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+# Sessions deleted in this process. A connection still open on one (the
+# sidebar deletes the open chat before switching to a new one) must not
+# write it back when it closes; dana.api.server checks this before saving.
+_DELETED_SESSION_IDS: set[str] = set()
+
+
+def is_deleted(session_id: str) -> bool:
+    return session_id in _DELETED_SESSION_IDS
+
+
 def delete_session(session_id: str) -> bool:
-    """Removes ``session_id``'s file if present. Returns whether anything
-    was actually deleted — never raises for an already-missing file, since
-    delete is expected to be idempotent (a double-click in the sidebar, or
-    deleting a session the frontend has stale metadata for, must not
-    surface as an error).
+    """Removes ``session_id``'s file and everything else it left behind (see
+    ``dana.api.session_state.forget_session``: its in-memory engine state and
+    its freecad_output/, exports/ and print folders). Returns whether the
+    file existed — never raises for an already-missing one, since delete is
+    expected to be idempotent (a double-click in the sidebar, or deleting a
+    session the frontend has stale metadata for, must not surface as an
+    error); the cleanup runs either way.
     """
     if not is_valid_session_id(session_id):
         return False
+    from dana.api.session_state import forget_session
+
+    _DELETED_SESSION_IDS.add(session_id)
     try:
         _session_path(session_id).unlink()
-        return True
+        existed = True
     except FileNotFoundError:
-        return False
+        existed = False
+    forget_session(session_id)
+    return existed
 
 
 def list_sessions() -> list[dict[str, Any]]:
@@ -293,11 +310,8 @@ def clear_all_sessions_endpoint() -> dict[str, Any]:
     deleted = 0
     if SESSIONS_DIR.is_dir():
         for path in SESSIONS_DIR.glob("*.json"):
-            try:
-                path.unlink()
+            if delete_session(path.stem):
                 deleted += 1
-            except FileNotFoundError:
-                pass
     return {"ok": True, "deleted": deleted}
 
 
@@ -330,6 +344,7 @@ def reset_session_endpoint(session_id: str) -> dict[str, Any]:
 __all__ = (
     "SESSIONS_DIR",
     "delete_session",
+    "is_deleted",
     "derive_title",
     "is_valid_session_id",
     "list_sessions",

@@ -295,6 +295,9 @@ def _clear_session_state() -> None:
     artifacts = sys.modules.get("dana.api.artifacts_registry")
     if artifacts is not None:
         artifacts._artifacts.clear()
+    sessions = sys.modules.get("dana.api.sessions")
+    if sessions is not None:
+        sessions._DELETED_SESSION_IDS.clear()
     server = sys.modules.get("dana.api.server")
     if server is not None:
         # Per-connection session dicts (CadCallLog, turn queue, HITL state)
@@ -311,7 +314,7 @@ def _reset_session_state():
     topology DAG, assembly state, measurement/collision gates
     (react_dispatch._PERSISTED_SESSION_REGISTRIES, the same list session
     persistence saves), task boards, the mock driver's geometry, the
-    artifact registry, and the server's live sessions (each holding its
+    artifact registry, the deleted-session ids, and the server's live sessions (each holding its
     CadCallLog and turn state). They're keyed by session_id, and most tests
     share the ambient default one, so anything left behind showed up in an
     unrelated later test (2f05ca2). Cleared before as well as after, so a

@@ -28,6 +28,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from dana.api import artifacts_registry
 from dana.core import react_dispatch
 from dana.plugins.freecad import engine as freecad_engine
 from dana.plugins.freecad.call_log import CadCallLog
@@ -117,6 +118,60 @@ def _snapshot_document(session_id: str) -> dict[str, Any] | None:
         log.warning("session %s: could not snapshot %s: %s", session_id, live, exc)
         return None
     return {"sha256": _sha256(snapshot), "size": snapshot.stat().st_size}
+
+
+def session_disk_paths(session_id: str) -> list[Path]:
+    """Everything a session leaves on disk besides its ``<id>.json``: its
+    document folder and snapshot, its exports (CAD files, macros, drawings,
+    BOM CSVs) and its print-check STLs. Paths may not exist."""
+    from dana.plugins.manufacturing import bom_exporter
+    from dana.plugins.os import file_system
+
+    return [
+        freecad_engine._OUTPUT_DIR / "sessions" / session_id,
+        document_snapshot_path(session_id),
+        freecad_engine._EXPORT_DIR / "sessions" / session_id,
+        bom_exporter._EXPORT_DIR / "sessions" / session_id,
+        Path(file_system._SANDBOX_ROOT) / "prints" / "sessions" / session_id,
+    ]
+
+
+def forget_session(session_id: str) -> list[str]:
+    """Removes what a deleted session left behind: its in-memory engine
+    state (registries, task board plan, mock meshes' registry, artifact
+    list) and the paths in ``session_disk_paths``. ``session_id`` must
+    already be validated (``dana.api.sessions.is_valid_session_id``); each
+    path is also checked to sit directly in its ``sessions/`` folder before
+    anything is deleted, and a symlink is unlinked, never followed.
+    Returns the paths removed."""
+    from dana.platform.mock import replace_mock_session
+
+    react_dispatch.forget_session_state(session_id)
+    task_board.forget_plan(session_id)
+    replace_mock_session(session_id, {})
+    artifacts_registry.forget_session(session_id)
+
+    removed = []
+    for path in session_disk_paths(session_id):
+        sessions_dir = path.parent
+        if sessions_dir.name != "sessions" or path.name not in (session_id, f"{session_id}.FCStd"):
+            continue
+        try:
+            if path.is_symlink():
+                path.unlink()  # the link only, wherever it points
+            elif path.resolve().parent != sessions_dir.resolve():
+                continue
+            elif path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(path)
+            else:
+                continue
+        except OSError as exc:
+            log.warning("session %s: could not remove %s: %s", session_id, path, exc)
+            continue
+        removed.append(str(path))
+    return removed
 
 
 # --- capture / restore --------------------------------------------------------
@@ -215,6 +270,8 @@ def restore_session_state(session: dict[str, Any], raw_state: Any, engine: Any) 
 
 
 __all__ = (
+    "forget_session",
+    "session_disk_paths",
     "STATE_VERSION",
     "capture_session_state",
     "decode",

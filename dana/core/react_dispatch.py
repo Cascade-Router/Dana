@@ -9932,6 +9932,14 @@ def snapshot_session_state(session_id: str) -> dict[str, Any]:
     }
 
 
+def forget_session_state(session_id: str) -> None:
+    """Drops every per-session registry entry for ``session_id`` (a deleted
+    session)."""
+    for registry in _PERSISTED_SESSION_REGISTRIES.values():
+        registry.pop(session_id, None)
+    _OUTPUT_TRUNCATED_BY_SESSION.pop(session_id, None)
+
+
 def restore_session_state(session_id: str, data: Any) -> None:
     """Inverse of ``snapshot_session_state``. Unknown keys are ignored, so a
     snapshot from a newer/older build degrades instead of failing."""

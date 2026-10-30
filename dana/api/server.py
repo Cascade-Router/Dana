@@ -63,7 +63,14 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from dana.api import artifacts_registry  # noqa: E402
 from dana.api.cad import router as _cad_router  # noqa: E402
 from dana.api.models import router as _models_router  # noqa: E402
-from dana.api.sessions import derive_title, is_valid_session_id, load_session, new_session_id, save_session  # noqa: E402
+from dana.api.sessions import (  # noqa: E402
+    derive_title,
+    is_deleted,
+    is_valid_session_id,
+    load_session,
+    new_session_id,
+    save_session,
+)
 from dana.api.session_state import capture_session_state, restore_session_state  # noqa: E402
 from dana.api.sessions import router as _sessions_router  # noqa: E402
 from dana.api.system import router as _system_router  # noqa: E402
@@ -2019,7 +2026,10 @@ def _save_session_record(session: dict[str, Any]) -> None:
     """Writes this session's transcript AND its engine state
     (dana.api.session_state) to disk. A failure to capture the engine state
     is logged and the transcript is still saved — persistence must never
-    break a turn the user has already been answered for."""
+    break a turn the user has already been answered for. A session deleted
+    while its connection is still open is never written back."""
+    if is_deleted(session["session_id"]):
+        return
     try:
         state: dict[str, Any] | None = capture_session_state(session, get_cad_engine())
     except Exception:  # noqa: BLE001
