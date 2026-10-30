@@ -3307,11 +3307,73 @@ def test_finished_plan_offers_a_capped_wrap_up_set_not_the_whole_cad_domain(
     assert rd._count_tokens(json.dumps(tools)) <= rd._TOOL_TOKEN_BUDGET
 
 
-def test_post_plan_set_keeps_tools_this_chain_used_when_they_fit() -> None:
-    schemas = rd._post_plan_tools_schema(frozenset({"query_topology"}), "check the plate")
+def test_capped_set_prefers_tools_this_chain_used() -> None:
+    schemas = rd._capped_tools_schema(
+        rd._PLAN_CORE_TOOL_IDS,
+        rd._VALIDATION_TOOL_IDS | {"create_freecad_box"},
+        "check the plate",
+        prefer=frozenset({"create_freecad_box"}),
+    )
     offered = {s["function"]["name"] for s in schemas}
-    assert "query_topology" in offered
+    assert rd._PLAN_CORE_TOOL_IDS <= offered and "create_freecad_box" in offered
     assert rd._count_tokens(json.dumps(schemas)) <= rd._TOOL_TOKEN_BUDGET
+
+
+def _task(description: str, tools: frozenset[str], *, status: str = "active", escape: bool = False) -> dict:
+    task = {"id": 1, "description": description, "status": status, "expected_tool_ids": tools}
+    if escape:
+        task["tool_escape_hatch"] = True
+    return task
+
+
+# Every FSM state a CAD session can be in. Each used to be able to fall
+# through to the neutral path, which offers the whole loaded freecad_full
+# domain uncut (8-10k tokens).
+_FSM_CASES = {
+    "planning": None,
+    "executing, tool-mapped task": ("executing", [_task("Create the base plate", frozenset({"create_freecad_box"}))]),
+    "executing, task with no declared tools": ("executing", [_task("Inspect and adjust the bracket", frozenset())]),
+    "executing, no active task": ("executing", [_task("Create the base plate", frozenset(), status="pending")]),
+    "executing, wrong-tool escape hatch": (
+        "executing",
+        [_task("Create the base plate", frozenset({"create_freecad_box"}), escape=True)],
+    ),
+    "validating": ("validating", [_task("Inspect the bracket", frozenset())]),
+    "done": ("done", [_task("Create the base plate", frozenset({"create_freecad_box"}), status="completed")]),
+}
+
+
+@pytest.mark.parametrize("case", list(_FSM_CASES), ids=list(_FSM_CASES))
+def test_no_cad_phase_offers_the_uncapped_catalog(case: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    sid = f"fsm-cap-{case.replace(' ', '-').replace(',', '')}"
+    set_session_id(sid)
+    if _FSM_CASES[case] is not None:
+        state, tasks = _FSM_CASES[case]
+        rd._PLAN_STATE_REGISTRY[sid] = {"has_plan": True, "plan_text": "plan", "tasks": tasks, "fsm_state": state}
+    fake = _mock_llm(monkeypatch, tool_calls=[], content="ok")
+    asyncio.run(
+        rd.next_react_turn(
+            [{"role": "system", "content": "sys"}, {"role": "user", "content": "make the bracket stronger"}],
+            None,
+            raw_text="make the bracket stronger",
+            # freecad_essential is narrowing-exempt, so the neutral path
+            # never trims it: the worst case the CAD tab produces.
+            active_plugins=frozenset({"freecad_essential", "freecad_full"}),
+            session_id=sid,
+        )
+    )
+    tools = fake.calls[-1]["tools"]
+    tokens = rd._count_tokens(json.dumps(tools))
+    assert tokens < 2600, f"{case}: {tokens} tokens, {len(tools)} tools"
+    offered = {t["function"]["name"] for t in tools}
+    if case in ("executing, task with no declared tools", "executing, no active task", "validating",
+                "executing, wrong-tool escape hatch", "done"):
+        assert tokens <= rd._TOOL_TOKEN_BUDGET, f"{case}: {tokens}"
+        assert {"search_tool_catalog", "load_specific_tool"} <= offered
+    if case == "executing, wrong-tool escape hatch":
+        assert "create_freecad_box" in offered  # the task's own tool is always kept
+    if case == "validating":
+        assert "mark_task_completed" in offered and offered & rd._VALIDATION_TOOL_IDS
 
 
 def test_position_assembly_part_blocked_until_measured_this_session() -> None:

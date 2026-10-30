@@ -54,18 +54,23 @@ rails.
 
 `_TOOL_TOKEN_BUDGET` = 2,000 tokens and `_MAX_ACTIVE_TOOLS` = 30 cap the
 optional tools added to a call (`schema_minify.py` sends each description's
-first sentence only). In a CAD session the FSM picks the set:
+first sentence only). In a CAD session every FSM phase is bounded:
 
 - **planning:** the core tools minus those that need an existing plan;
-- **executing a task:** the core tools plus that task's declared tools;
-- **plan done:** the core tools (minus the active-plan ones), then the
-  read-only checks (`query_topology`, collisions, BOM, blueprint,
-  printability) and tools this turn already used, while the budget lasts.
+- **executing a task with declared tools:** the core tools plus those tools;
+- **executing a task without them, validating, the wrong-tool escape
+  hatch, plan done:** a capped set — discovery and plan management always
+  (the escape hatch also keeps the task's own tools), then the phase's
+  candidates (the loaded domain ranked by the hash retriever; the checks,
+  screenshots and exports; the essential CAD set; the read-only checks),
+  tools this turn already used first, until the budget is spent.
 
 The offline evals (`tests/evals/`) measure every turn: planning 1,476
-tokens, executing up to 2,559, plan done at most 2,000 (it was 10,336 when
-the whole `freecad_full` domain was offered, more than a local model's
-8,192-token context). They fail if a phase grows past that.
+tokens, executing up to 2,559, validating and plan done at most 2,000. A
+plan-done turn used to offer the whole `freecad_full` domain (10,336
+tokens, more than a local model's 8,192-token context). The evals fail if
+a phase grows past that, and `test_no_cad_phase_offers_the_uncapped_catalog`
+drives every FSM state.
 Tools are found lazily (`search_tool_catalog` / `load_specific_tool`);
 capability domains decay out after a few turns of disuse. Tool retrieval is a
 384-d hash embedding on CPU — no neural embedding model.

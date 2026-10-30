@@ -5801,6 +5801,30 @@ _POST_PLAN_TOOL_IDS = frozenset(
     }
 )
 
+# What every capped CAD phase below keeps whatever the budget says:
+# discovery (so any tool is one load_specific_tool away) and managing the
+# plan. ~760 tokens; everything else competes by relevance for the rest of
+# _TOOL_TOKEN_BUDGET.
+_PLAN_CORE_TOOL_IDS = frozenset(
+    {
+        "search_tool_catalog",
+        "load_specific_tool",
+        "check_plugin_registry",
+        "mark_task_completed",
+        "insert_task",
+        "cancel_pending_task",
+        "cancel_active_task",
+    }
+)
+
+# VALIDATING (a task parked for a manual mark_task_completed): checks,
+# screenshots and exports, budget permitting.
+_VALIDATION_TOOL_IDS = _POST_PLAN_TOOL_IDS | {
+    "take_canvas_screenshot",
+    "export_freecad_model",
+    "export_assembly_to_urdf",
+}
+
 _FREECAD_TOOL_IDS = frozenset(
     {
         "create_freecad_box",
@@ -6743,30 +6767,35 @@ def _rank_by_relevance(tool_ids: Iterable[str], query: str) -> list[str]:
         return sorted(pool)
 
 
-def _post_plan_tools_schema(
-    candidates: frozenset[str], query: str, *, hidden_tool_ids: frozenset[str] = frozenset()
+def _capped_tools_schema(
+    must_keep: frozenset[str],
+    candidates: frozenset[str],
+    query: str,
+    *,
+    prefer: frozenset[str] = frozenset(),
+    hidden_tool_ids: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
-    """The wrap-up turn's tools once a CAD plan is done: the core tools
-    (minus the ones that need an unfinished plan) always, then
-    ``candidates`` (the post-plan checks and the tools this chain already
-    used), most relevant first, while ``_TOOL_TOKEN_BUDGET`` lasts. This
-    used to fall through to the neutral path, which offers the whole loaded
-    CAD domain uncut (narrowing-exempt): 41-46 tools, ~10k tokens, more than
-    a local model's whole 8k context."""
+    """The tools= payload for a CAD phase without a fixed allow-list:
+    ``must_keep`` always, then ``candidates`` while ``_TOOL_TOKEN_BUDGET``
+    (and ``_MAX_ACTIVE_TOOLS``) last -- ``prefer`` (tools this chain already
+    used) first, the rest by relevance to ``query`` (the 384-d hash
+    retriever). These phases used to fall through to the neutral path,
+    which offers the whole loaded CAD domain uncut: 8-10k tokens, more than
+    a local model's 8k context."""
     if is_headless():
         hidden_tool_ids = hidden_tool_ids | HEADLESS_PRUNED_TOOL_IDS
-    core = (_CORE_TOOL_IDS - _ACTIVE_PLAN_TOOL_IDS) - hidden_tool_ids
-    wanted = core | (candidates - hidden_tool_ids)
+    must = must_keep - hidden_tool_ids
+    wanted = must | (candidates - hidden_tool_ids)
     schemas = list(_llm_tools_schema_cached(frozenset(wanted)))
     schemas.extend(schema for tool_id, schema in _PLUGIN_TOOL_SCHEMAS.items() if tool_id in wanted)
     minified = minify_tool_schemas(schemas)
     if should_strip_tool_schemas(tool_calling_provider()):
         minified = strip_tool_schemas(minified)
-    return _cap_schemas_by_token_budget(minified, query, must_keep=frozenset(core))
+    return _cap_schemas_by_token_budget(minified, query, must_keep=frozenset(must), prefer=prefer)
 
 
 def _cap_schemas_by_token_budget(
-    schemas: list[dict[str, Any]], query: str, must_keep: frozenset[str]
+    schemas: list[dict[str, Any]], query: str, must_keep: frozenset[str], prefer: frozenset[str] = frozenset()
 ) -> list[dict[str, Any]]:
     """Final ceiling on this turn's serialized ``tools=`` payload — see the
     module comment above ``_TOOL_TOKEN_BUDGET`` for why this exists on top
@@ -6794,7 +6823,9 @@ def _cap_schemas_by_token_budget(
     kept_ids = [t for t in by_id if t in must_keep]
     remaining = [t for t in by_id if t not in must_keep]
     if remaining and len(kept_ids) < _MAX_ACTIVE_TOOLS and _list_cost(kept_ids) < _TOOL_TOKEN_BUDGET:
-        for tool_id in _rank_by_relevance(remaining, query):
+        ranked = _rank_by_relevance(remaining, query)
+        ranked.sort(key=lambda tool_id: tool_id not in prefer)  # stable: preferred first, by relevance
+        for tool_id in ranked:
             if len(kept_ids) >= _MAX_ACTIVE_TOOLS:
                 break
             if _list_cost([*kept_ids, tool_id]) > _TOOL_TOKEN_BUDGET:
@@ -7965,7 +7996,7 @@ async def _call_llm_once(
     narrowing_query: str | None = None,
     task_tool_ids: frozenset[str] = frozenset(),
     hard_restrict_to: frozenset[str] | None = None,
-    post_plan: bool = False,
+    capped_tools: tuple[frozenset[str], frozenset[str]] | None = None,
     provider_override: str | None = None,
     is_planning_phase: bool = False,
     state_overlay: str = "",
@@ -8110,10 +8141,14 @@ async def _call_llm_once(
     # "the Planner cannot see a geometry tool at all."
     if hard_restrict_to is not None:
         tools = _llm_tools_schema(active_plugins, hidden_tool_ids=hidden_tool_ids, hard_restrict_to=hard_restrict_to)
-    elif post_plan:
-        tools = _post_plan_tools_schema(
-            _POST_PLAN_TOOL_IDS | _sticky_tool_ids_from_messages(messages, raw_text),
-            raw_text,
+    elif capped_tools is not None:
+        must_keep, candidates = capped_tools
+        used = _sticky_tool_ids_from_messages(messages, raw_text)
+        tools = _capped_tools_schema(
+            must_keep,
+            candidates | used,
+            narrowing_query if narrowing_query is not None else raw_text,
+            prefer=used,
             hidden_tool_ids=hidden_tool_ids,
         )
     else:
@@ -8759,7 +8794,8 @@ async def next_react_turn(
     # narrow "Turn 0" window that's safe to hard-block without also
     # disabling Ollama for every later turn.
     is_planning_phase = False
-    post_plan = False
+    # (must_keep, candidates) for a capped phase; see _capped_tools_schema.
+    capped_tools: tuple[frozenset[str], frozenset[str]] | None = None
     freecad_domain_active = effective_plugins is not None and bool(
         effective_plugins & {"freecad", "freecad_essential", "freecad_full"}
     )
@@ -8773,45 +8809,47 @@ async def next_react_turn(
                 "check_plugin_registry",
             }
             is_planning_phase = True
-        elif _get_fsm_state(session_id) == "executing":
-            active_task = _active_task(session_id)
+        else:
+            # Every CAD phase below is bounded: a fixed allow-list, or a
+            # capped set (_capped_tools_schema). None falls through to the
+            # neutral path, which offers the whole loaded CAD domain uncut.
+            fsm_state = _get_fsm_state(session_id)
+            active_task = _active_task(session_id) if fsm_state == "executing" else None
+            other_core = _CORE_TOOL_IDS - _PLAN_CORE_TOOL_IDS - {"compile_plan_as_skill"}
             if active_task is not None:
                 narrowing_query = active_task.get("description") or raw_text
                 task_tool_ids = active_task.get("expected_tool_ids") or frozenset()
-                if task_tool_ids:
-                    # EXECUTING, tool-mapped task: same hard allow-list as
-                    # PLANNING above, not just a narrowing bias -- a model
-                    # that gets an out-of-order rejection from
-                    # _fsm_out_of_order_check still saw every OTHER geometry
-                    # tool's schema this turn (task_tool_ids only protected
-                    # the right one from being narrowed OUT, it never kept
-                    # the wrong ones from being offered), so it kept
-                    # brute-forcing siblings instead of retrying correctly.
-                    # A task with an empty expected_tool_ids (no fixed
-                    # signature) still falls through to the soft-narrowed
-                    # neutral default below, exactly like _fsm_out_of_order_
-                    # check's own permissiveness for that case.
-                    # compile_plan_as_skill needs a finished plan, so it is
-                    # left out until then (see _PLANNING_EXCLUDED_TOOL_IDS).
-                    hard_restrict_to = task_tool_ids | (_CORE_TOOL_IDS - {"compile_plan_as_skill"})
-                    if active_task.get("tool_escape_hatch"):
-                        # Wrong-Tool Escape Hatch: the Planner's declared
-                        # tool for this task has failed repeatedly (see
-                        # _advance_fsm_on_dispatch) -- widen back out to the
-                        # full essential CAD set (not the full ~31-tool
-                        # freecad_full domain) so a genuinely wrong
-                        # declaration has a real correct tool to fall back
-                        # to, instead of being locked forever into the one
-                        # id that keeps failing. _fsm_out_of_order_check
-                        # mirrors this same widened set at dispatch time.
-                        hard_restrict_to = hard_restrict_to | _FREECAD_ESSENTIAL_TOOL_IDS
-        elif _get_fsm_state(session_id) == "done":
-            # Plan finished: the wrap-up turn gets a small, capped set (see
-            # _post_plan_tools_schema), not the whole loaded CAD domain.
-            post_plan = True
-        # "validating" (a task with no expected_tool_ids, parked awaiting a
-        # manual mark_task_completed) falls through to the neutral defaults
-        # above -- the full-domain, whole-objective-narrowed behavior.
+            if fsm_state == "done":
+                # Plan finished: the wrap-up turn. Core tools minus the ones
+                # that need an unfinished plan, then the read-only checks.
+                capped_tools = (_CORE_TOOL_IDS - _ACTIVE_PLAN_TOOL_IDS, _POST_PLAN_TOOL_IDS)
+            elif fsm_state == "validating":
+                # A task parked for a manual mark_task_completed: plan
+                # management, then checks/screenshots/exports.
+                capped_tools = (_PLAN_CORE_TOOL_IDS, _VALIDATION_TOOL_IDS | other_core)
+            elif task_tool_ids and active_task.get("tool_escape_hatch"):
+                # Wrong-Tool Escape Hatch: the Planner's declared tool keeps
+                # failing (see _advance_fsm_on_dispatch), so the essential
+                # CAD set is offered as well -- ranked and capped, not the
+                # 39-tool, ~7.9k-token allow-list it used to be.
+                # _fsm_out_of_order_check still enforces the same widened set
+                # at dispatch time.
+                capped_tools = (_PLAN_CORE_TOOL_IDS | task_tool_ids, _FREECAD_ESSENTIAL_TOOL_IDS | other_core)
+            elif task_tool_ids:
+                # EXECUTING, tool-mapped task: a hard allow-list, not just a
+                # narrowing bias -- a model that gets an out-of-order
+                # rejection from _fsm_out_of_order_check otherwise still saw
+                # every OTHER geometry tool's schema and kept brute-forcing
+                # siblings instead of retrying correctly. compile_plan_as_skill
+                # needs a finished plan, so it is left out until then.
+                hard_restrict_to = task_tool_ids | (_CORE_TOOL_IDS - {"compile_plan_as_skill"})
+            else:
+                # EXECUTING a task with no declared tools (or no active task
+                # at all): the loaded domain's tools ranked by the hash
+                # retriever against the task and the user's message.
+                if active_task is not None:
+                    narrowing_query = f"{active_task.get('description') or ''} {raw_text}".strip()
+                capped_tools = (_PLAN_CORE_TOOL_IDS, _tool_ids_for_plugins(effective_plugins) | other_core)
 
     # Context-Footprint Ground Truth: a plain, dependency-free stand-in for
     # a real tokenizer count (~4 chars/token is the usual rough-order-of-
@@ -8840,7 +8878,7 @@ async def next_react_turn(
             narrowing_query=narrowing_query,
             task_tool_ids=task_tool_ids,
             hard_restrict_to=hard_restrict_to,
-            post_plan=post_plan,
+            capped_tools=capped_tools,
             provider_override=provider_override,
             is_planning_phase=is_planning_phase,
             state_overlay=_format_object_registry_overlay(session_id),
@@ -9064,7 +9102,7 @@ async def next_react_turn(
             narrowing_query=narrowing_query,
             task_tool_ids=task_tool_ids,
             hard_restrict_to=hard_restrict_to,
-            post_plan=post_plan,
+            capped_tools=capped_tools,
             provider_override=provider_override,
             is_planning_phase=is_planning_phase,
             session_id=session_id,
@@ -9147,7 +9185,7 @@ async def _retry_after_unknown_tool_id(
     narrowing_query: str | None = None,
     task_tool_ids: frozenset[str] = frozenset(),
     hard_restrict_to: frozenset[str] | None = None,
-    post_plan: bool = False,
+    capped_tools: tuple[frozenset[str], frozenset[str]] | None = None,
     provider_override: str | None = None,
     is_planning_phase: bool = False,
     session_id: str | None = None,
@@ -9205,7 +9243,7 @@ async def _retry_after_unknown_tool_id(
             narrowing_query=narrowing_query,
             task_tool_ids=task_tool_ids,
             hard_restrict_to=hard_restrict_to,
-            post_plan=post_plan,
+            capped_tools=capped_tools,
             provider_override=provider_override,
             is_planning_phase=is_planning_phase,
             state_overlay=_format_object_registry_overlay(session_id),

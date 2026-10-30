@@ -810,17 +810,25 @@ def test_update_context_normalizes_cad_to_freecad_essential_tool_set(
     "freecad_essential", so they're correctly absent here too — heavier,
     load-on-demand tools, exactly what trimming the default is for. The
     agent can still reach the full set (these two included) via
-    load_capability(domain="freecad") or "freecad_full"."""
+    load_capability(domain="freecad") or "freecad_full".
+
+    This harness opens the plan gate without an FSM plan, which is a capped
+    phase now (see _capped_tools_schema), so the offer is the capped,
+    relevance-ranked slice of that set rather than all of it."""
     import dana.core.react_dispatch as react_dispatch
 
     captured = _capture_tool_names(monkeypatch)
     with client.websocket_connect("/ws/chat") as ws:
         ws.receive_json()  # ready
         ws.send_json({"type": "update_context", "active_plugins": ["cad"]})
-        ws.send_json({"text": "hello"})
+        ws.send_json({"text": "make a box"})
         _drain_until(ws, "assistant_message")
 
-    assert captured["tool_names"] == react_dispatch._CORE_TOOL_IDS | react_dispatch._FREECAD_ESSENTIAL_TOOL_IDS
+    offered = captured["tool_names"]
+    assert offered <= react_dispatch._CORE_TOOL_IDS | react_dispatch._FREECAD_ESSENTIAL_TOOL_IDS
+    assert offered & react_dispatch._FREECAD_ESSENTIAL_TOOL_IDS  # the CAD tab's tools are reachable
+    assert not offered & {"modify_existing_freecad_document", "execute_freecad_script"}
+    assert react_dispatch._PLAN_CORE_TOOL_IDS <= offered
 
 
 @pytest.mark.usefixtures("interactive_tool_schema")
@@ -1465,14 +1473,25 @@ def test_unload_capability_tool_id_hides_tool_from_the_very_next_turn(
     monkeypatch.setattr(react_dispatch, "ModelProvider", lambda **_kwargs: fake)
 
     with client.websocket_connect("/ws/chat") as ws:
-        ws.receive_json()  # ready
+        session_id = ws.receive_json()["session_id"]
+        # An executing task that declares create_freecad_cylinder: a fixed
+        # allow-list, so the tool is offered until it is hidden.
+        react_dispatch._PLAN_STATE_REGISTRY[session_id] = {
+            "has_plan": True,
+            "plan_text": "plan",
+            "fsm_state": "executing",
+            "tasks": [{"id": 1, "description": "Create the post", "status": "active",
+                       "expected_tool_ids": frozenset({"create_freecad_cylinder"})}],
+        }
         ws.send_json({"type": "update_context", "active_plugins": ["freecad_essential"]})
         ws.send_json({"text": "stop letting yourself reach for create_freecad_cylinder directly"})
 
         _drain_until(ws, "assistant_message")
 
-    assert len(captured_tools) == 2
+    # The unfinished task can earn the "Done." reply one more nudge, so
+    # there may be a third call; the tool must be gone from every later one.
+    assert len(captured_tools) >= 2
     first_names = {t["function"]["name"] for t in captured_tools[0]}
-    second_names = {t["function"]["name"] for t in captured_tools[1]}
     assert "create_freecad_cylinder" in first_names
-    assert "create_freecad_cylinder" not in second_names
+    for later in captured_tools[1:]:
+        assert "create_freecad_cylinder" not in {t["function"]["name"] for t in later}

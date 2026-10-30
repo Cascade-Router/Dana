@@ -53,11 +53,11 @@ MODEL = "eval/scripted-model"
 # context); Phase 6 capped the wrap-up set, dropped plan-dependent tools
 # where they can only fail and tightened the core descriptions.
 # PHASE_TARGETS are the hard limits the ceilings must stay within.
-PHASE_TARGETS = {"planning": 2000, "executing": 3000, "done": 2000}
+PHASE_TARGETS = {"planning": 2000, "executing": 3000, "validating": 2000, "done": 2000}
 # planning and executing are fixed allow-lists, so their ceilings are exact.
 # The wrap-up set fills optional tools by relevance until _TOOL_TOKEN_BUDGET
 # runs out (1,940-1,995 here), so its ceiling is the budget itself.
-TOOL_TOKEN_CEILINGS = {"planning": 1476, "executing": 2559, "done": 2000}
+TOOL_TOKEN_CEILINGS = {"planning": 1476, "executing": 2559, "validating": 2000, "done": 2000}
 _ENV = {"DANA_HEADLESS": "true", "DANA_OS_DRY_RUN": "1", "DANA_CONTEXT_DISTILL": "0", "DANA_AUTO_APPROVE": "0"}
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
@@ -560,13 +560,17 @@ SCENARIOS: list[Scenario] = [
         prompt="Make a 30 x 20 x 10 mm block and an 8 mm radius, 25 mm tall rod, and confirm their dimensions.",
         tasks=[
             {"description": "Create the block", "expected_tools": ["create_freecad_box"]},
-            {"description": "Measure the block", "expected_tools": ["query_topology"]},
+            # No declared tools: executing it is a capped, retriever-ranked
+            # phase, and once a tool runs the task waits in VALIDATING for
+            # a manual mark_task_completed.
+            {"description": "Measure the block", "expected_tools": []},
             {"description": "Create the rod", "expected_tools": ["create_freecad_cylinder"]},
             {"description": "Measure the rod", "expected_tools": ["query_topology"]},
         ],
         steps=[
             Step("create_freecad_box", {"name": "Block", "length": 30, "width": 20, "height": 10}),
             Step("query_topology", {"part_name": "Block"}),
+            Step("mark_task_completed", {"task_id": 2, "created_feature_names": ["Block"]}),
             Step("create_freecad_cylinder", {"name": "Rod", "radius": 8, "height": 25}),
             Step("query_topology", {"part_name": "Rod"}),
         ],
