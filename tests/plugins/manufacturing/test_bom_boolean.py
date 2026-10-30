@@ -35,14 +35,10 @@ _REAL_FREECAD = pytest.param(
 )
 # Relative volume tolerance per driver.
 _TOLERANCE = {"mock": 5e-3, "freecad": 1e-6}
-# Cylinder placement that drills through the middle of the block. FreeCAD
-# places a box by its corner and a cylinder by its base centre; the mock
-# centres every primitive on its placement, so the same hole needs different
-# coordinates there.
-_DRILL_PLACEMENT = {
-    "freecad": {"placement_x": 10, "placement_y": 10, "placement_z": -5},
-    "mock": {},
-}
+# Cylinder placement that drills through the middle of the block: a box is
+# placed by its corner and a cylinder by its base centre (FreeCAD's
+# convention, which the mock follows too).
+_DRILL_PLACEMENT = {"placement_x": 10, "placement_y": 10, "placement_z": -5}
 
 BLOCK_MM3 = 20 * 20 * 10
 HOLE_MM3 = math.pi * 5**2 * 10  # r=5 cylinder through the full 10 mm height
@@ -82,7 +78,7 @@ def _drilled_block(call, driver: str) -> None:
     call("create_freecad_box", name="Block", length=20, width=20, height=10)
     # Centred on the block and overhanging it top and bottom, so the hole
     # goes all the way through: removed volume is exactly pi * r^2 * 10.
-    call("create_freecad_cylinder", name="Drill", radius=5, height=20, **_DRILL_PLACEMENT[driver])
+    call("create_freecad_cylinder", name="Drill", radius=5, height=20, **_DRILL_PLACEMENT)
     call("perform_freecad_boolean", operation="cut", base_object="Block", tool_object="Drill", name="DrilledBlock")
     call("create_freecad_assembly", name="Kit")
 

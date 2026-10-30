@@ -57,7 +57,7 @@ SCRIPTS: dict[str, tuple[list[dict[str, Any]], list[tuple[str, dict[str, Any]]],
             ("create_freecad_box", {"name": "Plate", "length": 60, "width": 40, "height": 5}),
             (
                 "perform_freecad_edge_operation",
-                {"operation": "chamfer", "target_object": "Plate", "value": 1, "face_centroid": [0, 0, 2.5]},
+                {"operation": "chamfer", "target_object": "Plate", "value": 1, "face_centroid": [30, 20, 5]},
             ),
         ],
         "Built a 60 x 40 x 5 mm plate and chamfered its top edges by 1 mm. "
@@ -69,7 +69,8 @@ SCRIPTS: dict[str, tuple[list[dict[str, Any]], list[tuple[str, dict[str, Any]]],
             "generate_assembly_bom"]}],
         [
             ("create_freecad_box", {"name": "Base", "length": 40, "width": 40, "height": 10}),
-            ("create_freecad_cylinder", {"name": "Post", "radius": 5, "height": 30, "placement_z": 10}),
+            ("create_freecad_cylinder", {"name": "Post", "radius": 5, "height": 30,
+                                         "placement_x": 20, "placement_y": 20, "placement_z": 10}),
             ("create_freecad_assembly", {"name": "Stand"}),
             ("add_parts_to_assembly", {"assembly_name": "Stand", "part_names": ["Base", "Post"]}),
             ("generate_assembly_bom", {"assembly_name": "Stand"}),

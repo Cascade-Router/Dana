@@ -65,8 +65,8 @@ first sentence only). In a CAD session every FSM phase is bounded:
   screenshots and exports; the essential CAD set; the read-only checks),
   tools this turn already used first, until the budget is spent.
 
-The offline evals (`tests/evals/`) measure every turn: planning 1,476
-tokens, executing up to 2,559, validating and plan done at most 2,000. A
+The offline evals (`tests/evals/`) measure every turn: planning 1,503
+tokens, executing up to 2,586, validating and plan done at most 2,000. A
 plan-done turn used to offer the whole `freecad_full` domain (10,336
 tokens, more than a local model's 8,192-token context). The evals fail if
 a phase grows past that, and `test_no_cad_phase_offers_the_uncapped_catalog`
@@ -96,7 +96,8 @@ files inside Dana's workspace.
 - **Timeouts:** 60 s per call; 180 s for collision checks, blueprints and
   printability (`DANA_FREECAD_HEAVY_TIMEOUT_S`).
 - **Mock engine** (`dana/platform/mock.py`: the Space, CI, non-Windows): one
-  trimesh mesh per object under `freecad_output/sessions/<id>/mock/`.
+  trimesh mesh per object under `freecad_output/sessions/<id>/mock/`,
+  placed like FreeCAD's (a box by its corner, a cylinder by its base centre).
   `query_topology` reports the mesh's smooth regions as faces (same schema;
   its own stable numbering), `check_printability` runs the real
   `build_report` on the mesh, and `validate_assembly_collisions` uses

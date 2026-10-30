@@ -727,7 +727,10 @@ class MockFreeCADEngine(BaseCADEngine):
 
         dims = {"length": float(length), "width": float(width), "height": float(height)}
         mesh = trimesh.creation.box(extents=[dims["length"], dims["width"], dims["height"]])
-        mesh.apply_translation(-mesh.centroid)
+        # Part::Box's placement is its minimum corner, not its center: a
+        # model reasoning in FreeCAD terms (a live run did) otherwise cuts
+        # a half-depth "through" hole on the mock.
+        mesh.apply_translation(-mesh.bounds[0])
         mesh.apply_translation(placement)
         out_path = _mesh_output_path(name)
         mesh.export(out_path)
@@ -756,7 +759,8 @@ class MockFreeCADEngine(BaseCADEngine):
 
         dims = {"radius": float(radius), "height": float(height)}
         mesh = trimesh.creation.cylinder(radius=dims["radius"], height=dims["height"])
-        mesh.apply_translation(-mesh.centroid)
+        # Part::Cylinder's placement is the center of its base circle, axis +Z.
+        mesh.apply_translation([0.0, 0.0, dims["height"] / 2.0])
         mesh.apply_translation(placement)
         out_path = _mesh_output_path(name)
         mesh.export(out_path)

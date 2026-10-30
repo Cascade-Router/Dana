@@ -131,16 +131,11 @@ def _dispatcher(cad: Any):
     return call
 
 
-def _build_cantilever(call, *, corner_placement: bool) -> None:
+def _build_cantilever(call) -> None:
     """Base occupies x 0..20, y 0..20, z 0..20; the arm x 20..80, z 10..20.
-    FreeCAD places a box by its corner, the mock by its centre."""
-    if corner_placement:
-        base, arm = {}, {"placement_x": 20, "placement_z": 10}
-    else:
-        base = {"placement_x": 10, "placement_y": 10, "placement_z": 10}
-        arm = {"placement_x": 50, "placement_y": 10, "placement_z": 15}
-    call("create_freecad_box", name="Base", length=20, width=20, height=20, **base)
-    call("create_freecad_box", name="Arm", length=60, width=20, height=10, **arm)
+    Both drivers place a box by its corner, as FreeCAD's Part::Box does."""
+    call("create_freecad_box", name="Base", length=20, width=20, height=20)
+    call("create_freecad_box", name="Arm", length=60, width=20, height=10, placement_x=20, placement_z=10)
     call("create_freecad_assembly", name="Rig")
     call("add_parts_to_assembly", assembly_name="Rig", part_names=["Base", "Arm"])
 
@@ -158,8 +153,10 @@ def test_mock_driver_cantilever_rescued_by_material() -> None:
     from dana.platform.mock import MockFreeCADEngine
 
     call = _dispatcher(MockFreeCADEngine())
-    _build_cantilever(call, corner_placement=False)
+    _build_cantilever(call)
     _check_rescue(call)
+    centers = {p["name"]: p["center_of_mass_mm"] for p in call("generate_assembly_bom", assembly_name="Rig")["parts"]}
+    assert centers == {"Base": [10.0, 10.0, 10.0], "Arm": [50.0, 10.0, 15.0]}
 
 
 @pytest.mark.e2e
@@ -175,7 +172,7 @@ def test_live_cantilever_rescued_by_material(tmp_path: Path, monkeypatch: pytest
     monkeypatch.setenv("DANA_HEADLESS", "true")
     monkeypatch.delenv("DANA_OS_DRY_RUN", raising=False)
     call = _dispatcher(RealFreeCADEngine())
-    _build_cantilever(call, corner_placement=True)
+    _build_cantilever(call)
     _check_rescue(call)
     centers = {p["name"]: p["center_of_mass_mm"] for p in call("generate_assembly_bom", assembly_name="Rig")["parts"]}
     assert centers == {"Base": [10.0, 10.0, 10.0], "Arm": [50.0, 10.0, 15.0]}

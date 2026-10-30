@@ -57,7 +57,11 @@ PHASE_TARGETS = {"planning": 2000, "executing": 3000, "validating": 2000, "done"
 # planning and executing are fixed allow-lists, so their ceilings are exact.
 # The wrap-up set fills optional tools by relevance until _TOOL_TOKEN_BUDGET
 # runs out (1,940-1,995 here), so its ceiling is the budget itself.
-TOOL_TOKEN_CEILINGS = {"planning": 1476, "executing": 2559, "validating": 2000, "done": 2000}
+# Phase 7 added five tool ids to create_plan's expected_tools list (+27
+# tokens on every planning and executing turn): a live DeepSeek run planned
+# get_freecad_bounding_box for "verify its topology" because query_topology
+# was not in the only tool list a planner sees.
+TOOL_TOKEN_CEILINGS = {"planning": 1503, "executing": 2586, "validating": 2000, "done": 2000}
 _ENV = {"DANA_HEADLESS": "true", "DANA_OS_DRY_RUN": "1", "DANA_CONTEXT_DISTILL": "0", "DANA_AUTO_APPROVE": "0"}
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
@@ -453,7 +457,10 @@ def _task2_checks(run: Run) -> list[Check]:
         _close("volume = plate - 4 holes", float(plate.volume), 80 * 50 * 6 - 4 * _HOLE_VOLUME, rel=1e-3),
         Check("outer size unchanged 80 x 50 x 6", _extents(plate) == [80.0, 50.0, 6.0], str(_extents(plate))),
         Check("hole centers on the top face", all(
-            any(math.isclose(b["centroid"][0], u, abs_tol=0.05) and math.isclose(b["centroid"][1], v, abs_tol=0.05)
+            # u/v are measured from the top face's center: (40, 25) on a
+            # corner-placed 80 x 50 plate.
+            any(math.isclose(b["centroid"][0], 40 + u, abs_tol=0.05)
+                and math.isclose(b["centroid"][1], 25 + v, abs_tol=0.05)
                 for b in bores) for u, v in _HOLE_SPOTS)),
     ]
 
@@ -479,9 +486,12 @@ def _task3_checks(run: Run) -> list[Check]:
 
 
 def _assembly_steps(post_z: float) -> list[Step]:
+    """A 40 x 40 x 10 base (corner at the origin) and a post standing on its
+    centre (a cylinder is placed by its base centre)."""
     return [
         Step("create_freecad_box", {"name": "Base", "length": 40, "width": 40, "height": 10}),
-        Step("create_freecad_cylinder", {"name": "Post", "radius": 5, "height": 30, "placement_z": post_z}),
+        Step("create_freecad_cylinder", {"name": "Post", "radius": 5, "height": 30,
+                                         "placement_x": 20, "placement_y": 20, "placement_z": post_z}),
         Step("create_freecad_assembly", {"name": "Stand"}),
         Step("add_parts_to_assembly", {"assembly_name": "Stand", "part_names": ["Base", "Post"]}),
     ]
@@ -597,7 +607,9 @@ SCENARIOS: list[Scenario] = [
         ],
         steps=[
             Step("create_freecad_box", {"name": "Block", "length": 40, "width": 40, "height": 20}),
-            Step("create_freecad_cylinder", {"name": "Bore", "radius": 8, "height": 40}),
+            # Through the block's centre, from below its bottom to above its top.
+            Step("create_freecad_cylinder", {"name": "Bore", "radius": 8, "height": 40,
+                                             "placement_x": 20, "placement_y": 20, "placement_z": -10}),
             Step("perform_freecad_boolean", {"operation": "cut", "base_object": "Block", "tool_object": "Bore",
                                              "name": "Bored"}),
         ],
@@ -622,15 +634,17 @@ SCENARIOS: list[Scenario] = [
             {"description": "Check the post prints", "expected_tools": ["check_printability"]},
         ],
         steps=[
-            # The post is centred on the base, so the two overlap.
+            # The post stands from z=0, inside the base, so the two overlap.
             *_assembly_steps(post_z=0),
             Step("run_full_manufacturing_pipeline", {"assembly_name": "Stand"}),
             # Moving a part before measuring its reference is blocked by the
             # bounding-box gate; the model measures, then retries. Lifted to
-            # sit 1 mm above the base: base top z=5, post spans 21±15.
-            Step("position_assembly_part", {"part_name": "Post", "placement_z": 21}, expect_error=True),
+            # sit 1 mm above the base's top (z=10).
+            Step("position_assembly_part", {"part_name": "Post", "placement_x": 20, "placement_y": 20,
+                                            "placement_z": 11}, expect_error=True),
             Step("get_freecad_bounding_box", {"target_object": "Base"}),
-            Step("position_assembly_part", {"part_name": "Post", "placement_z": 21}),
+            Step("position_assembly_part", {"part_name": "Post", "placement_x": 20, "placement_y": 20,
+                                            "placement_z": 11}),
             Step("validate_assembly_collisions", {"assembly_name": "Stand"}),
             Step("export_assembly_to_urdf", {"assembly_name": "Stand"}),
             Step("generate_assembly_bom", {"assembly_name": "Stand"}),

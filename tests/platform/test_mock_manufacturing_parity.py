@@ -54,7 +54,7 @@ def test_box_topology_has_six_planar_faces_in_part_box_order(cad: MockFreeCADEng
     assert all(_REAL_FACE_KEYS <= f.keys() and f["is_planar"] for f in faces)
     top = faces[5]
     assert top["surface_type"] == "Part::GeomPlane" and top["normal"] == pytest.approx([0, 0, 1])
-    assert top["centroid"] == pytest.approx([0, 0, 2.5])
+    assert top["centroid"] == pytest.approx([30, 20, 5])  # Part::Box: corner at the placement
     assert sorted([top["u_span_physical_mm"], top["v_span_physical_mm"]]) == pytest.approx([40, 60])
 
     assert topo["edge_count"] == 12 and all(e["kind"] == "line" for e in topo["edges"])
@@ -203,8 +203,8 @@ def test_printability_flags_a_part_too_big_for_the_configured_bed(
 
 
 def test_printability_finds_the_overhang_of_a_mushroom(cad: MockFreeCADEngine) -> None:
-    cad.create_cylinder(3, 20, name="Stem", placement=(0, 0, 10))
-    cad.create_box(40, 40, 4, name="Cap", placement=(0, 0, 22))
+    cad.create_cylinder(3, 20, name="Stem", placement=(20, 20, 0))
+    cad.create_box(40, 40, 4, name="Cap", placement=(0, 0, 20))
     cad.apply_boolean("union", "Stem", "Cap", name="Mushroom")
     report = cad.check_printability()  # default target: the newest top-level solid
     assert report["target"] == "Mushroom"
@@ -222,6 +222,7 @@ def test_printability_refuses_an_unknown_object(cad: MockFreeCADEngine) -> None:
 
 
 def _rig(cad: MockFreeCADEngine, offset_x: float) -> None:
+    """Two 20 mm cubes, B ``offset_x`` mm along X from A (both corner-placed)."""
     cad.create_box(20, 20, 20, name="A")
     cad.create_box(20, 20, 20, name="B", placement=(offset_x, 0, 0))
     cad.create_assembly("Rig")
@@ -297,16 +298,20 @@ def test_unknown_assembly_is_refused(cad: MockFreeCADEngine) -> None:
 def test_positioning_a_part_moves_it_and_clears_the_collision(cad: MockFreeCADEngine) -> None:
     _rig(cad, 0)
     assert cad.validate_assembly_collisions("Rig")["has_collisions"] is True
+    # yaw=90 turns B about its placement (its corner): it spans x 10..30, y 0..20.
     moved = cad.position_assembly_part("B", placement_x=30, yaw=90)
-    assert moved["bounding_box"] == pytest.approx([20, -10, -10, 40, 10, 10], abs=1e-6)
+    assert moved["bounding_box"] == pytest.approx([10, 0, 0, 30, 20, 20], abs=1e-6)
+    report = cad.validate_assembly_collisions("Rig")
+    assert report["has_collisions"] is True  # turned about its corner, B swings back over A
+    cad.position_assembly_part("B", placement_x=50, yaw=90)
     report = cad.validate_assembly_collisions("Rig")
     assert report["has_collisions"] is False and report["clearances"][0]["distance_mm"] == pytest.approx(10)
     # Absolute, not cumulative: the same call again changes nothing.
-    again = cad.position_assembly_part("B", placement_x=30, yaw=90)
-    assert again["bounding_box"] == pytest.approx(moved["bounding_box"], abs=1e-6)
+    again = cad.position_assembly_part("B", placement_x=50, yaw=90)
+    assert again["bounding_box"] == pytest.approx([30, 0, 0, 50, 20, 20], abs=1e-6)
     # The assembly preview follows the move.
     rig = trimesh.load(mock._mock_object_registry()["Rig"], force="mesh")
-    assert rig.bounds[1][0] == pytest.approx(40)
+    assert rig.bounds[1][0] == pytest.approx(50)
 
 
 def test_placements_survive_a_session_snapshot(cad: MockFreeCADEngine) -> None:
@@ -366,7 +371,7 @@ def test_mock_urdf_export_writes_links_meshes_and_inertia(cad: MockFreeCADEngine
     cad.create_cylinder(5, 30, name="Post")
     cad.create_assembly("Stand")
     cad.add_parts_to_assembly("Stand", ["Base", "Post"])
-    cad.position_assembly_part("Post", placement_z=21)
+    cad.position_assembly_part("Post", placement_x=20, placement_y=20, placement_z=11)
     cad.define_kinematic_joint("Stand", "Post", "Base", "revolute", axis=[0, 0, 1])
     result = cad.export_assembly_to_urdf("Stand")
     assert result["ok"] is True, result
@@ -379,12 +384,14 @@ def test_mock_urdf_export_writes_links_meshes_and_inertia(cad: MockFreeCADEngine
     joint = root.find("joint")
     assert (joint.get("type"), joint.find("parent").get("link"), joint.find("child").get("link")) == (
         "revolute", "Base", "Post")
-    assert [float(v) for v in joint.find("origin").get("xyz").split()] == pytest.approx([0, 0, 0.021])
+    assert [float(v) for v in joint.find("origin").get("xyz").split()] == pytest.approx([0.02, 0.02, 0.011])
 
-    for name in ("Base", "Post"):
-        mesh_file = links[name].find("visual/geometry/mesh").get("filename")
-        local = trimesh.load(urdf.parent / mesh_file, force="mesh")
-        assert local.centroid == pytest.approx([0, 0, 0], abs=1e-6)  # written in the part's own frame
+    # Written in each part's own frame: the box from its corner, the post
+    # from its base centre (Part::Box / Part::Cylinder origins).
+    local = {n: trimesh.load(urdf.parent / links[n].find("visual/geometry/mesh").get("filename"), force="mesh")
+             for n in ("Base", "Post")}
+    assert local["Base"].bounds[0] == pytest.approx([0, 0, 0], abs=1e-6)
+    assert local["Post"].centroid[:2] == pytest.approx([0, 0], abs=1e-6) and local["Post"].bounds[0][2] == pytest.approx(0)
     # Base: 40 x 40 x 10 mm of the default density (2,700 kg/m³ aluminium).
     mass = float(links["Base"].find("inertial/mass").get("value"))
     assert mass == pytest.approx(2700 * 16_000e-9, rel=1e-3)
