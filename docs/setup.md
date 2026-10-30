@@ -101,8 +101,9 @@ helper modules import cleanly from tests without a separate install step.
 Useful narrower runs while iterating:
 
 ```bash
-pytest tests/test_router.py tests/test_environment.py tests/web/test_headless_bridge.py
-pytest tests/evals/test_osworld_bench.py   # offline, seeded adversarial bench
+pytest tests/core/test_react_dispatch.py tests/test_llm_router.py
+pytest tests/evals/                        # offline CAD agent evals (~5 s)
+python scripts/run_offline_evals.py        # the same evals as a markdown scorecard
 pytest -m e2e                              # live OS/vision/browser tests (see below)
 ```
 

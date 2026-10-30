@@ -1,6 +1,6 @@
 # Dānā: A Production-Hardened Cybernetic Control Plane for Autonomous Desktop Actuation, Vision Grounding, and Self-Healing Execution
 
-**Package:** `dana` · **Product:** Dānā / Dana · **OSWorld snapshot:** `tests/evals/osworld_bench_summary.json` · **Golden eval:** `tests/evals/latest_eval_report.json` (2026-07-28)
+**Package:** `dana` · **Product:** Dānā / Dana · **Evaluation:** offline CAD & manufacturing agent evals, `tests/evals/` (scorecard 2026-10-30)
 
 ---
 
@@ -8,7 +8,9 @@
 
 Dānā is a **production-hardened**, local-by-design cybernetic control plane for Windows desktops. Cognition, tool binding, hybrid vision grounding, transactional file mutation, and episodic memory remain on-device (Ollama + local Florence-2 / YOLO). The LangGraph ReAct corridor is the deterministic skeleton; LLMs propose content and tool calls, while Python owns routing, validation, interrupts, shadow commits, fatal classification, and fail-closed exits.
 
-The system has been evaluated against **adversarial OSWorld-style benchmark conditions** (`tests/evals/test_osworld_bench.py`): seedable desktop translation noise (±5–15 px), toast overlays, and 50–300 ms actuation jitter via `DesktopNoiseInjector`, scored by `OSWorldAdapter` without requiring a live OSWorld download.
+> **Note (2026-10-30).** This paper predates the current CAD product; several modules it names (`dana/graph/`, the LangGraph corridor, the OSWorld harness) no longer exist. The current architecture is in [`../ARCHITECTURE.md`](../ARCHITECTURE.md). Section 3 now describes the evaluation suite that does exist.
+
+The agent loop is evaluated offline by five canonical CAD and manufacturing tasks (`tests/evals/`, Section 3), run through the real ReAct loop and its gates with a scripted model on the trimesh mock CAD engine.
 
 Three invariants structure the system:
 
@@ -214,56 +216,41 @@ Fatal failures (`fatal_block` / `FATAL_EXCEPTIONS`) skip local retries and escal
 
 ---
 
-## 3. Empirical Evaluation & OSWorld
+## 3. Empirical Evaluation: offline CAD & manufacturing evals
 
-### 3.1 OSWorldAdapter methodology
+### 3.1 Method
 
-**Harness:** `tests/evals/test_osworld_bench.py`  
-**Adapter:** `tests/evals/osworld_adapter.py` · `OSWorldAdapter`  
-**Noise:** `tests/evals/noise_injector.py` · `DesktopNoiseInjector`  
-**Summary artifact:** `tests/evals/osworld_bench_summary.json`
+**Harness:** `tests/evals/eval_harness.py` · **pytest entry:** `tests/evals/test_offline_evals.py` · **Scorecard:** `python scripts/run_offline_evals.py [--json results.json]`
 
-Offline OSWorld-style evaluation (no network / OSWorld download):
+Each task runs one chat session through the real `/ws/chat` server (in-process, FastAPI TestClient) against the trimesh mock CAD engine. The model is scripted, so runs are deterministic, free and offline, but it must pass the same gates a real model does: load the CAD capability, create a plan the validator accepts (one task per operation), load tools it isn't offered, and call tools whose arguments the dispatcher validates. Per task the harness records:
 
-1. Load fixture JSON (`load_osworld_fixture`) → map to `ReactGraphState` via `OSWorldAdapter.task_to_agent_state`.
-2. Apply adversarial desktop noise with `DesktopNoiseInjector`:
-   - Screen / bbox translation **±5–15 px** (`_SHIFT_MIN_PX` / `_SHIFT_MAX_PX`)
-   - Synthetic toast overlays (fixed RGB accent block)
-   - Actuation latency jitter **50–300 ms** production range (deterministic mode uses a cheap 1–5 ms band for CI speed)
-3. Ground UI via `HybridVisionGrounding` + injectable `Win32UIAProvider` / Florence mocks.
-4. Score click/tool trajectories with `OSWorldAdapter` (`click_tol_px` / `bbox_tol_px`, default 10 px): precision, task completion, composite score.
+- **turns**: LLM calls the loop made;
+- **tool-schema tokens**: the `tools=` payload of every call (cl100k) and its FSM phase, held to per-phase ceilings: planning 1,476, executing 2,559, post-plan wrap-up 2,000 (`_TOOL_TOKEN_BUDGET`);
+- **retries**: calls the gates rejected that the model then retried successfully;
+- **geometry checks**: assertions against hand-computed values (volumes, bounding boxes, faces, clearances, BOM masses, URDF links).
 
-### 3.2 OSWorld offline summary (logged scores)
+Subprocesses (FreeCADCmd, a slicer) and non-loopback network access are blocked and counted while a task runs; a passing run has none. The script also fails if the real `freecad_output/`, `exports/` or `agent_workspace/` changed.
 
-Source: `tests/evals/osworld_bench_summary.json` — **read from disk; not invented.**
+Tasks: (1) a block and a rod measured with `query_topology`; (2) a plate with four holes cut through its top face and a chamfer, including a wrong face name the tool rejects; (3) a boolean through-bore; (4) a stand whose post collides — the manufacturing pipeline reports `complete: False`, blamed on the collision — then moved clear (after the bounding-box gate makes it measure first) and passing the collision check, URDF export, BOM and printability; (5) the plate rebuilt from 80 to 100 mm with zero LLM calls.
 
-| Metric | Value |
-|--------|------:|
-| Benchmark | `osworld_offline` |
-| Task ID | `osworld_open_notepad_save` |
-| Runs (N) | **5** |
-| Mean precision | **1.0** |
-| Mean task completion | **1.0** |
-| Mean score | **1.0** |
-| All runs passed | **true** |
+### 3.2 Scorecard (2026-10-30)
 
-| Run | Seed | Offset (px) | Latency (s) | Precision | Task completion | Score |
-|----:|-----:|------------:|------------:|----------:|----------------:|------:|
-| 0 | 42 | (−5, 8) | 0.00356 | 1.0 | 1.0 | 1.0 |
-| 1 | 43 | (−7, −10) | 0.00115 | 1.0 | 1.0 | 1.0 |
-| 2 | 44 | (−13, 6) | 0.00263 | 1.0 | 1.0 | 1.0 |
-| 3 | 45 | (12, 9) | 0.00209 | 1.0 | 1.0 | 1.0 |
-| 4 | 46 | (11, −14) | 0.00455 | 1.0 | 1.0 | 1.0 |
+| Task | Result | Turns | Max tool-schema tokens | Retries | Geometry checks |
+|---|---|---:|---:|---:|---:|
+| Single primitive + topology check | PASS | 7 | 2,325 | 0 | 6/6 |
+| Multi-feature part (holes + chamfer) | PASS | 11 | 2,559 | 1 | 5/5 |
+| Boolean cut + tool-token budget | PASS | 6 | 2,325 | 0 | 5/5 |
+| Assembly + manufacturing verdict | PASS | 17 | 2,401 | 1 | 11/11 |
+| Zero-token parametric rebuild | PASS | 11 | 2,559 | 1 | 5/5 |
+
+The suite's first run found the wrap-up turn after a finished plan offering the whole CAD tool domain: 8,586–10,336 tokens of schema, more than a local model's 8,192-token context. With the post-plan set capped and the core schemas tightened, the per-phase maxima went from planning 2,826 / executing 3,382 / wrap-up 10,336 to 1,476 / 2,559 / at most 2,000.
 
 Reproduce:
 
 ```bash
-pytest tests/evals/test_osworld_bench.py
+pytest tests/evals/                      # ~5 s, part of the normal suite
+python scripts/run_offline_evals.py      # prints the scorecard
 ```
-
-### 3.3 Golden dataset (supplementary)
-
-**Source:** `tests/evals/latest_eval_report.json` · **N = 25** · heuristic judge · **Overall Index 4.587 / 5.0** (Groundedness 4.68 · Routing 4.60 · Tool Accuracy 4.48 · Failures 3/25). Failure tags observed: `missed_repl_tool` (`route-004`), `no_tools` (`route-005`), `unexpected_tool_path` (`mem-002`).
 
 ---
 
@@ -399,9 +386,8 @@ CompactionEngine().compact_memory(store)
 | Episodic SQLite | `dana/memory/store.py` |
 | Jason loop package | `dana_jason_loop/` |
 | Security / patch ledger | `dana_security/` |
-| OSWorld harness | `tests/evals/test_osworld_bench.py` |
-| OSWorld summary | `tests/evals/osworld_bench_summary.json` |
-| Golden eval report | `tests/evals/latest_eval_report.json` |
+| Offline agent evals | `tests/evals/eval_harness.py`, `tests/evals/test_offline_evals.py` |
+| Eval scorecard | `scripts/run_offline_evals.py` |
 
 ---
 
