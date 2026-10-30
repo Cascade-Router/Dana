@@ -37,6 +37,9 @@ export type ModelParameter = {
   min: number | null;
   /** Set when a downstream fillet/chamfer picks its edges by position. */
   warning?: string;
+  /** The value Dana originally chose; differs from `value` after a rebuild changed it. */
+  baseline?: number;
+  modified?: boolean;
 };
 
 export type ParameterTable = {

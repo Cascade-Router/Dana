@@ -52,8 +52,8 @@ def _params(log: CadCallLog) -> dict[str, dict[str, Any]]:
 def test_parameter_table_lists_dimensions_with_units_and_labels() -> None:
     params = _params(_log())
     assert params["1.length"] == {
-        "id": "1.length", "label": "Plate.length", "value": 60.0, "unit": "mm", "min": 0,
-        "warning": rb.DRESSUP_WARNING,
+        "id": "1.length", "label": "Plate.length", "value": 60.0, "baseline": 60.0, "modified": False,
+        "unit": "mm", "min": 0, "warning": rb.DRESSUP_WARNING,
     }
     assert params["2.radius"]["label"] == "Plate top feature.radius"  # composite unrolled
     assert params["2.u"]["min"] is None  # positions may be negative
@@ -301,3 +301,26 @@ def test_rebuild_without_overrides_is_rejected(client: TestClient) -> None:
         ws.receive_json()
         ws.send_json({"type": "rebuild", "overrides": {}})
         assert ws.receive_json()["ok"] is False
+
+
+def test_rebuild_remembers_the_agents_value_as_the_baseline() -> None:
+    """The Parameters tab's Reset: the first rebuild that changes a field
+    records the agent's original value; later edits keep it; rebuilding back
+    to it clears "modified"."""
+    log = _log()
+    records = log.records
+    applied = {(1, "length"): 80.0}
+    patched = rb._patched_records(records, applied, {(1, "length"): 60.0})
+    assert patched[1].baseline == {"length": 60.0}
+    log.replace(patched)
+    row = _params(log)["1.length"]
+    assert (row["value"], row["baseline"], row["modified"]) == (80.0, 60.0, True)
+
+    again = rb._patched_records(log.records, {(1, "length"): 95.0}, {(1, "length"): 80.0})
+    assert again[1].baseline == {"length": 60.0}  # still the agent's value, not the previous edit
+    log.replace(rb._patched_records(again, {(1, "length"): 60.0}, {(1, "length"): 95.0}))
+    row = _params(log)["1.length"]
+    assert (row["value"], row["modified"]) == (60.0, False)
+
+    restored = type(log).from_payload(log.to_payload())
+    assert restored.records[1].baseline == {"length": 60.0}  # survives a restart

@@ -57,7 +57,17 @@ export function ParametersTab({ table, status, onRebuild }: Props) {
 
   const changed = Object.keys(overrides).length;
   const running = status.state === "running";
-  const canRebuild = Boolean(onRebuild) && !table.reason && changed > 0 && !Object.keys(errors).length && !running;
+  const editable = Boolean(onRebuild) && !table.reason && !running;
+  const canRebuild = editable && changed > 0 && !Object.keys(errors).length;
+  // Every dimension a rebuild changed, back to the value Dana chose.
+  const baselineOverrides = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const param of table.params) {
+      if (param.modified && param.baseline !== undefined) out[param.id] = param.baseline;
+    }
+    return out;
+  }, [table.params]);
+  const modifiedCount = Object.keys(baselineOverrides).length;
 
   if (table.params.length === 0) {
     return (
@@ -105,7 +115,23 @@ export function ParametersTab({ table, status, onRebuild }: Props) {
                   onChange={(e) => setDrafts((prev) => ({ ...prev, [param.id]: e.target.value }))}
                 />
                 <span className="parameters-tab__unit">{param.unit}</span>
+                {param.modified && param.baseline !== undefined && editable && (
+                  <button
+                    type="button"
+                    className="parameters-tab__baseline"
+                    title={`Back to Dana's value (${param.baseline} ${param.unit}); apply to rebuild`}
+                    aria-label={`Reset ${param.label} to ${param.baseline}`}
+                    onClick={() => setDrafts((prev) => ({ ...prev, [param.id]: String(param.baseline) }))}
+                  >
+                    ↺
+                  </button>
+                )}
               </div>
+              {param.modified && param.baseline !== undefined && (
+                <span className="parameters-tab__was">
+                  was {param.baseline} {param.unit}
+                </span>
+              )}
               {error && (
                 <span id={`${inputId}-error`} className="parameters-tab__error">
                   {error}
@@ -121,10 +147,20 @@ export function ParametersTab({ table, status, onRebuild }: Props) {
         </button>
         {changed > 0 && !running && (
           <button type="button" className="parameters-tab__reset" onClick={() => setDrafts({})}>
-            Reset
+            Discard
           </button>
         )}
       </div>
+      {modifiedCount > 0 && (
+        <button
+          type="button"
+          className="parameters-tab__reset-all"
+          disabled={!editable}
+          onClick={() => onRebuild?.(baselineOverrides)}
+        >
+          Reset all to Dana's design ({modifiedCount} changed, 0 tokens)
+        </button>
+      )}
       {status.state === "done" && (
         <p
           className={status.ok ? "parameters-tab__status" : "parameters-tab__status parameters-tab__status--error"}

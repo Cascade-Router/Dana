@@ -129,7 +129,8 @@ test("a plate session streams its reply, fills the CostBar, exports a macro and 
 
   // --- Parameters tab: units, dressup warning, edit, Apply & Rebuild ---
   await page.getByRole("button", { name: /Parameters/ }).first().click();
-  const length = page.getByLabel("Plate.length");
+  // A name prefix: the warning icon's label is part of the input's accessible name.
+  const length = page.getByRole("spinbutton", { name: /^Plate\.length/ });
   await expect(length).toHaveValue("60");
   await expect(page.locator(".parameters-tab__unit").first()).toHaveText("mm");
   await expect(page.locator(".parameters-tab__warning").first()).toBeVisible();
@@ -142,6 +143,26 @@ test("a plate session streams its reply, fills the CostBar, exports a macro and 
   await expect(length).toHaveValue("80");
   await expect(page.locator(".cost-bar__rebuilds")).toHaveText("+1 free rebuild");
   expect(session.sentFrames.some((f) => f.includes('"type":"rebuild"'))).toBe(true);
+
+  // --- Reset to the agent's design: the changed field shows its baseline,
+  // one click rebuilds back to it, still for 0 tokens ---
+  await expect(page.locator(".parameters-tab__was").first()).toHaveText("was 60 mm");
+  const resetAll = page.getByRole("button", { name: /Reset all to Dana's design \(1 changed, 0 tokens\)/ });
+  await expect(resetAll).toBeEnabled();
+  await resetAll.click();
+  await expect(length).toHaveValue("60", { timeout: 30_000 });
+  await expect(page.locator(".parameters-tab__status")).toHaveText(/^Rebuilt/);
+  await expect(page.locator(".cost-bar__rebuilds")).toHaveText("+2 free rebuilds");
+  await expect(resetAll).toHaveCount(0);
+  await expect(page.locator(".parameters-tab__was")).toHaveCount(0);
+
+  // The per-field reset puts the baseline back into the input for review.
+  await length.fill("70");
+  await apply.click();
+  await expect(length).toHaveValue("70", { timeout: 30_000 });
+  await page.getByRole("button", { name: "Reset Plate.length to 60" }).click();
+  await expect(length).toHaveValue("60");
+  await expect(apply).toBeEnabled();
 
   expectNoConsoleErrors(session.consoleErrors);
 });

@@ -35,6 +35,9 @@ class CadCallRecord:
     result: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     timestamp: float = field(default_factory=time.time)
+    # field -> the value the agent originally chose, recorded the first time
+    # a zero-token rebuild changes that field (the Parameters tab's reset).
+    baseline: dict[str, float] = field(default_factory=dict)
 
 
 class CadCallLog:
@@ -92,6 +95,13 @@ class CadCallLog:
                     result=dict(raw.get("result") or {}),
                     error=raw.get("error") if isinstance(raw.get("error"), str) else None,
                     timestamp=float(raw.get("timestamp") or 0.0),
+                    baseline={
+                        str(k): float(v)
+                        for k, v in (raw.get("baseline") or {}).items()
+                        if isinstance(v, (int, float)) and not isinstance(v, bool)
+                    }
+                    if isinstance(raw.get("baseline"), dict)
+                    else {},
                 )
             )
         return log

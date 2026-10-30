@@ -130,7 +130,7 @@ def _label(step: dict[str, Any], field: str) -> str:
 def parameter_table(records: list[CadCallRecord], geometry_tool_ids: frozenset[str]) -> dict[str, Any]:
     """The editable dimensions of this session's model.
 
-    ``{"params": [{"id", "label", "value", "unit", "min", "warning"?}],
+    ``{"params": [{"id", "label", "value", "baseline", "modified", "unit", "min", "warning"?}],
     "unsupported": [tool_id, ...], "reason": str | None}``. ``id`` is
     ``"<call-log index>.<field>"``, stable while the log only grows."""
     plan = plan_rebuild(records, geometry_tool_ids)
@@ -148,10 +148,14 @@ def parameter_table(records: list[CadCallRecord], geometry_tool_ids: frozenset[s
     for spec in classify_parameters(plan.steps, expose):
         pos, field = spec.locations[0]
         step = plan.steps[pos]
+        baseline = records[plan.record_of_step[pos]].baseline.get(field, spec.default)
         entry: dict[str, Any] = {
             "id": spec.name,
             "label": _label(step, field),
             "value": spec.default,
+            # The agent's original value; differs from "value" after a rebuild changed it.
+            "baseline": baseline,
+            "modified": baseline != spec.default,
             "unit": _unit(step, field),
             "min": None if field in _SIGNED_FIELDS else (1 if field in _COUNT_FIELDS else 0),
         }
@@ -167,11 +171,14 @@ def parameter_table(records: list[CadCallRecord], geometry_tool_ids: frozenset[s
     return {"params": params, "unsupported": plan.unsupported, "reason": reason}
 
 
-def _apply_overrides(plan: RebuildPlan, overrides: dict[str, Any]) -> dict[tuple[int, str], float]:
+def _apply_overrides(
+    plan: RebuildPlan, overrides: dict[str, Any], original: dict[tuple[int, str], float] | None = None
+) -> dict[tuple[int, str], float]:
     """Patches ``overrides`` into the plan's steps; returns them keyed by
     (call-log index, field). Raises ValueError for an unknown id or an
     invalid value."""
     applied: dict[tuple[int, str], float] = {}
+    original = {} if original is None else original
     for param_id, raw in overrides.items():
         record_str, _, field = str(param_id).partition(".")
         try:
@@ -198,6 +205,7 @@ def _apply_overrides(plan: RebuildPlan, overrides: dict[str, Any]) -> dict[tuple
             value = int(value)
         elif field not in _SIGNED_FIELDS and value <= 0:
             raise ValueError(f"{param_id}: must be greater than 0")
+        original.setdefault((record_index, field), plan.steps[positions[0]][field])
         for pos in positions:
             plan.steps[pos][field] = value
             if plan.steps[pos]["kind"] == "pipe" and field == "pipe_radius":
@@ -206,9 +214,14 @@ def _apply_overrides(plan: RebuildPlan, overrides: dict[str, Any]) -> dict[tuple
     return applied
 
 
-def _write_back(rec: CadCallRecord, field: str, value: float) -> CadCallRecord:
+def _write_back(rec: CadCallRecord, field: str, value: float, original: float | None = None) -> CadCallRecord:
     """The record as if it had been called with ``value``: every place its
-    from_record builder may read ``field`` from is updated."""
+    from_record builder may read ``field`` from is updated. ``original`` (the
+    value before this rebuild) becomes the field's baseline the first time it
+    changes, so the Parameters tab can reset to the agent's design."""
+    baseline = dict(rec.baseline)
+    if original is not None and field not in baseline:
+        baseline[field] = original
     arguments = dict(rec.arguments)
     result = dict(rec.result)
     if field in arguments or not result.get("dimensions"):
@@ -218,7 +231,7 @@ def _write_back(rec: CadCallRecord, field: str, value: float) -> CadCallRecord:
         result["dimensions"] = {**dims, field: value}
     if field in result:
         result[field] = value
-    return replace(rec, arguments=arguments, result=result)
+    return replace(rec, arguments=arguments, result=result, baseline=baseline)
 
 
 def _prepare(
@@ -236,15 +249,21 @@ def _prepare(
     if not plan.steps:
         return {"ok": False, "error": "nothing to rebuild yet — no geometry has been created this session"}
     try:
-        return {"plan": plan, "applied": _apply_overrides(plan, overrides)}
+        original: dict[tuple[int, str], float] = {}
+        applied = _apply_overrides(plan, overrides, original)
+        return {"plan": plan, "applied": applied, "original": original}
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
 
-def _patched_records(records: list[CadCallRecord], applied: dict[tuple[int, str], float]) -> list[CadCallRecord]:
+def _patched_records(
+    records: list[CadCallRecord], applied: dict[tuple[int, str], float], original: dict[tuple[int, str], float]
+) -> list[CadCallRecord]:
     by_record: dict[int, CadCallRecord] = {}
     for (record_index, field), value in applied.items():
-        by_record[record_index] = _write_back(by_record.get(record_index, records[record_index]), field, value)
+        by_record[record_index] = _write_back(
+            by_record.get(record_index, records[record_index]), field, value, original.get((record_index, field))
+        )
     return [by_record.get(i, rec) for i, rec in enumerate(records)]
 
 
@@ -287,7 +306,7 @@ def rebuild(
     backup(session_path)
     os.replace(scratch, session_path)
 
-    call_log.replace(_patched_records(records, applied))
+    call_log.replace(_patched_records(records, applied, prepared["original"]))
 
     return {
         "ok": True,
@@ -320,7 +339,7 @@ def rebuild_mock(
     if "error" in prepared:
         return prepared
     plan, applied = prepared["plan"], prepared["applied"]
-    patched = _patched_records(records, applied)
+    patched = _patched_records(records, applied, prepared["original"])
 
     saved = mock_driver.snapshot_mock_session(session_id)
     mock_driver.replace_mock_session(session_id, {})

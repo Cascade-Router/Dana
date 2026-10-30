@@ -142,3 +142,39 @@
 .parameters-tab__status--error {
   color: #f87171;
 }
+
+.parameters-tab__baseline {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid #2a2a2a;
+  border-radius: 4px;
+  color: #93c5fd;
+  padding: 0 0.35rem;
+  cursor: pointer;
+}
+
+.parameters-tab__baseline:hover {
+  background: #1a1a1a;
+}
+
+.parameters-tab__was {
+  font-size: 0.7rem;
+  color: #93c5fd;
+}
+
+.parameters-tab__reset-all {
+  margin-top: 0.5rem;
+  width: 100%;
+  background: none;
+  border: 1px solid #1e3a5f;
+  border-radius: 6px;
+  color: #93c5fd;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.parameters-tab__reset-all:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
