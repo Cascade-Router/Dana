@@ -23,7 +23,6 @@ primitives) — those are reported as ``unsupported``.
 
 from __future__ import annotations
 
-import inspect
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -31,7 +30,7 @@ from typing import Any
 
 from dana.plugins.freecad import ir
 from dana.plugins.freecad.call_log import CadCallLog, CadCallRecord
-from dana.plugins.freecad.py_export import build_replay_steps
+from dana.plugins.freecad.py_export import build_replay_steps, composite_replay_steps
 from dana.plugins.freecad.skill_compiler import DEFAULT_PARAMETER_FIELDS, classify_parameters
 
 # Editable fields per step kind: the skill compiler's defaults, plus the
@@ -39,10 +38,9 @@ from dana.plugins.freecad.skill_compiler import DEFAULT_PARAMETER_FIELDS, classi
 # and the swept/faceted primitives.
 _EDITABLE_FIELDS: dict[str, tuple[str, ...]] = {
     **DEFAULT_PARAMETER_FIELDS,
-    "face_profile": ("radius", "width", "length", "extent", "u", "v"),
-    "pyramid": ("length", "width", "height"),
-    "pipe": ("pipe_radius", "length_or_angle"),
-    "helix": ("coil_radius", "pitch", "height", "pipe_radius", "angle_offset"),
+    # Positions and a rotation on top of the compiler's dimensional defaults.
+    "face_profile": (*DEFAULT_PARAMETER_FIELDS["face_profile"], "u", "v"),
+    "helix": (*DEFAULT_PARAMETER_FIELDS["helix"], "angle_offset"),
 }
 
 # Fields that may be zero or negative (positions on a face, a rotation);
@@ -67,12 +65,9 @@ class RebuildPlan:
 def _composite_steps(rec: CadCallRecord, offset: int) -> list[dict[str, Any]]:
     spec = ir.get_composite_ir(rec.tool_id)
     assert spec is not None
-    accepted = set(inspect.signature(spec.resolve_composite).parameters)
-    args = {k: v for k, v in rec.arguments.items() if k in accepted}
-    args["name"] = str(rec.result.get("name") or rec.arguments.get("name") or "Feature")
     # A deterministic scope keeps the private intermediates' names stable
     # from one rebuild to the next.
-    return ir.unroll_composite(spec, args, start_index=offset * 10, scope=f"rb{offset}")
+    return composite_replay_steps(rec, spec, start_index=offset * 10, scope=f"rb{offset}")
 
 
 def plan_rebuild(records: list[CadCallRecord], geometry_tool_ids: frozenset[str]) -> RebuildPlan:

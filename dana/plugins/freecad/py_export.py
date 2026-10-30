@@ -33,6 +33,7 @@ itself still owns.
 
 from __future__ import annotations
 
+import inspect
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -342,9 +343,26 @@ def build_replay_steps(
     """
     steps: list[dict[str, Any]] = []
     skipped: list[str] = []
+    # Step indices are assigned as steps are produced, not per record: a
+    # composite record (create_freecad_feature_on_face) unrolls into
+    # several steps, and the template derives helper variable names from
+    # the index, so two steps must never share one.
+    next_index = start_index
     for offset, rec in enumerate(records, start=start_index):
         if not rec.ok:
             skipped.append(f"Step {offset}: {rec.tool_id} failed — {rec.error}")
+            continue
+        composite = ir.get_composite_ir(rec.tool_id)
+        if composite is not None:
+            # Used to fall through to "not a FreeCAD geometry operation", so a
+            # macro or compiled skill of a drilled plate silently lost its holes.
+            try:
+                unrolled = composite_replay_steps(rec, composite, start_index=next_index)
+            except (TypeError, ValueError) as exc:
+                skipped.append(f"Step {offset}: {rec.tool_id} could not be replayed — {exc}")
+                continue
+            steps.extend(unrolled)
+            next_index += len(unrolled)
             continue
         ir_kind = ir.get_ir_kind(rec.tool_id)
         if ir_kind is not None and ir_kind.kind in ir.PARTDESIGN_KINDS:
@@ -366,10 +384,24 @@ def build_replay_steps(
                 skipped.append(f"Step {offset}: {rec.tool_id} (not a FreeCAD geometry operation)")
                 continue
             step = builder(rec, offset)
-        step["index"] = offset
+        step["index"] = next_index
         step["tool_id"] = rec.tool_id
         steps.append(step)
+        next_index += 1
     return steps, skipped
+
+
+def composite_replay_steps(
+    rec: CadCallRecord, spec: ir.CompositeIRSpec, *, start_index: int, scope: str | None = None
+) -> list[dict[str, Any]]:
+    """A composite record's atomic steps (``ir.unroll_composite``), built from
+    the recorded arguments the composite accepts and the name the live call
+    gave its result. A stable ``scope`` (the rebuild passes one) keeps the
+    private intermediates' names identical from run to run."""
+    accepted = set(inspect.signature(spec.resolve_composite).parameters)
+    args = {k: v for k, v in rec.arguments.items() if k in accepted}
+    args["name"] = str(rec.result.get("name") or rec.arguments.get("name") or "Feature")
+    return ir.unroll_composite(spec, args, start_index=start_index, scope=scope or f"r{start_index}")
 
 
 def _one_line(value: Any) -> str:

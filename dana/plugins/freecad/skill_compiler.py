@@ -145,6 +145,11 @@ DEFAULT_PARAMETER_FIELDS: dict[str, tuple[str, ...]] = {
     "pocket": ("depth",),
     "polar_pattern": ("occurrences",),
     "linear_pattern": ("occurrences", "length"),
+    "pyramid": ("length", "width", "height"),
+    "pipe": ("pipe_radius", "length_or_angle"),
+    "helix": ("coil_radius", "pitch", "height", "pipe_radius"),
+    # create_freecad_feature_on_face's hole/slot/boss profile.
+    "face_profile": ("radius", "width", "length", "extent"),
 }
 
 
@@ -233,8 +238,9 @@ def classify_parameters(
     for i, step in enumerate(steps):
         candidate_fields = DEFAULT_PARAMETER_FIELDS.get(step["kind"], ())
         for field_name in candidate_fields:
-            if field_name not in step:
-                continue
+            value = step.get(field_name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue  # absent or None, e.g. a circle profile's width/length
             if step["kind"] == "pocket" and field_name == "depth" and step.get("through_all"):
                 continue  # a through-all pocket ignores its depth
             default = step[field_name]
@@ -672,6 +678,11 @@ def execute_compiled_steps(steps: list[dict[str, Any]], *, name_prefix: str | No
         # "5e72_Box" would find nothing.
         prefix = f"s{prefix}"
     prefixed = _apply_name_prefix(steps, prefix)
+    for step in prefixed:
+        if step["kind"] == "pipe" and step.get("path_type") == "arc":
+            # The bend follows the pipe radius (ir.pipe_arc_radius), so a
+            # substituted pipe_radius needs a fresh one, as in the rebuild.
+            step["arc_radius"] = ir.pipe_arc_radius(step["pipe_radius"])
 
     script = ir.render_ir_script(
         prefixed,

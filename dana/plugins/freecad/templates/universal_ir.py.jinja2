@@ -250,51 +250,7 @@ if {{ step.var }}.Shape.isNull() or _bbox_collapsed_{{ step.index }} or {{ step.
     )
 
 {% elif step.kind == "face_profile" %}
-_target_{{ step.index }} = doc.getObject({{ step.object_name|pyrepr }})
-if _target_{{ step.index }} is None:
-    raise RuntimeError("no object named " + {{ step.object_name|pyrepr }} + " in the session document")
-{# `bb` deliberately unindexed: ir.py's _FACE_ORIGIN_EXPR entries are fixed
-   source-code fragments (e.g. "bb.XMax") shared by every face_profile step,
-   not per-step data — indexing this name would require indexing those
-   fragments too. Safe because `bb` is only ever read on the very next
-   line, before any later step (face_profile or otherwise) could reassign
-   it. #}
-bb = _target_{{ step.index }}.Shape.BoundBox
-_origin_{{ step.index }} = App.Vector({{ step.origin_expr[0] }}, {{ step.origin_expr[1] }}, {{ step.origin_expr[2] }})
-_normal_{{ step.index }} = App.Vector{{ step.normal|pyrepr }}
-_u_axis_{{ step.index }} = App.Vector{{ step.u_axis|pyrepr }}
-_v_axis_{{ step.index }} = App.Vector{{ step.v_axis|pyrepr }}
-_center_{{ step.index }} = _origin_{{ step.index }} + _u_axis_{{ step.index }} * {{ step.u|pyrepr }} + _v_axis_{{ step.index }} * {{ step.v|pyrepr }}
-_faces_{{ step.index }} = _target_{{ step.index }}.Shape.Faces
-_nearest_{{ step.index }} = min(_faces_{{ step.index }}, key=lambda f: f.CenterOfMass.distanceToPoint(_center_{{ step.index }})) if _faces_{{ step.index }} else None
-if (
-    _nearest_{{ step.index }} is None
-    or not isinstance(_nearest_{{ step.index }}.Surface, Part.Plane)
-    or abs(_nearest_{{ step.index }}.Surface.Axis.dot(_normal_{{ step.index }})) < 0.99
-):
-    raise RuntimeError(
-        "face " + {{ step.face|pyrepr }} + " of '" + {{ step.object_name|pyrepr }} + "' is not a flat "
-        "bounding-box face on this object — create_feature_on_face only supports box-like "
-        "(prismatic) objects"
-    )
-_start_{{ step.index }} = _center_{{ step.index }} + _normal_{{ step.index }} * ({{ step.push_sign|pyrepr }} * {{ step.clearance|pyrepr }})
-{% if step.shape == "circle" %}
-_tool_face_{{ step.index }} = Part.Face(Part.Wire([Part.Circle(_start_{{ step.index }}, _normal_{{ step.index }}, {{ step.radius|pyrepr }}).toShape()]))
-{% else %}
-_hw_{{ step.index }} = {{ (step.width / 2.0)|pyrepr }}
-_hl_{{ step.index }} = {{ (step.length / 2.0)|pyrepr }}
-_corners_{{ step.index }} = [
-    _start_{{ step.index }} - _u_axis_{{ step.index }} * _hw_{{ step.index }} - _v_axis_{{ step.index }} * _hl_{{ step.index }},
-    _start_{{ step.index }} + _u_axis_{{ step.index }} * _hw_{{ step.index }} - _v_axis_{{ step.index }} * _hl_{{ step.index }},
-    _start_{{ step.index }} + _u_axis_{{ step.index }} * _hw_{{ step.index }} + _v_axis_{{ step.index }} * _hl_{{ step.index }},
-    _start_{{ step.index }} - _u_axis_{{ step.index }} * _hw_{{ step.index }} + _v_axis_{{ step.index }} * _hl_{{ step.index }},
-]
-_tool_face_{{ step.index }} = Part.Face(Part.makePolygon(_corners_{{ step.index }} + [_corners_{{ step.index }}[0]]))
-{% endif %}
-{{ step.var }} = doc.addObject("Part::Feature", {{ step.name|pyrepr }})
-{{ step.var }}.Shape = _tool_face_{{ step.index }}.extrude(_normal_{{ step.index }} * ({{ step.extrude_sign|pyrepr }} * ({{ step.extent|pyrepr }} + {{ step.clearance|pyrepr }})))
-doc.recompute()
-
+{% include "_face_profile_step.py.jinja2" %}
 {% elif step.kind == "edge_operation" %}
 _target_{{ step.index }} = doc.getObject({{ step.target_object|pyrepr }})
 if _target_{{ step.index }} is None:

@@ -157,3 +157,59 @@ def test_sweep_and_loft_round_trip() -> None:
     assert live_tree["features"] == ["PartDesign::AdditivePipe", "PartDesign::AdditiveLoft"]
     macro_tree = _tree(py_export.render_macro_script(live.log))
     _assert_parity(live_tree, macro_tree, _skill_tree(live.log))
+
+
+_VOLUME_PROBE = """
+import json as _json
+_vols = {{}}
+for _o in doc.Objects:
+    for _want in {names!r}:
+        if (_o.Name == _want or _o.Name.endswith("_" + _want)) and getattr(_o, "Shape", None) is not None:
+            _vols[_want] = _o.Shape.Volume
+print(%r + "_VOLUMES " + _json.dumps(_vols))
+""" % engine._OK_MARKER
+
+
+def _volumes(script: str, names: list[str]) -> dict[str, float]:
+    result = engine._run_freecad_script(script + _VOLUME_PROBE.format(names=names))
+    assert result["ok"], result["error"]
+    match = re.search(re.escape(engine._OK_MARKER + "_VOLUMES ") + r"(\{.*\})", result["stdout"])
+    assert match, result["stdout"][-2000:]
+    return json.loads(match.group(1))
+
+
+def test_feature_on_face_pipe_and_helix_round_trip() -> None:
+    """The macro and the compiled skill used to drop create_freecad_feature_on_face
+    ("not a FreeCAD geometry operation"): a drilled plate came back undrilled."""
+    live = _Live()
+    live("create_freecad_box", engine.create_box(60, 40, 5, name="Plate"), length=60, width=40, height=5, name="Plate")
+    live("create_freecad_feature_on_face",
+         engine.create_feature_on_face("Plate", "top", "circle", 10, 5, 5, "cut", radius=3, name="Drilled"),
+         object_name="Plate", face="top", shape="circle", u=10, v=5, extent=5, operation="cut", radius=3, name="Drilled")
+    live("create_freecad_pipe", engine.create_pipe(2, "arc", 90, name="Elbow"),
+         pipe_radius=2, path_type="arc", length_or_angle=90, name="Elbow")
+    live("create_freecad_helix", engine.create_helix(10, 5, 20, 1, name="Spring"),
+         coil_radius=10, pitch=5, height=20, pipe_radius=1, name="Spring")
+    names = ["Drilled", "Elbow", "Spring"]
+
+    live_volumes = _volumes(
+        f"import FreeCAD as App\ndoc = App.openDocument({str(engine._session_document_path())!r})\n", names
+    )
+    assert live_volumes["Drilled"] == pytest.approx(60 * 40 * 5 - math.pi * 9 * 5, rel=1e-6)
+    macro_volumes = _volumes(py_export.render_macro_script(live.log), names)
+
+    records = skill_compiler.slice_records_since_plan(live.log.records)
+    compiled = skill_compiler.compile_call_log_to_skill(records, skill_name="shapes_parity", description="shapes")
+    assert compiled["ok"] is True and compiled["skipped"] == [], compiled
+    namespace: dict[str, Any] = {}
+    exec(compile(compiled["python_code"], "shapes_parity.py", "exec"), namespace)
+    set_session_id(f"parity-skill-{uuid.uuid4().hex[:8]}")
+    skill_result = namespace["run"]({})
+    assert skill_result["ok"] is True, skill_result
+    skill_volumes = _volumes(
+        f"import FreeCAD as App\ndoc = App.openDocument({str(engine._session_document_path())!r})\n", names
+    )
+    for volumes in (macro_volumes, skill_volumes):
+        assert set(volumes) == set(names)
+        for name in names:
+            assert volumes[name] == pytest.approx(live_volumes[name], rel=1e-9), name

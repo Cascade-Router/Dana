@@ -281,3 +281,57 @@ def test_skill_generated_from_records_with_a_bad_parameter_fails_cleanly() -> No
     step = ir.get_ir_kind("create_freecad_pad").from_args(sketch_name="S", length=4)
     with pytest.raises(ValueError, match="length must be positive"):
         engine.partdesign_step_code({**step, "length": -1})
+
+
+def _shapes_session() -> _Session:
+    s = _Session()
+    s.call("create_freecad_pyramid", "create_pyramid", length=20, width=20, height=15, name="Spire")
+    s.call("create_freecad_pipe", "create_pipe", pipe_radius=2, path_type="straight", length_or_angle=30, name="Rod")
+    s.call("create_freecad_pipe", "create_pipe", pipe_radius=2, path_type="arc", length_or_angle=90, name="Elbow")
+    s.call("create_freecad_helix", "create_helix", coil_radius=10, pitch=5, height=20, pipe_radius=1, name="Spring")
+    s.call("create_freecad_box", "create_box", length=60, width=40, height=5, name="Plate")
+    s.call("create_freecad_feature_on_face", "create_feature_on_face", object_name="Plate", face="top",
+           shape="circle", u=10, v=5, extent=5, operation="cut", radius=3, name="Drilled")
+    return s
+
+
+def test_skill_compiles_pyramid_pipe_helix_and_face_features() -> None:
+    """create_freecad_feature_on_face used to be skipped as "not a FreeCAD
+    geometry operation" (a compiled bracket lost its holes), and pyramid,
+    pipe and helix exposed no parameters."""
+    records = skill_compiler.slice_records_since_plan(_shapes_session().log.records)
+    out = skill_compiler.compile_call_log_to_skill(records, skill_name="shapes_skill", description="shapes")
+    assert out["ok"] is True and out["skipped"] == []
+    params = set(out["schema"]["function"]["parameters"]["properties"])
+    assert {"pyramid_0_height", "pipe_1_pipe_radius", "pipe_2_length_or_angle", "helix_3_pitch",
+            "face_profile_5_radius", "face_profile_5_extent"} <= params
+    assert "face_profile_5_width" not in params  # a circle has no width
+
+    captured: dict[str, str] = {}
+
+    def fake_run(script: str, **_kw: Any) -> dict[str, Any]:
+        captured["script"] = script
+        return {"ok": True, "resolved_name": "x", "bounding_box": None}
+
+    namespace: dict[str, Any] = {}
+    exec(compile(out["python_code"], "shapes_skill.py", "exec"), namespace)
+    original = skill_compiler._run_freecad_script
+    skill_compiler._run_freecad_script = fake_run
+    try:
+        result = namespace["run"]({"pyramid_0_height": 22.5, "pipe_2_pipe_radius": 8, "face_profile_5_radius": 4.5})
+    finally:
+        skill_compiler._run_freecad_script = original
+    assert result["ok"] is True
+    script = captured["script"]
+    ast.parse(script)
+    assert "22.5" in script and "4.5" in script
+    assert "Part::Helix" in script and "Part::Cut" in script
+    # The arc pipe's bend follows its new radius: max(3 x 8, 20) = 24.
+    assert "App.Vector(24.0, 0.0, 0.0)" in script
+
+
+def test_macro_export_keeps_feature_on_face_holes() -> None:
+    script = py_export.render_macro_script(_shapes_session().log)
+    ast.parse(script)
+    assert "Drilled" in script and "Part::Cut" in script
+    assert "create_freecad_feature_on_face (not a FreeCAD geometry operation)" not in script

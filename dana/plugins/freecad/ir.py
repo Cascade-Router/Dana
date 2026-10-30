@@ -273,6 +273,10 @@ _COMPOSITE_REFERENCE_FIELDS: dict[str, tuple[str, ...]] = {
     # Skill Compilation inlining a dependency skill whose own frozen steps
     # pattern an object THAT SAME dependency created earlier.
     "pattern": ("source_object",),
+    # The object a hole/slot/boss is cut into or added onto. Without it a
+    # compiled skill prefixed its own box's name but not this reference,
+    # and the run failed with "no object named Plate".
+    "face_profile": ("object_name",),
 }
 
 

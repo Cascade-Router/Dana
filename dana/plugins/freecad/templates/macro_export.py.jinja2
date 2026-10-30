@@ -191,6 +191,8 @@ doc.recompute()
 {% endif %}
 doc.recompute()
 
+{% elif step.kind == "face_profile" %}
+{% include "_face_profile_step.py.jinja2" %}
 {% elif step.kind == "boolean" %}
 {{ step.var }} = doc.addObject({{ step.feature_type|pyrepr }}, {{ step.name|pyrepr }})
 {% if step.operation == "cut" %}
