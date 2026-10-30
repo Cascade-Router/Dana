@@ -1,394 +1,132 @@
-# Dānā: A Production-Hardened Cybernetic Control Plane for Autonomous Desktop Actuation, Vision Grounding, and Self-Healing Execution
+# Dānā: An Agentic CAD & Manufacturing Engineer
 
-**Package:** `dana` · **Product:** Dānā / Dana · **Evaluation:** offline CAD & manufacturing agent evals, `tests/evals/` (scorecard 2026-10-30)
-
----
-
-## Abstract & Design Philosophy
-
-Dānā is a **production-hardened**, local-by-design cybernetic control plane for Windows desktops. Cognition, tool binding, hybrid vision grounding, transactional file mutation, and episodic memory remain on-device (Ollama + local Florence-2 / YOLO). The LangGraph ReAct corridor is the deterministic skeleton; LLMs propose content and tool calls, while Python owns routing, validation, interrupts, shadow commits, fatal classification, and fail-closed exits.
-
-> **Note (2026-10-30).** This paper predates the current CAD product; several modules it names (`dana/graph/`, the LangGraph corridor, the OSWorld harness) no longer exist. The current architecture is in [`../ARCHITECTURE.md`](../ARCHITECTURE.md). Section 3 now describes the evaluation suite that does exist.
-
-The agent loop is evaluated offline by five canonical CAD and manufacturing tasks (`tests/evals/`, Section 3), run through the real ReAct loop and its gates with a scripted model on the trimesh mock CAD engine.
-
-Three invariants structure the system:
-
-| Principle | Operational meaning |
-|-----------|---------------------|
-| **Local-by-design** | Voice critical path, ReAct bind-tools loops, Florence OCR, hybrid UIA grounding, and the episodic SQLite ledger do not require a cloud round-trip. Optional cloud surfaces (e.g. Gradio Space, GitHub issue escalation) are off the hot path. |
-| **Zero Cloud Latency (control plane)** | Plan-Then-Execute, Mailroom RapidFuzz short-circuits, heuristic critic / consolidate fallbacks, and autonomous sub-graph retries (N=2) keep decision edges offline-capable. Heavy models load JIT; the graph itself does not wait on remote APIs. |
-| **Fail-Closed HITL Safety** | Destructive / ledger-mutating intents route through `draft_cursor_prompt` → `ticket_validate` → `jason_ticket_review` → `ticket_approval` (interrupt). `FATAL_EXCEPTIONS` bypass Critic retries and draft HITL tickets. Deny / exhausted validation / REPL self-heal exhaustion halt without consolidating bad preferences into memory. |
-
-The product brand is **Dānā** / **Dana**; the Python package is `dana`. Supporting packages: `dana_jason_loop/`, `dana_security/`. This paper describes the live ReAct architecture as implemented in `dana/agentic_react_graph.py`, `dana/schema.py`, `dana/graph/`, `dana/exec/shadow_workspace.py`, `dana/vision/hybrid_grounding.py`, `dana/memory/`, and `dana/ui/watchdog.py`.
+**Repository:** `dana` · **Status:** 2026-10-30 · **Companion:** [`../ARCHITECTURE.md`](../ARCHITECTURE.md) (the system reference this paper summarizes)
 
 ---
 
-## 1. Architecture & Topology
+## Abstract
 
-### 1.1 Live ReAct corridor (production topology)
-
-`compile_dana_react_graph` wires the following StateGraph over `ReactGraphState`. Entry is **Memory Hydration → Supervisor Router** (`hydrate_memory` → `planner` Plan-Then-Execute), then executor → agent:
-
-```text
-START
-  │
-  ▼
-hydrate_memory ──► planner (supervisor router) ──► executor ──► agent
-                                                                  │
-              ┌───────────────────────────────────────────────────┼───────────────────────────────┐
-              │ draft_cursor_prompt                               │ other tool_calls              │ halt / final
-              ▼                                                   ▼                               ▼
-      ticket_validate                                          tools                    consolidate_memory
-              │                                                   │                               │
-     ┌────────┼────────┐          ┌───────────────────────────────┼───────────────┐               ▼
-     │ valid  │ invalid│          │ REPL err      │ fatal_block   │ continue      │              END
-     ▼        │ (<3)   │          ▼               ▼               ▼               │
-jason_ticket  │→ agent │       critic        fail_closed       agent /            │
-  _review     │        │          │          (+ HITL ticket)   END path           │
-     │        │ max→END│          ▼               │                               │
-     ▼        └────────┘       tools ◄── (retry)  ▼                               │
-ticket_approval                   │              END                              │
-     │ approve → tools            │ retries exhausted                             │
-     │ deny    → END              ▼                                               │
-                                  fail_closed → END                               │
-                                                                                  │
-Actuation plane (from tools):                                                     │
-  · Hybrid Win32 UIA + 2-Stage Crop & Zoom Florence-2                             │
-  · Transactional Shadow Workspace (.dana_scratch/<session_id>/)                  │
-  · Zero-Copy raw_state_buffer + Sub-Graph Retry (N=2)                            │
-Memory plane:                                                                     │
-  · CompactionEngine — exponential decay (λ=0.05/hr) + spatial TTL (900s)         │
-```
-
-### 1.2 Mermaid — Hydration · Supervisor · Shadow · Vision · Buffer · Memory
-
-```mermaid
-flowchart TB
-  subgraph Ambient["Ambient plane"]
-    WD[ShellWatchdog<br/>stdout/stderr text feed]
-    TOAST[Windows toast tickets<br/>dana.ui.notifications]
-    WD --> TOAST
-    TOAST -.->|build_structured_plan| PL
-  end
-
-  subgraph Corridor["ReAct corridor — compile_dana_react_graph"]
-    HM[hydrate_memory]
-    PL[planner / supervisor router]
-    EX[executor]
-    AG[agent / MoA bind_tools]
-    TV[ticket_validate]
-    JR[jason_ticket_review]
-    TA[ticket_approval HITL]
-    TL[tools]
-    CR[critic]
-    FC[fail_closed + FATAL ticket]
-    CM[consolidate_memory]
-
-    START([START]) --> HM --> PL --> EX --> AG
-    AG -->|draft_cursor_prompt| TV
-    TV -->|valid| JR --> TA
-    TV -->|invalid retry| AG
-    TA -->|Approve| TL
-    TA -->|Deny| END1([END])
-    AG -->|tool_calls| TL
-    TL -->|python_repl error<br/>non-fatal, retry_count < max| CR --> TL
-    TL -->|FATAL_EXCEPTIONS / fatal_block| FC --> END2([END])
-    TL -->|retries exhausted| FC
-    TL -->|continue| AG
-    AG -->|halt| CM --> END3([END])
-    TL -->|halt| CM
-  end
-
-  subgraph SubGraph["Injectable sub-graph retry — compile_subgraph_retry_graph"]
-    SG[subgraph]
-    BUMP[bump_subgraph_retry]
-    ESC[escalate_subgraph]
-    SUP[supervisor]
-    SG -->|failure, count < N=2| BUMP --> SG
-    SG -->|exhausted / fatal| ESC --> SUP
-    SG -->|success| ESC --> END4([END])
-  end
-
-  subgraph Actuation["Vision · Shadow · Buffer · Memory"]
-    HY[HybridVisionGrounding<br/>UIA → Florence coarse → crop/zoom]
-    SW[ShadowWorkspace<br/>.dana_scratch/]
-    RB[(raw_state_buffer<br/>zero-copy traces)]
-    EM[(EpisodicMemoryStore<br/>+ CompactionEngine)]
-  end
-
-  TL --> HY
-  TL --> SW
-  SG -.-> RB
-  HM <--> EM
-  CM <--> EM
-```
-
-### 1.3 Control-plane state (minimal)
-
-Durable pointers live in graph state; chat history / CoT live on the Blackboard keyed by `session_id` (`dana/schema.py:ReactGraphState`):
-
-| Field group | Examples | Lifetime |
-|-------------|----------|----------|
-| Bureaucratic | `session_id`, `current_agent`, `active_intent` | Cross-node |
-| Ephemeral turn | `messages`, `iterations`, `always_include`, `execution_plan` | Single invoke |
-| REPL self-heal | `execution_error`, `critique_history`, `retry_count`, `max_retries`, `last_code_snippet` | Until heal or fail-closed |
-| Fatal / HITL | `fatal_block`, `drafted_ticket`, `ticket_validated`, `jason_critique`, `consecutive_denials` | Until approve/deny or halt |
-| Zero-copy diagnostics | `raw_state_buffer`, `subgraph_retry_count`, `max_subgraph_retries` | Until escalate / clear |
-| Memory hydrate | `memory_context` | Per turn |
+Dānā turns a plain-language request ("a 40 × 30 × 10 mm mounting plate with a centered 4 mm through-hole") into a verified FreeCAD model and the files needed to make it: STEP/STL, a dimensioned 2D drawing, a costed bill of materials, a printability report, G-code and a replayable macro. An LLM proposes one tool call at a time inside a phase-gated ReAct loop; deterministic code owns everything numeric — geometry, measurement, collision and stability checks, rebuilds. The design target is a single 8 GB GPU (an RTX 2080 running `qwen2.5-coder:14b` with an 8,192-token context) or free/cheap cloud models, which constrains how many tool schemas each turn may carry. An offline evaluation suite of five canonical CAD tasks, run through the real loop, passes 5/5 with every turn's tool schema held to 1,503–2,586 tokens.
 
 ---
 
-## 2. Detailed Subsystem Specs
+## 1. Problem and thesis
 
-### 2.1 Transactional Shadow Workspaces & Fatal Error Classification
+Small and free-tier language models fail at 3D CAD in predictable ways:
 
-**Shadow workspaces** (`dana/exec/shadow_workspace.py`). File mutations from REPL / `file_editor` stage under `.dana_scratch/<session_id>/` first:
+- **They invent numbers.** Asked to place a hole, a model guesses coordinates instead of measuring the part, or assumes the wrong placement convention (a box's corner vs. its center).
+- **They drown in tools.** Dānā's catalog of 95 tools is ~18,000 tokens of JSON schema even with descriptions minified. Offered at once it overflows a local model's context and multiplies cloud cost; offered too narrowly, the right tool is missing.
+- **They declare success without checking.** "The hole goes through" is a claim; whether it does is a property of the solid.
+- **They are expensive to iterate with.** Changing one dimension by re-prompting re-runs the whole build through the model.
 
-| Outcome | Behavior |
-|---------|----------|
-| `exit_code == 0` | `commit()` copies staged files to destinations, then clears scratch |
-| Nonzero exit / exception | `rollback()` discards scratch; destination paths untouched |
-| Context binding | `bind_shadow_workspace` / `get_active_shadow` via `ContextVar` for tool hooks |
+**Thesis.** Keep the model in the role it is good at — decomposing intent into a plan and choosing the next operation — and take every other responsibility away from it:
 
-`run_shadow_transaction(session_id, runner)` is the canonical API: commit on success, rollback otherwise.
-
-**Fatal error classification** (`dana/graph/nodes/critic.py`). `FATAL_EXCEPTIONS` are never Critic-healed:
-
-```text
-PermissionError | FileNotFoundError | ModuleNotFoundError
-ConnectionRefusedError | TimeoutError | OSError
-```
-
-When `fatal_block` or `is_fatal_execution_error(...)` is true, `route_after_execution` sends **tools → fail_closed** (bypass Critic retries). `fail_closed_node` / fatal Critic short-circuit draft a structured HITL ticket (`drafted_ticket` with objective `Fatal OS Block: Missing dependency or permission denied`) on the existing ticket corridor fields—without consolidating memory.
-
-Fixable code faults (`SyntaxError`, `NameError`, `TypeError`, …) remain on the bounded Critic loop (`max_retries` default **3**).
-
-### 2.2 Spatial Coordinate TTL (900s) & Exponential Decay
-
-**Spatial TTL** (`dana/graph/nodes/memory.py`). On consolidate, spatial / UI location facts receive `ttl_seconds = SPATIAL_FACT_TTL_SECONDS` (**900** = 15 minutes) when not explicitly set. Hydrate calls `prune_expired_entries()` before search so stale click targets and element locations do not poison grounding.
-
-**Exponential decay** (`dana/memory/compaction.py` · `CompactionEngine`). After consolidate, `compact_memory` applies:
-
-\[
-W = W_0 \cdot \exp(-\lambda \cdot \Delta\mathrm{hours}), \quad \lambda = 0.05\ \mathrm{(procedural)}
-\]
-
-| Category | \(\lambda\) | Policy |
-|----------|-------------|--------|
-| Procedural / non-preference facts | **0.05 / hour** | Pruned when decayed weight &lt; **0.15** |
-| `user_preference` | **0.0** | Never decay |
-
-### 2.3 Hybrid Win32 UIA + Crop-and-Zoom Florence-2
-
-**Module:** `dana/vision/hybrid_grounding.py` · `HybridVisionGrounding` + `dana/vision/uia_provider.py` · `Win32UIAProvider`.
-
-Pipeline (all side-effects injectable for offline evals):
-
-1. **UIA first** — `Win32UIAProvider.find_element_bounds(label)` → return `[0, 1000]^4` immediately on hit.
-2. **Coarse Florence** — phrase ground on the full frame via `run_ocr_with_region`.
-3. **Crop & zoom if small** — if coarse width **or** height &lt; **30** (1000-scale): crop ROI with **15%** padding (`ROI_PADDING = 0.15`), upscale **2×** (Lanczos/bicubic), fine Florence on the zoomed crop, project back to global `[0, 1000]^4`.
-
-Stage tags: `uia` | `coarse` | `zoom` | `miss`. Coordinate contract remains Florence **0–1000** normalized (with already-pixel acceptance in `norm_box_to_screen` / conversion helpers).
-
-### 2.4 Zero-Copy State Buffer & Autonomous Sub-Graph Retries (N=2)
-
-**Zero-copy buffer** (`dana/graph/buffer.py`). `store_raw_trace` writes the **full** traceback + exception metadata into `raw_state_buffer.last_error` without LLM truncation. Supervisors and critics may summarize separately; diagnostics stay complete.
-
-**Sub-graph retries** (`dana/graph/subgraph_router.py`). Default `max_subgraph_retries = 2` (`DEFAULT_MAX_SUBGRAPH_RETRIES`):
-
-```text
-START → subgraph ─(non-fatal, count < 2)→ bump_subgraph_retry → subgraph
-               ─(exhausted / fatal)→ escalate_subgraph → supervisor → END
-               ─(success)→ escalate_subgraph → END
-```
-
-Fatal failures (`fatal_block` / `FATAL_EXCEPTIONS`) skip local retries and escalate immediately with `raw_state_buffer` intact. This corridor is injectable via `compile_subgraph_retry_graph` and does not rewrite ToolForge gates or `dana/paths.py`.
-
-### 2.5 Legacy corridor nodes (still live)
-
-| Subsystem | Modules | Role |
-|-----------|---------|------|
-| Self-healing REPL Critic | `dana/graph/nodes/critic.py` | Bounded patch loop for fixable errors; fatal → HITL |
-| Macro engine | `dana/macros/engine.py` | Phrase-grounded record/replay |
-| Shell Watchdog | `dana/ui/watchdog.py` | Opt-in ambient Traceback → toast + plan handoff |
-| Episodic store | `dana/memory/store.py` | SQLite `episodic_facts` + TTL prune |
+1. a **phase-gated state machine** decides which tools exist on each turn, within a fixed token budget;
+2. a **typed intermediate representation** turns each tool call into geometry the same way every time, so a session can be replayed, re-parameterized or compiled without the model;
+3. **deterministic verification** (B-Rep topology, boolean intersection, mass properties, mesh checks) decides whether a part is right.
 
 ---
 
-## 3. Empirical Evaluation: offline CAD & manufacturing evals
+## 2. System architecture
 
-### 3.1 Method
+### 2.1 Turn pipeline
 
-**Harness:** `tests/evals/eval_harness.py` · **pytest entry:** `tests/evals/test_offline_evals.py` · **Scorecard:** `python scripts/run_offline_evals.py [--json results.json]`
+A FastAPI server exposes one WebSocket per chat (`/ws/chat`). Each user turn runs as a tracked `asyncio` task chained per session, so turns never overlap and the socket keeps reading (Stop interrupts the model's HTTP stream itself). Every turn sends only the system prompt, the user message and a distilled working-memory summary (≤ 1,200 characters) — never a replay of the whole chat. The model proposes at most one tool call per step; `dispatch_tool_call` runs it in a worker thread, so a 60 s FreeCAD call never blocks other sessions, and FreeCAD itself runs as **one `FreeCADCmd` subprocess per call** against a per-session document, with a backup restored on any failure. The loop ends when the model answers in text (or after 30 steps).
 
-Each task runs one chat session through the real `/ws/chat` server (in-process, FastAPI TestClient) against the trimesh mock CAD engine. The model is scripted, so runs are deterministic, free and offline, but it must pass the same gates a real model does: load the CAD capability, create a plan the validator accepts (one task per operation), load tools it isn't offered, and call tools whose arguments the dispatcher validates. Per task the harness records:
+### 2.2 Phase-restricted tool retrieval
 
-- **turns**: LLM calls the loop made;
-- **tool-schema tokens**: the `tools=` payload of every call (cl100k) and its FSM phase, held to per-phase ceilings: planning 1,476, executing 2,559, post-plan wrap-up 2,000 (`_TOOL_TOKEN_BUDGET`);
-- **retries**: calls the gates rejected that the model then retried successfully;
-- **geometry checks**: assertions against hand-computed values (volumes, bounding boxes, faces, clearances, BOM masses, URDF links).
+A CAD session moves through `planning → executing ⇄ validating → done`. Geometry tools do not exist until `create_plan` succeeds, each task declares the tools it expects, and a task advances when they have run. Each phase gets a bounded tool set:
 
-Subprocesses (FreeCADCmd, a slicer) and non-loopback network access are blocked and counted while a task runs; a passing run has none. The script also fails if the real `freecad_output/`, `exports/` or `agent_workspace/` changed.
+| Phase | Tools offered |
+|---|---|
+| Planning | core tools minus those that need an existing plan |
+| Executing a task with declared tools | core tools + exactly those tools |
+| Executing without declared tools, validating, wrong-tool escape hatch, plan done | discovery and plan management always; then the phase's candidates, ranked (tools this turn used first, then by a 384-d hash-embedding retriever against the task), until `_TOOL_TOKEN_BUDGET` (2,000 tokens) is spent |
 
-Tasks: (1) a block and a rod measured with `query_topology`; (2) a plate with four holes cut through its top face and a chamfer, including a wrong face name the tool rejects; (3) a boolean through-bore; (4) a stand whose post collides — the manufacturing pipeline reports `complete: False`, blamed on the collision — then moved clear (after the bounding-box gate makes it measure first) and passing the collision check, URDF export, BOM and printability; (5) the plate rebuilt from 80 to 100 mm with zero LLM calls.
+Schema descriptions are minified to their first sentence (`schema_minify.py`), and any tool outside the offered set is one `search_tool_catalog` / `load_specific_tool` call away. The evaluation in §5 found and closed the paths where this used to fail: a finished plan's wrap-up turn offered the entire CAD domain (10,336 tokens — more than the local context on its own), and four other phases could fall back to it.
 
-### 3.2 Scorecard (2026-10-30)
+### 2.3 Fleet routing
+
+Which model serves a turn is a pure function of configuration and turn state (`routing_config.yaml`, `dana/core/llm_router.py`): entries list provider, model, priority, context window and cost; an entry is eligible only if its context window (with a safety margin) fits the turn; eligible entries are tried in priority order with local Qwen as the terminal fallback. Planning turns are pinned to a cloud model, geometry-precision turns exclude local models (which were seen to hallucinate argument names there), bookkeeping turns prefer the local model, and `allow_cloud: false` makes the whole system local. A failed entry falls through to the next.
+
+### 2.4 Resource constraints
+
+`ollama_num_ctx()` is capped at 8,192 (a larger KV cache ran out of VRAM on the reference GPU); local requests serialize on one lock; local models unload when the last connection closes; OCR, speech and tool retrieval run on CPU. Without FreeCAD (the hosted demo, Linux CI), a trimesh + manifold3d mock engine provides the same tool results from meshes, placed with FreeCAD's conventions.
+
+---
+
+## 3. Universal IR and zero-token parametric rebuilds
+
+Every geometry tool is defined once in `dana/plugins/freecad/ir.py` as an IR kind: `from_args` builds a step dict from a live call, `from_record` rebuilds it from the session's call log, and one Jinja2 template (`universal_ir.py.jinja2`) renders steps into FreeCAD Python. Composite tools (a hole on a named face) unroll into atomic steps (a face-relative profile, then a boolean). Four consumers share this path:
+
+- **live execution** — the tool call itself;
+- **macro export** — the whole session as one standalone `.py` that rebuilds the part in stock FreeCAD, with a provenance header (editable parameters, LLM calls vs. free rebuilds);
+- **skill compilation** — `compile_plan_as_skill` freezes a finished plan into a new parameterized tool;
+- **parametric rebuild** — the Parameters tab.
+
+**Zero-token rebuilds.** The Parameters tab lists every editable dimension recovered from the call log, with units and a warning where a downstream fillet selects edges by position. Changing a value patches the IR steps and renders them once into a *scratch* document, which replaces the live one only if the whole script succeeds — a bad value never touches the model. No LLM is called. Each parameter keeps the value the agent originally chose, so any field, or the whole model, can be reset to the agent's design, also for zero tokens. A live FreeCAD round-trip test checks that the live session, the exported macro and the compiled skill produce identical volumes.
+
+---
+
+## 4. Closed-loop manufacturing verification
+
+- **Topology.** `query_topology` reports every face's surface type, area, centroid, normal and parametric extent from the B-Rep, so the agent (and the user) can verify a hole is a bore rather than trust a bounding box.
+- **Collisions.** `validate_assembly_collisions` intersects every member pair's solids (`Shape.common`) after an axis-aligned bounding-box broadphase, and reports each pair's true minimum clearance; a pair that cannot be computed fails the check instead of passing as collision-free.
+- **Stability.** The BOM computes each part's mass from its volume and material and checks whether the assembly's center of mass, dropped onto the ground plane, lies inside the convex hull of its ground-contact points, with a margin.
+- **Printability.** The part is meshed and checked for closed, manifold, consistently wound geometry, build-volume fit (a PrusaSlicer profile, `DANA_PRINTER_BED_MM`, or a Prusa MK4) and overhangs beyond 45°; the six principal orientations are scored and the best one recommended.
+- **Drawings and robotics.** TechDraw produces dimensioned orthographic and isometric sheets with a title block filled from the BOM; `export_assembly_to_urdf` writes one link per part with its mesh, mass and inertia tensor, joined by the kinematic joints the agent declared.
+- **Pipeline.** `run_full_manufacturing_pipeline` chains BOM → collisions → URDF → drawing → per-part printability → slicing, and reports `complete: false` with a reason (for example, colliding parts) rather than a partial success. It stops at G-code: sending a job to a printer is a separate call that always asks the user.
+
+---
+
+## 5. Empirical evaluation
+
+### 5.1 Offline suite
+
+`tests/evals/` runs five canonical tasks through the real `/ws/chat` loop on the mock engine. The model is scripted, so runs are deterministic and free, but it must pass the real gates: load the CAD capability, create a plan the validator accepts, load tools it isn't offered, and call tools whose arguments are validated. Subprocesses and network access are blocked during a run. Geometry is checked against hand-computed values.
 
 | Task | Result | Turns | Max tool-schema tokens | Retries | Geometry checks |
 |---|---|---:|---:|---:|---:|
-| Single primitive + topology check | PASS | 7 | 2,325 | 0 | 6/6 |
-| Multi-feature part (holes + chamfer) | PASS | 11 | 2,559 | 1 | 5/5 |
-| Boolean cut + tool-token budget | PASS | 6 | 2,325 | 0 | 5/5 |
-| Assembly + manufacturing verdict | PASS | 17 | 2,401 | 1 | 11/11 |
-| Zero-token parametric rebuild | PASS | 11 | 2,559 | 1 | 5/5 |
+| Single primitive + topology check | PASS | 9 | 2,352 | 0 | 6/6 |
+| Multi-feature part (holes + chamfer) | PASS | 11 | 2,586 | 1 | 5/5 |
+| Boolean cut + tool-token budget | PASS | 6 | 2,352 | 0 | 5/5 |
+| Assembly + manufacturing verdict | PASS | 17 | 2,428 | 1 | 11/11 |
+| Zero-token parametric rebuild | PASS | 11 | 2,586 | 1 | 5/5 |
 
-The suite's first run found the wrap-up turn after a finished plan offering the whole CAD tool domain: 8,586–10,336 tokens of schema, more than a local model's 8,192-token context. With the post-plan set capped and the core schemas tightened, the per-phase maxima went from planning 2,826 / executing 3,382 / wrap-up 10,336 to 1,476 / 2,559 / at most 2,000.
+Per-phase maxima across the five tasks, in cl100k tokens of tool schema per call:
 
-Reproduce:
+| Phase | First measurement | Now | Target |
+|---|---:|---:|---:|
+| Planning | 2,826 | 1,503 | ≤ 2,000 |
+| Executing | 3,382 | 2,586 | < 3,000 |
+| Validating | (uncapped) | 1,996 | ≤ 2,000 |
+| Plan done (wrap-up) | 10,336 | 1,967 | ≤ 2,000 |
 
-```bash
-pytest tests/evals/                      # ~5 s, part of the normal suite
-python scripts/run_offline_evals.py      # prints the scorecard
-```
+Retries are genuine self-corrections: an invalid face name rejected by the tool, and a part move blocked until the reference object was measured. The assembly task checks both verdicts: a colliding stand makes the pipeline report `complete: false` for that reason; once the post is lifted clear, collisions, URDF export, BOM masses and printability all pass. The rebuild task changes the plate from 80 to 100 mm with zero LLM calls and checks the new volume. The ceilings are enforced: a turn that grows past them fails the suite (`pytest tests/evals/`, ~5 s; `python scripts/run_offline_evals.py` prints the scorecard).
 
----
+### 5.2 Live-model check
 
-## 4. Modular Extension Contract
-
-Dānā’s corridor is intentionally **injectable**: production defaults bind real nodes; evals and plugins substitute callables without rewriting edges. All imports use the `dana` package.
-
-### 4.1 Register custom graph nodes
-
-```python
-from typing import Any
-
-from dana.agentic_react_graph import compile_dana_react_graph
-from dana.graph.nodes.critic import critic_node, fail_closed_node
-from dana.graph.nodes.memory import (
-    consolidate_memory_node,
-    hydrate_memory_node,
-)
-from dana.schema import ReactGraphState
-
-
-def my_agent_node(state: ReactGraphState) -> dict[str, Any]:
-    ...
-
-
-def my_tools_node(state: ReactGraphState) -> dict[str, Any]:
-    ...
-
-
-def my_planner(state: ReactGraphState) -> dict[str, Any]:
-    """Optional override for Plan-Then-Execute / supervisor router."""
-    return {"execution_plan": {"steps": []}, "current_agent": "Planner"}
-
-
-graph = compile_dana_react_graph(
-    my_agent_node,
-    my_tools_node,
-    planner_node_fn=my_planner,
-    critic_node_fn=critic_node,
-    fail_closed_node_fn=fail_closed_node,
-    hydrate_memory_node_fn=hydrate_memory_node,
-    consolidate_memory_node_fn=consolidate_memory_node,
-)
-```
-
-### 4.2 Sub-graph retries + zero-copy buffer
-
-```python
-from dana.graph.buffer import store_raw_trace
-from dana.graph.subgraph_router import (
-    apply_subgraph_failure,
-    compile_subgraph_retry_graph,
-)
-
-
-def my_subgraph(state: dict) -> dict:
-    try:
-        ...
-    except Exception as exc:
-        return apply_subgraph_failure(state, exc)
-
-
-def my_supervisor(state: dict) -> dict:
-    return {"current_agent": "Supervisor"}
-
-
-retry_graph = compile_subgraph_retry_graph(my_subgraph, my_supervisor)
-```
-
-### 4.3 Custom tools
-
-```python
-# dana/tools/my_actuator.py
-def ping_workspace(path: str = ".") -> str:
-    """Return a grounded observation string for the ReAct loop."""
-    return f"[ping_workspace] ok path={path!r}"
-
-
-# Inside your tools_node / execute_fn dispatcher:
-from dana.tools.my_actuator import ping_workspace
-
-DISPATCH = {
-    "ping_workspace": lambda args: ping_workspace(**args),
-}
-```
-
-Register the tool id with the Intent Broker / MoA bind list the same way existing tools are foresight-cascaded—without modifying ToolForge security gates or `dana/paths.py`.
-
-### 4.4 Shadow workspace + hybrid vision injection
-
-```python
-from dana.exec.shadow_workspace import ShadowWorkspace, run_shadow_transaction
-from dana.vision.hybrid_grounding import HybridVisionGrounding
-from dana.vision.uia_provider import Win32UIAProvider
-
-ws, code, obs = run_shadow_transaction("eval-session", lambda w: (0, "ok"))
-
-grounder = HybridVisionGrounding(
-    uia_provider=Win32UIAProvider(control_tree=[]),
-    florence_ground_fn=my_florence_fn,  # injectable
-)
-box = grounder.locate_ui_element(image, "Save")
-```
-
-### 4.5 Episodic store + compaction
-
-```python
-from dana.graph.nodes.memory import make_hydrate_memory_node, make_consolidate_memory_node
-from dana.memory.compaction import CompactionEngine
-from dana.memory.store import EpisodicMemoryStore
-
-store = EpisodicMemoryStore(db_path=":memory:")
-hydrate = make_hydrate_memory_node(store)
-consolidate = make_consolidate_memory_node(store)
-CompactionEngine().compact_memory(store)
-```
+The mounting-plate prompt from the abstract was run through the configured router (DeepSeek), the real loop and the mock engine. The model planned three tasks with valid tool ids, called every tool correctly on the first attempt with no retries, stayed at or under 2,645 tool-schema tokens per turn, and produced a solid of 11,500.57 mm³ — exactly a 40 × 30 × 10 mm plate minus a 4 mm-radius through-hole (as a 32-segment mesh). The run used six LLM calls, ~27,000 prompt tokens and 15 s. Two earlier runs of the same prompt found real defects that were then fixed: the mock engine centered primitives on their placement while FreeCAD places a box by its corner, which halved the hole's depth on the demo, and the planner verified with a bounding box because `query_topology` was missing from the only tool list it sees.
 
 ---
 
-## 5. References (code map)
+## 6. Limitations
 
-| Concern | Primary paths |
-|---------|----------------|
-| Graph compile & routing | `dana/agentic_react_graph.py` |
-| Shared state / Handoff | `dana/schema.py` |
-| Critic / FATAL / fail-closed | `dana/graph/nodes/critic.py` |
-| Shadow workspaces | `dana/exec/shadow_workspace.py` |
-| Zero-copy buffer | `dana/graph/buffer.py` |
-| Sub-graph retries (N=2) | `dana/graph/subgraph_router.py` |
-| Hybrid UIA + crop/zoom | `dana/vision/hybrid_grounding.py`, `dana/vision/uia_provider.py` |
-| Memory hydrate/consolidate | `dana/graph/nodes/memory.py` |
-| Exponential compaction | `dana/memory/compaction.py` |
-| Episodic SQLite | `dana/memory/store.py` |
-| Jason loop package | `dana_jason_loop/` |
-| Security / patch ledger | `dana_security/` |
-| Offline agent evals | `tests/evals/eval_harness.py`, `tests/evals/test_offline_evals.py` |
-| Eval scorecard | `scripts/run_offline_evals.py` |
+- The offline suite uses a scripted model: it measures Dānā's loop, gates and geometry, not a model's planning ability. Live checks so far are single prompts.
+- The mock engine approximates B-Rep topology with mesh regions and cannot export STEP; real FreeCAD is required for production output.
+- Printability is a geometric heuristic, not a slicer simulation; slicing and printing have been tested against mocks, not real hardware.
+- The 2,000-token budget bounds planning and wrap-up turns; executing a task adds that task's own tools on top of the core set (up to ~2,600 tokens measured).
 
 ---
 
-*End of white paper.*
+## Code map
+
+| Concern | Where |
+|---|---|
+| Turn loop, FSM, tool budget | `dana/api/server.py`, `dana/core/react_dispatch.py`, `dana/tools/schema_minify.py` |
+| Routing | `routing_config.yaml`, `dana/core/llm_router.py`, `dana/core/model_provider.py` |
+| CAD engine, IR, templates | `dana/plugins/freecad/engine.py`, `ir.py`, `templates/` |
+| Macro export, skills, rebuild | `py_export.py`, `skill_compiler.py`, `rebuild.py` |
+| Manufacturing | `dana/plugins/manufacturing/`, `dana/plugins/freecad/printability.py`, `techdraw_export.py`, `dana/tools/urdf_builder.py` |
+| Mock engine | `dana/platform/mock.py` |
+| Evaluation | `tests/evals/eval_harness.py`, `scripts/run_offline_evals.py` |
