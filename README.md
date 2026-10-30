@@ -12,7 +12,7 @@ It began as a commercial product and is now published as an engineering portfoli
 |---|---|
 | **Stack** | Python 3.11 · FastAPI + WebSockets · React/TypeScript (Tauri desktop shell) · FreeCAD (headless `FreeCADCmd`) · Ollama · Jinja2 |
 | **Models** | Cloud: DeepSeek (primary), Gemini, OpenRouter, Groq · Local: `qwen2.5-coder:14b` (tools), `qwen2.5vl:7b` (vision) |
-| **Tests** | 1,479 pytest cases, blocking in CI, no live model or GPU needed · Playwright UI tests against a mock backend |
+| **Tests** | 1,513 pytest cases, blocking in CI, no live model or GPU needed · Playwright UI tests against a mock backend |
 
 ---
 
@@ -56,6 +56,8 @@ What a chat session gives you besides the conversation:
 - **Deliverables bar.** One-click macro (`.py`, with a provenance header listing the editable parameters and how many LLM calls vs. free rebuilds built it), STEP/STL, the 2D blueprint and a costed BOM with tip-over stability — none of them cost tokens.
 - **Sessions survive restarts** ([`dana/api/session_state.py`](dana/api/session_state.py)). The plan, object registry, topology, call log and token/cost totals are saved with the chat, and the FreeCAD document is snapshotted with its SHA-256; resuming restores both. Approvals, auto-approve and API keys are never written to disk.
 - **Real-time streaming.** Replies stream token by token; Stop interrupts the model's HTTP stream itself, not just the display.
+- **The hosted demo checks parts too** ([`dana/platform/mock.py`](dana/platform/mock.py)). Without FreeCAD (the Hugging Face Space, Linux CI) the trimesh mock engine still answers `query_topology` (faces, edges, bounding box, volume), `check_printability` (the same report and bed settings as on FreeCAD) and `validate_assembly_collisions` (exact mesh overlap and clearance via manifold3d), and builds real pipe and helix sweeps. STEP and URDF export still need FreeCAD.
+- **Deleting a chat deletes its files.** Its document, meshes, exports, BOMs and print checks go with it.
 
 ## 3. CI/CD with a blocking test pipeline
 
@@ -63,12 +65,13 @@ What a chat session gives you besides the conversation:
 
 **Solution** ([`.github/workflows/build.yml`](.github/workflows/build.yml)):
 
-- **Full pytest suite as a blocking job:** 1,479 tests. It runs on Python 3.12 under `xvfb`, with `--strict-markers` and a per-test timeout. Failures are parsed out of the JUnit XML into GitHub `::error` annotations, so they show on the PR without opening the log.
+- **Full pytest suite as a blocking job:** 1,513 tests. It runs on Python 3.12 under `xvfb`, with `--strict-markers` and a per-test timeout. Failures are parsed out of the JUnit XML into GitHub `::error` annotations, so they show on the PR without opening the log.
 - **Space smoke test.** It imports `app.py` from the exact payload `deploy/stage_space.sh` ships, with the pinned Gradio version.
 - **Frontend build.** It runs the same `tsc && vite build` that Vercel runs.
 - **Gated deploy.** The Hugging Face sync runs on `workflow_run` only after Build succeeds.
 - **Headless environment isolation** ([`tests/conftest.py`](tests/conftest.py)). Every module-level path into `freecad_output/`, `exports/` or `agent_workspace/` is redirected to the test's `tmp_path` (found by sweeping the loaded modules, so a new one is covered automatically), every per-session registry is cleared before and after each test, and the run fails if the real workspace changed at all. TTS/audio hardware calls go to fakes. They block mid-test `.env` reloads (a real leak that once overrode test env vars) and force auto-approve and context distillation off. `DANA_HEADLESS=true` and `DANA_OS_DRY_RUN=1` keep FreeCAD's GUI and physical input out of CI.
 - **No live dependencies.** LLM and VLM providers are patched at the call site, and hardware calls (TTS, audio, OS input) go to fakes or dry-run mode. The suite needs no model server, GPU, or API key.
+- **Offline agent evals** ([`tests/evals/`](tests/evals)). Five canonical CAD tasks run through the real ReAct loop and gates with a scripted model on the mock engine: a primitive plus topology check, a plate with holes and a chamfer, a boolean cut, an assembly's manufacturing verdict (colliding and fixed) and a zero-token rebuild. Each records turns, the tool-schema token high-water mark per FSM phase, self-correction retries and geometry checks against hand-computed values. Subprocesses and network access are blocked while they run. They're part of pytest (about 5 s); `python scripts/run_offline_evals.py` prints the scorecard. They found that the 2,000-token tool budget only trims optional tools: the core set alone is 2,826 tokens, so the evals hold each phase to its measured size instead.
 - **Browser tests** ([`tests/e2e/`](tests/e2e)). Playwright drives the real UI against the real server with the mock CAD engine, a scripted model and a throwaway workspace ([`tests/e2e/mock_backend.py`](tests/e2e/mock_backend.py)): streaming, the cost bar, macro export, the BOM popover and a parametric rebuild. Run with `cd frontend && npx playwright test`.
 
 ## 4. Context management: 2,000-character rolling core memory
@@ -142,7 +145,7 @@ A two-minute walkthrough of the pipeline is scripted in [`DEMO_SCRIPT.md`](DEMO_
 | `dana/plugins/vision/` | OCR grounding and two-pass blueprint extraction |
 | `dana/plugins/memory/` | Persistent core memory |
 | `frontend/` | React + TypeScript UI (Tauri desktop shell) |
-| `tests/` | pytest suite (mirrors the `dana/` layout) |
+| `tests/` | pytest suite (mirrors the `dana/` layout); `tests/e2e/` Playwright; `tests/evals/` offline agent evals |
 | `docs/` | Architecture notes and design write-ups ([`ARCHITECTURE.md`](ARCHITECTURE.md)) |
 
 ## License

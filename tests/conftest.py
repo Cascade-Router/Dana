@@ -25,30 +25,15 @@ import dana.core.react_dispatch as _react_dispatch_module  # noqa: E402
 import dana.plugins.os.file_system as _file_system_module  # noqa: E402
 import dana.plugins.planning.task_board as _task_board_module  # noqa: E402
 from workspace_isolation import (  # noqa: E402 — tests/ is on sys.path (rootdir conftest)
+    import_path_holders,
     snapshot_real_workspace,
     workspace_changes,
     workspace_redirects,
 )
 
-# Every module that copies a workspace directory into a module-level Path,
-# imported up front so _isolate_workspace_dirs redirects it before a test
-# runs rather than missing one a test imports lazily halfway through.
-for _module_name in (
-    "dana.api.artifacts_registry",
-    "dana.api.cad",
-    "dana.api.sessions",
-    "dana.api.workspace",
-    "dana.platform.mock",
-    "dana.plugins.freecad.engine",
-    "dana.plugins.freecad.printability",
-    "dana.plugins.freecad.py_export",
-    "dana.plugins.manufacturing.bom_exporter",
-    "dana.plugins.memory.core_memory",
-    "dana.tools.image_to_3d",
-    "dana.tools.sim_wrapper_generator",
-    "dana.tools.urdf_builder",
-):
-    __import__(_module_name)
+# Imported up front so _isolate_workspace_dirs redirects every one of them
+# before a test runs (see workspace_isolation.PATH_HOLDING_MODULES).
+import_path_holders()
 
 
 def pytest_configure(config: pytest.Config) -> None:

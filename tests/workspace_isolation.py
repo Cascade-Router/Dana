@@ -20,6 +20,32 @@ from dana.paths import PROJECT_ROOT
 ISOLATED_DIRS: tuple[str, ...] = ("freecad_output", "exports", "agent_workspace")
 _REAL_ROOTS: tuple[Path, ...] = tuple(PROJECT_ROOT / name for name in ISOLATED_DIRS)
 
+# Every module that copies a workspace directory into a module-level Path.
+# The sweep below only sees loaded modules, so import_path_holders() loads
+# these first; one a run would otherwise import lazily halfway through
+# would keep pointing at the real directory.
+PATH_HOLDING_MODULES: tuple[str, ...] = (
+    "dana.api.artifacts_registry",
+    "dana.api.cad",
+    "dana.api.sessions",
+    "dana.api.workspace",
+    "dana.platform.mock",
+    "dana.plugins.freecad.engine",
+    "dana.plugins.freecad.printability",
+    "dana.plugins.freecad.py_export",
+    "dana.plugins.manufacturing.bom_exporter",
+    "dana.plugins.memory.core_memory",
+    "dana.tools.image_to_3d",
+    "dana.tools.sim_wrapper_generator",
+    "dana.tools.urdf_builder",
+)
+
+
+def import_path_holders() -> None:
+    for name in PATH_HOLDING_MODULES:
+        __import__(name)
+
+
 # module name -> (module object, names of its Path globals seen under a real root)
 _SCANNED: dict[str, tuple[ModuleType, tuple[str, ...]]] = {}
 

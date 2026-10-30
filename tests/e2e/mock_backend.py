@@ -135,10 +135,9 @@ def _install(workspace: Path) -> None:
     import dana.core.react_dispatch as rd
     import dana.plugins.os.file_system as file_system
     from dana.platform.mock import MockControlPlane, MockFreeCADEngine
-    from workspace_isolation import workspace_redirects
+    from workspace_isolation import import_path_holders, workspace_redirects
 
-    for name in ("dana.api.cad", "dana.plugins.freecad.py_export", "dana.plugins.manufacturing.bom_exporter"):
-        __import__(name)
+    import_path_holders()
     for module, attr, value in list(workspace_redirects(workspace)):
         setattr(module, attr, value)
     Path(file_system._SANDBOX_ROOT).mkdir(parents=True, exist_ok=True)

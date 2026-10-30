@@ -35,7 +35,7 @@ A module is **legacy** if only tests, `scripts/`, or other legacy modules import
 | `custom_tools/`, `_offline_archive/` | local-only | Legacy tool mirror and archived old files |
 | `rover_urdf/`, `meshes/` | untracked | Sample URDF output (their `.stl` files are ignored) |
 
-Paths referenced by old docs that **do not exist**: `run.py`, `dana/core_agent.py`, `dana/graph/`, `dana/ui/`, `dana/swarm/`, `dana/updater/` (only a stray `__pycache__`), `dana/web/`, `dana_jason_loop/`, `dana_security/`, `execution_jail/`, `tests/evals/`.
+Paths referenced by old docs that **do not exist**: `run.py`, `dana/core_agent.py`, `dana/graph/`, `dana/ui/`, `dana/swarm/`, `dana/updater/` (only a stray `__pycache__`), `dana/web/`, `dana_jason_loop/`, `dana_security/`, `execution_jail/`. (`tests/evals/` exists again since 2026-10-30, holding the offline agent evals, not the old OSWorld bench those docs describe.)
 
 ---
 
@@ -114,7 +114,7 @@ Paths referenced by old docs that **do not exist**: `run.py`, `dana/core_agent.p
 | **Web research** | `dana/plugins/web/research.py` | `search_web` via DuckDuckGo `ddgs` (no key); `read_webpage` via httpx + BeautifulSoup, capped at 10k characters |
 | **Coder plugin** | `dana/plugins/coder_plugin/engine.py` + `manifest.json` | Wraps Aider: `search_codebase`, `analyze_codebase`, `run_verification_command` (allowlisted), `execute_code_task`. `app.py` removes it on the HF Space |
 | **Planning** | `dana/plugins/planning/task_board.py` | `create_plan`, `mark_task_completed`, `insert_task`, `cancel_*`, and the plan FSM that restricts which tools each phase may call |
-| **Tool infrastructure** | `dana/tools/registry.py` (in-memory registry with a hash-embedding index, optional FAISS), `schema.py` (ToolSpec/ToolCall IR), `schema_minify.py` | Registry, schemas, and token-budgeted tool lists (2,000 tokens / 30 tools max) |
+| **Tool infrastructure** | `dana/tools/registry.py` (in-memory registry with a hash-embedding index, optional FAISS), `schema.py` (ToolSpec/ToolCall IR), `schema_minify.py` | Registry, schemas, and token-budgeted tool lists (the 2,000-token / 30-tool cap trims optional tools only; see ARCHITECTURE.md's Tool budget) |
 | **Safety gates** | `dana/security/dry_run.py` (`DANA_OS_DRY_RUN`), `react_dispatch.is_mutating_tool` (fails closed), `server._HITL_ALWAYS_APPROVED_TOOLS`, `dana/middleware/kill_switch.py` | Dry-run is honored in ~20 FreeCAD sites and in OS control. HITL applies to every mutating tool, with bypasses for parametric CAD CRUD, a per-session allowlist, the UI auto-approve toggle, and `DANA_AUTO_APPROVE`. The F12 kill-switch **listener is never started** by the server |
 
 ### 2.5 Memory and context management

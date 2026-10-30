@@ -52,8 +52,14 @@ rails.
 
 ### Tool budget
 
-At most `_MAX_ACTIVE_TOOLS` = 30 tools and `_TOOL_TOKEN_BUDGET` = 2,000
-tokens of schema per call (`schema_minify.py` keeps first sentences only).
+`_TOOL_TOKEN_BUDGET` = 2,000 tokens and `_MAX_ACTIVE_TOOLS` = 30 cap the
+optional tools added to a call (`schema_minify.py` keeps first sentences
+only). They don't bound the whole payload: the core tools, an FSM
+allow-list (planning, or an executing task's own tools) and a
+narrowing-exempt domain such as `freecad_full` are never cut. Measured by
+the offline evals (`tests/evals/`): planning 2,826 tokens (the 17 core
+tools), executing up to 3,382, and up to 10,336 once a plan is done and the
+whole CAD domain is offered. The evals fail if any phase grows past that.
 Tools are found lazily (`search_tool_catalog` / `load_specific_tool`);
 capability domains decay out after a few turns of disuse. Tool retrieval is a
 384-d hash embedding on CPU — no neural embedding model.
@@ -145,7 +151,7 @@ API keys and suspended HITL turns are never written to disk.
 | `dana/platform/` | CAD/OS drivers (win32, darwin, mock) |
 | `dana/tools/` | Tool schema/IR, CAD vision, OS control, misc tools |
 | `frontend/` | Tauri/React app |
-| `tests/` | pytest suite; `tests/e2e/` Playwright |
+| `tests/` | pytest suite; `tests/e2e/` Playwright; `tests/evals/` offline agent evals |
 | `scripts/ci/` | Boundary and dead-code gates, coverage floor |
 
 ## Verifying a change
@@ -154,6 +160,7 @@ API keys and suspended HITL turns are never written to disk.
 DANA_HEADLESS=true DANA_OS_DRY_RUN=1 .venv/Scripts/python -m pytest tests --timeout=300
 python scripts/ci/check_boundaries.py
 python scripts/ci/check_dead_code_incremental.py --base origin/main
+python scripts/run_offline_evals.py   # agent eval scorecard (also part of pytest)
 cd frontend && npm run build && npx playwright test
 ```
 
