@@ -47,19 +47,19 @@
           "name": "placement_x",
           "type": "number",
           "required": false,
-          "description_en": "Global X-axis offset in mm. Defaults to 0."
+          "description_en": "X of the box's minimum corner in mm (the box spans x to x + length)."
         },
         {
           "name": "placement_y",
           "type": "number",
           "required": false,
-          "description_en": "Global Y-axis offset in mm. Defaults to 0."
+          "description_en": "Y of the box's minimum corner in mm (the box spans y to y + width)."
         },
         {
           "name": "placement_z",
           "type": "number",
           "required": false,
-          "description_en": "Global Z-axis offset in mm. Defaults to 0."
+          "description_en": "Z of the box's bottom face in mm (the box spans z to z + height)."
         }
       ]
     },
@@ -103,19 +103,19 @@
           "name": "placement_x",
           "type": "number",
           "required": false,
-          "description_en": "Global X-axis offset in mm. Defaults to 0."
+          "description_en": "X of the cylinder's axis in mm (the cylinder is centered on x, y)."
         },
         {
           "name": "placement_y",
           "type": "number",
           "required": false,
-          "description_en": "Global Y-axis offset in mm. Defaults to 0."
+          "description_en": "Y of the cylinder's axis in mm (the cylinder is centered on x, y)."
         },
         {
           "name": "placement_z",
           "type": "number",
           "required": false,
-          "description_en": "Global Z-axis offset in mm. Defaults to 0."
+          "description_en": "Z of the cylinder's bottom face in mm (it spans z to z + height, so a through-hole starts at the part's bottom face)."
         }
       ]
     },
