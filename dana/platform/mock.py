@@ -885,13 +885,29 @@ class MockFreeCADEngine(BaseCADEngine):
 
         resolved_name = name or default_names[op]
         face_targeted = face_centroid is not None
+        # The geometry isn't simulated, but feasibility is: OCC cannot round
+        # or bevel an edge by half or more of the shortest edge it meets
+        # (two fillets would overlap), and fails such a call. The solid's
+        # smallest extent stands in for that edge -- exact for the boxes and
+        # plates these ops mostly target, conservative otherwise.
+        mesh = trimesh.load(target, force="mesh")
+        smallest = float(min(mesh.extents))
+        if not value or float(value) <= 0:
+            return {"ok": False, "error": f"apply_edge_operation: {op} size must be positive, got {value!r}"}
+        if float(value) >= smallest / 2.0:
+            return {
+                "ok": False,
+                "error": (
+                    f"BRep_API: command not done -- a {float(value):g} mm {op} cannot fit on "
+                    f"{target_object!r}, whose shortest edge is {smallest:g} mm (needs < {smallest / 2.0:g} mm)"
+                ),
+            }
         # Safe stub: trimesh has no generic edge-rounding/beveling operation,
         # so this returns the target's own mesh unmodified under the new
         # name/type rather than attempting to simulate real fillet/chamfer
         # geometry — callers relying on the ok/path/name/type/bounding_box
         # contract (mesh export, the object registry, HITL summaries) still
         # get a consistent result end-to-end in this headless container.
-        mesh = trimesh.load(target, force="mesh")
         out_path = _mesh_output_path(resolved_name)
         mesh.export(out_path)
         _mock_object_registry()[resolved_name] = str(out_path)

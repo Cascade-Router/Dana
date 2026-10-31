@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """The Kobayashi Maru gauntlet — five historically crash/exhaustion-inducing
 prompts, replayed through Dana's REAL ``/ws/chat`` routing
-(``dana.api.server.ws_chat`` / ``_run_react_loop``), the REAL dispatcher
-(``dana.core.react_dispatch.dispatch_tool_call``), and — wherever a
-FreeCADCmd binary is installed — the REAL FreeCAD engine. Nothing in the
-engine/tools/dispatcher is modified or monkeypatched; this is a pure
-evaluation harness.
+(``dana.api.server.ws_chat`` / ``_run_react_loop``), the REAL plan-gated
+FSM and dispatcher (``dana.core.react_dispatch``), and either the REAL
+FreeCAD engine or the trimesh mock engine.
 
 Only two things are stubbed, both deliberately external to what this
 gauntlet evaluates:
@@ -16,16 +14,22 @@ gauntlet evaluates:
      this pins down WHICH tool the agent "chooses" so the pass/fail
      criteria below are reproducible, while every call still flows through
      the real ``next_react_turn -> dispatch_tool_call -> engine`` chain.
+     Every geometry scenario opens with ``create_plan``, one task per
+     operation, because the FSM refuses geometry before a plan exists.
   2. The VLM canvas analysis (``analyze_cad_blueprint``) — a network/local-
      model call, not part of the ReAct/dispatch machinery under test.
 
 Everything else — WebSocket message routing, HITL suspend/resume, the
-visual-capture suspend path, ``dispatch_tool_call``, ``error_digest.py``,
-and (when available) the real FreeCAD subprocess — runs unmodified.
+visual-capture suspend path, ``dispatch_tool_call``, ``error_digest.py`` —
+runs unmodified.
 
 Usage (from repo root)::
 
-    .venv\\Scripts\\python.exe scripts/run_kobayashi_maru.py [--keep-artifacts]
+    .venv\\Scripts\\python.exe scripts/run_kobayashi_maru.py [--mock | --freecad] [--keep-artifacts]
+
+``--mock`` runs on the trimesh mock engine (no FreeCAD needed, what CI and
+``tests/test_kobayashi_maru.py`` use); ``--freecad`` requires FreeCADCmd.
+Without either, FreeCAD is used when FreeCADCmd is found, else the mock.
 
 Runs in a scratch workspace (``scripts/scratch_workspace.py``): the
 gauntlet's chats, documents and exports never reach the user's real ones.
@@ -83,6 +87,21 @@ def _fake_vlm_analysis(_image_b64: str, **_kwargs: Any) -> str:
     return '{"ok": true, "summary": "Proportions look correct for a NEMA17 mount.", "entities": []}'
 
 
+def _plan(objective: str, *tasks: tuple[str, list[str]]) -> list[ToolCall]:
+    """The create_plan turn every geometry scenario now opens with: one task
+    per operation, each declaring the one tool it runs (the FSM offers and
+    dispatches exactly the active task's tools)."""
+    return [
+        ToolCall(
+            tool_id="create_plan",
+            arguments={
+                "objective": objective,
+                "tasks": [{"description": d, "expected_tools": tools} for d, tools in tasks],
+            },
+        )
+    ]
+
+
 class _Recorder:
     """Every WS event received for one scenario, so assertions can inspect
     exactly what the dispatcher/engine actually did."""
@@ -92,6 +111,9 @@ class _Recorder:
 
     def of_type(self, msg_type: str) -> list[dict[str, Any]]:
         return [e for e in self.events if e.get("type") == msg_type]
+
+    def dispatched(self) -> list[str]:
+        return [e["tool_name"] for e in self.of_type("tool_dispatch_start")]
 
 
 def _default_on_event(recorder: _Recorder, ws: Any, msg: dict[str, Any]) -> bool:
@@ -121,16 +143,17 @@ def _run_scenario(
     """Sends `prompt` over a real /ws/chat connection, replays `turns` as
     the LLM's responses, and drains every WS event into a Recorder."""
     # One provider instance, captured by the closure below — ModelProvider()
-    # is called fresh on every LLM turn, so returning a NEW _ScriptedProvider
-    # each time would reset its queue back to turns[0] forever instead of
-    # depleting it turn by turn.
+    # is called fresh (with api_keys=...) on every LLM turn, so returning a
+    # NEW _ScriptedProvider each time would reset its queue back to
+    # turns[0] forever instead of depleting it turn by turn.
     provider = _ScriptedProvider(turns)
-    react_dispatch.ModelProvider = lambda: provider  # noqa: E731
+    react_dispatch.ModelProvider = lambda **_kwargs: provider  # noqa: E731
     recorder = _Recorder()
     with client.websocket_connect("/ws/chat") as ws:
         ws.receive_json()  # ready
+        ws.send_json({"type": "update_context", "active_plugins": ["cad"]})
         ws.send_json({"text": prompt})
-        for _ in range(60):
+        for _ in range(200):
             msg = ws.receive_json()
             recorder.events.append(msg)
             if msg.get("type") == "assistant_message" or on_event(recorder, ws, msg):
@@ -139,8 +162,11 @@ def _run_scenario(
 
 
 def _tool_result(recorder: _Recorder, tool_id: str) -> dict[str, Any] | None:
-    matches = [e for e in recorder.of_type("tool_result") if e["tool_id"] == tool_id]
-    return matches[0] if matches else None
+    """The first ``tool_dispatch_end`` for ``tool_id`` as {"ok", "payload"}."""
+    for event in recorder.of_type("tool_dispatch_end"):
+        if event["tool_id"] == tool_id:
+            return {"ok": event["status"] == "success", "payload": event.get("output") or {}}
+    return None
 
 
 def _is_digested_error(payload: dict[str, Any]) -> bool:
@@ -156,14 +182,18 @@ def _is_digested_error(payload: dict[str, Any]) -> bool:
 
 
 def scenario_kernel_crash(client: TestClient) -> tuple[bool, str]:
-    """A 20mm fillet on a 10mm cube's edges. Empirically, this FreeCAD build
-    doesn't raise on the fillet call itself — it silently returns an
-    invalid/degenerate shape (ok: True). The REAL crash surfaces one step
-    later: reading that shape's spatial properties (the system prompt's own
-    "verify before mutating" rule) genuinely fails, and THAT failure is what
-    error_digest.py must catch and structure — a truer test of the full
-    reasoning framework than asserting the first call alone fails."""
+    """A 20mm fillet on a 10mm cube's edges. Depending on the kernel, the
+    fillet call itself fails, or it silently returns a degenerate shape
+    (ok: True) and the follow-up read of its spatial properties fails. Either
+    failure must come back as a structured error_digest payload the model can
+    act on, never an unhandled exception."""
     turns = [
+        _plan(
+            PROMPTS[0],
+            ("Create the 10 mm cube", ["create_freecad_box"]),
+            ("Fillet the cube's edges with a 20 mm radius", ["perform_freecad_edge_operation"]),
+            ("Inspect the filleted solid", ["inspect_spatial_properties"]),
+        ),
         [ToolCall(tool_id="create_freecad_box", arguments={"length": 10, "width": 10, "height": 10, "name": "KMBox"})],
         [
             ToolCall(
@@ -179,11 +209,7 @@ def scenario_kernel_crash(client: TestClient) -> tuple[bool, str]:
     edge_op = _tool_result(rec, "perform_freecad_edge_operation")
     inspect = _tool_result(rec, "inspect_spatial_properties")
     if edge_op is None:
-        return False, "perform_freecad_edge_operation was never dispatched"
-
-    # Either the edge operation itself fails and gets digested (a stricter
-    # FreeCAD build), or it silently "succeeds" and the follow-up inspection
-    # catches the corruption instead — either is a legitimate survival path.
+        return False, f"perform_freecad_edge_operation was never dispatched (dispatched: {rec.dispatched()})"
     if not edge_op["ok"] and _is_digested_error(edge_op["payload"]):
         return True, f"fillet failed directly and was digested: reason={edge_op['payload']['reason']!r}"
     if inspect is not None and not inspect["ok"] and _is_digested_error(inspect["payload"]):
@@ -193,7 +219,7 @@ def scenario_kernel_crash(client: TestClient) -> tuple[bool, str]:
         )
     return False, (
         f"neither the fillet nor the follow-up inspection produced a digested error "
-        f"(edge_op.ok={edge_op['ok']}, inspect={inspect['payload'] if inspect else 'never called'})"
+        f"(edge_op={edge_op['payload']}, inspect={inspect['payload'] if inspect else 'never called'})"
     )
 
 
@@ -203,7 +229,15 @@ def scenario_kernel_crash(client: TestClient) -> tuple[bool, str]:
 
 
 def scenario_assembly_mate(client: TestClient) -> tuple[bool, str]:
+    """A concentric hinge mate between two freshly made parts must succeed
+    through the real assembly path, not just be accepted."""
     turns = [
+        _plan(
+            PROMPTS[1],
+            ("Create the hinge base block", ["create_freecad_box"]),
+            ("Create the hinge pin cylinder", ["create_freecad_cylinder"]),
+            ("Mate the pin concentrically to the base", ["create_assembly_mate"]),
+        ),
         [ToolCall(tool_id="create_freecad_box", arguments={"length": 20, "width": 20, "height": 10, "name": "KMHingeBase"})],
         [ToolCall(tool_id="create_freecad_cylinder", arguments={"radius": 5, "height": 30, "name": "KMHingePin"})],
         [
@@ -223,7 +257,7 @@ def scenario_assembly_mate(client: TestClient) -> tuple[bool, str]:
 
     mate = _tool_result(rec, "create_assembly_mate")
     if mate is None:
-        return False, "create_assembly_mate was never called"
+        return False, f"create_assembly_mate was never called (dispatched: {rec.dispatched()})"
     if not mate["ok"]:
         return False, f"create_assembly_mate failed: {mate['payload']}"
     return True, f"create_assembly_mate succeeded (mate_type={mate['payload'].get('mate_type')!r})"
@@ -235,6 +269,9 @@ def scenario_assembly_mate(client: TestClient) -> tuple[bool, str]:
 
 
 def scenario_visual_judgment(client: TestClient) -> tuple[bool, str]:
+    """take_canvas_screenshot needs the frontend's canvas: the loop must park
+    on session['visual_state'], ask for a capture, and resume once one
+    arrives. No plan needed: it is a core tool, offered in every phase."""
     turns = [
         [ToolCall(tool_id="take_canvas_screenshot", arguments={})],
         "The proportions look correct for a NEMA17 mount — not overly bulky.",
@@ -245,18 +282,29 @@ def scenario_visual_judgment(client: TestClient) -> tuple[bool, str]:
         if msg["type"] == "visual_capture_request":
             # The actual claim under test: peek at server-side session
             # state BEFORE resolving the suspend.
-            sessions = list(server_module._active_sessions.values())
-            state = sessions[0].get("visual_state") if sessions else None
-            probe["suspended"] = bool(state) and state["call"].tool_id == "take_canvas_screenshot"
+            states = [s.get("visual_state") for s in server_module._active_sessions.values()]
+            probe["suspended"] = any(s and s["call"].tool_id == "take_canvas_screenshot" for s in states)
         return _default_on_event(recorder, ws, msg)
 
-    rec = _run_scenario(client, PROMPTS[2], turns, on_event=on_event)
+    # Headless mode (CI, the local .env) answers take_canvas_screenshot with
+    # a "skipped" result instead of suspending, since there is no canvas.
+    # Turn off only that pruning, as tests/conftest.py's
+    # interactive_tool_schema fixture does: DANA_HEADLESS itself stays set,
+    # so the FreeCAD GUI-launch lock is untouched.
+    real_is_headless = react_dispatch.is_headless
+    react_dispatch.is_headless = lambda: False
+    try:
+        rec = _run_scenario(client, PROMPTS[2], turns, on_event=on_event)
+    finally:
+        react_dispatch.is_headless = real_is_headless
 
     if not probe.get("suspended"):
         return False, "session['visual_state'] was never populated for take_canvas_screenshot"
     screenshot = _tool_result(rec, "take_canvas_screenshot")
     if screenshot is None or not screenshot["ok"]:
         return False, f"visual capture round-trip did not resolve cleanly: {screenshot}"
+    if not rec.of_type("assistant_message"):
+        return False, "the loop never resumed to a final answer after the capture"
     return True, "session['visual_state'] suspend path triggered on take_canvas_screenshot, then resolved cleanly"
 
 
@@ -266,7 +314,14 @@ def scenario_visual_judgment(client: TestClient) -> tuple[bool, str]:
 
 
 def scenario_loop_exhaustion(client: TestClient) -> tuple[bool, str]:
+    """64 tiles one call at a time would blow through the iteration cap; a
+    single batch_pattern_array call must place all of them."""
     turns = [
+        _plan(
+            PROMPTS[3],
+            ("Create one square tile", ["create_freecad_box"]),
+            ("Pattern the tile into an 8 by 8 grid", ["batch_pattern_array"]),
+        ),
         [ToolCall(tool_id="create_freecad_box", arguments={"length": 10, "width": 10, "height": 2, "name": "KMTile"})],
         [
             ToolCall(
@@ -280,17 +335,19 @@ def scenario_loop_exhaustion(client: TestClient) -> tuple[bool, str]:
 
     pattern = _tool_result(rec, "batch_pattern_array")
     if pattern is None:
-        return False, "batch_pattern_array was never called"
+        return False, f"batch_pattern_array was never called (dispatched: {rec.dispatched()})"
     if not pattern["ok"]:
         return False, f"batch_pattern_array failed: {pattern['payload']}"
 
     copy_count = pattern["payload"].get("dimensions", {}).get("copy_count")
-    dispatches = len(rec.of_type("tool_result"))
-    if dispatches >= 5:  # dana.api.server._MAX_REACT_ITERATIONS
-        return False, f"used {dispatches} dispatch iterations — did not avoid the 5-iteration cap"
+    geometry_calls = [t for t in rec.dispatched() if t != "create_plan"]
+    if copy_count != 64:
+        return False, f"batch_pattern_array placed {copy_count} tiles, not 64"
+    if len(geometry_calls) > 2:
+        return False, f"used {len(geometry_calls)} geometry calls ({geometry_calls}) for what one pattern call covers"
     return True, (
-        f"{copy_count} tiles placed in {dispatches} tool call(s) — well under the 5-iteration cap "
-        f"that 64 individual create+align calls would have blown straight through"
+        f"{copy_count} tiles placed in {len(geometry_calls)} geometry calls — 64 individual "
+        f"create+align calls would have blown through the iteration cap"
     )
 
 
@@ -301,14 +358,16 @@ def scenario_loop_exhaustion(client: TestClient) -> tuple[bool, str]:
 
 def scenario_missing_geometry(client: TestClient) -> tuple[bool, str]:
     """No loft primitive exists in the tool registry. Forces the LLM to
-    "hallucinate" one (create_freecad_loft) and checks that
-    next_react_turn's existing safety net — an unrecognized tool_id
-    degrades to a final text turn — catches it before it ever reaches
-    dispatch_tool_call, rather than crashing the WS connection."""
-    turns = [[ToolCall(tool_id="create_freecad_loft", arguments={"profile_a": "StarPrism", "profile_b": "Cylinder"})]]
+    "hallucinate" one (create_freecad_loft) and checks that the router
+    rejects the unknown tool_id before dispatch_tool_call ever sees it, and
+    the loop still ends in a final message instead of crashing the socket."""
+    turns = [
+        [ToolCall(tool_id="create_freecad_loft", arguments={"profile_a": "StarPrism", "profile_b": "Cylinder"})],
+        "There is no loft tool; I can approximate it with a boolean of simpler solids instead.",
+    ]
     rec = _run_scenario(client, PROMPTS[4], turns)
 
-    if rec.of_type("tool_call") or rec.of_type("tool_result"):
+    if "create_freecad_loft" in rec.dispatched() or _tool_result(rec, "create_freecad_loft") is not None:
         return False, "the hallucinated tool call reached the dispatcher instead of being caught upstream"
     if not rec.of_type("assistant_message"):
         return False, "the loop never produced a final message — did not degrade safely"
@@ -324,44 +383,74 @@ SCENARIOS: list[tuple[str, Callable[[TestClient], tuple[bool, str]]]] = [
 ]
 
 
-def main() -> int:
-    original_provider = react_dispatch.ModelProvider
-    original_vlm = react_dispatch.analyze_cad_blueprint
-    original_captures_dir = react_dispatch.CAPTURES_DIR
-    original_screenshot_path = react_dispatch._LAST_CANVAS_SCREENSHOT_PATH
+def resolve_engine_mode(mock: bool, freecad: bool) -> str:
+    """"mock" or "freecad": an explicit flag wins, else FreeCAD when
+    FreeCADCmd is found."""
+    if mock:
+        return "mock"
+    if freecad:
+        return "freecad"
+    from dana.plugins.freecad.engine import detect_freecadcmd
+
+    return "freecad" if detect_freecadcmd() else "mock"
+
+
+def run_gauntlet(engine_mode: str) -> list[tuple[str, bool, str]]:
+    """Runs every scenario on ``engine_mode`` and returns (name, passed,
+    detail) rows. Restores every module attribute it patches."""
+    from dana.platform import factory
+
+    patched: list[tuple[Any, str, Any]] = []
+
+    def patch(target: Any, attr: str, value: Any) -> None:
+        patched.append((target, attr, getattr(target, attr)))
+        setattr(target, attr, value)
+
     scratch = Path(tempfile.mkdtemp(prefix="kobayashi_maru_"))
-    react_dispatch.analyze_cad_blueprint = _fake_vlm_analysis
-    react_dispatch.CAPTURES_DIR = scratch
-    react_dispatch._LAST_CANVAS_SCREENSHOT_PATH = scratch / "last_canvas_screenshot.png"
+    patch(react_dispatch, "analyze_cad_blueprint", _fake_vlm_analysis)
+    patch(react_dispatch, "CAPTURES_DIR", scratch)
+    patch(react_dispatch, "_LAST_CANVAS_SCREENSHOT_PATH", scratch / "last_canvas_screenshot.png")
+    patch(react_dispatch, "ModelProvider", react_dispatch.ModelProvider)  # restored after the scenarios
+    if engine_mode == "mock":
+        from dana.platform.mock import MockControlPlane, MockFreeCADEngine
 
-    print("=" * 78)
-    print(" KOBAYASHI MARU GAUNTLET — Dana ReAct Integration Evaluation")
-    print("=" * 78)
+        # The ReAct loop and plugin tools reach the engine through two
+        # different module names.
+        patch(server_module, "get_cad_engine", lambda: MockFreeCADEngine())
+        patch(server_module, "get_control_plane", lambda: MockControlPlane())
+        patch(factory, "get_cad_engine", lambda: MockFreeCADEngine())
 
+    # Not `with TestClient(...)`: that runs the server lifespan (speech
+    # models, printer watchdog, stdout broadcast), none of which this needs.
     client = TestClient(server_module.app)
-    results: list[bool] = []
+    rows: list[tuple[str, bool, str]] = []
     try:
-        for i, (name, scenario) in enumerate(SCENARIOS, start=1):
+        for name, scenario in SCENARIOS:
             try:
                 passed, detail = scenario(client)
             except Exception as exc:  # noqa: BLE001 — a scenario crashing IS a gauntlet failure, not a script crash
                 passed, detail = False, f"scenario raised {type(exc).__name__}: {exc}"
                 traceback.print_exc()
-            results.append(passed)
-            status = "PASS" if passed else "FAIL"
-            print(f"[{i}/5] {name:<28} ... {status}")
-            print(f"      -> {detail}")
+            rows.append((name, passed, detail))
     finally:
-        react_dispatch.ModelProvider = original_provider
-        react_dispatch.analyze_cad_blueprint = original_vlm
-        react_dispatch.CAPTURES_DIR = original_captures_dir
-        react_dispatch._LAST_CANVAS_SCREENSHOT_PATH = original_screenshot_path
+        for target, attr, value in reversed(patched):
+            setattr(target, attr, value)
+    return rows
 
-    passed_count = sum(results)
-    print("-" * 78)
-    print(f"RESULT: {passed_count}/{len(SCENARIOS)} scenarios survived the gauntlet.")
+
+def main(engine_mode: str) -> int:
     print("=" * 78)
-    return 0 if passed_count == len(SCENARIOS) else 1
+    print(f" KOBAYASHI MARU GAUNTLET — Dana ReAct Integration Evaluation ({engine_mode} engine)")
+    print("=" * 78)
+    rows = run_gauntlet(engine_mode)
+    for i, (name, passed, detail) in enumerate(rows, start=1):
+        print(f"[{i}/{len(rows)}] {name:<28} ... {'PASS' if passed else 'FAIL'}")
+        print(f"      -> {detail}")
+    passed_count = sum(passed for _, passed, _ in rows)
+    print("-" * 78)
+    print(f"RESULT: {passed_count}/{len(rows)} scenarios survived the gauntlet.")
+    print("=" * 78)
+    return 0 if passed_count == len(rows) else 1
 
 
 if __name__ == "__main__":
@@ -369,9 +458,15 @@ if __name__ == "__main__":
 
     import scratch_workspace  # scripts/ is sys.path[0] when run as a script
 
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    engine = parser.add_mutually_exclusive_group()
+    engine.add_argument("--mock", action="store_true", help="run on the trimesh mock engine")
+    engine.add_argument("--freecad", action="store_true", help="run on real FreeCAD (needs FreeCADCmd)")
     scratch_workspace.add_arguments(parser, session_id=False)
     args = parser.parse_args()
+    mode = resolve_engine_mode(args.mock, args.freecad)
     with scratch_workspace.scratch_workspace("kobayashi-maru", keep=args.keep_artifacts):
-        code = main()
+        code = main(mode)
     raise SystemExit(code)
