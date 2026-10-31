@@ -6,7 +6,7 @@
 
 ## Abstract
 
-Dānā turns a plain-language request ("a 40 × 30 × 10 mm mounting plate with a centered 4 mm through-hole") into a verified FreeCAD model and the files needed to make it: STEP/STL, a dimensioned 2D drawing, a costed bill of materials, a printability report, G-code and a replayable macro. An LLM proposes one tool call at a time inside a phase-gated ReAct loop; deterministic code owns everything numeric — geometry, measurement, collision and stability checks, rebuilds. The design target is a single 8 GB GPU (an RTX 2080 running `qwen2.5-coder:14b` with an 8,192-token context) or free/cheap cloud models, which constrains how many tool schemas each turn may carry. An offline evaluation suite of five canonical CAD tasks, run through the real loop, passes 5/5 with every turn's tool schema held to 1,503–2,586 tokens.
+Dānā turns a plain-language request ("a 40 × 30 × 10 mm mounting plate with a centered 4 mm through-hole") into a verified FreeCAD model and the files needed to make it: STEP/STL, a dimensioned 2D drawing, a costed bill of materials, a printability report, G-code and a replayable macro. An LLM proposes one tool call at a time inside a phase-gated ReAct loop; deterministic code owns everything numeric — geometry, measurement, collision and stability checks, rebuilds. The design target is a single 8 GB GPU (an RTX 2080 running `qwen2.5-coder:14b` with an 8,192-token context) or free/cheap cloud models, which constrains how many tool schemas each turn may carry. An offline evaluation suite of five canonical CAD tasks, run through the real loop, passes 5/5 with no turn's tool schema over 2,000 tokens.
 
 ---
 
@@ -40,7 +40,7 @@ A CAD session moves through `planning → executing ⇄ validating → done`. Ge
 | Phase | Tools offered |
 |---|---|
 | Planning | core tools minus those that need an existing plan |
-| Executing a task with declared tools | core tools + exactly those tools |
+| Executing a task with declared tools | exactly those tools + discovery and plan management (other core tools stay callable without their schemas) |
 | Executing without declared tools, validating, wrong-tool escape hatch, plan done | discovery and plan management always; then the phase's candidates, ranked (tools this turn used first, then by a 384-d hash-embedding retriever against the task), until `_TOOL_TOKEN_BUDGET` (2,000 tokens) is spent |
 
 Schema descriptions are minified to their first sentence (`schema_minify.py`), and any tool outside the offered set is one `search_tool_catalog` / `load_specific_tool` call away. The evaluation in §5 found and closed the paths where this used to fail: a finished plan's wrap-up turn offered the entire CAD domain (10,336 tokens — more than the local context on its own), and four other phases could fall back to it.
@@ -87,20 +87,22 @@ Every geometry tool is defined once in `dana/plugins/freecad/ir.py` as an IR kin
 
 | Task | Result | Turns | Max tool-schema tokens | Retries | Geometry checks |
 |---|---|---:|---:|---:|---:|
-| Single primitive + topology check | PASS | 9 | 2,352 | 0 | 6/6 |
-| Multi-feature part (holes + chamfer) | PASS | 11 | 2,586 | 1 | 5/5 |
-| Boolean cut + tool-token budget | PASS | 6 | 2,352 | 0 | 5/5 |
-| Assembly + manufacturing verdict | PASS | 17 | 2,428 | 1 | 11/11 |
-| Zero-token parametric rebuild | PASS | 11 | 2,586 | 1 | 5/5 |
+| Single primitive + topology check | PASS | 9 | 1,998 | 0 | 6/6 |
+| Multi-feature part (holes + chamfer) | PASS | 11 | 1,954 | 1 | 5/5 |
+| Boolean cut + tool-token budget | PASS | 6 | 1,998 | 0 | 5/5 |
+| Assembly + manufacturing verdict | PASS | 17 | 1,958 | 1 | 11/11 |
+| Zero-token parametric rebuild | PASS | 11 | 1,954 | 1 | 5/5 |
 
 Per-phase maxima across the five tasks, in cl100k tokens of tool schema per call:
 
 | Phase | First measurement | Now | Target |
 |---|---:|---:|---:|
 | Planning | 2,826 | 1,503 | ≤ 2,000 |
-| Executing | 3,382 | 2,586 | < 3,000 |
-| Validating | (uncapped) | 1,996 | ≤ 2,000 |
-| Plan done (wrap-up) | 10,336 | 1,967 | ≤ 2,000 |
+| Executing | 3,382 | 1,979 | ≤ 2,000 |
+| Validating | (uncapped) | 1,993 | ≤ 2,000 |
+| Plan done (wrap-up) | 10,336 | 1,998 | ≤ 2,000 |
+
+Turns over 2,000 tokens: 0 of 54. Executing turns with declared tools are 756–1,312 tokens; the turns near 2,000 are the capped sets, which add optional tools by relevance until the budget is spent.
 
 Retries are genuine self-corrections: an invalid face name rejected by the tool, and a part move blocked until the reference object was measured. The assembly task checks both verdicts: a colliding stand makes the pipeline report `complete: false` for that reason; once the post is lifted clear, collisions, URDF export, BOM masses and printability all pass. The rebuild task changes the plate from 80 to 100 mm with zero LLM calls and checks the new volume. The ceilings are enforced: a turn that grows past them fails the suite (`pytest tests/evals/`, ~5 s; `python scripts/run_offline_evals.py` prints the scorecard).
 
@@ -115,7 +117,7 @@ The mounting-plate prompt from the abstract was run through the configured route
 - The offline suite uses a scripted model: it measures Dānā's loop, gates and geometry, not a model's planning ability. Live checks so far are single prompts.
 - The mock engine approximates B-Rep topology with mesh regions and cannot export STEP; real FreeCAD is required for production output.
 - Printability is a geometric heuristic, not a slicer simulation; slicing and printing have been tested against mocks, not real hardware.
-- The 2,000-token budget bounds planning and wrap-up turns; executing a task adds that task's own tools on top of the core set (up to ~2,600 tokens measured).
+- A task's declared tools are never dropped to meet the budget, so a task declaring four or more of the heaviest tools (feature-on-face, assembly constraints, drawings) could still exceed 2,000 tokens; plan-management tools give way first.
 
 ---
 

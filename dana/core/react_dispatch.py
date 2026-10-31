@@ -5817,6 +5817,10 @@ _PLAN_CORE_TOOL_IDS = frozenset(
     }
 )
 
+# EXECUTING a tool-mapped task never loses these to the budget: finishing
+# the task, and tool discovery.
+_EXECUTING_MUST_KEEP_TOOL_IDS = frozenset({"search_tool_catalog", "load_specific_tool", "mark_task_completed"})
+
 # VALIDATING (a task parked for a manual mark_task_completed): checks,
 # screenshots and exports, budget permitting.
 _VALIDATION_TOOL_IDS = _POST_PLAN_TOOL_IDS | {
@@ -8141,6 +8145,16 @@ async def _call_llm_once(
     # "the Planner cannot see a geometry tool at all."
     if hard_restrict_to is not None:
         tools = _llm_tools_schema(active_plugins, hidden_tool_ids=hidden_tool_ids, hard_restrict_to=hard_restrict_to)
+        if task_tool_ids:
+            # EXECUTING a tool-mapped task: a task that declares several
+            # heavy tools can push its allow-list past the budget, so the
+            # optional plan-management tools give way first -- never the
+            # task's own tools, finishing it, or tool discovery.
+            tools = _cap_schemas_by_token_budget(
+                tools,
+                narrowing_query if narrowing_query is not None else raw_text,
+                must_keep=task_tool_ids | _EXECUTING_MUST_KEEP_TOOL_IDS,
+            )
     elif capped_tools is not None:
         must_keep, candidates = capped_tools
         used = _sticky_tool_ids_from_messages(messages, raw_text)
@@ -8840,9 +8854,11 @@ async def next_react_turn(
                 # narrowing bias -- a model that gets an out-of-order
                 # rejection from _fsm_out_of_order_check otherwise still saw
                 # every OTHER geometry tool's schema and kept brute-forcing
-                # siblings instead of retrying correctly. compile_plan_as_skill
-                # needs a finished plan, so it is left out until then.
-                hard_restrict_to = task_tool_ids | (_CORE_TOOL_IDS - {"compile_plan_as_skill"})
+                # siblings instead of retrying correctly. Of the core tools
+                # only discovery and plan management: a plan step needs no
+                # create_plan, memory, skill or capability tool, and those
+                # were ~1,270 tokens of every executing turn.
+                hard_restrict_to = task_tool_ids | _PLAN_CORE_TOOL_IDS
             else:
                 # EXECUTING a task with no declared tools (or no active task
                 # at all): the loaded domain's tools ranked by the hash
@@ -9059,8 +9075,12 @@ async def next_react_turn(
     # without this), which would wrongly let a hallucinated OR merely
     # out-of-task geometry tool_id through this check even though it was
     # never in the schema the model actually saw this turn.
+    # A tool-mapped EXECUTING task offers only discovery and plan management
+    # from the core set (token budget) but still dispatches the rest of it:
+    # the allow-list exists to stop sibling geometry tools, not core ones.
     allowed_tool_ids = (
-        (hard_restrict_to - hidden_tool_ids)
+        ((hard_restrict_to | (_CORE_TOOL_IDS - {"compile_plan_as_skill"} if task_tool_ids else frozenset()))
+         - hidden_tool_ids)
         if hard_restrict_to is not None
         else (_tool_ids_for_plugins(effective_plugins) - hidden_tool_ids)
     )

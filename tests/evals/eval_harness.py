@@ -53,15 +53,19 @@ MODEL = "eval/scripted-model"
 # context); Phase 6 capped the wrap-up set, dropped plan-dependent tools
 # where they can only fail and tightened the core descriptions.
 # PHASE_TARGETS are the hard limits the ceilings must stay within.
-PHASE_TARGETS = {"planning": 2000, "executing": 3000, "validating": 2000, "done": 2000}
-# planning and executing are fixed allow-lists, so their ceilings are exact.
-# The wrap-up set fills optional tools by relevance until _TOOL_TOKEN_BUDGET
-# runs out (1,940-1,995 here), so its ceiling is the budget itself.
-# Phase 7 added five tool ids to create_plan's expected_tools list (+27
-# tokens on every planning and executing turn): a live DeepSeek run planned
-# get_freecad_bounding_box for "verify its topology" because query_topology
-# was not in the only tool list a planner sees.
-TOOL_TOKEN_CEILINGS = {"planning": 1503, "executing": 2586, "validating": 2000, "done": 2000}
+# Since Phase 8 every phase's target is _TOOL_TOKEN_BUDGET, and any turn
+# over it fails the suite whatever its phase.
+PHASE_TARGETS = {"planning": 2000, "executing": 2000, "validating": 2000, "done": 2000}
+# planning is a fixed allow-list, so its ceiling is exact. Phase 7 added
+# five tool ids to create_plan's expected_tools list (+27 tokens): a live
+# DeepSeek run planned get_freecad_bounding_box for "verify its topology"
+# because query_topology was not in the only tool list a planner sees.
+# Executing a task with declared tools offers those tools plus discovery
+# and plan management (756-1,312 tokens here; 2,586 before Phase 8, when it
+# carried the whole core set). Executing without declared tools, validating
+# and the wrap-up turn fill optional tools by relevance until the budget runs
+# out (1,950-1,998 here), so their ceiling is the budget itself.
+TOOL_TOKEN_CEILINGS = {"planning": 1503, "executing": 2000, "validating": 2000, "done": 2000}
 _ENV = {"DANA_HEADLESS": "true", "DANA_OS_DRY_RUN": "1", "DANA_CONTEXT_DISTILL": "0", "DANA_AUTO_APPROVE": "0"}
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
@@ -113,6 +117,12 @@ class Run:
     @property
     def max_tool_tokens(self) -> int:
         return max(self.tool_tokens, default=0)
+
+    def phase_maxima(self) -> dict[str, int]:
+        maxima: dict[str, int] = {}
+        for phase, tokens in zip(self.tool_phases, self.tool_tokens):
+            maxima[phase] = max(maxima.get(phase, 0), tokens)
+        return maxima
 
     @property
     def turns_over_budget(self) -> int:
@@ -351,6 +361,11 @@ def _common_checks(run: Run) -> list[Check]:
             "tool schema within its phase's ceiling",
             len(run.tool_phases) == run.llm_calls and not run.ceiling_breaches(),
             "; ".join(run.ceiling_breaches()) or f"max={run.max_tool_tokens}",
+        ),
+        Check(
+            f"no turn over the {rd._TOOL_TOKEN_BUDGET:,}-token budget",
+            run.turns_over_budget == 0,
+            f"{run.turns_over_budget}/{run.llm_calls} over",
         ),
         Check(f"_TOOL_TOKEN_BUDGET is {rd._TOOL_TOKEN_BUDGET} (<= 2000)", rd._TOOL_TOKEN_BUDGET <= 2000),
         Check(
@@ -685,10 +700,17 @@ def scorecard(runs: list[Run]) -> str:
     lines.append("")
     lines.append(f"**{passed}/{len(runs)} tasks passed.**")
     lines.append("")
-    lines.append(
-        "Tool-schema tokens are held to per-phase ceilings "
-        + ", ".join(f"{phase} {limit:,}" for phase, limit in TOOL_TOKEN_CEILINGS.items())
-        + " (targets: planning and post-plan within the 2,000-token budget, executing under 3,000)."
+    maxima: dict[str, int] = {}
+    for run in runs:
+        for phase, tokens in run.phase_maxima().items():
+            maxima[phase] = max(maxima.get(phase, 0), tokens)
+    over = sum(r.turns_over_budget for r in runs)
+    lines.append(f"**Turns over 2,000 tool-schema tokens: {over}/{sum(r.llm_calls for r in runs)}.**")
+    lines.append("")
+    lines.append("| Phase | Max tool-schema tokens | Ceiling |")
+    lines.append("|---|---:|---:|")
+    lines.extend(
+        f"| {phase} | {maxima[phase]:,} | {limit:,} |" for phase, limit in TOOL_TOKEN_CEILINGS.items() if phase in maxima
     )
     for run in runs:
         failures = [c for c in run.checks if not c.passed]

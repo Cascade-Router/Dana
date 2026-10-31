@@ -57,7 +57,10 @@ optional tools added to a call (`schema_minify.py` sends each description's
 first sentence only). In a CAD session every FSM phase is bounded:
 
 - **planning:** the core tools minus those that need an existing plan;
-- **executing a task with declared tools:** the core tools plus those tools;
+- **executing a task with declared tools:** those tools plus discovery and
+  plan management (other core tools stay callable, their schemas are not
+  sent); if a task declares enough heavy tools to pass the budget, plan
+  management gives way first;
 - **executing a task without them, validating, the wrong-tool escape
   hatch, plan done:** a capped set — discovery and plan management always
   (the escape hatch also keeps the task's own tools), then the phase's
@@ -66,11 +69,12 @@ first sentence only). In a CAD session every FSM phase is bounded:
   tools this turn already used first, until the budget is spent.
 
 The offline evals (`tests/evals/`) measure every turn: planning 1,503
-tokens, executing up to 2,586, validating and plan done at most 2,000. A
-plan-done turn used to offer the whole `freecad_full` domain (10,336
-tokens, more than a local model's 8,192-token context). The evals fail if
-a phase grows past that, and `test_no_cad_phase_offers_the_uncapped_catalog`
-drives every FSM state.
+tokens, executing up to 1,979 (756-1,312 with declared tools), validating
+and plan done at most 2,000. A plan-done turn used to offer the whole
+`freecad_full` domain (10,336 tokens, more than a local model's
+8,192-token context), and executing carried the whole core set (2,586).
+The evals fail on any turn over 2,000, and
+`test_no_cad_phase_offers_the_uncapped_catalog` drives every FSM state.
 Tools are found lazily (`search_tool_catalog` / `load_specific_tool`);
 capability domains decay out after a few turns of disuse. Tool retrieval is a
 384-d hash embedding on CPU — no neural embedding model.

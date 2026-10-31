@@ -63,6 +63,8 @@ def main() -> int:
                         "passed": r.passed,
                         "turns": r.llm_calls,
                         "max_tool_schema_tokens": r.max_tool_tokens,
+                        "max_tool_schema_tokens_by_phase": r.phase_maxima(),
+                        "turns_over_budget": r.turns_over_budget,
                         "retries": r.retries,
                         "duration_s": round(r.duration_s, 3),
                         "error": r.error,

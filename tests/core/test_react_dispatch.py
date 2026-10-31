@@ -3345,6 +3345,9 @@ _FSM_CASES = {
 
 @pytest.mark.parametrize("case", list(_FSM_CASES), ids=list(_FSM_CASES))
 def test_no_cad_phase_offers_the_uncapped_catalog(case: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Cloud-primary: full schemas. A local Ollama turn strips them, which
+    # would hide an over-budget set.
+    monkeypatch.setenv("DANA_CLOUD_PRIMARY", "1")
     sid = f"fsm-cap-{case.replace(' ', '-').replace(',', '')}"
     set_session_id(sid)
     if _FSM_CASES[case] is not None:
@@ -3364,16 +3367,75 @@ def test_no_cad_phase_offers_the_uncapped_catalog(case: str, monkeypatch: pytest
     )
     tools = fake.calls[-1]["tools"]
     tokens = rd._count_tokens(json.dumps(tools))
-    assert tokens < 2600, f"{case}: {tokens} tokens, {len(tools)} tools"
+    assert tokens <= rd._TOOL_TOKEN_BUDGET, f"{case}: {tokens} tokens, {len(tools)} tools"
     offered = {t["function"]["name"] for t in tools}
-    if case in ("executing, task with no declared tools", "executing, no active task", "validating",
-                "executing, wrong-tool escape hatch", "done"):
-        assert tokens <= rd._TOOL_TOKEN_BUDGET, f"{case}: {tokens}"
+    if case != "planning":
         assert {"search_tool_catalog", "load_specific_tool"} <= offered
+    if case not in ("planning", "done"):
+        assert "mark_task_completed" in offered
+    if case == "executing, tool-mapped task":
+        # The task's tool and plan management, not memory/skills/create_plan.
+        assert offered == rd._PLAN_CORE_TOOL_IDS | {"create_freecad_box"}
     if case == "executing, wrong-tool escape hatch":
         assert "create_freecad_box" in offered  # the task's own tool is always kept
     if case == "validating":
         assert "mark_task_completed" in offered and offered & rd._VALIDATION_TOOL_IDS
+
+
+def test_a_heavy_tool_mapped_task_drops_plan_management_before_its_own_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A task declaring three of the heaviest tools still fits the budget:
+    the optional plan-management tools give way, never the task's own
+    tools, mark_task_completed or discovery."""
+    heavy = frozenset({"create_freecad_feature_on_face", "apply_assembly_constraint", "generate_2d_blueprint"})
+    monkeypatch.setenv("DANA_CLOUD_PRIMARY", "1")  # full schemas, as in the test above
+    sid = "fsm-cap-heavy-task"
+    set_session_id(sid)
+    rd._PLAN_STATE_REGISTRY[sid] = {
+        "has_plan": True, "plan_text": "plan", "fsm_state": "executing",
+        "tasks": [_task("Mount the bracket and draw it", heavy)],
+    }
+    fake = _mock_llm(monkeypatch, tool_calls=[], content="ok")
+    asyncio.run(
+        rd.next_react_turn(
+            [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"}],
+            None,
+            raw_text="go",
+            active_plugins=frozenset({"freecad_essential", "freecad_full"}),
+            session_id=sid,
+        )
+    )
+    tools = fake.calls[-1]["tools"]
+    offered = {t["function"]["name"] for t in tools}
+    assert heavy | rd._EXECUTING_MUST_KEEP_TOOL_IDS <= offered
+    assert not rd._PLAN_CORE_TOOL_IDS <= offered  # something optional gave way
+    assert rd._count_tokens(json.dumps(tools)) <= rd._TOOL_TOKEN_BUDGET
+
+
+def test_a_tool_mapped_task_still_dispatches_core_tools_it_does_not_offer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Executing offers only discovery and plan management from the core
+    set, but a call to another core tool (here update_core_memory) is
+    dispatched, not bounced as out of phase."""
+    sid = "fsm-core-dispatch"
+    set_session_id(sid)
+    rd._PLAN_STATE_REGISTRY[sid] = {
+        "has_plan": True, "plan_text": "plan", "fsm_state": "executing",
+        "tasks": [_task("Create the base plate", frozenset({"create_freecad_box"}))],
+    }
+    _mock_llm(monkeypatch, tool_calls=[ToolCall(tool_id="update_core_memory", arguments={"fact": "x"})], content="")
+    turn = asyncio.run(
+        rd.next_react_turn(
+            [{"role": "system", "content": "sys"}, {"role": "user", "content": "remember x"}],
+            None,
+            raw_text="remember x",
+            active_plugins=frozenset({"freecad_essential"}),
+            session_id=sid,
+        )
+    )
+    assert turn.kind == "tool_call" and turn.call.tool_id == "update_core_memory"
 
 
 def test_position_assembly_part_blocked_until_measured_this_session() -> None:
