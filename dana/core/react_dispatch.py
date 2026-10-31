@@ -89,7 +89,14 @@ from dana.tools.schema import (
     to_openai_function_schema,
     validate_tool_arguments,
 )
-from dana.tools.schema_minify import minify_tool_schemas, should_strip_tool_schemas, strip_tool_schemas
+from dana.tools.schema_minify import (
+    COMPACTION_LEVELS,
+    compact_tool_schema,
+    minify_tool_schemas,
+    should_strip_tool_schemas,
+    strip_tool_schema,
+    strip_tool_schemas,
+)
 
 
 class ToolResult:
@@ -6860,6 +6867,42 @@ def _cap_schemas_by_token_budget(
     return [s for s in schemas if _schema_tool_id(s) in kept]
 
 
+def _fit_task_tools_to_budget(
+    schemas: list[dict[str, Any]], task_tool_ids: frozenset[str], query: str
+) -> list[dict[str, Any]]:
+    """EXECUTING a tool-mapped task: the task's own tools plus discovery and
+    plan management, brought within ``_TOOL_TOKEN_BUDGET`` without ever
+    hiding a tool the task declared. A task that declares several of the
+    heaviest tools (5 of them: ~2,300 tokens on their own) used to be offered
+    over budget, because the only lever was dropping tools and these may
+    not be dropped. In order, stopping at the first that fits:
+
+    A. strip the other tools (discovery, plan management) to name, a short
+       description and parameter types -- still callable;
+    B. compact the task's own tools level by level (``compact_tool_schema``):
+       names, types, ``required`` and ``enum`` always survive, and so does
+       where a placement puts the solid (a box's corner, a cylinder's base);
+    C. as a last resort, let the optional plan-management tools go
+       (``_cap_schemas_by_token_budget``), never the task's own tools,
+       ``mark_task_completed`` or discovery.
+    """
+
+    def fits(candidate: list[dict[str, Any]]) -> bool:
+        return _count_tokens(json.dumps(candidate)) <= _TOOL_TOKEN_BUDGET
+
+    if fits(schemas):
+        return schemas
+    stage_a = [s if _schema_tool_id(s) in task_tool_ids else strip_tool_schema(s) for s in schemas]
+    if fits(stage_a):
+        return stage_a
+    candidate = stage_a
+    for level in COMPACTION_LEVELS:
+        candidate = [compact_tool_schema(s, level) if _schema_tool_id(s) in task_tool_ids else s for s in stage_a]
+        if fits(candidate):
+            return candidate
+    return _cap_schemas_by_token_budget(candidate, query, must_keep=task_tool_ids | _EXECUTING_MUST_KEEP_TOOL_IDS)
+
+
 _CORE_SYSTEM_PROMPT = """\
 You are Dana, a general-purpose AI desktop assistant and autonomous \
 software engineering agent. Capability domains (CAD modeling, software \
@@ -8164,14 +8207,8 @@ async def _call_llm_once(
     if hard_restrict_to is not None:
         tools = _llm_tools_schema(active_plugins, hidden_tool_ids=hidden_tool_ids, hard_restrict_to=hard_restrict_to)
         if task_tool_ids:
-            # EXECUTING a tool-mapped task: a task that declares several
-            # heavy tools can push its allow-list past the budget, so the
-            # optional plan-management tools give way first -- never the
-            # task's own tools, finishing it, or tool discovery.
-            tools = _cap_schemas_by_token_budget(
-                tools,
-                narrowing_query if narrowing_query is not None else raw_text,
-                must_keep=task_tool_ids | _EXECUTING_MUST_KEEP_TOOL_IDS,
+            tools = _fit_task_tools_to_budget(
+                tools, task_tool_ids, narrowing_query if narrowing_query is not None else raw_text
             )
     elif capped_tools is not None:
         must_keep, candidates = capped_tools

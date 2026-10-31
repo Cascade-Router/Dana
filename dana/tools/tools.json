@@ -103,19 +103,19 @@
           "name": "placement_x",
           "type": "number",
           "required": false,
-          "description_en": "X of the cylinder's axis in mm (the cylinder is centered on x, y)."
+          "description_en": "X of the cylinder's base center in mm (the cylinder is centered on x, y)."
         },
         {
           "name": "placement_y",
           "type": "number",
           "required": false,
-          "description_en": "Y of the cylinder's axis in mm (the cylinder is centered on x, y)."
+          "description_en": "Y of the cylinder's base center in mm (the cylinder is centered on x, y)."
         },
         {
           "name": "placement_z",
           "type": "number",
           "required": false,
-          "description_en": "Z of the cylinder's bottom face in mm (it spans z to z + height, so a through-hole starts at the part's bottom face)."
+          "description_en": "Z of the cylinder's base in mm (it spans z to z + height, so a through-hole starts at the part's bottom face)."
         }
       ]
     },

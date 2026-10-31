@@ -8,9 +8,13 @@ already-loaded tool. Pure-function tests: no LLM, no network.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from dana.tools.schema_minify import (
+    COMPACTION_LEVELS,
+    compact_tool_schema,
     minify_tool_schema,
     minify_tool_schemas,
     should_strip_tool_schemas,
@@ -152,3 +156,47 @@ def test_minify_does_not_cut_a_description_at_an_abbreviation() -> None:
     assert out["function"]["description"] == (
         "Breaks a complex goal (e.g. 'build a full web app from scratch') down into an ordered checklist."
     )
+
+
+def _placement_schema() -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": "create_freecad_box",
+            "description": "Create a parametric rectangular box (Part::Box) solid in FreeCAD, saved as a .FCStd document.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "length": {"type": "number", "description": "Box length in mm, measured along X."},
+                    "mode": {"type": "string", "enum": ["solid", "shell"], "description": "Whether to hollow it out."},
+                    "placement_x": {
+                        "type": "number",
+                        "description": "X of the box's minimum corner in mm (the box spans x to x + length).",
+                    },
+                },
+                "required": ["length"],
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize("level", COMPACTION_LEVELS)
+def test_compaction_keeps_the_call_contract_at_every_level(level: int) -> None:
+    original = _placement_schema()
+    compacted = compact_tool_schema(original, level)
+    params, before = compacted["function"]["parameters"], original["function"]["parameters"]
+    assert compacted["function"]["name"] == "create_freecad_box"
+    assert params["required"] == ["length"]
+    assert params["properties"]["mode"]["enum"] == ["solid", "shell"]
+    assert {k: v["type"] for k, v in params["properties"].items()} == {
+        k: v["type"] for k, v in before["properties"].items()
+    }
+    assert params["properties"]["placement_x"]["description"] == "X of the box's minimum corner in mm"
+    assert original == _placement_schema()  # never mutated
+
+
+def test_compaction_levels_only_get_smaller() -> None:
+    sizes = [len(json.dumps(compact_tool_schema(_placement_schema(), level))) for level in COMPACTION_LEVELS]
+    assert len(json.dumps(_placement_schema())) > sizes[0] >= sizes[1] >= sizes[2]
+    level2 = compact_tool_schema(_placement_schema(), 2)["function"]["parameters"]["properties"]
+    assert "description" not in level2["length"]  # non-placement prose goes at level 2

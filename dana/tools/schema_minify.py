@@ -169,6 +169,90 @@ def strip_tool_schemas(schemas: list[dict]) -> list[dict]:
     return [strip_tool_schema(s) for s in schemas]
 
 
+# --------------------------------------------------------------------------
+# Adaptive compaction: for a turn whose REQUIRED tools alone overrun the
+# token budget (an executing task that declares several of the heaviest
+# tools). Unlike strip_tool_schema it keeps the one kind of parameter prose
+# a model can't infer from a name or type -- where a placement puts the
+# solid (a box by its corner, a cylinder by its base) -- and it tightens in
+# levels, so the caller can stop at the first one that fits.
+# --------------------------------------------------------------------------
+
+_CLAUSE_BREAKS = (" (", "; ", " — ", " -- ", ": ")
+_CRITICAL_WORDS = ("corner", "base", "origin", "center", "centre")
+COMPACTION_LEVELS = (1, 2, 3)
+
+
+def _first_clause(text: str, max_chars: int) -> str:
+    """``text`` cut at its first sentence or clause break, then at a word
+    boundary within ``max_chars``."""
+    text = _WHITESPACE_RE.sub(" ", text or "").strip()
+    end = _first_sentence_end(text)
+    if end > 0:
+        text = text[:end]
+    for brk in _CLAUSE_BREAKS:
+        index = text.find(brk)
+        if index > 0:
+            text = text[:index]
+    text = text.rstrip(" .,;")
+    if len(text) > max_chars:
+        cut = text.rfind(" ", 0, max_chars)
+        text = text[: cut if cut > 0 else max_chars].rstrip(" ,;") + "…"
+    return text
+
+
+def _is_critical(name: str, description: str) -> bool:
+    """A parameter whose description says WHERE geometry goes, which its
+    name and type alone don't tell a model."""
+    lowered = description.lower()
+    return name.startswith("placement") or any(word in lowered for word in _CRITICAL_WORDS)
+
+
+def _compact_node(node: Any, name: str, level: int) -> Any:
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key == "properties" and isinstance(value, dict):
+            out[key] = {prop: _compact_node(sub, prop, level) for prop, sub in value.items()}
+        elif key == "items":
+            out[key] = _compact_node(value, name, level)
+        elif key == "description":
+            if not isinstance(value, str):
+                continue
+            if level == 1:
+                out[key] = _first_clause(value, 60)
+            elif _is_critical(name, value):
+                out[key] = _first_clause(value, 60 if level == 2 else 40)
+        elif key in _STRUCTURAL_PARAM_KEYS:
+            out[key] = value
+    return out
+
+
+def compact_tool_schema(schema: dict, level: int) -> dict:
+    """A copy of ``schema`` with its prose tightened to ``level``:
+
+    1. the function description and every parameter description cut to
+       their first clause (80/60 characters);
+    2. the function description to 60 characters, and only placement-style
+       parameter descriptions (see ``_is_critical``) kept, at 60;
+    3. as 2, at 40 characters each.
+
+    Names, types, ``required``, ``enum`` and ``items`` survive every level,
+    so the tool stays exactly as callable as before."""
+    fn = schema.get("function")
+    if not isinstance(fn, dict):
+        return schema
+    out_fn: dict[str, Any] = {"name": fn.get("name")}
+    description = fn.get("description")
+    if isinstance(description, str) and description.strip():
+        out_fn["description"] = _first_clause(description, 80 if level == 1 else 60)
+    params = fn.get("parameters")
+    if isinstance(params, dict):
+        out_fn["parameters"] = _compact_node(params, "", level)
+    return {"type": schema.get("type", "function"), "function": out_fn}
+
+
 def should_strip_tool_schemas(provider: str | None = None) -> bool:
     """Whether ``strip_tool_schema`` (full removal) should run on top of the
     always-on ``minify_tool_schemas`` condensing pass, for this turn's
@@ -195,6 +279,8 @@ def estimate_tokens(schemas: list[dict]) -> int:
 
 
 __all__ = (
+    "COMPACTION_LEVELS",
+    "compact_tool_schema",
     "minify_tool_schema",
     "minify_tool_schemas",
     "minification_enabled",

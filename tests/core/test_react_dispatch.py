@@ -3399,19 +3399,15 @@ def test_no_cad_phase_offers_the_uncapped_catalog(case: str, monkeypatch: pytest
         assert "mark_task_completed" in offered and offered & rd._VALIDATION_TOOL_IDS
 
 
-def test_a_heavy_tool_mapped_task_drops_plan_management_before_its_own_tools(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A task declaring three of the heaviest tools still fits the budget:
-    the optional plan-management tools give way, never the task's own
-    tools, mark_task_completed or discovery."""
-    heavy = frozenset({"create_freecad_feature_on_face", "apply_assembly_constraint", "generate_2d_blueprint"})
-    monkeypatch.setenv("DANA_CLOUD_PRIMARY", "1")  # full schemas, as in the test above
-    sid = "fsm-cap-heavy-task"
+def _executing_tools_for(monkeypatch: pytest.MonkeyPatch, sid: str, task_tools: frozenset[str]) -> list[dict]:
+    """The tools= payload of one EXECUTING turn whose active task declares
+    ``task_tools``, on the cloud path (full schemas: a local Ollama turn
+    strips them, which would hide an overrun)."""
+    monkeypatch.setenv("DANA_CLOUD_PRIMARY", "1")
     set_session_id(sid)
     rd._PLAN_STATE_REGISTRY[sid] = {
         "has_plan": True, "plan_text": "plan", "fsm_state": "executing",
-        "tasks": [_task("Mount the bracket and draw it", heavy)],
+        "tasks": [_task("Do the heavy step", task_tools)],
     }
     fake = _mock_llm(monkeypatch, tool_calls=[], content="ok")
     asyncio.run(
@@ -3423,11 +3419,70 @@ def test_a_heavy_tool_mapped_task_drops_plan_management_before_its_own_tools(
             session_id=sid,
         )
     )
-    tools = fake.calls[-1]["tools"]
+    return fake.calls[-1]["tools"]
+
+
+def _heaviest_cad_tools(monkeypatch: pytest.MonkeyPatch, count: int) -> list[str]:
+    """The ``count`` CAD tools with the largest full (cloud) schemas, measured
+    from the registry so the worst case follows it as it grows."""
+    monkeypatch.setenv("DANA_CLOUD_PRIMARY", "1")
+    sizes = []
+    for tool_id in rd._tool_ids_for_plugins(frozenset({"freecad_full", "freecad_essential"})):
+        schema = rd._llm_tools_schema(None, hard_restrict_to=frozenset({tool_id}))
+        if schema:
+            sizes.append((rd._count_tokens(json.dumps(schema)), tool_id))
+    return [tool_id for _, tool_id in sorted(sizes, reverse=True)[:count]]
+
+
+def _descriptions(tools: list[dict], tool_id: str) -> dict[str, str]:
+    schema = next(t for t in tools if t["function"]["name"] == tool_id)
+    props = schema["function"]["parameters"].get("properties", {})
+    return {name: prop.get("description", "") for name, prop in props.items()}
+
+
+def test_the_five_heaviest_cad_tools_in_one_task_fit_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The worst case: one task declaring the 5 heaviest CAD tools (~2,300
+    tokens of schema on their own, ~3,000 with discovery and plan
+    management). Every one stays offered with every parameter, and the
+    payload is compacted to within _TOOL_TOKEN_BUDGET."""
+    heaviest = frozenset(_heaviest_cad_tools(monkeypatch, 5))
+    full = rd._llm_tools_schema(None, hard_restrict_to=heaviest | rd._PLAN_CORE_TOOL_IDS)
+    assert rd._count_tokens(json.dumps(full)) > rd._TOOL_TOKEN_BUDGET  # the case is real
+    tools = _executing_tools_for(monkeypatch, "fsm-five-heaviest", heaviest)
     offered = {t["function"]["name"] for t in tools}
-    assert heavy | rd._EXECUTING_MUST_KEEP_TOOL_IDS <= offered
-    assert not rd._PLAN_CORE_TOOL_IDS <= offered  # something optional gave way
+    assert heaviest | rd._EXECUTING_MUST_KEEP_TOOL_IDS <= offered
     assert rd._count_tokens(json.dumps(tools)) <= rd._TOOL_TOKEN_BUDGET
+    by_name = {t["function"]["name"]: t for t in full}
+    for tool_id in heaviest:
+        original = by_name[tool_id]["function"]["parameters"]
+        compacted = next(t for t in tools if t["function"]["name"] == tool_id)["function"]["parameters"]
+        assert set(compacted.get("properties", {})) == set(original.get("properties", {})), tool_id
+        assert compacted.get("required") == original.get("required"), tool_id
+        for name, prop in original.get("properties", {}).items():
+            assert compacted["properties"][name].get("type") == prop.get("type"), (tool_id, name)
+            assert compacted["properties"][name].get("enum") == prop.get("enum"), (tool_id, name)
+
+
+def test_compaction_keeps_where_a_box_and_a_cylinder_are_placed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Box and cylinder declared alongside three of the heaviest tools: the
+    payload has to be compacted, and the placement conventions a model
+    can't infer (a box by its corner, a cylinder by its base) survive it."""
+    task_tools = frozenset({"create_freecad_box", "create_freecad_cylinder", *_heaviest_cad_tools(monkeypatch, 3)})
+    full = rd._llm_tools_schema(None, hard_restrict_to=task_tools | rd._PLAN_CORE_TOOL_IDS)
+    assert rd._count_tokens(json.dumps(full)) > rd._TOOL_TOKEN_BUDGET
+    tools = _executing_tools_for(monkeypatch, "fsm-box-cylinder-heavy", task_tools)
+    assert task_tools <= {t["function"]["name"] for t in tools}
+    assert rd._count_tokens(json.dumps(tools)) <= rd._TOOL_TOKEN_BUDGET
+    box, cylinder = _descriptions(tools, "create_freecad_box"), _descriptions(tools, "create_freecad_cylinder")
+    assert all("corner" in box[axis] for axis in ("placement_x", "placement_y"))
+    assert "bottom face" in box["placement_z"]
+    assert all("base" in cylinder[axis] for axis in ("placement_x", "placement_y", "placement_z"))
+
+
+def test_a_task_that_fits_is_sent_uncompacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    tools = _executing_tools_for(monkeypatch, "fsm-light-task", frozenset({"create_freecad_box"}))
+    expected = rd._llm_tools_schema(None, hard_restrict_to=rd._PLAN_CORE_TOOL_IDS | {"create_freecad_box"})
+    assert tools == expected
 
 
 def test_a_tool_mapped_task_still_dispatches_core_tools_it_does_not_offer(
