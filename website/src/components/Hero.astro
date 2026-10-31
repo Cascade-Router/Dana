@@ -2,8 +2,7 @@
 import HeroTerminal from "./HeroTerminal.astro";
 import { withBase } from "../utils/withBase";
 
-const downloadHref =
-  "https://github.com/Cascade-Router/Dana/releases";
+const repoHref = "https://github.com/Cascade-Router/Dana";
 const hfSpaceHref = "https://huggingface.co/spaces/AMIXXM/Dana";
 ---
 
@@ -12,7 +11,7 @@ const hfSpaceHref = "https://huggingface.co/spaces/AMIXXM/Dana";
   <div
     class="relative mx-auto grid max-w-6xl items-center gap-10 px-6 pb-20 pt-10 lg:grid-cols-[1.05fr_0.95fr] lg:gap-14 lg:pb-28 lg:pt-16"
   >
-    <div class="order-2 lg:order-1">
+    <div class="order-2 min-w-0 lg:order-1">
       <p
         class="animate-fade-up font-mono text-xs font-medium uppercase tracking-[0.2em] text-teal sm:text-sm"
       >
@@ -22,20 +21,22 @@ const hfSpaceHref = "https://huggingface.co/spaces/AMIXXM/Dana";
         class="mt-5 max-w-xl text-4xl font-bold leading-[1.1] tracking-tight text-white sm:text-5xl lg:text-6xl"
         style="animation-delay: 60ms"
       >
-        Zero-Trust Autonomous CAD
+        Describe a part. Get a verified FreeCAD model.
       </h1>
       <p class="mt-6 max-w-lg text-base leading-relaxed text-slate-300 sm:text-lg">
-        An autonomous CAD orchestrator that verifies every cut mathematically, tracks
-        solids through destructive operations, and self-heals its own scripts —
-        offline-first, on your machine, by design.
+        An open-source LLM agent that plans the build, drives a real FreeCAD kernel
+        through ~90 typed tools, checks its own geometry and exports a macro that
+        rebuilds the part without the agent — on a local 8 GB GPU or free-tier cloud
+        models.
       </p>
       <div class="mt-8 flex flex-wrap items-center gap-3">
         <a
-          id="download-btn"
-          href={downloadHref}
+          href={repoHref}
+          rel="noopener noreferrer"
+          target="_blank"
           class="inline-flex min-h-[3rem] items-center justify-center rounded-none border border-amber bg-transparent px-7 text-sm font-semibold text-amber transition hover:bg-amber/10 focus:outline-none focus-visible:ring-1 focus-visible:ring-amber"
         >
-          Download for Windows
+          View on GitHub
         </a>
         <a
           href={hfSpaceHref}
@@ -52,12 +53,12 @@ const hfSpaceHref = "https://huggingface.co/spaces/AMIXXM/Dana";
           Embed below
         </a>
       </div>
-      <p id="os-hint" class="mt-3 font-mono text-xs text-slate-500" aria-live="polite">
-        Windows 10/11 · local Meta-Broker · headless control plane
+      <p class="mt-3 font-mono text-xs text-slate-500">
+        FreeCAD · FastAPI + WebSockets · React/Tauri · Ollama or cloud models · AGPL-3.0
       </p>
     </div>
 
-    <div class="order-1 flex justify-center lg:order-2 lg:justify-end" aria-hidden="false">
+    <div class="order-1 flex min-w-0 justify-center lg:order-2 lg:justify-end" aria-hidden="false">
       <HeroTerminal />
     </div>
   </div>

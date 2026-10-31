@@ -6,7 +6,7 @@ import Hero from "../components/Hero.astro";
 import LiveHfSimulator from "../components/LiveHfSimulator.astro";
 import BentoGrid from "../components/BentoGrid.astro";
 import CadArchitecture from "../components/CadArchitecture.astro";
-import SpindleViewer from "../components/SpindleViewer.astro";
+import PartViewer from "../components/PartViewer.astro";
 import TerminalReveal from "../components/TerminalReveal.astro";
 ---
 
@@ -17,32 +17,32 @@ import TerminalReveal from "../components/TerminalReveal.astro";
     <LiveHfSimulator />
     <BentoGrid />
     <CadArchitecture />
-    <SpindleViewer />
+    <PartViewer />
     <TerminalReveal />
 
     <section class="border-t border-slate-800/80 bg-ink-900/30">
       <div class="mx-auto max-w-6xl px-6 py-20" data-reveal>
         <h2 class="text-2xl font-semibold text-white sm:text-3xl">
-          System requirements
+          What it runs on
         </h2>
         <p class="mt-3 max-w-2xl text-slate-400">
-          Dānā ships as a Windows-first, CUDA-accelerated control plane.
+          A FastAPI server, a React/Tauri desktop app and a headless FreeCAD kernel.
         </p>
         <dl class="mt-10 grid gap-8 sm:grid-cols-2">
           <div>
             <dt class="text-xs font-semibold uppercase tracking-[0.18em] text-teal-soft">
               OS
             </dt>
-            <dd class="mt-2 text-sm text-slate-300">Windows 10 / 11 (x64)</dd>
+            <dd class="mt-2 text-sm text-slate-300">
+              Windows 10 / 11 recommended; the server and test suite also run on Linux (CI)
+            </dd>
           </div>
           <div>
-            <dt
-              class="text-xs font-semibold uppercase tracking-[0.18em] text-amber"
-            >
+            <dt class="text-xs font-semibold uppercase tracking-[0.18em] text-amber">
               GPU
             </dt>
             <dd class="mt-2 text-sm text-slate-300">
-              NVIDIA RTX · 8GB+ VRAM recommended
+              Optional. An 8 GB card runs qwen2.5-coder:14b locally; cloud models need none
             </dd>
           </div>
           <div>
@@ -50,15 +50,31 @@ import TerminalReveal from "../components/TerminalReveal.astro";
               Stack
             </dt>
             <dd class="mt-2 text-sm text-slate-300">
-              PyTorch CUDA float16 · Ollama · LangGraph
+              FreeCAD (headless FreeCADCmd) · FastAPI + WebSockets · React/Tauri · Ollama
             </dd>
           </div>
           <div>
             <dt class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Privacy
+              Models
             </dt>
             <dd class="mt-2 text-sm text-slate-300">
-              local · offline-first · no cloud STT by default
+              Local Ollama, or DeepSeek, Gemini, OpenRouter and Groq, picked per turn by one routing file; <code class="font-mono text-teal">DANA_FREE_ONLY</code> keeps every turn at $0
+            </dd>
+          </div>
+          <div>
+            <dt class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Tests
+            </dt>
+            <dd class="mt-2 text-sm text-slate-300">
+              1,558 pytest cases, Playwright UI tests and five offline agent evals, blocking in CI — no live model or GPU needed
+            </dd>
+          </div>
+          <div>
+            <dt class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+              License
+            </dt>
+            <dd class="mt-2 text-sm text-slate-300">
+              AGPL-3.0, published as an engineering portfolio piece
             </dd>
           </div>
         </dl>

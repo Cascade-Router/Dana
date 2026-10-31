@@ -1,7 +1,7 @@
 ---
 /**
- * Landing-page embed of the Hugging Face Gradio Space (ZeroGPU simulator).
- * Native iframe avoids CORS / web-component status errors from ``<gradio-app>``.
+ * Landing-page embed of the Hugging Face Gradio Space. Native iframe avoids
+ * CORS / web-component status errors from ``<gradio-app>``.
  */
 const spaceSrc = "https://amixxm-dana.hf.space";
 const spacePageUrl = "https://huggingface.co/spaces/AMIXXM/Dana";
@@ -11,11 +11,11 @@ const spacePageUrl = "https://huggingface.co/spaces/AMIXXM/Dana";
   <div class="mx-auto max-w-6xl">
     <div class="mb-6 text-center" data-reveal>
       <h2 class="text-2xl font-bold text-white sm:text-3xl">
-        Live Control Plane
+        Try it on Hugging Face
       </h2>
       <p class="mx-auto mt-2 max-w-2xl text-sm text-slate-400">
-        Headless Meta-Broker on Hugging Face — submit <code class="font-mono text-teal">/broker</code>
-        epics and watch the task tracker stream live.
+        The hosted demo runs the real agent loop on Dānā's mock CAD engine (the Space has
+        no FreeCAD): plan, build, query topology and check printability from the chat.
       </p>
       <p class="mt-3 text-xs text-slate-500">
         <a
@@ -34,7 +34,7 @@ const spacePageUrl = "https://huggingface.co/spaces/AMIXXM/Dana";
       data-reveal
     >
       <iframe
-        title="Dānā live cybernetic simulator"
+        title="Dānā on Hugging Face Spaces"
         src={spaceSrc}
         frameborder="0"
         class="block w-full bg-ink-900"

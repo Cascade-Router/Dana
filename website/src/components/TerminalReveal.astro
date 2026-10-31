@@ -1,18 +1,19 @@
 ---
 /**
- * Mock routing terminal — typing starts only when scrolled into view.
- * Fixed min-height reserves space (no CLS). Vanilla JS only.
+ * Routing terminal: the per-turn trace of the Phase 8 free-tier live run
+ * (FSM phase, tool called, tool-schema tokens). Typing starts only when
+ * scrolled into view; fixed min-height reserves space (no CLS). Vanilla JS
+ * only.
  */
 const lines = [
-  "$ dana engage --mode developer",
-  "Status: ACTIVE (Variables Locked)",
-  "$ route \"draft_cursor_prompt: fix OCR bounds\"",
-  "→ MoA_Reasoner  intent=draft_cursor_prompt",
-  "→ ticket_validate  OK",
-  "→ jason_ticket_review  critique ready",
-  "→ ticket_approval  HITL interrupt",
-  "→ tools  patch_ledger.md  [PENDING]",
-  "OK: The ticket is on the board.",
+  "$ DANA_CLOUD_PROVIDER=openrouter  DANA_FREE_ONLY=true",
+  "→ planning   nemotron-3-super:free  create_plan              1,503 tool tokens",
+  "→ executing  nemotron-3-super:free  create_freecad_box       1,100",
+  "→ executing  nemotron-3-super:free  create_freecad_cylinder  1,093",
+  "→ executing  nemotron-3-super:free  perform_freecad_boolean  1,065",
+  "→ executing  nemotron-3-super:free  query_topology             876",
+  "→ done       nemotron-3-super:free  summary                  1,957",
+  "OK: 11,500.57 mm³ · 6 LLM calls · 19 s · $0.00",
 ];
 ---
 
@@ -23,8 +24,9 @@ const lines = [
         Routing you can watch.
       </h2>
       <p class="mt-3 text-slate-400">
-        LangGraph corridor from utterance to ledger — validate, critique, approve,
-        then write.
+        Each turn's model is a pure function of <code class="font-mono text-teal">routing_config.yaml</code>,
+        <code class="font-mono text-teal">.env</code> and the turn's state — here, a whole build on
+        OpenRouter's free tier.
       </p>
     </div>
 
@@ -40,12 +42,12 @@ const lines = [
         <span class="h-2 w-2 bg-amber"></span>
         <span class="h-2 w-2 bg-teal"></span>
         <span class="ms-3 font-mono text-xs font-medium uppercase tracking-[0.18em] text-slate-500"
-          >dana · offline router</span
+          >dana · fleet router</span
         >
       </div>
       <pre
         id="dana-terminal"
-        class="h-[18rem] overflow-hidden p-5 font-mono text-[13px] leading-relaxed text-[#abb2bf] sm:text-sm"
+        class="h-[18rem] overflow-x-auto overflow-y-hidden p-5 font-mono text-[13px] leading-relaxed text-[#abb2bf] sm:text-sm"
         data-lines={JSON.stringify(lines)}
         aria-live="polite"
       ><span class="tok-comment">// scroll into view to replay</span></pre>

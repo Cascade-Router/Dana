@@ -14,7 +14,7 @@ const links = [
 ];
 ---
 
-<header class="relative z-20 mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
+<header class="relative z-20 mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-5">
   <a href={withBase()} class="group flex items-center gap-3 text-white">
     <picture>
       <source srcset={withBase("dana-logo.webp")} type="image/webp" />
@@ -29,7 +29,7 @@ const links = [
     </picture>
     <span class="text-lg font-semibold tracking-tight">Dānā</span>
   </a>
-  <nav class="flex items-center gap-5 text-sm font-medium text-slate-300" aria-label="Primary">
+  <nav class="flex flex-wrap items-center justify-end gap-x-5 gap-y-1 text-sm font-medium text-slate-300" aria-label="Primary">
     {
       links.map((link) =>
         link.external ? (

@@ -1,20 +1,18 @@
 ---
 /**
- * Hero's split-screen panel — a real, working UI element (not a stand-in
- * video) previewing the three architecture pillars CadArchitecture.astro
- * explains below: deterministic verification, topological lineage, and
- * self-healing. Same typing-terminal engine as TerminalReveal.astro
- * (../scripts/terminal_type), scroll-gated the same way.
+ * Hero's split-screen panel: the tool calls of a real session (the
+ * Phase 8 free-tier live run of this prompt), typed out with the same
+ * scroll-gated engine as TerminalReveal.astro (../scripts/terminal_type).
  */
 const lines = [
-  "$ dana verify boss_extrude_04 --tolerance 1e-6",
-  "✓ deterministic check passed  Δ=0.0000mm",
-  "$ dana lineage trace --session cnc_spindle",
-  "✓ 14 solids tracked across 3 destructive cuts",
-  "$ dana run cnc_post_process.py",
-  "⚠ AttributeError: 'NoneType' object has no attribute 'z'",
-  "→ self-heal: patching via aider…",
-  "✓ script recovered — task resumed in 2.1s",
+  "$ a 40x30x10 mm mounting plate with a centered 4 mm radius through-hole",
+  "→ create_plan  4 tasks",
+  "→ create_freecad_box  40 × 30 × 10",
+  "→ create_freecad_cylinder  r 4 · h 10 · base at (20, 15, 0)",
+  "→ perform_freecad_boolean  cut",
+  "✓ query_topology  7 faces · 11,500.57 mm³",
+  "$ Parameters › length 40 → 60 · Apply & Rebuild",
+  "✓ rebuilt from the call log · 0 LLM tokens",
 ];
 ---
 
@@ -28,12 +26,12 @@ const lines = [
     <span class="h-2 w-2 bg-amber"></span>
     <span class="h-2 w-2 bg-teal"></span>
     <span class="ms-3 font-mono text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
-      dana · cad kernel
+      dana · cad session
     </span>
   </div>
   <pre
     id="hero-terminal"
-    class="h-[15rem] overflow-hidden p-5 font-mono text-[12.5px] leading-relaxed text-[#abb2bf] sm:text-sm"
+    class="h-[15rem] overflow-x-auto overflow-y-hidden p-5 font-mono text-[12.5px] leading-relaxed text-[#abb2bf] sm:text-sm"
     data-lines={JSON.stringify(lines)}
     aria-live="polite"
   ><span class="tok-comment">// scroll into view to replay</span></pre>

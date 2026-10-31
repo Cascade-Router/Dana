@@ -1,6 +1,6 @@
 # Dānā Web — Stage 9.0
 
-Astro + Tailwind dark-first landing for the Dānā cybernetic brand.
+Astro + Tailwind dark-first landing page for Dānā, the agentic CAD engineer. Its copy and numbers come from the repo README, `docs/WHITE_PAPER.md` and the offline evals; update them together.
 
 ## Stack
 
@@ -12,9 +12,9 @@ Astro + Tailwind dark-first landing for the Dānā cybernetic brand.
 
 | Path | Purpose |
 |------|---------|
-| `/` | Landing — hero logo float, bento features, routing terminal |
-| `/demo` | REST chat setup guide (global bar on every page) |
-| `/terminal` | Same guide, terminal framing |
+| `/` | Landing — hero, Hugging Face embed, session features, architecture, 3D part viewer, routing terminal |
+| `/demo` | The Hugging Face Space in an iframe |
+| `/terminal` | REST chat setup guide (global bar on every page) |
 
 Legacy static site archived under `legacy/`.
 
@@ -52,5 +52,6 @@ Workflow: `.github/workflows/deploy_website.yml` — builds on `website/**` push
 
 ## Assets
 
-- `public/dana-logo.png` — copy of `dana/ui/assets/dana_logo_highres.png`
+- `public/dana-logo.png` — the app logo
+- `public/models/mounting-plate.glb` — the 3D viewer's model: the Phase 8 live run's mounting plate, rebuilt by the mock CAD engine
 - `public/favicon.svg` — teal DA mark
