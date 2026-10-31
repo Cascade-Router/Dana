@@ -9,9 +9,12 @@ confirm it can actually see the geometry — the same
 ``analyze_cad_blueprint``/``verify_cad_rendering`` path the CAD_MICRO_LOOP_RULE
 tells the agent to use after every CAD operation.
 
+Runs in a scratch workspace (``scripts/scratch_workspace.py``), never the
+user's ``freecad_output/sessions/default/``; ``--keep-artifacts`` keeps it.
+
 Usage (from repo root)::
 
-    python scripts/test_cad_vision_live.py
+    python scripts/test_cad_vision_live.py [--keep-artifacts] [--session-id ID]
 """
 
 from __future__ import annotations
@@ -156,4 +159,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import argparse
+
+    import scratch_workspace  # scripts/ is sys.path[0] when run as a script
+
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    scratch_workspace.add_arguments(parser)
+    args = parser.parse_args()
+    with scratch_workspace.scratch_workspace("vision-live", session_id=args.session_id, keep=args.keep_artifacts):
+        code = main()
+    sys.exit(code)

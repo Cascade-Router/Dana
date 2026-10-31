@@ -2,6 +2,8 @@
 
 Exercises the WebSocket ReAct loop in-process (no real socket/uvicorn needed)
 via Starlette's TestClient, so it works even without the frontend toolchain.
+Runs in a scratch workspace (``scripts/scratch_workspace.py``), so its chats
+and documents never reach the user's real ones; ``--keep-artifacts`` keeps it.
 """
 
 from __future__ import annotations
@@ -128,4 +130,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import argparse
+
+    import scratch_workspace  # scripts/ is sys.path[0] when run as a script
+
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    scratch_workspace.add_arguments(parser, session_id=False)
+    args = parser.parse_args()
+    with scratch_workspace.scratch_workspace("api-smoke", keep=args.keep_artifacts):
+        code = main()
+    raise SystemExit(code)

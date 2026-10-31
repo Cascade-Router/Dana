@@ -15,9 +15,12 @@ and one continuous in-between blend), and asserts the resulting
 ``Placement.Base`` always lands inside that face's real ``BoundBox`` — never
 floating off in space.
 
+Runs in a scratch workspace (``scripts/scratch_workspace.py``);
+``--keep-artifacts`` keeps it.
+
 Usage (from repo root)::
 
-    python scripts/test_uv_tensor.py
+    python scripts/test_uv_tensor.py [--keep-artifacts] [--session-id ID]
 """
 
 from __future__ import annotations
@@ -32,9 +35,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from dana.api.sessions import new_session_id  # noqa: E402
 from dana.plugins.freecad import engine  # noqa: E402
-from dana.session_context import set_session_id  # noqa: E402
 
 # The five old semantic_alignment tokens, expressed as their equivalent
 # uv_tensor value (see _face_alignment_delta's old _uv_by_alignment dict,
@@ -89,8 +90,6 @@ def _probe(session_path: Path, box_name: str, wheel_name: str) -> tuple[list[flo
 
 
 def main() -> int:
-    set_session_id(f"test-uv-tensor-{new_session_id()}")
-
     box = json.loads(engine.create_box(40.0, 20.0, 10.0, name="Chassis"))
     assert box["ok"], box
     box_name = box["name"]
@@ -152,4 +151,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import argparse
+
+    import scratch_workspace  # scripts/ is sys.path[0] when run as a script
+
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    scratch_workspace.add_arguments(parser)
+    args = parser.parse_args()
+    with scratch_workspace.scratch_workspace("uv-tensor", session_id=args.session_id, keep=args.keep_artifacts):
+        code = main()
+    raise SystemExit(code)

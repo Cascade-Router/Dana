@@ -15,9 +15,12 @@ Any FreeCAD.exe process this script itself spawns is closed on exit; any
 FreeCAD.exe that was already running before the script started is left
 completely untouched (never closes a pre-existing user session).
 
+Runs in a scratch workspace (``scripts/scratch_workspace.py``), never the
+user's ``freecad_output/sessions/default/``; ``--keep-artifacts`` keeps it.
+
 Usage (from repo root)::
 
-    python scripts/showcase_freecad_demo.py
+    python scripts/showcase_freecad_demo.py [--keep-artifacts] [--session-id ID]
 """
 
 from __future__ import annotations
@@ -232,4 +235,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    import argparse
+
+    import scratch_workspace  # scripts/ is sys.path[0] when run as a script
+
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    scratch_workspace.add_arguments(parser)
+    args = parser.parse_args()
+    with scratch_workspace.scratch_workspace("showcase", session_id=args.session_id, keep=args.keep_artifacts):
+        code = main()
+    sys.exit(code)

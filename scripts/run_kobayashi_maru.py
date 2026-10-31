@@ -25,7 +25,10 @@ and (when available) the real FreeCAD subprocess — runs unmodified.
 
 Usage (from repo root)::
 
-    .venv\\Scripts\\python.exe scripts/run_kobayashi_maru.py
+    .venv\\Scripts\\python.exe scripts/run_kobayashi_maru.py [--keep-artifacts]
+
+Runs in a scratch workspace (``scripts/scratch_workspace.py``): the
+gauntlet's chats, documents and exports never reach the user's real ones.
 
 Exit 0 when 5/5 scenarios survive.
 """
@@ -362,4 +365,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import argparse
+
+    import scratch_workspace  # scripts/ is sys.path[0] when run as a script
+
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    scratch_workspace.add_arguments(parser, session_id=False)
+    args = parser.parse_args()
+    with scratch_workspace.scratch_workspace("kobayashi-maru", keep=args.keep_artifacts):
+        code = main()
+    raise SystemExit(code)

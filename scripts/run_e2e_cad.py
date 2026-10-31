@@ -40,21 +40,14 @@ allowlists, or a visual-capture request) is a genuine "this headless script
 cannot proceed" case — this runner detects the stuck session state below
 and fails loudly instead of hanging.
 
-Local Chat Session Persistence is still exercised for real (a genuine,
-uniquely-named session is created and handed through the same
-_process_user_text -> _finish_turn -> save_session path a live chat uses) —
-full orchestrator parity means not silently skipping that either — but its
-on-disk record is deleted again once the run ends, so repeated CI runs never
-accumulate phantom chats in the user's real session storage.
-
-This run's own ``Session_Active.FCStd`` (under ``freecad_output/sessions/
-<this run's session_id>/`` — see ``dana.session_context``) gets the same
-treatment in the other direction: ``_wipe_session_state`` deletes it (plus
-any stale backup/lock file) before the very first prompt of a run is
-dispatched. Since each run's session_id is a fresh UUID, this is now a
-defensive no-op in practice (see that function's own docstring) rather
-than the load-bearing fix it was before per-session CAD workspace
-isolation existed.
+Local Chat Session Persistence is still exercised for real (the run's
+session goes through the same _process_user_text -> _finish_turn ->
+save_session path a live chat uses), but into a scratch workspace
+(``scripts/scratch_workspace.py``): ``freecad_output/``, ``exports/`` and
+``agent_workspace/`` point at a temp directory for the run, which is
+removed afterwards, so the user's real sessions, chat history and default
+``Session_Active.FCStd`` are never touched. ``--keep-artifacts`` keeps the
+temp directory for inspection; ``--session-id`` names the run's session.
 
 ``--bypass-hitl-gate-unsafe``: sets this run's own ``session["auto_approve"]``
 to ``True`` — the SAME field ``dana.api.server``'s real HITL gate already
@@ -80,10 +73,12 @@ Usage (from repo root)::
     python scripts/run_e2e_cad.py                 # runs the default master prompt
     python scripts/run_e2e_cad.py "some other prompt"
     python scripts/run_e2e_cad.py --bypass-hitl-gate-unsafe "prompt needing execute_freecad_script"
+    python scripts/run_e2e_cad.py --keep-artifacts --session-id e2e-debug
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import sys
@@ -124,21 +119,10 @@ load_dotenv(_ROOT / ".env")
 load_dotenv()
 
 from dana.api.server import _default_auto_approve, _process_user_text  # noqa: E402
-from dana.api.sessions import SESSIONS_DIR, new_session_id  # noqa: E402
 from dana.platform.factory import get_cad_engine  # noqa: E402
 from dana.plugins.freecad.call_log import CadCallLog  # noqa: E402
-from dana.session_context import session_scoped_dir  # noqa: E402
 
-# Same base directory dana.plugins.freecad.engine._OUTPUT_DIR writes to —
-# declared as its own copy rather than importing engine.py's underscore-
-# prefixed module attributes across modules, same precedent
-# dana.tools.image_to_3d/dana.api.cad/dana.tools.urdf_builder's own
-# docstrings already apply. The actual per-run document now lives under
-# this session's OWN sessions/<session_id>/ subdirectory (session
-# isolation — see dana.session_context) rather than directly inside this
-# flat directory.
-_FREECAD_OUTPUT_BASE = _ROOT / "freecad_output"
-_SESSION_DOCUMENT_NAME = "Session_Active.FCStd"
+import scratch_workspace  # noqa: E402 — scripts/ is sys.path[0] when run as a script
 
 # See the module docstring's own "--bypass-hitl-gate-unsafe" section for
 # exactly what this does and does not exempt.
@@ -221,61 +205,6 @@ def _banner(title: str) -> None:
     print(f"\n{'=' * 78}\n{title}\n{'=' * 78}", flush=True)
 
 
-def _wipe_session_state(session_id: str) -> None:
-    """Deletes ``session_id``'s own ``Session_Active.FCStd`` (and any stale
-    lock/backup file sitting next to it) before this run's first prompt is
-    ever dispatched.
-
-    Since per-session CAD workspace isolation (``dana.session_context``),
-    each run's ``session_id`` is a fresh UUID (see ``run()`` below) that has
-    never existed before, so in practice this now always finds nothing to
-    delete — a previous CI run's leftovers live under a DIFFERENT, already-
-    abandoned session_id's own subdirectory, not this one. Kept anyway as a
-    defensive no-op-in-the-common-case safety net (e.g. if a caller ever
-    passes a fixed/repeated session_id for reproducible manual testing) —
-    this is what used to matter when every run shared the one global
-    ``freecad_output/Session_Active.FCStd``: a previous run's leftover
-    objects (a stray ``BaseBox``, ``AI_Part``, ``CutResult``, ...) would
-    otherwise still be sitting in that document, and the Automatic Visual
-    Verification hook would screenshot/VLM-read a mix of this run's new
-    geometry and the prior run's leftovers — state contamination a VLM has
-    no way to distinguish from "this run's actual result".
-
-    Always safe to call: a genuinely fresh session directory has nothing to
-    delete, and every ``create_freecad_*``/``import_and_solidify_mesh`` call
-    below creates the document fresh (``App.newDocument``) the moment it
-    doesn't find one on disk (``_SESSION_OPEN_SNIPPET``).
-    """
-    session_dir = session_scoped_dir(_FREECAD_OUTPUT_BASE, session_id)
-    doc_stem = Path(_SESSION_DOCUMENT_NAME).stem
-
-    removed: list[str] = []
-    # Matches the document itself, FreeCAD's own timestamped
-    # ".<timestamp>.FCBak" backup convention (see the sibling Box.*/Cut.*
-    # .FCBak files already in freecad_output/), and a plain ".lock" suffix.
-    for candidate in session_dir.glob(f"{doc_stem}*"):
-        try:
-            candidate.unlink()
-            removed.append(candidate.name)
-        except OSError:
-            pass
-    # LibreOffice-style lock marker convention — not one FreeCAD itself
-    # currently emits, but cheap to also guard against a future FreeCAD
-    # version (or a crashed prior GUI process) that does.
-    lock_marker = session_dir / f".~lock.{_SESSION_DOCUMENT_NAME}#"
-    if lock_marker.exists():
-        try:
-            lock_marker.unlink()
-            removed.append(lock_marker.name)
-        except OSError:
-            pass
-
-    if removed:
-        print(f"[runner] Wiped stale session state: {', '.join(sorted(removed))}", flush=True)
-    else:
-        print("[runner] No stale session state found (clean start).", flush=True)
-
-
 class _FakeWebSocket:
     """Duck-typed stand-in for ``fastapi.WebSocket``. ``_process_user_text``'s
     whole call chain only ever calls ``send_json`` on the websocket it's
@@ -322,9 +251,7 @@ class _FakeWebSocket:
             )
 
 
-async def run(prompt: str, *, bypass_hitl_gate_unsafe: bool = False) -> int:
-    session_id = f"e2e-{new_session_id()}"
-    _wipe_session_state(session_id)
+async def run(prompt: str, *, session_id: str, bypass_hitl_gate_unsafe: bool = False) -> int:
     engine = get_cad_engine()
     print(f"[runner] CAD engine driver: {type(engine).__name__}", flush=True)
     print(f"[runner] Session: {session_id}", flush=True)
@@ -383,13 +310,7 @@ async def run(prompt: str, *, bypass_hitl_gate_unsafe: bool = False) -> int:
         "hitl_approved_tools": set(_CI_PREAPPROVED_TOOLS),
     }
 
-    try:
-        await _process_user_text(websocket, session, prompt)
-    finally:
-        try:
-            (SESSIONS_DIR / f"{session_id}.json").unlink(missing_ok=True)
-        except OSError:
-            pass
+    await _process_user_text(websocket, session, prompt)
 
     if session.get("react_state") is not None or session.get("visual_state") is not None:
         print(
@@ -411,9 +332,17 @@ async def run(prompt: str, *, bypass_hitl_gate_unsafe: bool = False) -> int:
 
 
 if __name__ == "__main__":
-    argv = sys.argv[1:]
-    bypass_hitl_gate_unsafe = _BYPASS_HITL_FLAG in argv
-    if bypass_hitl_gate_unsafe:
-        argv = [a for a in argv if a != _BYPASS_HITL_FLAG]
-    prompt = " ".join(argv) or _MASTER_PROMPT
-    sys.exit(asyncio.run(run(prompt, bypass_hitl_gate_unsafe=bypass_hitl_gate_unsafe)))
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("prompt", nargs="*", help="the prompt (default: the master prompt)")
+    parser.add_argument(_BYPASS_HITL_FLAG, action="store_true", help="see the module docstring")
+    scratch_workspace.add_arguments(parser)
+    args = parser.parse_args()
+    with scratch_workspace.scratch_workspace("e2e", session_id=args.session_id, keep=args.keep_artifacts) as sid:
+        code = asyncio.run(
+            run(
+                " ".join(args.prompt) or _MASTER_PROMPT,
+                session_id=sid,
+                bypass_hitl_gate_unsafe=args.bypass_hitl_gate_unsafe,
+            )
+        )
+    sys.exit(code)
