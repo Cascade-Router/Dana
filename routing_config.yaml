@@ -7,6 +7,11 @@
 # API keys are NEVER stored here — api_key_env just names which existing
 # .env variable to read (same indirection dana/api/system.py already uses
 # for its env allowlist). Edited by hand; no Python required.
+#
+# .env still wins over the priorities below: an explicit DANA_CLOUD_PROVIDER
+# puts that provider's entries first, DANA_OPENROUTER_MODEL replaces the
+# OpenRouter entry's model (its first model, the rest as OpenRouter
+# fallbacks), and DANA_FREE_ONLY=true drops every entry with a price.
 
 version: 1
 

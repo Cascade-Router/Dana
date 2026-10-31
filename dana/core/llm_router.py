@@ -93,11 +93,14 @@ def select_fleet_chain(
     *,
     estimated_tokens: int,
     prefer_id: str | None = None,
+    prefer_provider: str | None = None,
 ) -> list[FleetEntry]:
     """Order ``entries`` into the chain to try, cheapest-fitting-first.
 
     Entries whose ``context_window * safety_margin`` fits ``estimated_tokens``
-    are tried first, ordered by (priority, cost_per_1m_prompt). Entries that
+    are tried first, ordered by (priority, cost_per_1m_prompt), except that
+    entries of ``prefer_provider`` (the operator's ``DANA_CLOUD_PROVIDER``)
+    sort ahead of every other provider's. Entries that
     don't fit are appended afterward, ordered by largest context_window
     first — still attempted as a last resort (never return an empty chain)
     rather than giving up before making a single request. The configured
@@ -115,7 +118,9 @@ def select_fleet_chain(
     fitting = [e for e in entries if e.context_window * margin >= estimated_tokens]
     overflowing = [e for e in entries if e not in fitting]
 
-    fitting.sort(key=lambda e: (e.id != prefer_id, e.priority, e.cost_per_1m_prompt))
+    fitting.sort(
+        key=lambda e: (e.id != prefer_id, e.provider != prefer_provider, e.priority, e.cost_per_1m_prompt)
+    )
     overflowing.sort(key=lambda e: -e.context_window)
 
     chain = fitting + overflowing
@@ -269,6 +274,27 @@ def _turn_needs_geometry_precision(tools: list[dict[str, Any]] | None) -> bool:
     return False
 
 
+def configured_cloud_provider() -> str | None:
+    """``DANA_CLOUD_PROVIDER`` when the operator set one, else ``None``.
+
+    An explicit provider in ``.env`` outranks the fleet's own priorities: an
+    operator who set ``openrouter`` to stay on free models must not be routed
+    to a paid priority-1 entry first. The fleet still supplies the fallbacks
+    when that provider fails or has no key."""
+    return (os.environ.get("DANA_CLOUD_PROVIDER") or "").strip().lower() or None
+
+
+def free_only() -> bool:
+    """``DANA_FREE_ONLY=true`` drops every fleet entry with a non-zero price,
+    so a failing free provider falls back to another free one (or local
+    Ollama) instead of a paid API."""
+    return (os.environ.get("DANA_FREE_ONLY") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_free(entry: FleetEntry) -> bool:
+    return entry.cost_per_1m_prompt == 0 and entry.cost_per_1m_completion == 0
+
+
 def resolve_chain(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
@@ -316,6 +342,11 @@ def resolve_chain(
     if local_entries and not cloud_allowed():
         return sorted(local_entries, key=lambda e: e.priority)
 
+    if free_only():
+        entries = [e for e in entries if _is_free(e)]
+        if not entries:
+            return None
+
     # Admin/Introspection Local-First Preference — only meaningful when the
     # configured terminal_fallback is itself an Ollama entry (the whole
     # point is routing bookkeeping/discovery turns to a LOCAL model instead
@@ -357,7 +388,13 @@ def resolve_chain(
                 return None
 
     estimated = estimate_tokens(messages, tools)
-    return select_fleet_chain(entries, defaults, estimated_tokens=estimated, prefer_id=prefer_id)
+    return select_fleet_chain(
+        entries,
+        defaults,
+        estimated_tokens=estimated,
+        prefer_id=prefer_id,
+        prefer_provider=configured_cloud_provider(),
+    )
 
 
 def report_fleet_entry_failure(entry: FleetEntry, exc: Exception) -> None:
@@ -392,6 +429,8 @@ def api_key_for(entry: FleetEntry, *, fallback_key: str) -> str:
 
 __all__ = (
     "FleetEntry",
+    "configured_cloud_provider",
+    "free_only",
     "estimate_tokens",
     "select_fleet_chain",
     "resolve_chain",

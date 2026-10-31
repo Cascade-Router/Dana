@@ -284,6 +284,13 @@ def cloud_provider_name() -> str:
     )
 
 
+def openrouter_model_list() -> list[str]:
+    """The comma-separated ``DANA_OPENROUTER_MODEL`` (or ``OPENROUTER_MODEL``)
+    list: the first entry is the model, the rest OpenRouter's fallbacks."""
+    raw = (os.environ.get("DANA_OPENROUTER_MODEL") or os.environ.get("OPENROUTER_MODEL") or "").strip()
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
 def cloud_primary_enabled() -> bool:
     """Whether the ReAct loop's per-turn TOOL-CALLING hot path (dana.core.
     react_dispatch._call_llm_once) should route through a cloud OpenAI-
@@ -764,10 +771,7 @@ class ModelProvider:
                 (os.environ.get("OPENROUTER_API_BASE") or "").strip()
                 or "https://openrouter.ai/api/v1"
             )
-            raw_models = (
-                (os.environ.get("DANA_OPENROUTER_MODEL") or os.environ.get("OPENROUTER_MODEL") or "").strip()
-            )
-            model_list = [m.strip() for m in raw_models.split(",") if m.strip()]
+            model_list = openrouter_model_list()
             # meta-llama/llama-3.3-70b-instruct:free confirmed DEAD (live 404 from
             # OpenRouter itself: "This model is unavailable for free. The paid
             # version is available now -- use this slug instead: meta-llama/
@@ -1202,12 +1206,18 @@ class ModelProvider:
         errors: list[str] = []
         for entry in chain:
             try:
-                fallback_key, base, _, extra_headers, fallback_models = self._resolve_openai_endpoint(
+                fallback_key, base, env_model, extra_headers, fallback_models = self._resolve_openai_endpoint(
                     entry.provider
                 )
             except Exception as exc:  # noqa: BLE001 — this entry has no usable key/base; try the next one
                 errors.append(f"{entry.id} ({entry.provider}): {exc}")
                 continue
+            # The operator's DANA_OPENROUTER_MODEL list (usually :free models)
+            # beats the fleet entry's single slug: env_model is its first
+            # entry and fallback_models the rest, so the whole list is sent.
+            model = entry.model
+            if entry.provider == "openrouter" and openrouter_model_list():
+                model = env_model
             key = llm_router.api_key_for(entry, fallback_key=fallback_key)
             if not key:
                 errors.append(f"{entry.id} ({entry.provider}): no API key configured")
@@ -1218,7 +1228,7 @@ class ModelProvider:
                         messages,
                         api_key=key,
                         base_url=base,
-                        model=entry.model,
+                        model=model,
                         tools=tools,
                         tool_choice=tool_choice,
                         num_predict=num_predict,
@@ -1231,7 +1241,7 @@ class ModelProvider:
                 raise  # the user hit Stop; don't try the next fleet entry
             except Exception as exc:  # noqa: BLE001 — advance to the next chain entry
                 reset_stream(on_delta)
-                errors.append(f"{entry.id} ({entry.provider}/{entry.model}): {exc}")
+                errors.append(f"{entry.id} ({entry.provider}/{model}): {exc}")
                 print(
                     f"[LLM Router] {entry.id} failed, advancing to next fleet entry: {exc}",
                     file=sys.stderr,
@@ -1264,7 +1274,7 @@ class ModelProvider:
                 and self._looks_like_attempted_tool_call(raw.get("content"))
             ):
                 reason = "returned an unrecoverable raw-text payload instead of a structured create_plan call"
-                errors.append(f"{entry.id} ({entry.provider}/{entry.model}): {reason}")
+                errors.append(f"{entry.id} ({entry.provider}/{model}): {reason}")
                 print(
                     f"[LLM Router] {entry.id} {reason}, advancing to next fleet entry.",
                     file=sys.stderr,
@@ -1293,7 +1303,7 @@ class ModelProvider:
                 reset_stream(on_delta)
                 continue
 
-            _log_ttft(entry.model, raw.get("ttft_ms"), tools_schema_bytes=len(json.dumps(tools)) if tools else 0)
+            _log_ttft(model, raw.get("ttft_ms"), tools_schema_bytes=len(json.dumps(tools)) if tools else 0)
             self.last_provider = f"router:{entry.id}"
             usage = raw.get("usage") or {}
             prompt_tokens = int(usage.get("prompt_tokens") or 0)
@@ -1310,7 +1320,7 @@ class ModelProvider:
                     raw.get("tool_calls"), raw_text=str(raw.get("content") or "")
                 ),
                 "provider": self.last_provider,
-                "model": entry.model,
+                "model": model,
                 "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
                 "cost_usd": cost_usd,
                 "finish_reason": raw.get("finish_reason"),

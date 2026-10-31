@@ -296,6 +296,118 @@ def test_complete_with_tool_calls_without_fleet_but_cloud_primary_uses_openroute
 
 
 # --------------------------------------------------------------------------
+# DANA_CLOUD_PROVIDER precedence — an explicit .env provider beats fleet priority
+# --------------------------------------------------------------------------
+
+_PAID_FIRST_FLEET = {
+    "version": 1,
+    "defaults": {"terminal_fallback": "local"},
+    "fleet": [
+        {
+            "id": "paid", "provider": "deepseek", "model": "deepseek-chat",
+            "api_key_env": "DEEPSEEK_API_KEY", "context_window": 64000,
+            "cost_per_1m_prompt": 0.28, "cost_per_1m_completion": 0.42, "priority": 1,
+        },
+        {
+            "id": "free", "provider": "openrouter", "model": "fleet/model:free",
+            "api_key_env": "OPENROUTER_API_KEY", "context_window": 100000, "priority": 3,
+        },
+        {"id": "local", "provider": "ollama", "model": "qwen", "context_window": 8192, "priority": 99},
+    ],
+}
+
+
+@pytest.fixture()
+def paid_first_fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """The shipped fleet's shape (a paid priority-1 entry above a free one),
+    both keys present, and every completion recorded."""
+    config_path = tmp_path / "routing_config.yaml"
+    config_path.write_text(yaml.safe_dump(_PAID_FIRST_FLEET), encoding="utf-8")
+    monkeypatch.setattr(routing_config_module, "ROUTING_CONFIG_PATH", config_path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+    calls: list[dict] = []
+
+    def fake_complete(messages, *, api_key, base_url, model, fallback_models=None, **kw):
+        calls.append({"base_url": base_url, "model": model, "fallback_models": list(fallback_models or [])})
+        if model == "fail-me:free":
+            raise RuntimeError("cloud HTTP 429: rate limited (simulated)")
+        return _canned_ok()
+
+    monkeypatch.setattr(model_provider_module, "complete_openai_with_tools", fake_complete)
+    return calls
+
+
+def test_fleet_priority_applies_without_a_configured_provider(paid_first_fleet: list[dict]) -> None:
+    result = ModelProvider().complete_with_tool_calls([{"role": "user", "content": "hi"}], tools=[])
+    assert result["provider"] == "router:paid"
+
+
+def test_configured_openrouter_is_tried_before_a_paid_priority_one_entry(
+    monkeypatch: pytest.MonkeyPatch, paid_first_fleet: list[dict]
+) -> None:
+    monkeypatch.setenv("DANA_CLOUD_PROVIDER", "openrouter")
+    result = ModelProvider().complete_with_tool_calls([{"role": "user", "content": "hi"}], tools=[])
+    assert result["provider"] == "router:free"
+    assert result["cost_usd"] == 0.0
+    assert [c["model"] for c in paid_first_fleet] == ["fleet/model:free"]
+
+
+def test_openrouter_model_list_from_env_reaches_the_bridge(
+    monkeypatch: pytest.MonkeyPatch, paid_first_fleet: list[dict]
+) -> None:
+    monkeypatch.setenv("DANA_CLOUD_PROVIDER", "openrouter")
+    monkeypatch.setenv("DANA_OPENROUTER_MODEL", "a/one:free, b/two:free,c/three:free")
+    result = ModelProvider().complete_with_tool_calls([{"role": "user", "content": "hi"}], tools=[])
+    assert paid_first_fleet == [
+        {"base_url": "https://openrouter.ai/api/v1", "model": "a/one:free",
+         "fallback_models": ["b/two:free", "c/three:free"]}
+    ]
+    assert result["model"] == "a/one:free"
+
+
+def test_free_only_falls_back_to_local_instead_of_the_paid_entry(
+    monkeypatch: pytest.MonkeyPatch, paid_first_fleet: list[dict]
+) -> None:
+    monkeypatch.setenv("DANA_CLOUD_PROVIDER", "openrouter")
+    monkeypatch.setenv("DANA_FREE_ONLY", "true")
+    monkeypatch.setenv("DANA_OPENROUTER_MODEL", "fail-me:free")
+    result = ModelProvider().complete_with_tool_calls([{"role": "user", "content": "hi"}], tools=[])
+    assert [c["model"] for c in paid_first_fleet] == ["fail-me:free", "qwen"]
+    assert result["provider"] == "router:local"
+
+
+def test_configured_provider_without_a_key_falls_through_to_the_fleet(
+    monkeypatch: pytest.MonkeyPatch, paid_first_fleet: list[dict]
+) -> None:
+    monkeypatch.setenv("DANA_CLOUD_PROVIDER", "openrouter")
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    result = ModelProvider().complete_with_tool_calls([{"role": "user", "content": "hi"}], tools=[])
+    assert result["provider"] == "router:paid"
+
+
+def test_shipped_routing_config_honors_a_configured_openrouter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real routing_config.yaml lists a paid entry at priority 1; an
+    explicit DANA_CLOUD_PROVIDER=openrouter must still come first, and
+    DANA_FREE_ONLY must leave no paid entry in the chain at all."""
+    from dana.core.llm_router import resolve_chain
+
+    monkeypatch.setattr(
+        routing_config_module, "ROUTING_CONFIG_PATH", Path(__file__).resolve().parents[1] / "routing_config.yaml"
+    )
+    messages = [{"role": "user", "content": "hi"}]
+    assert resolve_chain(messages)[0].provider == "deepseek"
+    monkeypatch.setenv("DANA_CLOUD_PROVIDER", "openrouter")
+    assert resolve_chain(messages)[0].provider == "openrouter"
+    monkeypatch.setenv("DANA_FREE_ONLY", "1")
+    chain = resolve_chain(messages)
+    assert chain[0].provider == "openrouter"
+    assert all(e.cost_per_1m_prompt == 0 and e.cost_per_1m_completion == 0 for e in chain)
+    assert chain[-1].id == "ollama_local"
+
+
+# --------------------------------------------------------------------------
 # report_fleet_entry_failure — the circuit breaker wired into the Model Registry
 # --------------------------------------------------------------------------
 

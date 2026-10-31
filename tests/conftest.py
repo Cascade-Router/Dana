@@ -211,7 +211,10 @@ def _no_dotenv_reload_mid_test(monkeypatch: pytest.MonkeyPatch) -> None:
     local ``DANA_HEADLESS=true`` still keeps the FreeCAD GUI from launching
     during a test run. ``DANA_CLOUD_PRIMARY`` is cleared because it changes
     which provider and tool schema a turn resolves, which tests assume is
-    the default local path; a test that needs it sets it itself.
+    the default local path; a test that needs it sets it itself. The same
+    goes for ``DANA_CLOUD_PROVIDER``/``DANA_FREE_ONLY`` (they reorder and
+    filter the fleet chain) and ``DANA_OPENROUTER_MODEL`` (it replaces the
+    fleet entry's model).
     image_analysis imports ensure_dotenv_loaded by name, so it's patched too.
     """
     import dana.core.model_provider as model_provider
@@ -220,7 +223,8 @@ def _no_dotenv_reload_mid_test(monkeypatch: pytest.MonkeyPatch) -> None:
     image_analysis = sys.modules.get("dana.plugins.vision.image_analysis")
     if image_analysis is not None:
         monkeypatch.setattr(image_analysis, "ensure_dotenv_loaded", lambda: None)
-    monkeypatch.delenv("DANA_CLOUD_PRIMARY", raising=False)
+    for name in ("DANA_CLOUD_PRIMARY", "DANA_CLOUD_PROVIDER", "DANA_FREE_ONLY", "DANA_OPENROUTER_MODEL"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)

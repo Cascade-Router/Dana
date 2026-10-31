@@ -70,6 +70,13 @@ relying on this table for anything security-sensitive.
 (`DANA_OPENAI_MODEL`, `DANA_ANTHROPIC_MODEL`, `DANA_GEMINI_MODEL`,
 `DANA_GROQ_MODEL`, `DANA_CLOUD_PROVIDER`).
 
+**Cloud routing with `routing_config.yaml`:** the fleet's priorities decide
+the order, except that an explicit `DANA_CLOUD_PROVIDER` always goes first
+(so `openrouter` is never skipped for a paid priority-1 entry), its
+`DANA_OPENROUTER_MODEL` list replaces the fleet entry's model with that
+list's first model and the rest as OpenRouter fallbacks, and
+`DANA_FREE_ONLY=true` removes every paid entry from the chain.
+
 **Feature flags (persisted, not env-only):** `feature_flags.json` at the
 project root — see [`architecture.md` §8](architecture.md#8-feature-manager--env-key-toggles).
 Delete it (or use the Settings UI toggle) to fall back to
