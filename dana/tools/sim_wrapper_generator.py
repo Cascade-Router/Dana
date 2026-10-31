@@ -15,12 +15,13 @@ wire contract as every ``dana.plugins.freecad.engine``/``dana.tools.
 urdf_builder`` function, so it slots into ``dana.core.react_dispatch``'s
 handler dict the same way.
 
-The generated scripts are boilerplate/stubs, not a finished RL pipeline —
-the task this bridges to (Isaac Sim's own Python API surface across
-versions, a real reward/termination function, a real ROS2 package layout,
-a real Webots PROTO conversion) is inherently something only the caller's
-own project can finish; see each generator function's own docstring for
-exactly what's stubbed and why.
+The RL targets (Isaac Sim, Webots) come with a working default task: the
+reward is the negative distance to a target joint pose minus an action
+penalty, and an episode ends on a tilt, a height drop or a step limit
+(``_TASK_DEFAULTS_SOURCE``, plain Python a caller edits or replaces). What
+stays the caller's is the task itself (its real objective, domain
+randomization, a ROS2 package layout, the Webots PROTO conversion); see
+each generator function's own docstring.
 """
 
 from __future__ import annotations
@@ -54,6 +55,66 @@ _EXPORT_DIR = DANA_WORKSPACE / "exports"
 _SIM_WRAPPERS_SUBDIR = "sim_wrappers"
 
 _TARGET_PLATFORMS = frozenset({"isaac_sim", "gazebo", "ros2", "webots"})
+
+
+# The generated scripts' default task logic, shared by every RL target.
+# Plain Python (math only), so it runs without the simulator; no braces, as
+# it is spliced into f-string templates.
+_TASK_DEFAULTS_SOURCE = """\
+# ---------------------------------------------------------------------------
+# Task defaults: working, generic choices. Edit these knobs, or replace
+# compute_reward / is_terminated, for your task.
+# ---------------------------------------------------------------------------
+
+# Joint pose the reward pulls toward: None = the pose reset() starts from
+# ("hold still"), or one value per joint, in the URDF's units.
+TARGET_JOINT_POSITIONS = None
+# Weight of the action-magnitude penalty (discourages large, jerky commands).
+ACTION_PENALTY = 0.01
+# The episode terminates (a failure) when the base tilts past this angle...
+MAX_TILT_RAD = math.radians(45.0)
+# ...or drops below this fraction of its starting height,
+MIN_HEIGHT_RATIO = 0.5
+# and is truncated (a time limit) after this many steps.
+MAX_EPISODE_STEPS = 1000
+
+
+def compute_reward(joint_positions, target_positions, action, action_penalty=ACTION_PENALTY):
+    \"\"\"Negative Euclidean distance from the joint state to the target,
+    minus action_penalty times the squared action magnitude:
+
+        reward = -||q - q_target|| - action_penalty * ||a||^2
+
+    Finite and <= 0; 0 means on target with no effort. Replace it with your
+    task's own objective (forward velocity, an end-effector goal, ...); it
+    only has to return a float.\"\"\"
+    distance = math.sqrt(sum((float(q) - float(t)) ** 2 for q, t in zip(joint_positions, target_positions)))
+    effort = sum(float(a) ** 2 for a in action)
+    return -distance - action_penalty * effort
+
+
+def tilt_from_up_axis_z(up_z):
+    \"\"\"Angle in radians between the base's up axis and world up, from the
+    world-z component of that up axis (1 = upright, 0 = on its side).\"\"\"
+    return math.acos(max(-1.0, min(1.0, float(up_z))))
+
+
+def is_terminated(
+    tilt_rad,
+    base_height,
+    start_height,
+    step_count,
+    max_tilt_rad=MAX_TILT_RAD,
+    min_height_ratio=MIN_HEIGHT_RATIO,
+    max_steps=MAX_EPISODE_STEPS,
+):
+    \"\"\"Gymnasium's (terminated, truncated) pair: terminated once the base
+    tips past max_tilt_rad or falls below min_height_ratio of its starting
+    height (only checked when it started above the ground), truncated once
+    step_count reaches max_steps.\"\"\"
+    fell = start_height > 0 and base_height < min_height_ratio * start_height
+    return bool(tilt_rad > max_tilt_rad or fell), bool(step_count >= max_steps)
+"""
 
 
 def _ok(**payload: Any) -> str:
@@ -128,10 +189,9 @@ def _isaac_sim_script(assembly_name: str, robot_name: str, urdf_path: Path, outp
     the raw ``_urdf`` module path below is the one thing a caller may need
     to adjust for their installed version), spawns it at the origin on a
     default ground plane, and wraps it in a minimal Gym-style env class
-    with ``reset()``/``step()`` stubs operating on PyTorch tensors — the
-    RL-pipeline half this whole tool exists to hand off to a caller's own
-    project, deliberately left unimplemented (a real reward/termination
-    function is a modeling decision only the caller can make).
+    with Gymnasium-style ``reset()``/``step()``: actions are joint position
+    targets, and the reward/termination come from ``_TASK_DEFAULTS_SOURCE``
+    (working defaults a caller replaces with their task's own).
     """
     class_name = "".join(w[0].upper() + w[1:] for w in re.split(r"[^A-Za-z0-9]+", assembly_name) if w) or "Robot"
     # repr(), not manual "..."/r"..." wrapping: robot_name comes straight
@@ -165,11 +225,14 @@ from omni.isaac.kit import SimulationApp
 
 simulation_app = SimulationApp({{"headless": False}})
 
+import math
+
 import numpy as np
 import torch
 from omni.isaac.core import World
 from omni.isaac.core.articulations import Articulation
 from omni.isaac.core.utils.stage import add_reference_to_stage
+from omni.isaac.core.utils.types import ArticulationAction
 import omni.kit.commands
 from omni.importer.urdf import _urdf
 
@@ -205,13 +268,15 @@ def _import_urdf_as_usd(urdf_path: str) -> str:
     return robot_path
 
 
+{_TASK_DEFAULTS_SOURCE}
+
 class {class_name}Env:
-    """Minimal Gym-style RL environment stub wrapping the imported
-    '{robot_name}' articulation. `reset()`/`step()` are intentionally
-    empty of any task logic (reward shaping, termination, domain
-    randomization) — that's this environment's real design work, specific
-    to whatever task '{assembly_name}' is being trained for, and can't be
-    guessed from the URDF alone."""
+    """Gymnasium-style environment wrapping the imported '{robot_name}'
+    articulation. The reward is compute_reward (distance to
+    TARGET_JOINT_POSITIONS plus an action penalty) and an episode ends via
+    is_terminated (tilt, height drop, step limit); edit the knobs above, or
+    replace those functions, for whatever task '{assembly_name}' is trained
+    for."""
 
     def __init__(self) -> None:
         self.world = World(stage_units_in_meters=1.0)
@@ -223,23 +288,42 @@ class {class_name}Env:
         self.robot = Articulation(prim_path=robot_prim_path, name=ROBOT_NAME)
         self.world.scene.add(self.robot)
         self.world.reset()
+        self.step_count = 0
+        self.start_height = 0.0
+        self.target_positions: list = []
 
-    def reset(self) -> torch.Tensor:
-        """TODO: randomize initial joint state / targets for your task.
-        Returns the initial observation tensor."""
+    def reset(self, seed: int | None = None):
+        """Gymnasium's reset(): restores the start pose and returns
+        (observation, info). Add domain randomization here."""
         self.world.reset()
-        return self._get_observation()
+        self.step_count = 0
+        self.start_height = self._base_pose()[0]
+        positions = [float(q) for q in self.robot.get_joint_positions()]
+        self.target_positions = (
+            list(TARGET_JOINT_POSITIONS) if TARGET_JOINT_POSITIONS is not None else positions
+        )
+        return self._get_observation(), {{}}
 
     def step(self, action: torch.Tensor):
-        """TODO: convert `action` into a real ArticulationAction, compute
-        a real reward/done/info for your task. `action` should have
-        `self.robot.num_dof` entries. Currently a no-op physics tick."""
+        """Applies `action` as joint position targets (`self.robot.num_dof`
+        values, in the URDF's units), advances physics one tick and returns
+        Gymnasium's (observation, reward, terminated, truncated, info)."""
+        self.robot.apply_action(ArticulationAction(joint_positions=action))
         self.world.step(render=True)
-        observation = self._get_observation()
-        reward = torch.zeros(1)  # TODO
-        done = torch.zeros(1, dtype=torch.bool)  # TODO
-        info: dict = {{}}
-        return observation, reward, done, info
+        self.step_count += 1
+        positions = [float(q) for q in self.robot.get_joint_positions()]
+        reward = compute_reward(positions, self.target_positions, [float(a) for a in action])
+        height, tilt = self._base_pose()
+        terminated, truncated = is_terminated(tilt, height, self.start_height, self.step_count)
+        info = {{"base_height": height, "base_tilt_rad": tilt}}
+        return self._get_observation(), reward, terminated, truncated, info
+
+    def _base_pose(self) -> tuple:
+        """(height, tilt) of the root link: its world z, and the angle
+        between its up axis and world up, from the (w, x, y, z) quaternion."""
+        position, orientation = self.robot.get_world_pose()
+        _w, x, y, _z = (float(v) for v in orientation)
+        return float(position[2]), tilt_from_up_axis_z(1.0 - 2.0 * (x * x + y * y))
 
     def _get_observation(self) -> torch.Tensor:
         positions = self.robot.get_joint_positions()
@@ -254,9 +338,11 @@ def main() -> None:
     env = {class_name}Env()
     try:
         env.reset()
-        zero_action = torch.zeros(env.robot.num_dof)
+        hold = torch.as_tensor(env.target_positions, dtype=torch.float32)
         for _ in range(200):
-            env.step(zero_action)
+            _, _, terminated, truncated, _ = env.step(hold)
+            if terminated or truncated:
+                env.reset()
     finally:
         env.close()
 
@@ -408,8 +494,9 @@ def _webots_controller_script(assembly_name: str, robot_name: str, urdf_path: Pa
     stable Webots controller API — no hardcoded per-joint device names,
     since those come from ``urdf2webots``'s own naming and aren't known
     ahead of time here), then wraps them in the same minimal Gym-style
-    env shape (``reset()``/``step()`` stubs) the Isaac Sim target uses,
-    for a consistent shape across every target this module generates.
+    env shape the Isaac Sim target uses (actions are motor velocities,
+    observations position-sensor readings), with the same default
+    reward/termination (``_TASK_DEFAULTS_SOURCE``).
     """
     class_name = "".join(w[0].upper() + w[1:] for w in re.split(r"[^A-Za-z0-9]+", assembly_name) if w) or "Robot"
     # repr(), not manual "..."/r"..." wrapping — see _isaac_sim_script's own
@@ -439,6 +526,8 @@ standalone script) — Webots launches it automatically once the above
 
 from __future__ import annotations
 
+import math
+
 from controller import Node, Supervisor
 
 ROBOT_NAME = {robot_name_repr}
@@ -460,13 +549,15 @@ def _discover_motors(robot: Supervisor) -> list:
     return motors
 
 
+{_TASK_DEFAULTS_SOURCE}
+
 class {class_name}Env:
-    """Minimal Gym-style RL environment stub wrapping '{robot_name}' as a
-    Webots Supervisor. `reset()`/`step()` are intentionally empty of any
-    task logic (reward shaping, termination, domain randomization) —
-    that's this environment's real design work, specific to whatever
-    task '{assembly_name}' is being trained for, and can't be guessed
-    from the URDF alone."""
+    """Gymnasium-style environment wrapping '{robot_name}' as a Webots
+    Supervisor. The reward is compute_reward (distance to
+    TARGET_JOINT_POSITIONS plus an action penalty) and an episode ends via
+    is_terminated (tilt, height drop, step limit); edit the knobs above, or
+    replace those functions, for whatever task '{assembly_name}' is trained
+    for."""
 
     def __init__(self) -> None:
         self.robot = Supervisor()
@@ -475,25 +566,56 @@ class {class_name}Env:
         for motor in self.motors:
             motor.setPosition(float("inf"))  # velocity control mode
             motor.setVelocity(0.0)
+        # In velocity mode a motor's target position is infinite, so joint
+        # positions come from each motor's own position sensor.
+        self.sensors = [motor.getPositionSensor() for motor in self.motors]
+        for sensor in self.sensors:
+            if sensor is not None:
+                sensor.enable(self.timestep)
+        self.base = self.robot.getSelf()
+        self.step_count = 0
+        self.start_height = 0.0
+        self.target_positions: list = []
 
-    def reset(self):
-        """TODO: randomize initial joint state / targets for your task."""
+    def reset(self, seed=None):
+        """Gymnasium's reset(): restores the world and returns
+        (observation, info). Add domain randomization here."""
         self.robot.simulationReset()
         self.robot.step(self.timestep)
-        return self._get_observation()
+        self.step_count = 0
+        self.start_height = self._base_pose()[0]
+        observation = self._get_observation()
+        self.target_positions = (
+            list(TARGET_JOINT_POSITIONS) if TARGET_JOINT_POSITIONS is not None else observation
+        )
+        return observation, {{}}
 
     def step(self, action):
-        """TODO: apply `action` to self.motors, compute a real
-        reward/done/info for your task. Currently a no-op physics tick."""
+        """Applies `action` as one velocity per motor (clamped to that
+        motor's limit), advances one timestep and returns Gymnasium's
+        (observation, reward, terminated, truncated, info)."""
+        for motor, velocity in zip(self.motors, action):
+            limit = motor.getMaxVelocity()
+            motor.setVelocity(max(-limit, min(limit, float(velocity))))
         self.robot.step(self.timestep)
+        self.step_count += 1
         observation = self._get_observation()
-        reward = 0.0  # TODO
-        done = False  # TODO
-        info: dict = {{}}
-        return observation, reward, done, info
+        reward = compute_reward(observation, self.target_positions, action)
+        height, tilt = self._base_pose()
+        terminated, truncated = is_terminated(tilt, height, self.start_height, self.step_count)
+        info = {{"base_height": height, "base_tilt_rad": tilt}}
+        return observation, reward, terminated, truncated, info
+
+    def _base_pose(self) -> tuple:
+        """(height, tilt) of the robot's root node: its world z, and the angle
+        between its up axis and world up (element [2][2] of its row-major
+        rotation matrix; Webots worlds are z-up since R2022a)."""
+        position = self.base.getPosition()
+        orientation = self.base.getOrientation()
+        return float(position[2]), tilt_from_up_axis_z(orientation[8])
 
     def _get_observation(self):
-        return [m.getTargetPosition() for m in self.motors]
+        return [sensor.getValue() if sensor is not None else 0.0 for sensor in self.sensors]
 
     def close(self) -> None:
         pass  # Webots owns the process lifecycle; nothing to tear down here.
@@ -504,7 +626,9 @@ def main() -> None:
     env.reset()
     zero_action = [0.0] * len(env.motors)
     for _ in range(200):
-        env.step(zero_action)
+        _, _, terminated, truncated, _ = env.step(zero_action)
+        if terminated or truncated:
+            env.reset()
 
 
 if __name__ == "__main__":
