@@ -47,7 +47,7 @@ Schema descriptions are minified to their first sentence (`schema_minify.py`), a
 
 ### 2.3 Fleet routing
 
-Which model serves a turn is a pure function of configuration and turn state (`routing_config.yaml`, `dana/core/llm_router.py`): entries list provider, model, priority, context window and cost; an entry is eligible only if its context window (with a safety margin) fits the turn; eligible entries are tried in priority order with local Qwen as the terminal fallback. Planning turns are pinned to a cloud model, geometry-precision turns exclude local models (which were seen to hallucinate argument names there), bookkeeping turns prefer the local model, and `allow_cloud: false` makes the whole system local. A failed entry falls through to the next.
+Which model serves a turn is a pure function of configuration and turn state (`routing_config.yaml`, `dana/core/llm_router.py`): entries list provider, model, priority, context window and cost; an entry is eligible only if its context window (with a safety margin) fits the turn; eligible entries are tried in priority order with local Qwen as the terminal fallback. Planning turns are pinned to a cloud model, geometry-precision turns exclude local models (which were seen to hallucinate argument names there), bookkeeping turns prefer the local model, and `allow_cloud: false` makes the whole system local. An explicit `DANA_CLOUD_PROVIDER` outranks the configured priorities, and `DANA_FREE_ONLY=true` removes every priced entry, so a budget set in `.env` is never bypassed for a paid model. A failed entry falls through to the next.
 
 ### 2.4 Resource constraints
 
@@ -108,13 +108,24 @@ Retries are genuine self-corrections: an invalid face name rejected by the tool,
 
 ### 5.2 Live-model check
 
-The mounting-plate prompt from the abstract was run through the configured router (DeepSeek), the real loop and the mock engine. The model planned three tasks with valid tool ids, called every tool correctly on the first attempt with no retries, stayed at or under 2,645 tool-schema tokens per turn, and produced a solid of 11,500.57 mm³ — exactly a 40 × 30 × 10 mm plate minus a 4 mm-radius through-hole (as a 32-segment mesh). The run used six LLM calls, ~27,000 prompt tokens and 15 s. Two earlier runs of the same prompt found real defects that were then fixed: the mock engine centered primitives on their placement while FreeCAD places a box by its corner, which halved the hole's depth on the demo, and the planner verified with a bounding box because `query_topology` was missing from the only tool list it sees.
+The mounting-plate prompt from the abstract was run through the real router, the real loop and the mock engine.
+
+**DeepSeek (paid).** The model planned three tasks with valid tool ids, called every tool correctly on the first attempt, stayed at or under 2,645 tool-schema tokens per turn, and produced a solid of 11,500.57 mm³ — exactly a 40 × 30 × 10 mm plate minus a 4 mm-radius through-hole (as a 32-segment mesh) — in six LLM calls, ~27,000 prompt tokens and 15 s. Earlier runs found two defects, since fixed: the mock engine centered primitives on their placement while FreeCAD places a box by its corner, and `query_topology` was missing from the only tool list the planner sees.
+
+**OpenRouter free tier, $0.00.** With `DANA_CLOUD_PROVIDER=openrouter` and `DANA_FREE_ONLY=true`, every turn went to `nemotron-3-super-120b-a12b:free`. (Before that, the router ignored `DANA_CLOUD_PROVIDER` after planning and billed the paid priority-1 entry.) The weaker model exposed four more defects, each fixed and re-run:
+
+- the placement parameters said "Global X-axis offset" without saying which point is placed, so it centered the hole's cylinder at mid-depth (11,750 mm³);
+- `load_specific_tool` reported "available now" for a tool the active task would block, and the run gave up with no hole;
+- the sketch-geometry error described a flat `[x, y, ...]` format, which the model then sent five times;
+- arrays sent as JSON strings were rejected although only the encoding was wrong.
+
+After the fixes, three consecutive runs built the correct 11,500.57 mm³ solid in 6, 9 and 17 LLM calls (19–47 s), with no turn over 2,000 tool-schema tokens. The cleanest used 1,503 tokens to plan, 876–1,100 per executing turn and 1,957 to wrap up. Earlier free-tier runs, before the fixes, also picked a sketch-and-pocket route the model could not finish; free models remain the least reliable lane, which is why `routing_config.yaml` ranks them below DeepSeek by default.
 
 ---
 
 ## 6. Limitations
 
-- The offline suite uses a scripted model: it measures Dānā's loop, gates and geometry, not a model's planning ability. Live checks so far are single prompts.
+- The offline suite uses a scripted model: it measures Dānā's loop, gates and geometry, not a model's planning ability. Live checks so far use one prompt (one paid run, a handful of free-tier runs).
 - The mock engine approximates B-Rep topology with mesh regions and cannot export STEP; real FreeCAD is required for production output.
 - Printability is a geometric heuristic, not a slicer simulation; slicing and printing have been tested against mocks, not real hardware.
 - A task's declared tools are never dropped to meet the budget, so a task declaring four or more of the heaviest tools (feature-on-face, assembly constraints, drawings) could still exceed 2,000 tokens; plan-management tools give way first.

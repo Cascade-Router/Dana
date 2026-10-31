@@ -12,7 +12,7 @@ It began as a commercial product and is now published as an engineering portfoli
 |---|---|
 | **Stack** | Python 3.11 · FastAPI + WebSockets · React/TypeScript (Tauri desktop shell) · FreeCAD (headless `FreeCADCmd`) · Ollama · Jinja2 |
 | **Models** | Cloud: DeepSeek (primary), Gemini, OpenRouter, Groq · Local: `qwen2.5-coder:14b` (tools), `qwen2.5vl:7b` (vision) |
-| **Tests** | 1,533 pytest cases, blocking in CI, no live model or GPU needed · Playwright UI tests against a mock backend |
+| **Tests** | 1,558 pytest cases, blocking in CI, no live model or GPU needed · Playwright UI tests against a mock backend |
 
 ---
 
@@ -29,6 +29,7 @@ It began as a commercial product and is now published as an engineering portfoli
   2. *Admin/introspection turns* (the last tool call was a catalog or discovery lookup) prefer the local model, which saves cloud quota.
   3. *Geometry-precision turns* **exclude** local models entirely. Small local models were confirmed live to hallucinate tool-argument names on these calls.
   4. A *Planning-Phase Cloud Lock* in [`dana/core/react_dispatch.py`](dana/core/react_dispatch.py) pins Turn 0 (`create_plan`) to a cloud model.
+- **`.env` outranks the fleet's priorities.** An explicit `DANA_CLOUD_PROVIDER` puts that provider's entries first (so `openrouter` is never skipped for the paid priority-1 DeepSeek entry), `DANA_OPENROUTER_MODEL` supplies the OpenRouter model and its fallback list, and `DANA_FREE_ONLY=true` drops every priced entry. A full build of the mounting-plate prompt on `nemotron-3-super:free` cost $0.00.
 - **Failure accounting.** A failed entry is reported (`report_fleet_entry_failure`) and the chain falls through to the next one. The whole router can be removed: without the YAML file, the legacy `.env` resolution runs unchanged.
 
 In practice, DeepSeek handles planning and geometry, local Qwen handles bookkeeping and full-offline mode, and every routing decision can be reproduced from config.
@@ -65,11 +66,11 @@ What a chat session gives you besides the conversation:
 
 **Solution** ([`.github/workflows/build.yml`](.github/workflows/build.yml)):
 
-- **Full pytest suite as a blocking job:** 1,533 tests. It runs on Python 3.12 under `xvfb`, with `--strict-markers` and a per-test timeout. Failures are parsed out of the JUnit XML into GitHub `::error` annotations, so they show on the PR without opening the log.
+- **Full pytest suite as a blocking job:** 1,558 tests. It runs on Python 3.12 under `xvfb`, with `--strict-markers` and a per-test timeout. Failures are parsed out of the JUnit XML into GitHub `::error` annotations, so they show on the PR without opening the log.
 - **Space smoke test.** It imports `app.py` from the exact payload `deploy/stage_space.sh` ships, with the pinned Gradio version.
 - **Frontend build.** It runs the same `tsc && vite build` that Vercel runs.
 - **Gated deploy.** The Hugging Face sync runs on `workflow_run` only after Build succeeds.
-- **Headless environment isolation** ([`tests/conftest.py`](tests/conftest.py)). Every module-level path into `freecad_output/`, `exports/` or `agent_workspace/` is redirected to the test's `tmp_path` (found by sweeping the loaded modules, so a new one is covered automatically), every per-session registry is cleared before and after each test, and the run fails if the real workspace changed at all. TTS/audio hardware calls go to fakes. They block mid-test `.env` reloads (a real leak that once overrode test env vars) and force auto-approve and context distillation off. `DANA_HEADLESS=true` and `DANA_OS_DRY_RUN=1` keep FreeCAD's GUI and physical input out of CI.
+- **Headless environment isolation** ([`tests/conftest.py`](tests/conftest.py)). Every module-level path into `freecad_output/`, `exports/` or `agent_workspace/` is redirected to the test's `tmp_path` (found by sweeping the loaded modules, so a new one is covered automatically), every per-session registry is cleared before and after each test, and the run fails if the real workspace changed at all. TTS/audio hardware calls go to fakes. They block mid-test `.env` reloads (a real leak that once overrode test env vars) and force auto-approve and context distillation off. `DANA_HEADLESS=true` and `DANA_OS_DRY_RUN=1` keep FreeCAD's GUI and physical input out of CI. The hand-run scripts (`scripts/run_e2e_cad.py`, `run_kobayashi_maru.py`, ...) use the same sweep through [`scripts/scratch_workspace.py`](scripts/scratch_workspace.py): a temp workspace and scratch session by default, `--keep-artifacts` to keep them.
 - **No live dependencies.** LLM and VLM providers are patched at the call site, and hardware calls (TTS, audio, OS input) go to fakes or dry-run mode. The suite needs no model server, GPU, or API key.
 - **Offline agent evals** ([`tests/evals/`](tests/evals)). Five canonical CAD tasks run through the real ReAct loop and gates with a scripted model on the mock engine: a primitive plus topology check, a plate with holes and a chamfer, a boolean cut, an assembly's manufacturing verdict (colliding and fixed) and a zero-token rebuild. Each records turns, the tool-schema token high-water mark per FSM phase, self-correction retries and geometry checks against hand-computed values. Subprocesses and network access are blocked while they run. They're part of pytest (about 5 s); `python scripts/run_offline_evals.py` prints the scorecard. They caught the wrap-up turn after a finished plan offering 10,336 tokens of tool schemas (more than a local model's 8k context); every turn of every phase is now held to the 2,000-token budget (planning 1,503, executing at most 1,979, wrap-up at most 2,000), and any turn over it fails the suite.
 - **Browser tests** ([`tests/e2e/`](tests/e2e)). Playwright drives the real UI against the real server with the mock CAD engine, a scripted model and a throwaway workspace ([`tests/e2e/mock_backend.py`](tests/e2e/mock_backend.py)): streaming, the cost bar, macro export, the BOM popover and a parametric rebuild. Run with `cd frontend && npx playwright test`.
