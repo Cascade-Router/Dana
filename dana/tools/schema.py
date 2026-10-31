@@ -329,6 +329,29 @@ def tool_argument_model(spec: ToolSpec) -> type[BaseModel]:
     return model
 
 
+def coerce_stringified_arrays(spec: ToolSpec, arguments: dict[str, Any]) -> dict[str, Any]:
+    """``arguments`` with every array parameter that arrived as a JSON-encoded
+    string (``'["Base", "Hole"]'``) parsed back into a list. Free-tier models
+    do this often -- live runs on nemotron-3-super:free sent
+    perform_freecad_boolean's ``objects`` and create_freecad_sketch's
+    ``geometry`` that way and burned retries on "Input should be a valid
+    list" when only the encoding was wrong. Anything that doesn't parse to a
+    list is left alone for validate_tool_arguments to reject."""
+    coerced: dict[str, Any] | None = None
+    for param in spec.parameters:
+        value = arguments.get(param.name)
+        if param.type != "array" or not isinstance(value, str) or not value.lstrip().startswith("["):
+            continue
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            continue
+        if isinstance(parsed, list):
+            coerced = coerced if coerced is not None else dict(arguments)
+            coerced[param.name] = parsed
+    return coerced if coerced is not None else arguments
+
+
 def validate_tool_arguments(spec: ToolSpec, arguments: dict[str, Any]) -> str | None:
     """``None`` when ``arguments`` matches ``spec``'s own schema; otherwise
     a plain-English message — worded for the Honest Error Handler to hand

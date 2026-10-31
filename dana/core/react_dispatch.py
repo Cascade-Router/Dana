@@ -83,6 +83,7 @@ from dana.tools.schema import (
     ToolCall,
     ToolParameterSpec,
     ToolSpec,
+    coerce_stringified_arrays,
     load_tool_registry,
     openai_tools_schema,
     to_openai_function_schema,
@@ -525,6 +526,13 @@ def _tool_load_specific_tool(args: dict[str, Any], _engine: Any, _cp: Any) -> di
                 "granular tools currently available in your schema to complete the task manually."
             ),
         }
+    # A task with declared tools offers and dispatches only those (plus the
+    # core set), so "it's available now" would be false: a live run loaded
+    # create_freecad_sketch for a pocket-only task three times, its calls
+    # bounced each time, and the loop gave up with the hole never cut.
+    blocked = None if tool_id in _CORE_TOOL_IDS else _fsm_out_of_order_check(tool_id)
+    if blocked is not None:
+        return {"ok": False, "error": f"'{tool_id}' can't be loaded during this task. {blocked}"}
     return {
         "ok": True,
         "tool_id": tool_id,
@@ -4614,7 +4622,17 @@ _SKETCH_PRIMITIVE_KEYS: dict[str, frozenset[str]] = {
     "circle": frozenset({"type", "center", "radius"}),
     "arc": frozenset({"type", "center", "radius", "start_angle", "end_angle"}),
 }
-_SKETCH_GEOMETRY_ERROR = "Invalid geometry primitive. Only 'line', 'circle', and 'arc' with format [x, y, ...] are supported."
+# The full shapes, not just the type names: the minified schema keeps only
+# the first 140 characters of the geometry description, so this message is
+# where a model learns the format. "with format [x, y, ...]" read as a flat
+# list and cost a live run five rejected attempts.
+_SKETCH_GEOMETRY_ERROR = (
+    "Invalid geometry. Each element must be an object: "
+    '{"type": "line", "start": [x, y], "end": [x, y]}, '
+    '{"type": "circle", "center": [x, y], "radius": r} or '
+    '{"type": "arc", "center": [x, y], "radius": r, "start_angle": deg, "end_angle": deg} '
+    "(no rectangle type: use 4 lines)."
+)
 
 
 def validate_sketch_geometry(geometry: Any) -> None:
@@ -9648,6 +9666,7 @@ def dispatch_tool_call(
     # for these same tool_ids is still validated normally.
     _tool_spec = _native_tool_spec(call.tool_id)
     if _tool_spec is not None:
+        call.arguments = coerce_stringified_arrays(_tool_spec, call.arguments)
         _injected = _CONTEXT_INJECTED_ARGS.get(call.tool_id)
         _args_to_validate = (
             {k: v for k, v in call.arguments.items() if k not in _injected} if _injected else call.arguments

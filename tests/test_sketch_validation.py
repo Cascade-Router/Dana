@@ -9,7 +9,7 @@ import pytest
 
 import dana.core.react_dispatch as rd
 
-_ERR = "Invalid geometry primitive. Only 'line', 'circle', and 'arc' with format [x, y, ...] are supported."
+_ERR = rd._SKETCH_GEOMETRY_ERROR
 
 _VALID = [
     {"type": "line", "start": [0, 0], "end": [10, 0]},

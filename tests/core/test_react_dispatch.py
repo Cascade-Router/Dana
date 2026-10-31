@@ -2268,6 +2268,23 @@ def test_load_specific_tool_unlocks_a_known_tool_id() -> None:
     assert result["unlocked_tools"] == ["read_webpage"]
 
 
+def test_load_specific_tool_refuses_a_tool_the_active_task_would_block() -> None:
+    """A pocket-only task can't call create_freecad_sketch, so loading it
+    must not report "it's available now"; it names insert_task instead. A
+    tool the task declares, or a core tool, still loads."""
+    sid = "load-during-task"
+    set_session_id(sid)
+    rd._PLAN_STATE_REGISTRY[sid] = {
+        "has_plan": True, "plan_text": "plan", "fsm_state": "executing",
+        "tasks": [{"id": 2, "description": "Cut the hole", "status": "active",
+                   "expected_tool_ids": frozenset({"create_freecad_pocket"})}],
+    }
+    blocked = rd._tool_load_specific_tool({"tool_id": "create_freecad_sketch"}, None, None)
+    assert blocked["ok"] is False and "insert_task(insert_before_task_id=2" in blocked["error"]
+    assert rd._tool_load_specific_tool({"tool_id": "create_freecad_pocket"}, None, None)["ok"] is True
+    assert rd._tool_load_specific_tool({"tool_id": "update_core_memory"}, None, None)["ok"] is True
+
+
 def test_load_specific_tool_rejects_an_unknown_tool_id() -> None:
     result = rd._tool_load_specific_tool({"tool_id": "not_a_real_tool"}, None, None)
     assert result["ok"] is False
