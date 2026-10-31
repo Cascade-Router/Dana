@@ -128,7 +128,7 @@ After the fixes, three consecutive runs built the correct 11,500.57 mm³ solid i
 - The offline suite uses a scripted model: it measures Dānā's loop, gates and geometry, not a model's planning ability. Live checks so far use one prompt (one paid run, a handful of free-tier runs).
 - The mock engine approximates B-Rep topology with mesh regions and cannot export STEP; real FreeCAD is required for production output.
 - Printability is a geometric heuristic, not a slicer simulation; slicing and printing have been tested against mocks, not real hardware.
-- A task's declared tools are never dropped to meet the budget, so a task declaring four or more of the heaviest tools (feature-on-face, assembly constraints, drawings) could still exceed 2,000 tokens; plan-management tools give way first.
+- A task's declared tools are never dropped to meet the budget. When a task declares several of the heaviest tools, their schemas are compacted instead (descriptions cut to the first clause, then to placement conventions only; names, types, enums and required flags kept), which fits even the five heaviest into 2,000 tokens; a model sees less prose about those tools on such turns.
 
 ---
 

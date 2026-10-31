@@ -12,7 +12,7 @@ It began as a commercial product and is now published as an engineering portfoli
 |---|---|
 | **Stack** | Python 3.11 · FastAPI + WebSockets · React/TypeScript (Tauri desktop shell) · FreeCAD (headless `FreeCADCmd`) · Ollama · Jinja2 |
 | **Models** | Cloud: DeepSeek (primary), Gemini, OpenRouter, Groq · Local: `qwen2.5-coder:14b` (tools), `qwen2.5vl:7b` (vision) |
-| **Tests** | 1,558 pytest cases, blocking in CI, no live model or GPU needed · Playwright UI tests against a mock backend |
+| **Tests** | 1,595 pytest cases, blocking in CI, no live model or GPU needed · Playwright UI tests against a mock backend |
 
 ---
 
@@ -66,7 +66,7 @@ What a chat session gives you besides the conversation:
 
 **Solution** ([`.github/workflows/build.yml`](.github/workflows/build.yml)):
 
-- **Full pytest suite as a blocking job:** 1,558 tests. It runs on Python 3.12 under `xvfb`, with `--strict-markers` and a per-test timeout. Failures are parsed out of the JUnit XML into GitHub `::error` annotations, so they show on the PR without opening the log.
+- **Full pytest suite as a blocking job:** 1,595 tests. It runs on Python 3.12 under `xvfb`, with `--strict-markers` and a per-test timeout. Failures are parsed out of the JUnit XML into GitHub `::error` annotations, so they show on the PR without opening the log.
 - **Space smoke test.** It imports `app.py` from the exact payload `deploy/stage_space.sh` ships, with the pinned Gradio version.
 - **Frontend build.** It runs the same `tsc && vite build` that Vercel runs.
 - **Gated deploy.** The Hugging Face sync runs on `workflow_run` only after Build succeeds.
