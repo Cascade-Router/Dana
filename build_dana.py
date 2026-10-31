@@ -27,6 +27,30 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
+# Non-Python files under dana/ that ship as data: manifests, tools.json and
+# the other registries, the IR/macro Jinja templates, canned UX .wav. An
+# allowlist, so local runtime files (e.g. dana/memory/memory.db) never ship.
+PACKAGE_DATA_SUFFIXES = frozenset({".json", ".jinja", ".jinja2", ".wav"})
+# Repo-root files the code reads through dana.paths.PROJECT_ROOT. In the
+# onedir build PROJECT_ROOT is the bundle's _internal/ directory (paths.py's
+# own parent's parent), so they ship to "." to land where it looks.
+ROOT_DATA_FILES = ("routing_config.yaml", "ARCHITECTURE.md")
+# Git-ignored per-user files that match the allowlist (a developer's own
+# settings.json holds their city, timezone and microphone ids).
+LOCAL_ONLY_NAMES = frozenset({"settings.json"})
+
+
+def data_files() -> list[tuple[Path, str]]:
+    """``(source, destination directory)`` for every data file the build
+    bundles; Dana.spec mirrors this list."""
+    out = [
+        (path, path.parent.relative_to(ROOT).as_posix())
+        for path in sorted((ROOT / "dana").rglob("*"))
+        if path.is_file() and path.suffix in PACKAGE_DATA_SUFFIXES and path.name not in LOCAL_ONLY_NAMES
+    ]
+    out += [(ROOT / name, ".") for name in ROOT_DATA_FILES if (ROOT / name).is_file()]
+    return out
+
 
 def main() -> int:
     # Ensure repo root is importable / discoverable for Analysis.
@@ -82,13 +106,8 @@ def main() -> int:
     for mod in hidden_imports:
         args.append(f"--hidden-import={mod}")
 
-    # Non-Python package files (manifest.json, tools.json, templates, canned UX
-    # .wav). An allowlist, so local runtime files (e.g. dana/memory/memory.db)
-    # never get bundled.
-    for data_file in sorted((ROOT / "dana").rglob("*")):
-        if data_file.is_file() and data_file.suffix in {".json", ".jinja", ".jinja2", ".wav"}:
-            dest = data_file.parent.relative_to(ROOT).as_posix()
-            args.append(f"--add-data={data_file}{os.pathsep}{dest}")
+    for data_file, dest in data_files():
+        args.append(f"--add-data={data_file}{os.pathsep}{dest}")
 
     ico = ROOT / "assets" / "dana_logo.ico"
     if not ico.is_file():

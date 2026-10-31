@@ -17,10 +17,19 @@ for pkg in ('torch', 'onnxruntime', 'sounddevice'):
 for pkg in ('dana', 'uvicorn'):
     hiddenimports += collect_submodules(pkg)
 
-# Non-Python package files (allowlist, so local runtime files never ship).
+# Non-Python package files (allowlist, so local runtime files never ship;
+# settings.json is a developer's own git-ignored settings).
 for data_file in sorted((ROOT / 'dana').rglob('*')):
-    if data_file.is_file() and data_file.suffix in {'.json', '.jinja', '.jinja2', '.wav'}:
+    if (
+        data_file.is_file()
+        and data_file.suffix in {'.json', '.jinja', '.jinja2', '.wav'}
+        and data_file.name not in {'settings.json'}
+    ):
         datas.append((str(data_file), data_file.parent.relative_to(ROOT).as_posix()))
+# Repo-root files read through dana.paths.PROJECT_ROOT (the bundle's _internal/).
+for name in ('routing_config.yaml', 'ARCHITECTURE.md'):
+    if (ROOT / name).is_file():
+        datas.append((str(ROOT / name), '.'))
 if (ROOT / 'assets').is_dir():
     datas.append((str(ROOT / 'assets'), 'assets'))
 for name in ('stop_dana.bat', 'stop_dana.vbs', 'start_dana.bat'):
