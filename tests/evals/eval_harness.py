@@ -262,6 +262,15 @@ def install(patch: Patch, setenv: SetEnv, run_ref: list[Run]) -> None:
     # cold cache it downloads, and blocked it would leave _count_tokens on
     # its len//3 estimate for the rest of the process.
     rd._count_tokens("warm-up")
+    # Same for matplotlib's font cache, built on first use for the mock
+    # engine's blueprints: on Linux that build runs `fc-list`, which the
+    # subprocess guard would block (and fail the task) on CI.
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from matplotlib import font_manager
+
+    font_manager.findfont("DejaVu Sans")
     patch(model_provider, "ensure_dotenv_loaded", lambda: None)
     patch(server, "get_cad_engine", lambda: MockFreeCADEngine())
     # Plugin tools (run_full_manufacturing_pipeline) get their engine from
