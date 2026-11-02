@@ -68,9 +68,10 @@ first sentence only). In a CAD session every FSM phase is bounded:
   screenshots and exports; the essential CAD set; the read-only checks),
   tools this turn already used first, until the budget is spent.
 
-The offline evals (`tests/evals/`) measure every turn: planning 1,503
-tokens, executing up to 1,979 (756-1,312 with declared tools), validating
-and plan done at most 2,000. A plan-done turn used to offer the whole
+The offline evals (`tests/evals/`) measure every turn: planning 1,521
+tokens (1,637 once a session has geometry and `update_cad_parameters` is
+offered), executing up to 1,997 (756-1,312 with declared tools),
+validating and plan done at most 2,000. A plan-done turn used to offer the whole
 `freecad_full` domain (10,336 tokens, more than a local model's
 8,192-token context), and executing carried the whole core set (2,586).
 The evals fail on any turn over 2,000, and
@@ -108,7 +109,10 @@ files inside Dana's workspace.
   manifold3d for overlap volume and clearance. Pipes and helices are real
   sweeps, `position_assembly_part` moves the mesh, and
   `export_assembly_to_urdf` writes per-link meshes with exact mass
-  properties. STEP export still needs FreeCAD.
+  properties. `generate_2d_blueprint` projects the mesh's feature edges
+  into the same page layout TechDraw writes (wireframe, no hidden-line
+  removal) and renders the same PDF/SVG/DXF. STEP export and per-part
+  drawing sheets still need FreeCAD.
 - **GUI:** shown only when `DANA_HEADLESS` is not `true` (the default lock is
   `true`). Dana's FreeCAD window runs with a private `user.cfg` (`-u`) and only
   the PID Dana launched is ever closed or screenshotted.
@@ -134,6 +138,29 @@ model. On the mock engine the patched log is replayed through the mock
 driver instead. No LLM call either way. Logs containing raw scripts or
 assembly tools are reported as unsupported rather than rebuilt with
 geometry missing.
+
+The agent reaches the same rebuild through `update_cad_parameters`
+({parameter id or label: value}); `dana.api.server` intercepts it (it needs
+the session's call log) and runs `_perform_rebuild`, so object names, the
+mesh and the Parameters tab stay in step. It is offered only once the
+session has geometry, in planning and on the wrap-up turn.
+
+### Turn 2 and later
+
+A turn starts from [system, user] only. Every CAD turn's system prompt
+therefore carries "## Current CAD model" (`server._cad_state_block`, at most
+200 tokens): object names with bounding boxes and the editable parameters
+with their current values and ids, including any Parameters-tab rebuild
+since the last turn. A rebuild refreshes the records' bounding boxes for
+this (FreeCAD: the final solid's; stale ones after the first change are
+dropped).
+
+### Sketch to CAD
+
+`analyze_reference_design` returns an OCR-grounded JSON blueprint; the
+model builds it with ordinary `create_freecad_*` calls, so the result is in
+the call log, editable in the Parameters tab (a misread dimension is fixed
+for 0 tokens) and exportable as a macro like any other build.
 
 ## Session persistence
 

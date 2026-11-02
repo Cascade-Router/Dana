@@ -74,7 +74,7 @@ Every geometry tool is defined once in `dana/plugins/freecad/ir.py` as an IR kin
 - **Collisions.** `validate_assembly_collisions` intersects every member pair's solids (`Shape.common`) after an axis-aligned bounding-box broadphase, and reports each pair's true minimum clearance; a pair that cannot be computed fails the check instead of passing as collision-free.
 - **Stability.** The BOM computes each part's mass from its volume and material and checks whether the assembly's center of mass, dropped onto the ground plane, lies inside the convex hull of its ground-contact points, with a margin.
 - **Printability.** The part is meshed and checked for closed, manifold, consistently wound geometry, build-volume fit (a PrusaSlicer profile, `DANA_PRINTER_BED_MM`, or a Prusa MK4) and overhangs beyond 45°; the six principal orientations are scored and the best one recommended.
-- **Drawings and robotics.** TechDraw produces dimensioned orthographic and isometric sheets with a title block filled from the BOM; `export_assembly_to_urdf` writes one link per part with its mesh, mass and inertia tensor, joined by the kinematic joints the agent declared.
+- **Drawings and robotics.** TechDraw produces dimensioned orthographic and isometric sheets with a title block filled from the BOM (without FreeCAD, the same sheet is projected from the mock's mesh as a wireframe); `export_assembly_to_urdf` writes one link per part with its mesh, mass and inertia tensor, joined by the kinematic joints the agent declared.
 - **Pipeline.** `run_full_manufacturing_pipeline` chains BOM → collisions → URDF → drawing → per-part printability → slicing, and reports `complete: false` with a reason (for example, colliding parts) rather than a partial success. It stops at G-code: sending a job to a printer is a separate call that always asks the user.
 
 ---
@@ -83,28 +83,30 @@ Every geometry tool is defined once in `dana/plugins/freecad/ir.py` as an IR kin
 
 ### 5.1 Offline suite
 
-`tests/evals/` runs five canonical tasks through the real `/ws/chat` loop on the mock engine. The model is scripted, so runs are deterministic and free, but it must pass the real gates: load the CAD capability, create a plan the validator accepts, load tools it isn't offered, and call tools whose arguments are validated. Subprocesses and network access are blocked during a run. Geometry is checked against hand-computed values.
+`tests/evals/` runs seven canonical tasks through the real `/ws/chat` loop on the mock engine. The model is scripted, so runs are deterministic and free, but it must pass the real gates: load the CAD capability, create a plan the validator accepts, load tools it isn't offered, and call tools whose arguments are validated. Subprocesses and network access are blocked during a run. Geometry is checked against hand-computed values.
 
 | Task | Result | Turns | Max tool-schema tokens | Retries | Geometry checks |
 |---|---|---:|---:|---:|---:|
-| Single primitive + topology check | PASS | 9 | 1,998 | 0 | 6/6 |
-| Multi-feature part (holes + chamfer) | PASS | 11 | 1,954 | 1 | 5/5 |
-| Boolean cut + tool-token budget | PASS | 6 | 1,998 | 0 | 5/5 |
-| Assembly + manufacturing verdict | PASS | 17 | 1,958 | 1 | 11/11 |
-| Zero-token parametric rebuild | PASS | 11 | 1,954 | 1 | 5/5 |
+| Single primitive + topology check | PASS | 9 | 1,997 | 0 | 6/6 |
+| Multi-feature part (holes + chamfer) | PASS | 11 | 1,915 | 1 | 5/5 |
+| Boolean cut + tool-token budget | PASS | 6 | 1,971 | 0 | 5/5 |
+| Assembly + manufacturing verdict | PASS | 17 | 1,991 | 1 | 11/11 |
+| Zero-token parametric rebuild | PASS | 11 | 1,915 | 1 | 5/5 |
+| Multi-turn edit (state block + `update_cad_parameters`) | PASS | 8 | 1,991 | 0 | 12/12 |
+| Sketch to CAD, OCR misread fixed for 0 tokens | PASS | 8 | 1,911 | 0 | 9/9 |
 
-Per-phase maxima across the five tasks, in cl100k tokens of tool schema per call:
+Per-phase maxima across the seven tasks, in cl100k tokens of tool schema per call:
 
 | Phase | First measurement | Now | Target |
 |---|---:|---:|---:|
-| Planning | 2,826 | 1,503 | ≤ 2,000 |
-| Executing | 3,382 | 1,979 | ≤ 2,000 |
-| Validating | (uncapped) | 1,993 | ≤ 2,000 |
-| Plan done (wrap-up) | 10,336 | 1,998 | ≤ 2,000 |
+| Planning | 2,826 | 1,521 | ≤ 2,000 |
+| Executing | 3,382 | 1,997 | ≤ 2,000 |
+| Validating | (uncapped) | 1,949 | ≤ 2,000 |
+| Plan done (wrap-up) | 10,336 | 1,991 | ≤ 2,000 |
 
-Turns over 2,000 tokens: 0 of 54. Executing turns with declared tools are 756–1,312 tokens; the turns near 2,000 are the capped sets, which add optional tools by relevance until the budget is spent.
+Turns over 2,000 tokens: 0 of 70. Executing turns with declared tools are 756–1,312 tokens; the turns near 2,000 are the capped sets, which add optional tools by relevance until the budget is spent.
 
-Retries are genuine self-corrections: an invalid face name rejected by the tool, and a part move blocked until the reference object was measured. The assembly task checks both verdicts: a colliding stand makes the pipeline report `complete: false` for that reason; once the post is lifted clear, collisions, URDF export, BOM masses and printability all pass. The rebuild task changes the plate from 80 to 100 mm with zero LLM calls and checks the new volume. The ceilings are enforced: a turn that grows past them fails the suite (`pytest tests/evals/`, ~5 s; `python scripts/run_offline_evals.py` prints the scorecard).
+Retries are genuine self-corrections: an invalid face name rejected by the tool, and a part move blocked until the reference object was measured. The assembly task checks both verdicts: a colliding stand makes the pipeline report `complete: false` for that reason; once the post is lifted clear, collisions, URDF export, BOM masses and printability all pass. The rebuild task changes the plate from 80 to 100 mm with zero LLM calls and checks the new volume. The multi-turn task lengthens a plate in the Parameters tab between turns, then checks that turn 2's prompt shows the new value (a 126-token state block) and that "make the hole radius 6 mm" is one `update_cad_parameters` call. The sketch task builds from a blueprint whose 16 mm thickness was read as 18 mm, fixes it in the Parameters tab, and checks the drawing (PDF, SVG, DXF, true sizes) and the macro's corrected value. The ceilings are enforced: a turn that grows past them fails the suite (`pytest tests/evals/`, ~5 s; `python scripts/run_offline_evals.py` prints the scorecard).
 
 ### 5.2 Live-model check
 
