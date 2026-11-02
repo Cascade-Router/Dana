@@ -267,6 +267,23 @@ def _patched_records(
     return [by_record.get(i, rec) for i, rec in enumerate(records)]
 
 
+def _with_bounding_boxes(
+    records: list[CadCallRecord], boxes: dict[int, Any], stale_from: int | None = None
+) -> list[CadCallRecord]:
+    """``records`` with their result bounding boxes brought up to date:
+    ``boxes`` gives fresh ones by index, and from ``stale_from`` on any box
+    not in ``boxes`` is dropped (geometry downstream of a change may have
+    moved, and an unknown box beats a wrong one)."""
+    out = []
+    for i, rec in enumerate(records):
+        if i in boxes:
+            rec = replace(rec, result={**rec.result, "bounding_box": boxes[i]})
+        elif stale_from is not None and i >= stale_from and "bounding_box" in rec.result:
+            rec = replace(rec, result={k: v for k, v in rec.result.items() if k != "bounding_box"})
+        out.append(rec)
+    return out
+
+
 def rebuild(
     call_log: CadCallLog,
     overrides: dict[str, Any],
@@ -306,7 +323,11 @@ def rebuild(
     backup(session_path)
     os.replace(scratch, session_path)
 
-    call_log.replace(_patched_records(records, applied, prepared["original"]))
+    # The script reports only the final solid's box.
+    final_record = plan.record_of_step[-1]
+    boxes = {final_record: result["bounding_box"]} if result.get("bounding_box") else {}
+    patched = _patched_records(records, applied, prepared["original"])
+    call_log.replace(_with_bounding_boxes(patched, boxes, stale_from=min(i for i, _ in applied)))
 
     return {
         "ok": True,
@@ -344,10 +365,13 @@ def rebuild_mock(
     saved = mock_driver.snapshot_mock_session(session_id)
     mock_driver.replace_mock_session(session_id, {})
     last: dict[str, Any] = {}
+    boxes: dict[int, Any] = {}
     for i in sorted(set(plan.record_of_step)):
         rec = patched[i]
         try:
             last = handlers[rec.tool_id](dict(rec.arguments), engine, None)
+            if last.get("bounding_box") is not None:
+                boxes[i] = last["bounding_box"]
         except Exception as exc:  # noqa: BLE001 — reported, state restored below
             last = {"ok": False, "error": str(exc)}
         if not last.get("ok", True):
@@ -357,7 +381,7 @@ def rebuild_mock(
                 "error": f"rebuild failed at {rec.tool_id}, model left unchanged: {last.get('error') or 'failed'}",
             }
 
-    call_log.replace(patched)
+    call_log.replace(_with_bounding_boxes(patched, boxes))
     return {
         "ok": True,
         "path": last.get("path"),

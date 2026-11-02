@@ -2129,6 +2129,29 @@ def _object_registry() -> dict[str, str]:
     return _OBJECT_PATH_REGISTRY.setdefault(get_session_id(), {})
 
 
+# The agent's way to change an existing model's dimensions in place:
+# dana.api.server runs it through the same zero-token rebuild as the
+# Parameters tab (it needs the session's call log, which handlers don't get).
+PARAMETER_EDIT_TOOL_ID = "update_cad_parameters"
+
+
+def _parameter_edit_tool_ids(session_id: str | None) -> frozenset[str]:
+    """``{PARAMETER_EDIT_TOOL_ID}`` once this session has geometry to edit,
+    else nothing -- so a fresh session's schemas don't carry it."""
+    sid = session_id if session_id is not None else get_session_id()
+    return frozenset({PARAMETER_EDIT_TOOL_ID}) if _OBJECT_PATH_REGISTRY.get(sid) else frozenset()
+
+
+def _tool_update_cad_parameters(_args: dict[str, Any], _engine: Any, _cp: Any) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": (
+            f"{PARAMETER_EDIT_TOOL_ID} needs the chat session's call log: dana.api.server runs it "
+            "through the parametric rebuild; it cannot be dispatched on its own."
+        ),
+    }
+
+
 def _format_object_registry_overlay(session_id: str | None = None) -> str:
     """Renders THIS session's real, dispatch-confirmed feature names (every
     key ``_object_registry()`` holds — populated by ``dispatch_tool_call``
@@ -5447,6 +5470,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], Any, Any], dict[str, Any]]] =
     "analyze_desktop_screen": _tool_analyze_desktop_screen,
     "query_engineering_standard": _tool_query_engineering_standard,
     "take_canvas_screenshot": _tool_take_canvas_screenshot,
+    PARAMETER_EDIT_TOOL_ID: _tool_update_cad_parameters,
     "execute_vision_analysis": _tool_execute_vision_analysis,
     "manipulate_camera": _tool_manipulate_camera,
 }
@@ -5856,6 +5880,7 @@ _VALIDATION_TOOL_IDS = _POST_PLAN_TOOL_IDS | {
 
 _FREECAD_TOOL_IDS = frozenset(
     {
+        "update_cad_parameters",
         "create_freecad_box",
         "create_freecad_cylinder",
         "create_freecad_extrusion",
@@ -5946,6 +5971,7 @@ _FREECAD_TOOL_IDS = frozenset(
 # with domain="freecad_full".
 _FREECAD_ESSENTIAL_TOOL_IDS = frozenset(
     {
+        "update_cad_parameters",
         "create_freecad_box",
         "create_freecad_cylinder",
         "perform_freecad_boolean",
@@ -7563,6 +7589,7 @@ def build_system_prompt(
     mounted_directories: list[str] | None = None,
     working_memory: str = "",
     session_id: str | None = None,
+    cad_state: str = "",
 ) -> str:
     """The dynamic context the LLM reasons over each turn — this is where
     the React 3D viewer's active-selection state enters the ReAct loop.
@@ -7731,6 +7758,12 @@ def build_system_prompt(
             "This is a compressed memory of earlier turns, not the verbatim conversation — "
             "if it seems to conflict with what the user just said, trust the user's latest message."
         )
+    if cad_state.strip():
+        # The live model and its editable parameters (dana.api.server.
+        # _cad_state_block): a new turn starts a fresh messages list, so this
+        # is how turn 2+ knows what turn 1 built, and what the user changed
+        # in the Parameters tab since.
+        lines.append(cad_state.strip())
     memory_section = format_core_memory_for_prompt()
     if memory_section:
         lines.append(memory_section)
@@ -7781,6 +7814,11 @@ def build_system_prompt(
             "example, if you need to create 3 coils, you must create three distinct tasks "
             "(e.g., Task 2: First coil, Task 3: Second coil, Task 4: Third coil)."
         )
+        if cad_state.strip():
+            lines.append(
+                f"Exception: to only change dimensions of the existing model listed above, call "
+                f"'{PARAMETER_EDIT_TOOL_ID}' instead of planning a rebuild."
+            )
     return "\n".join(lines)
 
 
@@ -8873,10 +8911,11 @@ async def next_react_turn(
             # PLANNING: no geometry tool is even offered -- see _llm_tools_
             # schema's hard_restrict_to docstring for why this is a hard
             # allow-list, not a narrowing bias.
-            hard_restrict_to = (_CORE_TOOL_IDS - _PLANNING_EXCLUDED_TOOL_IDS) | {
-                "search_tool_catalog",
-                "check_plugin_registry",
-            }
+            hard_restrict_to = (
+                (_CORE_TOOL_IDS - _PLANNING_EXCLUDED_TOOL_IDS)
+                | {"search_tool_catalog", "check_plugin_registry"}
+                | _parameter_edit_tool_ids(session_id)
+            )
             is_planning_phase = True
         else:
             # Every CAD phase below is bounded: a fixed allow-list, or a
@@ -8891,7 +8930,10 @@ async def next_react_turn(
             if fsm_state == "done":
                 # Plan finished: the wrap-up turn. Core tools minus the ones
                 # that need an unfinished plan, then the read-only checks.
-                capped_tools = (_CORE_TOOL_IDS - _ACTIVE_PLAN_TOOL_IDS, _POST_PLAN_TOOL_IDS)
+                capped_tools = (
+                    (_CORE_TOOL_IDS - _ACTIVE_PLAN_TOOL_IDS) | _parameter_edit_tool_ids(session_id),
+                    _POST_PLAN_TOOL_IDS,
+                )
             elif fsm_state == "validating":
                 # A task parked for a manual mark_task_completed: plan
                 # management, then checks/screenshots/exports.

@@ -432,6 +432,18 @@
       ]
     },
     {
+      "id": "update_cad_parameters",
+      "description_en": "Changes dimensions of the existing model by parameter id and rebuilds it in place, keeping every object name. Use it for any 'make X longer/wider/bigger' edit of what this session already built, instead of planning new geometry. The ids are listed under 'Current CAD model' in your context; a label like 'Plate.length' works too.",
+      "parameters": [
+        {
+          "name": "overrides",
+          "type": "object",
+          "required": true,
+          "description_en": "{parameter id or label: new value in mm, degrees or a count}, e.g. {\"0.length\": 120, \"1.radius\": 6}."
+        }
+      ]
+    },
+    {
       "id": "modify_freecad_parameter",
       "description_en": "Modifies a dimensional property of an existing object (e.g. changing a box's Height, or a cylinder's Radius), or moves and/or rotates it (parameter_name='Placement' or 'Placement.Base'), in place without recreating it. Refuses outright if target_object was anchored via anchor_assembly_root, or if a Placement/Placement.Base edit targets a part currently locked by an active apply_assembly_constraint mate -- re-call apply_assembly_constraint against the correct face/edge instead of overriding its Placement directly.",
       "parameters": [

@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import socket
 import subprocess
 import time
@@ -73,7 +74,9 @@ _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 @dataclass(frozen=True)
 class Step:
     tool_id: str
-    args: dict[str, Any]
+    # Or a function of the turn's system prompt, for a call whose arguments
+    # come from what the model was told (Task 6's parameter ids).
+    args: dict[str, Any] | Callable[[str], dict[str, Any]]
     expect_error: bool = False  # a deliberate mistake the gate must reject
 
 
@@ -93,8 +96,13 @@ class Scenario:
     steps: list[Step]
     reply: str
     checks: Callable[[Run], list[Check]]
-    # Runs after the chat turn on the same socket (Task 5's rebuild).
+    # Runs after the chat turn on the same socket (Task 5's rebuild, Task 6's
+    # rebuild and second turn).
     after: Callable[[Any, Run], None] | None = None
+    # A second user turn's calls and reply, played once the first turn's
+    # reply has been given.
+    turn2_steps: list[Step] = field(default_factory=list)
+    turn2_reply: str = ""
 
 
 @dataclass
@@ -183,13 +191,22 @@ class ScriptedModel:
     def __init__(self, run: Run) -> None:
         self._run = run
         scenario = run.scenario
-        self._sequence = [
-            Step("load_capability", {"domain": "freecad_full"}),
-            Step("create_plan", {"objective": scenario.prompt, "tasks": scenario.tasks}),
-            *scenario.steps,
+        self._turns = [
+            (
+                [
+                    Step("load_capability", {"domain": "freecad_full"}),
+                    Step("create_plan", {"objective": scenario.prompt, "tasks": scenario.tasks}),
+                    *scenario.steps,
+                ],
+                scenario.reply,
+            )
         ]
+        if scenario.turn2_steps:
+            self._turns.append((list(scenario.turn2_steps), scenario.turn2_reply))
+        self._turn = 0
+        self._sequence, self._reply = self._turns[0]
         self._next = 0
-        self._loaded: set[str] = set()
+        self.loaded: set[str] = set()
 
     def complete_with_tool_calls(self, messages: Any, *, tools: Any, provider: Any = None, **kwargs: Any) -> dict:
         from dana.core import react_dispatch as rd
@@ -200,15 +217,23 @@ class ScriptedModel:
         sid = self._run.session_id
         self._run.tool_phases.append(rd._get_fsm_state(sid) if rd._get_has_plan(sid) else "planning")
         result = {"model": MODEL, "provider": "eval", "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
+        system_prompt = str((messages or [{}])[0].get("content") or "")
+        self._run.extra.setdefault("system_prompts", {}).setdefault(self._turn, system_prompt)
         if self._next < len(self._sequence):
             step = self._sequence[self._next]
             gated = step.tool_id not in ("load_capability", "create_plan")
-            if gated and step.tool_id not in _offered(tools) and step.tool_id not in self._loaded:
-                self._loaded.add(step.tool_id)
+            if gated and step.tool_id not in _offered(tools) and step.tool_id not in self.loaded:
+                self.loaded.add(step.tool_id)
                 return {**result, "content": "", "tool_calls": [ToolCall("load_specific_tool", {"tool_id": step.tool_id})]}
             self._next += 1
-            return {**result, "content": "", "tool_calls": [ToolCall(step.tool_id, dict(step.args))]}
-        return {**result, "content": self._run.scenario.reply, "tool_calls": []}
+            args = step.args(system_prompt) if callable(step.args) else dict(step.args)
+            return {**result, "content": "", "tool_calls": [ToolCall(step.tool_id, args)]}
+        reply = self._reply
+        if self._turn + 1 < len(self._turns):  # the next user message starts the next script
+            self._turn += 1
+            self._sequence, self._reply = self._turns[self._turn]
+            self._next = 0
+        return {**result, "content": reply, "tool_calls": []}
 
 
 # --- environment ----------------------------------------------------------------------
@@ -578,6 +603,77 @@ def _task5_checks(run: Run) -> list[Check]:
     ]
 
 
+# --- Task 6: a second turn edits what the first built -------------------------------
+
+_PARAMETER_RE = re.compile(r"(?P<label>[\w.]+)=(?P<value>[-\d.]+)[^;\[\n]*\[(?P<id>[\w.]+)\]")
+
+
+def _prompt_parameters(system_prompt: str) -> dict[str, tuple[float, str]]:
+    """``label -> (value, id)`` from the "## Current CAD model" block."""
+    block = system_prompt.split("## Current CAD model", 1)[-1] if "## Current CAD model" in system_prompt else ""
+    return {m["label"]: (float(m["value"]), m["id"]) for m in _PARAMETER_RE.finditer(block.split("\n## ", 1)[0])}
+
+
+def _cad_state_section(system_prompt: str) -> str:
+    if "## Current CAD model" not in system_prompt:
+        return ""
+    return "## Current CAD model" + system_prompt.split("## Current CAD model", 1)[1].split("\n## ", 1)[0]
+
+
+def _hole_radius_override(system_prompt: str) -> dict[str, Any]:
+    """What a model does with the state block: look up the hole's radius id."""
+    _value, param_id = _prompt_parameters(system_prompt)["Hole.radius"]
+    return {"overrides": {param_id: 6}}
+
+
+def _ui_rebuild_then_turn2(ws: Any, run: Run) -> None:
+    """Between turns the user lengthens the plate in the Parameters tab (0
+    tokens); then turn 2 asks for a bigger hole."""
+    llm_calls = run.llm_calls
+    ws.send_json({"type": "list_parameters"})
+    table = _receive_until(ws, run, "parameters")
+    length = next(p for p in table["params"] if p["label"] == "Plate.length")
+    ws.send_json({"type": "rebuild", "overrides": {length["id"]: 60}})
+    run.extra["rebuild"] = _receive_until(ws, run, "rebuild_result")
+    run.extra["rebuild_llm_calls"] = run.llm_calls - llm_calls
+    run.extra["turn1_events"] = len(run.tool_events)
+    ws.send_json({"text": "Make the hole radius 6 mm."})
+    run.extra["turn2_reply"] = _receive_until(ws, run, "assistant_message")["content"]
+
+
+def _task6_checks(run: Run) -> list[Check]:
+    from dana.core import react_dispatch as rd
+
+    prompt2 = (run.extra.get("system_prompts") or {}).get(1, "")
+    section = _cad_state_section(prompt2)
+    params = _prompt_parameters(prompt2)
+    turn2 = run.tool_events[run.extra.get("turn1_events", 0):]
+    update = [e for e in turn2 if e["tool_id"] == "update_cad_parameters"]
+    plate = run.mesh("Bracket")
+    return [
+        Check("UI rebuild between turns: ok, 0 LLM calls",
+              (run.extra.get("rebuild") or {}).get("ok") is True and run.extra.get("rebuild_llm_calls") == 0),
+        Check("turn 2 sees the UI's new plate length (60)", params.get("Plate.length", (None,))[0] == 60.0,
+              str(params.get("Plate.length"))),
+        Check("turn 2 sees the hole radius (4) and its id", params.get("Hole.radius", (None,))[0] == 4.0,
+              str(params.get("Hole.radius"))),
+        Check("CAD state block lists the objects", "Objects:" in section and "Bracket" in section, section[:80]),
+        Check("its boxes follow the UI rebuild (Bracket 60×30×10)", "Bracket 60×30×10 at (0, 0, 0)" in section,
+              section.split("Objects:", 1)[-1][:120]),
+        Check("CAD state block <= 200 tokens", 0 < rd._count_tokens(section) <= 200, str(rd._count_tokens(section))),
+        Check("update_cad_parameters offered without loading it",
+              "update_cad_parameters" not in run.model.loaded),
+        Check("turn 2 changed it with update_cad_parameters only",
+              [e["tool_id"] for e in turn2] == ["update_cad_parameters"] and update[0]["status"] == "success",
+              str([(e["tool_id"], e["status"]) for e in turn2])),
+        Check("object names kept", (update[0]["output"] or {}).get("name") == "Bracket" if update else False),
+        Check("plate is 60 x 30 x 10", _extents(plate) == [60.0, 30.0, 10.0], str(_extents(plate))),
+        _close("volume = 60·30·10 - π·6²·10", float(plate.volume), 60 * 30 * 10 - math.pi * 36 * 10 * _POLYGON_32,
+               rel=1e-3),
+        Check("turn 2's reply", run.extra.get("turn2_reply") == "The hole is now 6 mm in radius."),
+    ]
+
+
 SCENARIOS: list[Scenario] = [
     Scenario(
         key="t1_primitive_topology",
@@ -678,6 +774,28 @@ SCENARIOS: list[Scenario] = [
         reply="The mounting plate has four 6 mm through-holes and chamfered edges.",
         checks=_task5_checks,
         after=_rebuild,
+    ),
+    Scenario(
+        key="t6_multi_turn_edit",
+        title="Multi-turn edit (state block + update_cad_parameters)",
+        prompt="A 40 x 30 x 10 mm mounting plate with a centered 4 mm radius through-hole.",
+        tasks=[
+            {"description": "Create the plate", "expected_tools": ["create_freecad_box"]},
+            {"description": "Create the hole cylinder", "expected_tools": ["create_freecad_cylinder"]},
+            {"description": "Cut the hole through the plate", "expected_tools": ["perform_freecad_boolean"]},
+        ],
+        steps=[
+            Step("create_freecad_box", {"name": "Plate", "length": 40, "width": 30, "height": 10}),
+            Step("create_freecad_cylinder",
+                 {"name": "Hole", "radius": 4, "height": 10, "placement_x": 20, "placement_y": 15, "placement_z": 0}),
+            Step("perform_freecad_boolean",
+                 {"operation": "cut", "base_object": "Plate", "tool_object": "Hole", "name": "Bracket"}),
+        ],
+        reply="The mounting plate with its through-hole is built.",
+        checks=_task6_checks,
+        after=_ui_rebuild_then_turn2,
+        turn2_steps=[Step("update_cad_parameters", _hole_radius_override)],
+        turn2_reply="The hole is now 6 mm in radius.",
     ),
 ]
 

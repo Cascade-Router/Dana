@@ -113,6 +113,7 @@ from dana.core.react_dispatch import (  # noqa: E402
     plugin_registry_view,
 )
 from dana.core.react_dispatch import _TOOL_TOKEN_BUDGET as _TOOL_SCHEMA_TOKEN_BUDGET  # noqa: E402
+from dana.core.react_dispatch import PARAMETER_EDIT_TOOL_ID  # noqa: E402
 from dana.core.context_distiller import schedule_distillation  # noqa: E402
 from dana.paths import CAPTURES_DIR  # noqa: E402
 from dana.session_context import set_session_id  # noqa: E402
@@ -829,19 +830,19 @@ def _is_mock_engine(engine: Any) -> bool:
     return isinstance(engine, MockFreeCADEngine)
 
 
-async def _run_rebuild(websocket: WebSocket, session: dict[str, Any], overrides: dict[str, Any]) -> None:
-    """Zero-token parametric rebuild (no LLM call). Queued like a turn
-    (_spawn_turn), so it never races a running ReAct turn's FreeCAD calls."""
+async def _perform_rebuild(
+    session: dict[str, Any], overrides: dict[str, Any], *, zero_token: bool
+) -> tuple[dict[str, Any], str | None]:
+    """Rebuilds this session's model with ``overrides`` (parameter ids ->
+    values) and refreshes its mesh/STEP artifacts: ``(result, mesh_url)``.
+    Shared by the Parameters tab (``zero_token``: counted as a rebuild that
+    cost no LLM call) and the agent's update_cad_parameters tool."""
     from dana.plugins.freecad import engine as freecad_engine
     from dana.plugins.freecad.rebuild import rebuild, rebuild_mock
 
     engine = get_cad_engine()
-    call_log = session.get("call_log")
-    if call_log is None:
-        await websocket.send_json({"type": "rebuild_result", "ok": False, "error": "Nothing to rebuild yet."})
-        return
+    call_log = session["call_log"]
     set_session_id(session["session_id"])
-    started = time.perf_counter()
     if _is_mock_engine(engine):
         # Headless driver (HF Space, CI): replay the call log through it.
         result = await asyncio.to_thread(
@@ -886,9 +887,21 @@ async def _run_rebuild(websocket: WebSocket, session: dict[str, Any], overrides:
             artifacts_registry.register_artifact(
                 step["path"], format="step", source="generated", session_id=session["session_id"]
             )
-        _cost_tracking(session)["zero_token_rebuilds"] += 1
+        if zero_token:
+            _cost_tracking(session)["zero_token_rebuilds"] += 1
         if session.get("session_title") is not None:
             await asyncio.to_thread(_save_session_record, session)  # the call log changed
+    return result, mesh_url
+
+
+async def _run_rebuild(websocket: WebSocket, session: dict[str, Any], overrides: dict[str, Any]) -> None:
+    """Zero-token parametric rebuild (no LLM call). Queued like a turn
+    (_spawn_turn), so it never races a running ReAct turn's FreeCAD calls."""
+    if session.get("call_log") is None:
+        await websocket.send_json({"type": "rebuild_result", "ok": False, "error": "Nothing to rebuild yet."})
+        return
+    started = time.perf_counter()
+    result, mesh_url = await _perform_rebuild(session, overrides, zero_token=True)
     event = {
         "type": "rebuild_result",
         "ok": bool(result.get("ok")),
@@ -901,6 +914,140 @@ async def _run_rebuild(websocket: WebSocket, session: dict[str, Any], overrides:
     await websocket.send_json(event)
     _log_terminal_event(session, event)
     await websocket.send_json(_parameters_event(session))
+
+
+def _resolve_parameter_overrides(session: dict[str, Any], raw: Any) -> tuple[dict[str, float], str | None]:
+    """``update_cad_parameters``' overrides keyed by parameter id
+    ("0.length"), with labels ("Plate.length", any case) translated to ids.
+    ``(overrides, error)``; the error lists what can be changed."""
+    from dana.plugins.freecad.rebuild import parameter_table
+
+    call_log = session.get("call_log")
+    params = parameter_table(call_log.records if call_log else [], _REBUILD_GEOMETRY_TOOLS)["params"]
+    if not params:
+        return {}, "This session has no editable parameters yet; build the model first."
+    if not isinstance(raw, dict) or not raw:
+        return {}, 'overrides must be a non-empty object, e.g. {"0.length": 120}.'
+    by_label = {str(p["label"]).lower(): p["id"] for p in params}
+    ids = {p["id"] for p in params}
+    resolved: dict[str, float] = {}
+    for key, value in raw.items():
+        param_id = key if key in ids else by_label.get(str(key).strip().lower())
+        if param_id is None:
+            known = ", ".join(f"{p['label']} [{p['id']}]" for p in params)
+            return {}, f"unknown parameter {key!r}; editable: {known}"
+        resolved[param_id] = value
+    return resolved, None
+
+
+async def _agent_parameter_update(websocket: WebSocket, session: dict[str, Any], call: Any) -> ToolResult:
+    """The agent's update_cad_parameters call, run through the same rebuild
+    as the Parameters tab, so object names, the call log, the mesh and the
+    UI's parameter list all stay in step. Never recorded in the call log
+    itself: the rebuild rewrites the records it changed."""
+    from dana.core import react_dispatch as rd
+
+    started = time.perf_counter()
+    if session.get("call_log") is None:
+        overrides, error = {}, "Nothing to update yet: no CAD model has been built in this session."
+    else:
+        overrides, error = _resolve_parameter_overrides(session, (call.arguments or {}).get("overrides"))
+    mesh_url: str | None = None
+    if error is None:
+        result, mesh_url = await _perform_rebuild(session, overrides, zero_token=False)
+        error = None if result.get("ok") else str(result.get("error") or "rebuild failed")
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    if error is not None:
+        # Verbatim, not digested: an unknown-id error lists the valid ids.
+        payload = {"ok": False, "error": error}
+        ok, message = False, error
+    else:
+        payload = {
+            "ok": True,
+            "name": result.get("name"),
+            "bounding_box": result.get("bounding_box"),
+            "applied": result.get("applied", {}),
+            "message": "Rebuilt with the new values; every object kept its name.",
+        }
+        ok, message = True, "ok"
+    note = rd._advance_fsm_on_dispatch(call.tool_id, ok=ok)
+    if note:
+        payload["message"] = f"{payload.get('message') or message} {note}".strip()
+    session["_parameter_edit_mesh_url"] = mesh_url
+    await websocket.send_json(_parameters_event(session))
+    return ToolResult(call.tool_id, ok, payload, message, duration_ms)
+
+
+# The live-model block of every CAD turn's system prompt (_cad_state_block).
+_CAD_STATE_MAX_TOKENS = 200
+
+
+def _bbox_text(bbox: Any) -> str:
+    """"40×30×10 at (0, 0, 0)" from a [xmin, ymin, zmin, xmax, ymax, zmax]
+    list (the mock) or a FreeCAD-style {"xmin", ..., "xlen", ...} dict."""
+
+    def num(v: float) -> str:
+        return f"{float(v):g}"
+
+    if isinstance(bbox, (list, tuple)) and len(bbox) == 6:
+        lo, hi = bbox[:3], bbox[3:]
+        size = [b - a for a, b in zip(lo, hi)]
+    elif isinstance(bbox, dict) and all(k in bbox for k in ("xmin", "ymin", "zmin", "xlen", "ylen", "zlen")):
+        lo = [bbox["xmin"], bbox["ymin"], bbox["zmin"]]
+        size = [bbox["xlen"], bbox["ylen"], bbox["zlen"]]
+    else:
+        return ""
+    return f"{'×'.join(num(v) for v in size)} at ({', '.join(num(v) for v in lo)})"
+
+
+def _cad_state_block(session: dict[str, Any]) -> str:
+    """What this session's model is right now, for the system prompt: object
+    names with bounding boxes, and the editable parameters with their
+    CURRENT values (after any Parameters-tab rebuild between turns). A new
+    turn starts from [system, user] only, so without this turn 2 can't see
+    what turn 1 built. Kept within _CAD_STATE_MAX_TOKENS: the newest objects
+    and the first parameters are kept, the rest summarized as "+N more"."""
+    from dana.core.react_dispatch import _count_tokens
+    from dana.plugins.freecad.rebuild import parameter_table
+
+    call_log = session.get("call_log")
+    records = call_log.records if call_log else []
+    if not records:
+        return ""
+    boxes: dict[str, str] = {}
+    for rec in records:
+        name = rec.result.get("name") if rec.ok and isinstance(rec.result, dict) else None
+        text = _bbox_text(rec.result.get("bounding_box")) if name else ""
+        if name and text:
+            boxes.pop(str(name), None)
+            boxes[str(name)] = text  # re-inserted: newest last
+    table = parameter_table(records, _REBUILD_GEOMETRY_TOOLS)
+    params = [f"{p['label']}={p['value']:g}{' ' + p['unit'] if p['unit'] else ''} [{p['id']}]" for p in table["params"]]
+    if not boxes and not params:
+        return ""
+    objects = [f"{name} {text}" for name, text in boxes.items()]
+
+    def render(objs: list[str], hidden_objs: int, prms: list[str], hidden_prms: int) -> str:
+        lines = ["## Current CAD model (live; trust this over earlier turns)"]
+        if objs or hidden_objs:
+            lines.append("Objects: " + "; ".join(([f"+{hidden_objs} older"] if hidden_objs else []) + objs))
+        if table["reason"]:
+            lines.append("Parameters can't be edited: some steps have no replay.")
+        elif prms or hidden_prms:
+            lines.append("Parameters: " + "; ".join(prms + ([f"+{hidden_prms} more"] if hidden_prms else [])))
+            lines.append(f"Change these with {PARAMETER_EDIT_TOOL_ID}, not a new build.")
+        return "\n".join(lines)
+
+    objs, prms = list(objects), list(params)
+    text = render(objs, 0, prms, 0)
+    while _count_tokens(text) > _CAD_STATE_MAX_TOKENS and (objs or prms):
+        # Trim the longer list first; objects lose their oldest entries.
+        if prms and (len(prms) >= len(objs) or not objs):
+            prms.pop()
+        else:
+            objs.pop(0)
+        text = render(objs, len(objects) - len(objs), prms, len(params) - len(prms))
+    return text
 
 
 def _node_type_for(tool_id: str) -> str:
@@ -1243,6 +1390,7 @@ _HITL_ALWAYS_APPROVED_TOOLS: frozenset[str] = frozenset(
         "perform_freecad_boolean",
         "perform_freecad_edge_operation",
         "modify_freecad_parameter",
+        "update_cad_parameters",  # the same in-place dimension edit, through the rebuild
         "align_freecad_objects",
         "insert_standard_part",
         # Local-only geometry CRUD, same as every other entry here — imports
@@ -1516,20 +1664,25 @@ async def _execute_and_continue(
     # receive loop, broadcasts and the suspension sweeper. asyncio.to_thread
     # copies the current context, so set_session_id above still applies
     # inside the handler chain.
-    result = await asyncio.to_thread(
-        dispatch_tool_call,
-        call,
-        engine,
-        control_plane,
-        call_log=session.get("call_log"),
-        api_keys=session.get("api_keys"),
-        allowed_mounts=load_mounted_directories(),
-        # Zero-Trust Monolith Ban (dispatch_tool_call's own docstring): the
-        # ONLY thing that can authorize execute_freecad_script — THIS
-        # turn's actual original user message, never anything the model
-        # itself declares (a plan, an argument, a prior tool result).
-        raw_user_text=_first_user_text(messages),
-    )
+    session.pop("_parameter_edit_mesh_url", None)
+    if call.tool_id == PARAMETER_EDIT_TOOL_ID:
+        # Needs the session's call log and the server's rebuild/mesh path.
+        result = await _agent_parameter_update(websocket, session, call)
+    else:
+        result = await asyncio.to_thread(
+            dispatch_tool_call,
+            call,
+            engine,
+            control_plane,
+            call_log=session.get("call_log"),
+            api_keys=session.get("api_keys"),
+            allowed_mounts=load_mounted_directories(),
+            # Zero-Trust Monolith Ban (dispatch_tool_call's own docstring): the
+            # ONLY thing that can authorize execute_freecad_script — THIS
+            # turn's actual original user message, never anything the model
+            # itself declares (a plan, an argument, a prior tool result).
+            raw_user_text=_first_user_text(messages),
+        )
     # Stop clicked while the tool ran: the tool itself already happened, so
     # its result is still recorded below, but the best-effort mesh/STEP/
     # visual-verification follow-ups (more FreeCAD subprocesses) are skipped
@@ -1615,7 +1768,7 @@ async def _execute_and_continue(
         # result.payload["memory"] shape write_core_memory already produces.
         await _broadcast_memory_update(websocket, result.payload.get("memory"))
 
-    mesh_url = None
+    mesh_url = session.pop("_parameter_edit_mesh_url", None)  # an update_cad_parameters rebuild's
     if result.ok and call.tool_id in _CAD_CREATE_TOOLS:
         # Topological Lineage Graph: this is exactly the tool_id set whose
         # payload carries both "name" and "path" (the read-only inspection
@@ -2869,6 +3022,7 @@ async def _process_user_text(
                 # turn, so the ambient contextvar can't be trusted yet (see
                 # build_system_prompt's own docstring).
                 session_id=session["session_id"],
+                cad_state=_cad_state_block(session),
             ),
         },
         build_user_message(user_text, attachments),
