@@ -557,7 +557,7 @@ class _DeltaStreamer:
 
 # Tool id -> result payload keys naming a deliverable file it wrote.
 _DELIVERABLE_PATH_KEYS: dict[str, tuple[str, ...]] = {
-    "generate_2d_blueprint": ("path", "svg_path"),
+    "generate_2d_blueprint": ("path", "svg_path", "dxf_path"),
     "generate_assembly_bom": ("path",),
 }
 

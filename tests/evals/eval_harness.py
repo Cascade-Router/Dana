@@ -744,6 +744,24 @@ def _fix_ocr_then_export(ws: Any, run: Run) -> None:
     run.extra["rebuild_llm_calls"] = run.llm_calls - llm_calls
 
 
+def _blueprint_checks(drawing: dict[str, Any], run: Run) -> list[Check]:
+    """The drawing on the mock engine: a mesh projection, all three files
+    written, true sizes dimensioned, no FreeCAD call."""
+    files = {key: Path(drawing.get(key) or "") for key in ("path", "svg_path", "dxf_path")}
+    sizes = {d["view"]: (d["width_mm"], d["height_mm"]) for d in drawing.get("dimensions") or []}
+    return [
+        Check("2D blueprint drawn without FreeCAD",
+              drawing.get("projection") == "mesh" and not run.extra.get("freecad_calls_refused"),
+              str(drawing.get("error") or drawing.get("projection"))),
+        Check("blueprint .pdf, .svg and .dxf written",
+              sorted(p.suffix for p in files.values()) == [".dxf", ".pdf", ".svg"]
+              and all(p.is_file() and p.stat().st_size > 1000 for p in files.values()),
+              str({k: p.name for k, p in files.items()})),
+        Check("drawing dimensions: front 60 x 18, top 60 x 40, right 40 x 18",
+              sizes == {"Front": (60.0, 18.0), "Top": (60.0, 40.0), "Right": (40.0, 18.0)}, str(sizes)),
+    ]
+
+
 def _task7_checks(run: Run) -> list[Check]:
     params = run.extra.get("parameters") or {}
     rebuild = run.extra.get("rebuild") or {}
@@ -762,6 +780,7 @@ def _task7_checks(run: Run) -> list[Check]:
         Check("part is 60 x 40 x 16", _extents(part) == [60.0, 40.0, 16.0], str(_extents(part))),
         _close("volume = 60·40·16 - π·5²·16", float(part.volume), 60 * 40 * 16 - math.pi * 25 * 16 * _POLYGON_32,
                rel=1e-3),
+        *_blueprint_checks(run.last_output("generate_2d_blueprint"), run),
         Check("macro exported with the corrected thickness",
               macro_path.suffix == ".py" and bool(plate_height) and float(plate_height.group(1)) == 16.0
               and "base_plate.height = 16.0 mm" in macro,
@@ -901,6 +920,7 @@ SCENARIOS: list[Scenario] = [
             {"description": "Create the base plate", "expected_tools": ["create_freecad_box"]},
             {"description": "Create the bore cylinder", "expected_tools": ["create_freecad_cylinder"]},
             {"description": "Cut the bore through the plate", "expected_tools": ["perform_freecad_boolean"]},
+            {"description": "Draw the bracket", "expected_tools": ["generate_2d_blueprint"]},
         ],
         steps=[
             Step("analyze_reference_design", {"file_paths": ["sketch.png"]}),
@@ -908,6 +928,7 @@ SCENARIOS: list[Scenario] = [
             Step("create_freecad_cylinder", _bore_from_blueprint),
             Step("perform_freecad_boolean",
                  {"operation": "cut", "base_object": "base_plate", "tool_object": "bore", "name": "Bracket"}),
+            Step("generate_2d_blueprint", {"object_name": "Bracket", "filename": "sketch_bracket_drawing"}),
         ],
         reply="The bracket from your sketch is built: a 60 x 40 x 18 mm plate with a 5 mm bore.",
         checks=_task7_checks,

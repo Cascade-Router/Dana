@@ -77,6 +77,17 @@ SCRIPTS: dict[str, tuple[list[dict[str, Any]], list[tuple[str, dict[str, Any]]],
         ],
         "The stand's bill of materials is ready: two parts in PLA.",
     ),
+    "drawing": (
+        [
+            {"description": "Create the bracket", "expected_tools": ["create_freecad_box"]},
+            {"description": "Draw the bracket", "expected_tools": ["generate_2d_blueprint"]},
+        ],
+        [
+            ("create_freecad_box", {"name": "Bracket", "length": 50, "width": 30, "height": 8}),
+            ("generate_2d_blueprint", {"object_name": "Bracket", "filename": "bracket_drawing"}),
+        ],
+        "The bracket's drawing is ready: front, top, right and isometric views, dimensioned.",
+    ),
 }
 
 
@@ -159,6 +170,12 @@ def main() -> None:
 
     workspace = Path(tempfile.mkdtemp(prefix="dana-e2e-"))
     print(f"[mock_backend] workspace: {workspace}", flush=True)
+    # The mock engine imports trimesh lazily, ~3 s on first use. Paid by the
+    # first geometry call of every parallel spec at once, under three
+    # browsers, it took ~60 s and timed out unrelated tests; the specs test
+    # the UI, not a cold import.
+    import manifold3d  # noqa: F401
+    import trimesh  # noqa: F401
     try:
         if args.gradio:
             import app  # the Space entry point; imports dana.api.server itself

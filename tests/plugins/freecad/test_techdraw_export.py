@@ -673,3 +673,68 @@ def test_pipeline_reports_a_freecad_failure_without_rendering(
     result = json.loads(generate_2d_blueprint(existing_path))
     assert result["ok"] is False and "TechDraw crashed" in result["error"]
     assert not (tmp_path / "exports").exists()
+
+
+# --------------------------------------------------------------------------
+# Mock engine: the drawing is projected from the mock's own mesh, in-process
+# --------------------------------------------------------------------------
+
+
+def _mock_bracket() -> str:
+    from dana.platform.mock import MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    assert engine.create_box(40, 30, 10, name="Plate")["ok"]
+    assert engine.create_cylinder(4, 10, name="Hole", placement=(20.0, 15.0, 0.0))["ok"]
+    cut = engine.apply_boolean("cut", "Plate", "Hole", name="Bracket")
+    assert cut["ok"], cut
+    return cut["path"]
+
+
+def test_a_mock_mesh_is_drawn_without_freecad(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_freecad(*_a, **_k):
+        raise AssertionError("the mesh path must not start FreeCADCmd")
+
+    monkeypatch.setattr(techdraw_export, "_run_freecad_script", no_freecad)
+    result = json.loads(techdraw_export.generate_2d_blueprint(_mock_bracket(), object_name="Bracket", filename="bracket"))
+    assert result["ok"] is True, result
+    assert result["projection"] == "mesh" and "wireframe" in result["note"]
+    for key, suffix in (("path", ".pdf"), ("svg_path", ".svg"), ("dxf_path", ".dxf")):
+        path = Path(result[key])
+        assert path.suffix == suffix and path.is_file() and path.stat().st_size > 1000
+    sizes = {d["view"]: (d["width_mm"], d["height_mm"]) for d in result["dimensions"]}
+    assert sizes == {"Front": (40.0, 10.0), "Top": (40.0, 30.0), "Right": (30.0, 10.0)}
+
+
+def test_the_hosted_demo_draws_meshes_but_still_refuses_freecad_documents(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(techdraw_export, "IS_HF_SPACE", True)
+    drawn = json.loads(techdraw_export.generate_2d_blueprint(_mock_bracket(), object_name="Bracket"))
+    assert drawn["ok"] is True, drawn
+    document = tmp_path / "Session_Active.FCStd"
+    document.write_bytes(b"not really")
+    refused = json.loads(techdraw_export.generate_2d_blueprint(str(document), object_name="Bracket"))
+    assert refused["ok"] is False and "hosted cloud demo" in refused["error"]
+
+
+def test_dry_run_still_draws_a_mesh_and_part_sheets_say_they_need_freecad(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(techdraw_export, "is_dry_run_enabled", lambda: True)
+    result = json.loads(
+        techdraw_export.generate_2d_blueprint(_mock_bracket(), object_name="Bracket", include_part_sheets=True)
+    )
+    assert result["ok"] is True and "dry_run" not in result
+    assert result["page_count"] == 1 and "Per-part sheets need FreeCAD" in result["note"]
+
+
+def test_projection_layers_match_what_techdraw_writes(tmp_path: Path) -> None:
+    """One ``View<Name>`` layer per requested view, centred on its slot."""
+    import ezdxf
+
+    dxf = tmp_path / "page.dxf"
+    techdraw_export._write_mesh_projection_dxf(Path(_mock_bracket()), ["Front", "Isometric"], (297.0, 210.0), str(dxf))
+    boxes = techdraw_export._view_boxes(ezdxf.readfile(dxf))
+    assert set(boxes) == {"Front", "Isometric"}
+    x0, y0, x1, y1 = boxes["Front"]
+    assert (x1 - x0, y1 - y0) == pytest.approx((40.0, 10.0))
+    assert ((x0 + x1) / 2, (y0 + y1) / 2) == pytest.approx((0.30 * 297.0, 0.28 * 210.0))

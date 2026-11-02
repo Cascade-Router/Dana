@@ -198,3 +198,37 @@ test("an assembly session's BOM popover opens inside the viewport with its stats
 
   expectNoConsoleErrors(session.consoleErrors);
 });
+
+test("the mock engine draws a real 2D blueprint the Deliverables bar shows and downloads", async ({ page }) => {
+  test.setTimeout(180_000);
+  const session = await openCadSession(page);
+  await send(page, "Make a bracket and give me its drawing");
+  await expect(page.locator(".chat-panel__bubble--assistant", { hasText: "drawing is ready" })).toHaveCount(1, {
+    timeout: 60_000,
+  });
+
+  // No FreeCAD here: the SVG/PDF are projected from the mock's own mesh.
+  const bar = page.locator(".deliverables-bar");
+  const blueprint = bar.getByRole("button", { name: "Blueprint", exact: true });
+  await expect(blueprint).toBeEnabled({ timeout: 15_000 });
+  await expect(bar.getByRole("button", { name: "PDF", exact: true })).toBeEnabled();
+  await blueprint.click();
+  const image = page.locator(".blueprint-viewer__image");
+  await expect(image).toBeVisible({ timeout: 15_000 });
+  const src = (await image.getAttribute("src"))!;
+  expect(src).toMatch(/bracket_drawing\.svg/);
+  const svg = await page.request.get(new URL(src, API_BASE).toString());
+  expect(svg.status()).toBe(200);
+  const svgText = await svg.text();
+  expect(svgText).toContain("<svg");
+  // The dimension labels are the part's true size: 50 x 8 front, 50 x 30 top.
+  for (const size of ["50", "30", "8"]) expect(svgText).toContain(`>${size} mm<`);
+  // Viewer3D stays mounted behind the 2D view.
+  await expect(page.locator(".viewer3d canvas")).toHaveCount(1);
+
+  await bar.getByRole("button", { name: "PDF", exact: true }).click();
+  await expect.poll(session.openedUrls, { timeout: 15_000 }).toContainEqual(
+    expect.stringMatching(/bracket_drawing\.pdf\/download\?session_id=/)
+  );
+  expectNoConsoleErrors(session.consoleErrors);
+});

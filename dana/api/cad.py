@@ -43,10 +43,10 @@ _FREECAD_EXPORT_DIR = DANA_WORKSPACE / "exports"
 # sandbox (so the agent can read them back), session-scoped the same way.
 _AGENT_EXPORT_DIR = AGENT_WORKSPACE_DIR / "exports"
 
-# Lowercase (matched against suffix.lower()). .pdf/.svg: 2D blueprints;
+# Lowercase (matched against suffix.lower()). .pdf/.svg/.dxf: 2D blueprints;
 # .csv: BOM; .py/.fcmacro: the session's replayable FreeCAD macro.
 _ARTIFACT_EXTENSIONS = frozenset(
-    {".step", ".stp", ".stl", ".fcstd", ".urdf", ".glb", ".obj", ".svg", ".pdf", ".csv", ".py", ".fcmacro"}
+    {".step", ".stp", ".stl", ".fcstd", ".urdf", ".glb", ".obj", ".svg", ".pdf", ".dxf", ".csv", ".py", ".fcmacro"}
 )
 
 # Throwaway-intermediate marker: dana.plugins.freecad.engine.export_mesh_stl

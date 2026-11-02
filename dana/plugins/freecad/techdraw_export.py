@@ -31,6 +31,14 @@ Bypasses the ``BaseCADEngine`` platform abstraction and calls
 ``dana.plugins.freecad.engine``'s stateless script-runner directly — same
 precedent as ``standard_parts.py``: this is FreeCAD-plugin-specific
 tooling, not a cross-platform primitive.
+
+Without FreeCAD (the mock engine on the hosted demo and Linux CI) the
+source is the mock's own mesh file, and step (1) is done in this process
+instead: ``_write_mesh_projection_dxf`` projects the mesh's feature edges
+into the same ``View<Name>`` layers at the same page slots, so step (2) --
+dimensions, scale, title block, PDF and SVG -- runs unchanged. It is a
+wireframe projection: hidden edges are drawn too, there is no hidden-line
+removal. Either way the finished sheet is also kept as a ``.dxf``.
 """
 
 from __future__ import annotations
@@ -524,6 +532,77 @@ def _sheet_figure(sheet: _Sheet, page_size_mm: tuple[float, float]) -> Any:
     return fig
 
 
+# Mesh files the mock engine writes: a source with one of these suffixes is
+# drawn by projecting the mesh instead of through FreeCAD.
+_MESH_SUFFIXES = frozenset({".glb", ".gltf", ".stl", ".obj", ".ply"})
+# Adjacent faces meeting at more than this are a drawn edge; a 32-segment
+# cylinder's facets meet at 11.25 degrees, so its side stays a smooth surface.
+_FEATURE_EDGE_ANGLE_DEG = 20.0
+
+
+def _view_basis(direction: Sequence[float], xdirection: Sequence[float]) -> tuple[Any, Any]:
+    """Page-right and page-up unit vectors for a view: ``xdirection`` made
+    perpendicular to ``direction``, and world up (+Z; +Y for a view along Z)
+    made perpendicular to both."""
+    import numpy as np
+
+    d = np.asarray(direction, dtype=float)
+    d /= np.linalg.norm(d)
+    x = np.asarray(xdirection, dtype=float)
+    x = x - x.dot(d) * d
+    x /= np.linalg.norm(x)
+    up = np.array([0.0, 1.0, 0.0]) if abs(d[2]) > 0.99 else np.array([0.0, 0.0, 1.0])
+    y = up - up.dot(d) * d - up.dot(x) * x
+    return x, y / np.linalg.norm(y)
+
+
+def _feature_edges(mesh: Any) -> Any:
+    """``(n, 2, 3)`` endpoints of the mesh's drawable edges: where adjacent
+    faces meet at a crease, plus any open boundary."""
+    import numpy as np
+    import trimesh
+
+    sharp = mesh.face_adjacency_edges[mesh.face_adjacency_angles > np.radians(_FEATURE_EDGE_ANGLE_DEG)]
+    boundary = mesh.edges_sorted[trimesh.grouping.group_rows(mesh.edges_sorted, require_count=1)]
+    return mesh.vertices[np.vstack([sharp.reshape(-1, 2), boundary.reshape(-1, 2)])]
+
+
+def _write_mesh_projection_dxf(
+    mesh_path: Path, view_names: Sequence[str], page_size_mm: tuple[float, float], dxf_path: str
+) -> None:
+    """What the FreeCAD branch's TechDraw page writes, from a mesh: each
+    requested view's projected edges as LINEs on layer ``View<Name>``, 1:1 in
+    page millimetres, centred on that view's page slot."""
+    import ezdxf
+    import numpy as np
+    import trimesh
+
+    mesh = trimesh.load(mesh_path, force="mesh")
+    if mesh.is_empty:
+        raise ValueError(f"{mesh_path.name} has no geometry to draw")
+    edges = _feature_edges(mesh)
+    doc = ezdxf.new()
+    msp = doc.modelspace()
+    width, height = page_size_mm
+    for name in view_names:
+        layout = _VIEW_LAYOUT[name.lower()]
+        x_axis, y_axis = _view_basis(layout["direction"], layout["xdirection"])
+        flat = np.stack([edges @ x_axis, edges @ y_axis], axis=-1)  # (n, 2, 2)
+        lo, hi = flat.reshape(-1, 2).min(axis=0), flat.reshape(-1, 2).max(axis=0)
+        centre = np.array([layout["slot"][0] * width, layout["slot"][1] * height])
+        placed = flat - (lo + hi) / 2.0 + centre
+        layer = f"View{name.lower().capitalize()}"
+        seen: set[tuple[float, ...]] = set()
+        for start, end in placed:
+            a, b = tuple(np.round(start, 6)), tuple(np.round(end, 6))
+            key = a + b if a <= b else b + a
+            if a == b or key in seen:
+                continue  # an edge seen end-on, or one drawn already
+            seen.add(key)
+            msp.add_line(a, b, dxfattribs={"layer": layer})
+    doc.saveas(dxf_path)
+
+
 def _blueprint_dir() -> Path:
     """``exports/sessions/<session_id>/`` (same layout as
     ``engine._export_dir``), so the stale-file ``unlink`` below can only
@@ -649,6 +728,7 @@ def _render_dxf_to_svg(
     )
     svg_text = _svg_labels(svg_text, sheet.labels, page_size_mm)
 
+    sheet.doc.saveas(_blueprint_dir() / f"{_safe_name(name)}.dxf")  # the sheet itself, for CAD/CAM
     out_path = _blueprint_dir() / f"{_safe_name(name)}.svg"
     # Same stale-file guard as _render_dxf_to_pdf's own out_path — see that
     # function's comment for the exact failure this prevents.
@@ -745,13 +825,15 @@ def generate_2d_blueprint(
     first unreferenced object was drawn, whatever was asked for. Only a
     genuinely single-object file can omit it.
     """
-    if IS_HF_SPACE:
+    target = Path(source_path)
+    from_mesh = target.suffix.lower() in _MESH_SUFFIXES
+    if IS_HF_SPACE and not from_mesh:
         # Same bypass as standard_parts.py's insert_standard_part (see this
         # module's own docstring) — never goes through get_cad_engine()'s
         # Mock/Real switch, always a real FreeCADCmd subprocess. Gated here,
-        # at the shell-out itself, regardless of caller.
+        # at the shell-out itself, regardless of caller. The mock engine's
+        # meshes are drawn in-process instead (see the module docstring).
         return _error("generate_2d_blueprint is disabled in the hosted cloud demo — it requires the real FreeCAD engine.")
-    target = Path(source_path)
     if not target.is_file():
         return _error(f"generate_2d_blueprint: source_path not found: {source_path}")
 
@@ -787,7 +869,9 @@ def generate_2d_blueprint(
         return _error("generate_2d_blueprint: title_block must be an object of title-block fields")
 
     resolved_name = filename or target.stem
-    if is_dry_run_enabled():
+    # Dry run skips the FreeCADCmd subprocess; a mesh projection only writes
+    # this session's export files in-process, like the mock's other exports.
+    if is_dry_run_enabled() and not from_mesh:
         return _dry_run_result(
             "generate_2d_blueprint", name=resolved_name, views=requested, page_size=size_key
         )
@@ -817,23 +901,29 @@ def generate_2d_blueprint(
     fd, dxf_path = tempfile.mkstemp(suffix=".dxf")
     os.close(fd)
     os.unlink(dxf_path)
-    sheets_dir = tempfile.mkdtemp(prefix="dana_part_sheets_") if include_part_sheets else None
+    sheets_dir = tempfile.mkdtemp(prefix="dana_part_sheets_") if include_part_sheets and not from_mesh else None
     overview_rows = _overview_rows(title_block, object_name or resolved_name) if title_block is not None else None
     try:
-        script = _BLUEPRINT_SCRIPT.format(
-            resolve_snippet=_RESOLVE_OBJECT_SNIPPET,
-            object_lookup=_object_lookup_snippet(target_object=object_name),
-            source_path=str(target),
-            template_parts=_PAGE_TEMPLATES[size_key],
-            view_specs=view_specs,
-            dxf_path=dxf_path,
-            marker=_OK_MARKER,
-        )
-        if sheets_dir:
-            script += _PART_SHEETS_SCRIPT.format(sheets_dir=sheets_dir)
-        result = _run_freecad_script(script, timeout=_HEAVY_ANALYSIS_TIMEOUT_S)
-        if not result["ok"]:
-            return _error(f"generate_2d_blueprint failed: {result['error']}")
+        if from_mesh:
+            try:
+                _write_mesh_projection_dxf(target, requested, _PAGE_SIZES_MM[size_key], dxf_path)
+            except Exception as exc:  # noqa: BLE001 — surface as a normal tool failure, not a crash
+                return _error(f"generate_2d_blueprint: projecting {target.name} failed: {exc}")
+        else:
+            script = _BLUEPRINT_SCRIPT.format(
+                resolve_snippet=_RESOLVE_OBJECT_SNIPPET,
+                object_lookup=_object_lookup_snippet(target_object=object_name),
+                source_path=str(target),
+                template_parts=_PAGE_TEMPLATES[size_key],
+                view_specs=view_specs,
+                dxf_path=dxf_path,
+                marker=_OK_MARKER,
+            )
+            if sheets_dir:
+                script += _PART_SHEETS_SCRIPT.format(sheets_dir=sheets_dir)
+            result = _run_freecad_script(script, timeout=_HEAVY_ANALYSIS_TIMEOUT_S)
+            if not result["ok"]:
+                return _error(f"generate_2d_blueprint failed: {result['error']}")
 
         part_sheets: list[tuple[str, _Sheet]] = []
         try:
@@ -874,12 +964,20 @@ def generate_2d_blueprint(
         if sheets_dir:
             shutil.rmtree(sheets_dir, ignore_errors=True)
 
+    extra: dict[str, Any] = {}
+    if from_mesh:
+        extra["note"] = "Drawn from the mock engine's mesh: a wireframe projection, hidden edges included."
+        if include_part_sheets:
+            extra["note"] += " Per-part sheets need FreeCAD; only the overview sheet was drawn."
     return _ok(
         name=resolved_name,
         views=requested,
         page_size=size_key,
         path=str(pdf_path),
         svg_path=str(svg_path),
+        dxf_path=str(svg_path.with_suffix(".dxf")),
+        projection="mesh" if from_mesh else "techdraw",
+        **extra,
         dimensions=sheet.dimensions,
         scale=_scale_text(sheet.scale),
         scale_factor=sheet.scale,
