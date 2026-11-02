@@ -61,12 +61,15 @@ PHASE_TARGETS = {"planning": 2000, "executing": 2000, "validating": 2000, "done"
 # five tool ids to create_plan's expected_tools list (+27 tokens): a live
 # DeepSeek run planned get_freecad_bounding_box for "verify its topology"
 # because query_topology was not in the only tool list a planner sees.
+# Phase 10 added analyze_reference_design and generate_2d_blueprint to that
+# list (+18): without them a planner had no listed tool for reading a
+# sketch, so a sketch-to-CAD request could not be planned.
 # Executing a task with declared tools offers those tools plus discovery
 # and plan management (756-1,312 tokens here; 2,586 before Phase 8, when it
 # carried the whole core set). Executing without declared tools, validating
 # and the wrap-up turn fill optional tools by relevance until the budget runs
 # out (1,950-1,998 here), so their ceiling is the budget itself.
-TOOL_TOKEN_CEILINGS = {"planning": 1503, "executing": 2000, "validating": 2000, "done": 2000}
+TOOL_TOKEN_CEILINGS = {"planning": 1521, "executing": 2000, "validating": 2000, "done": 2000}
 _ENV = {"DANA_HEADLESS": "true", "DANA_OS_DRY_RUN": "1", "DANA_CONTEXT_DISTILL": "0", "DANA_AUTO_APPROVE": "0"}
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
@@ -74,9 +77,10 @@ _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 @dataclass(frozen=True)
 class Step:
     tool_id: str
-    # Or a function of the turn's system prompt, for a call whose arguments
-    # come from what the model was told (Task 6's parameter ids).
-    args: dict[str, Any] | Callable[[str], dict[str, Any]]
+    # Or a function of the turn's messages, for a call whose arguments come
+    # from what the model was told or shown: Task 6's parameter ids in the
+    # system prompt, Task 7's blueprint in a tool result.
+    args: dict[str, Any] | Callable[[list[dict[str, Any]]], dict[str, Any]]
     expect_error: bool = False  # a deliberate mistake the gate must reject
 
 
@@ -226,7 +230,7 @@ class ScriptedModel:
                 self.loaded.add(step.tool_id)
                 return {**result, "content": "", "tool_calls": [ToolCall("load_specific_tool", {"tool_id": step.tool_id})]}
             self._next += 1
-            args = step.args(system_prompt) if callable(step.args) else dict(step.args)
+            args = step.args(list(messages or [])) if callable(step.args) else dict(step.args)
             return {**result, "content": "", "tool_calls": [ToolCall(step.tool_id, args)]}
         reply = self._reply
         if self._turn + 1 < len(self._turns):  # the next user message starts the next script
@@ -288,6 +292,7 @@ def install(patch: Patch, setenv: SetEnv, run_ref: list[Run]) -> None:
         return real_connect(sock, address)
 
     patch(engine, "_run_freecad_script", no_freecad)
+    patch(rd, "_vision_analyze_reference_design", _sketch_reading)
     patch(subprocess, "Popen", no_subprocess)
     patch(socket.socket, "connect", loopback_only)
 
@@ -620,9 +625,9 @@ def _cad_state_section(system_prompt: str) -> str:
     return "## Current CAD model" + system_prompt.split("## Current CAD model", 1)[1].split("\n## ", 1)[0]
 
 
-def _hole_radius_override(system_prompt: str) -> dict[str, Any]:
+def _hole_radius_override(messages: list[dict[str, Any]]) -> dict[str, Any]:
     """What a model does with the state block: look up the hole's radius id."""
-    _value, param_id = _prompt_parameters(system_prompt)["Hole.radius"]
+    _value, param_id = _prompt_parameters(str(messages[0].get("content") or ""))["Hole.radius"]
     return {"overrides": {param_id: 6}}
 
 
@@ -671,6 +676,96 @@ def _task6_checks(run: Run) -> list[Check]:
         _close("volume = 60·30·10 - π·6²·10", float(plate.volume), 60 * 30 * 10 - math.pi * 36 * 10 * _POLYGON_32,
                rel=1e-3),
         Check("turn 2's reply", run.extra.get("turn2_reply") == "The hole is now 6 mm in radius."),
+    ]
+
+
+# --- Task 7: a sketch with one misread dimension, fixed for 0 tokens ----------------
+
+# What OCR + the two VLM passes return for a drawing of a 60 x 40 x 16 mm
+# plate with a 5 mm radius bore: the handwritten "16" read as "18", the
+# misreading the Parameters tab exists to fix without another model call.
+SKETCH_BLUEPRINT: dict[str, Any] = {
+    "bounding_box": {"x": 60.0, "y": 40.0, "z": 18.0},
+    "primitives": [
+        {"id": "base_plate", "type": "box", "dimensions": {"length": 60.0, "width": 40.0, "height": 18.0}},
+        {"id": "bore", "type": "cylinder", "dimensions": {"radius": 5.0, "height": 18.0}},
+    ],
+    "relationships": [
+        {"parent_id": "base_plate", "child_id": "bore", "attachment_type": "concentric",
+         "offset": {"x": 30.0, "y": 20.0, "z": 0.0}},
+    ],
+    "joints": [],
+}
+
+
+def _sketch_reading(file_paths: list[str], *, api_keys: dict[str, str] | None = None) -> dict[str, Any]:
+    return {"ok": True, "paths": list(file_paths), "blueprint": json.loads(json.dumps(SKETCH_BLUEPRINT)),
+            "ocr_dimensions": {"front": ["60", "18"], "top": ["60", "40"]}}
+
+
+def _blueprint_from(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """The blueprint the analyze_reference_design call returned this turn."""
+    for message in reversed(messages):
+        if message.get("role") == "tool" and '"blueprint"' in str(message.get("content")):
+            return json.loads(message["content"])["blueprint"]
+    raise AssertionError("no blueprint in the conversation yet")
+
+
+def _primitive(messages: list[dict[str, Any]], primitive_id: str) -> dict[str, Any]:
+    return next(p for p in _blueprint_from(messages)["primitives"] if p["id"] == primitive_id)
+
+
+def _plate_from_blueprint(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    dims = _primitive(messages, "base_plate")["dimensions"]
+    return {"name": "base_plate", "length": dims["length"], "width": dims["width"], "height": dims["height"]}
+
+
+def _bore_from_blueprint(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    dims = _primitive(messages, "bore")["dimensions"]
+    offset = next(r for r in _blueprint_from(messages)["relationships"] if r["child_id"] == "bore")["offset"]
+    return {"name": "bore", "radius": dims["radius"], "height": dims["height"],
+            "placement_x": offset["x"], "placement_y": offset["y"], "placement_z": offset["z"]}
+
+
+def _fix_ocr_then_export(ws: Any, run: Run) -> None:
+    """The user spots the misread thickness in the Parameters tab, fixes it
+    (0 tokens), then downloads the macro from the Deliverables bar."""
+    llm_calls = run.llm_calls
+    ws.send_json({"type": "list_parameters"})
+    table = _receive_until(ws, run, "parameters")
+    run.extra["parameters"] = {p["label"]: p["value"] for p in table["params"]}
+    height = next(p for p in table["params"] if p["label"] == "base_plate.height")
+    ws.send_json({"type": "rebuild", "overrides": {height["id"]: 16}})
+    run.extra["rebuild"] = _receive_until(ws, run, "rebuild_result")
+    ws.send_json({"type": "export_python_script", "filename": "sketch_bracket"})
+    run.extra["macro"] = _receive_until(ws, run, "python_script_exported")
+    macro_path = Path(run.extra["macro"].get("path") or "")
+    run.extra["macro_text"] = macro_path.read_text(encoding="utf-8") if macro_path.is_file() else ""
+    run.extra["rebuild_llm_calls"] = run.llm_calls - llm_calls
+
+
+def _task7_checks(run: Run) -> list[Check]:
+    params = run.extra.get("parameters") or {}
+    rebuild = run.extra.get("rebuild") or {}
+    macro_path = Path((run.extra.get("macro") or {}).get("path") or "")
+    macro = run.extra.get("macro_text") or ""
+    plate_height = re.search(r"^base_plate\w*\.Height = ([\d.]+)$", macro, re.M)
+    part = run.mesh("Bracket")
+    return [
+        Check("the sketch's dimensions are editable parameters",
+              {"base_plate.length", "base_plate.width", "base_plate.height", "bore.radius", "bore.height"} <= set(params),
+              str(sorted(params))),
+        Check("built with the blueprint's numbers (misread 18 mm)", params.get("base_plate.height") == 18.0,
+              str(params.get("base_plate.height"))),
+        Check("OCR fix rebuilt with 0 LLM calls", rebuild.get("ok") is True and run.extra.get("rebuild_llm_calls") == 0,
+              str(rebuild.get("error"))),
+        Check("part is 60 x 40 x 16", _extents(part) == [60.0, 40.0, 16.0], str(_extents(part))),
+        _close("volume = 60·40·16 - π·5²·16", float(part.volume), 60 * 40 * 16 - math.pi * 25 * 16 * _POLYGON_32,
+               rel=1e-3),
+        Check("macro exported with the corrected thickness",
+              macro_path.suffix == ".py" and bool(plate_height) and float(plate_height.group(1)) == 16.0
+              and "base_plate.height = 16.0 mm" in macro,
+              plate_height.group(0) if plate_height else macro_path.name),
     ]
 
 
@@ -796,6 +891,27 @@ SCENARIOS: list[Scenario] = [
         after=_ui_rebuild_then_turn2,
         turn2_steps=[Step("update_cad_parameters", _hole_radius_override)],
         turn2_reply="The hole is now 6 mm in radius.",
+    ),
+    Scenario(
+        key="t7_sketch_to_cad",
+        title="Sketch to CAD, OCR misread fixed for 0 tokens",
+        prompt="Build the bracket in this sketch: sketch.png",
+        tasks=[
+            {"description": "Read the sketch's blueprint", "expected_tools": ["analyze_reference_design"]},
+            {"description": "Create the base plate", "expected_tools": ["create_freecad_box"]},
+            {"description": "Create the bore cylinder", "expected_tools": ["create_freecad_cylinder"]},
+            {"description": "Cut the bore through the plate", "expected_tools": ["perform_freecad_boolean"]},
+        ],
+        steps=[
+            Step("analyze_reference_design", {"file_paths": ["sketch.png"]}),
+            Step("create_freecad_box", _plate_from_blueprint),
+            Step("create_freecad_cylinder", _bore_from_blueprint),
+            Step("perform_freecad_boolean",
+                 {"operation": "cut", "base_object": "base_plate", "tool_object": "bore", "name": "Bracket"}),
+        ],
+        reply="The bracket from your sketch is built: a 60 x 40 x 18 mm plate with a 5 mm bore.",
+        checks=_task7_checks,
+        after=_fix_ocr_then_export,
     ),
 ]
 
