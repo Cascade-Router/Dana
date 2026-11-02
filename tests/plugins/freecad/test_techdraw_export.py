@@ -698,7 +698,11 @@ def test_a_mock_mesh_is_drawn_without_freecad(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(techdraw_export, "_run_freecad_script", no_freecad)
     result = json.loads(techdraw_export.generate_2d_blueprint(_mock_bracket(), object_name="Bracket", filename="bracket"))
     assert result["ok"] is True, result
-    assert result["projection"] == "mesh" and "wireframe" in result["note"]
+    assert result["projection"] == "mesh" and "hidden edges dashed" in result["note"]
+    # The textbook front view of a plate with a through-bore: its 4 outline
+    # edges, and the bore's two silhouettes as hidden (dashed) lines -- not
+    # the bore rims' 32 facets, nor a hidden copy of the outline.
+    assert result["edge_counts"]["Front"] == {"visible": 4, "hidden": 2}
     for key, suffix in (("path", ".pdf"), ("svg_path", ".svg"), ("dxf_path", ".dxf")):
         path = Path(result[key])
         assert path.suffix == suffix and path.is_file() and path.stat().st_size > 1000
@@ -738,3 +742,46 @@ def test_projection_layers_match_what_techdraw_writes(tmp_path: Path) -> None:
     x0, y0, x1, y1 = boxes["Front"]
     assert (x1 - x0, y1 - y0) == pytest.approx((40.0, 10.0))
     assert ((x0 + x1) / 2, (y0 + y1) / 2) == pytest.approx((0.30 * 297.0, 0.28 * 210.0))
+
+
+def _view_lines(dxf: Path, view: str) -> list[tuple[tuple[float, float], tuple[float, float], str]]:
+    import ezdxf
+
+    msp = ezdxf.readfile(dxf).modelspace()
+    return [
+        ((e.dxf.start.x, e.dxf.start.y), (e.dxf.end.x, e.dxf.end.y), e.dxf.linetype)
+        for e in msp.query(f'LINE[layer=="View{view}"]')
+    ]
+
+
+def test_a_standing_cylinder_is_drawn_by_its_silhouette(tmp_path: Path) -> None:
+    """Its side is one smooth surface (no creases), so the front view's two
+    vertical sides exist only as silhouette edges."""
+    from dana.platform.mock import MockFreeCADEngine
+
+    rod = MockFreeCADEngine().create_cylinder(5, 30, name="Rod")
+    dxf = tmp_path / "rod.dxf"
+    techdraw_export._write_mesh_projection_dxf(Path(rod["path"]), ["Front"], (297.0, 210.0), str(dxf))
+    vertical = [(a, b) for a, b, linetype in _view_lines(dxf, "Front")
+                if abs(a[0] - b[0]) < 1e-6 and linetype != "DASHED"]
+    assert len(vertical) == 2
+    assert all(abs(abs(a[1] - b[1]) - 30.0) < 1e-6 for a, b in vertical)
+    assert abs(abs(vertical[0][0][0] - vertical[1][0][0]) - 10.0) < 0.1  # 2 x radius, a 32-gon's width
+
+
+def test_the_right_view_shows_the_parts_plus_x_side_unmirrored(tmp_path: Path) -> None:
+    """Seen from +X with Z up, +Y is to the right: a post near y = 35 on a
+    40 mm deep base is drawn in the view's right half."""
+    from dana.platform.mock import MockFreeCADEngine
+
+    engine = MockFreeCADEngine()
+    engine.create_box(40, 40, 10, name="Base")
+    engine.create_cylinder(3, 20, name="Post", placement=(20.0, 35.0, 10.0))
+    part = engine.apply_boolean("union", "Base", "Post", name="Part")
+    dxf = tmp_path / "part.dxf"
+    techdraw_export._write_mesh_projection_dxf(Path(part["path"]), ["Right"], (297.0, 210.0), str(dxf))
+    lines = _view_lines(dxf, "Right")
+    xs = [x for a, b, _ in lines for x in (a[0], b[0])]
+    centre = (min(xs) + max(xs)) / 2
+    post = [(a, b) for a, b, _ in lines if min(a[1], b[1]) > min(y for l in lines for y in (l[0][1], l[1][1])) + 15]
+    assert post and all(min(a[0], b[0]) > centre for a, b in post)

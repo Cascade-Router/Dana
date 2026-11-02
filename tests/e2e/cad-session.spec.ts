@@ -103,7 +103,7 @@ test("a plate session streams its reply, fills the CostBar, exports a macro and 
   // --- Deliverables bar renders every control without overflowing ---
   const bar = page.locator(".deliverables-bar");
   await expect(bar).toBeVisible();
-  for (const name of ["Macro .py", "STEP", "Blueprint", "PDF", "BOM ▾"]) {
+  for (const name of ["Macro .py", "STEP", "Blueprint", "PDF", "DXF", "BOM ▾"]) {
     await expect(bar.getByRole("button", { name, exact: true })).toBeVisible();
   }
   const meshButton = bar.getByRole("button", { name: /^(STL|GLB)$/ });
@@ -230,5 +230,16 @@ test("the mock engine draws a real 2D blueprint the Deliverables bar shows and d
   await expect.poll(session.openedUrls, { timeout: 15_000 }).toContainEqual(
     expect.stringMatching(/bracket_drawing\.pdf\/download\?session_id=/)
   );
+  // The same sheet as DXF, for CAD/CAM.
+  const dxfButton = bar.getByRole("button", { name: "DXF", exact: true });
+  await expect(dxfButton).toBeEnabled();
+  await dxfButton.click();
+  await expect.poll(session.openedUrls, { timeout: 15_000 }).toContainEqual(
+    expect.stringMatching(/bracket_drawing\.dxf\/download\?session_id=/)
+  );
+  const dxfUrl = (await session.openedUrls()).find((u) => u.includes(".dxf/download"))!;
+  const dxf = await page.request.get(new URL(dxfUrl, API_BASE).toString());
+  expect(dxf.status()).toBe(200);
+  expect(await dxf.text()).toContain("ENTITIES");
   expectNoConsoleErrors(session.consoleErrors);
 });

@@ -176,6 +176,15 @@ def main() -> None:
     # the UI, not a cold import.
     import manifold3d  # noqa: F401
     import trimesh  # noqa: F401
+
+    # Likewise the blueprint renderer (~2 s cold; 30+ s under the same load).
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import ezdxf.addons.drawing.matplotlib  # noqa: F401
+    from matplotlib import font_manager
+
+    font_manager.findfont("DejaVu Sans")
     try:
         if args.gradio:
             import app  # the Space entry point; imports dana.api.server itself

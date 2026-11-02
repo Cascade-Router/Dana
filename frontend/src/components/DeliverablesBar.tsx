@@ -60,6 +60,7 @@ export function DeliverablesBar({ sessionId, artifacts, log, onExportMacro, onSh
   const mesh = latestArtifact(artifacts, ["stl", "glb"]);
   const pdf = latestArtifact(artifacts, ["pdf"]);
   const svg = latestArtifact(artifacts, ["svg"]);
+  const dxf = latestArtifact(artifacts, ["dxf"]);
   const bom = useMemo(() => latestBom(log), [log]);
   const bomCsv = bom?.path ? artifacts.find((a) => a.filename === basename(bom.path!)) : undefined;
 
@@ -136,6 +137,15 @@ export function DeliverablesBar({ sessionId, artifacts, log, onExportMacro, onSh
           onClick={() => open(pdf)}
         >
           PDF
+        </button>
+        <button
+          type="button"
+          className="deliverables-bar__btn deliverables-bar__btn--icon"
+          disabled={!dxf}
+          title={dxf ? "Download the latest blueprint DXF (CAD/CAM)" : "No blueprint DXF yet"}
+          onClick={() => open(dxf)}
+        >
+          DXF
         </button>
       </div>
       <div className="deliverables-bar__popover-anchor">

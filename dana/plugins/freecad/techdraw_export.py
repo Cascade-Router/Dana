@@ -34,11 +34,12 @@ tooling, not a cross-platform primitive.
 
 Without FreeCAD (the mock engine on the hosted demo and Linux CI) the
 source is the mock's own mesh file, and step (1) is done in this process
-instead: ``_write_mesh_projection_dxf`` projects the mesh's feature edges
-into the same ``View<Name>`` layers at the same page slots, so step (2) --
-dimensions, scale, title block, PDF and SVG -- runs unchanged. It is a
-wireframe projection: hidden edges are drawn too, there is no hidden-line
-removal. Either way the finished sheet is also kept as a ``.dxf``.
+instead: ``_write_mesh_projection_dxf`` projects the mesh's creases,
+boundaries and per-view silhouettes into the same ``View<Name>`` layers at
+the same page slots, visible edges solid and hidden ones dashed (decided by
+ray-casting each edge's midpoint toward the viewer), so step (2) --
+dimensions, scale, title block, PDF and SVG -- runs unchanged. Either way the
+finished sheet is also kept as a ``.dxf``.
 """
 
 from __future__ import annotations
@@ -535,44 +536,105 @@ def _sheet_figure(sheet: _Sheet, page_size_mm: tuple[float, float]) -> Any:
 # Mesh files the mock engine writes: a source with one of these suffixes is
 # drawn by projecting the mesh instead of through FreeCAD.
 _MESH_SUFFIXES = frozenset({".glb", ".gltf", ".stl", ".obj", ".ply"})
-# Adjacent faces meeting at more than this are a drawn edge; a 32-segment
-# cylinder's facets meet at 11.25 degrees, so its side stays a smooth surface.
-_FEATURE_EDGE_ANGLE_DEG = 20.0
+# Adjacent faces meeting at more than this are a crease (a drawn edge); a
+# 32-segment cylinder's facets meet at 11.25 degrees, so its side stays one
+# smooth surface whose outline comes from the silhouette instead.
+_FEATURE_EDGE_ANGLE_DEG = 15.0
+# Standard third-angle views as the direction toward the viewer. Explicit,
+# not derived from _VIEW_LAYOUT's TechDraw Direction/XDirection pairs, so the
+# mock's "Right" is the part's +X side, not a mirrored left view.
+_MOCK_VIEWERS: dict[str, tuple[float, float, float]] = {
+    "front": (0.0, -1.0, 0.0),
+    "top": (0.0, 0.0, 1.0),
+    "right": (1.0, 0.0, 0.0),
+    "isometric": (1.0, -1.0, 1.0),
+}
+# Points tested per occlusion pass; bounds the (points x triangles) arrays.
+_OCCLUSION_CHUNK = 128
 
 
-def _view_basis(direction: Sequence[float], xdirection: Sequence[float]) -> tuple[Any, Any]:
-    """Page-right and page-up unit vectors for a view: ``xdirection`` made
-    perpendicular to ``direction``, and world up (+Z; +Y for a view along Z)
-    made perpendicular to both."""
+def _view_basis(viewer: Sequence[float]) -> tuple[Any, Any, Any]:
+    """(page-right, page-up, toward-viewer) unit vectors for a view seen from
+    ``viewer``: up is world +Z (+Y for a view along Z), right = up x viewer."""
     import numpy as np
 
-    d = np.asarray(direction, dtype=float)
-    d /= np.linalg.norm(d)
-    x = np.asarray(xdirection, dtype=float)
-    x = x - x.dot(d) * d
-    x /= np.linalg.norm(x)
-    up = np.array([0.0, 1.0, 0.0]) if abs(d[2]) > 0.99 else np.array([0.0, 0.0, 1.0])
-    y = up - up.dot(d) * d - up.dot(x) * x
-    return x, y / np.linalg.norm(y)
+    v = np.asarray(viewer, dtype=float)
+    v /= np.linalg.norm(v)
+    up = np.array([0.0, 1.0, 0.0]) if abs(v[2]) > 0.99 else np.array([0.0, 0.0, 1.0])
+    up = up - up.dot(v) * v
+    up /= np.linalg.norm(up)
+    return np.cross(up, v), up, v
 
 
-def _feature_edges(mesh: Any) -> Any:
-    """``(n, 2, 3)`` endpoints of the mesh's drawable edges: where adjacent
-    faces meet at a crease, plus any open boundary."""
+def _drawn_edges(mesh: Any, toward_viewer: Any) -> Any:
+    """``(n, 2)`` vertex-index pairs a view draws: creases, open boundaries,
+    and this view's silhouette -- where the faces either side of an edge
+    turn opposite ways relative to the viewer (the outline of a cylinder,
+    a bore or a fillet), which a fixed crease angle never finds."""
     import numpy as np
     import trimesh
 
-    sharp = mesh.face_adjacency_edges[mesh.face_adjacency_angles > np.radians(_FEATURE_EDGE_ANGLE_DEG)]
+    pairs = mesh.face_adjacency
+    facing = np.sign(np.round(mesh.face_normals @ toward_viewer, 9))
+    silhouette = facing[pairs[:, 0]] != facing[pairs[:, 1]]
+    crease = mesh.face_adjacency_angles > np.radians(_FEATURE_EDGE_ANGLE_DEG)
     boundary = mesh.edges_sorted[trimesh.grouping.group_rows(mesh.edges_sorted, require_count=1)]
-    return mesh.vertices[np.vstack([sharp.reshape(-1, 2), boundary.reshape(-1, 2)])]
+    edges = np.vstack([mesh.face_adjacency_edges[crease | silhouette], boundary.reshape(-1, 2)])
+    return np.unique(np.sort(edges, axis=1), axis=0)
+
+
+def _occluded(points: Any, toward_viewer: Any, triangles: Any, eps: float) -> Any:
+    """For each point, whether a ray from it toward the viewer hits the mesh
+    (Moller-Trumbore, numpy only). Hits closer than ``eps`` are the point's
+    own surface and don't count."""
+    import numpy as np
+
+    d = np.asarray(toward_viewer, dtype=float)
+    a, e1, e2 = triangles[:, 0], triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]
+    pvec = np.cross(d, e2)
+    det = np.einsum("ij,ij->i", e1, pvec)
+    usable = np.abs(det) > 1e-12  # a ray parallel to the triangle never hits it
+    a, e1, e2, pvec = a[usable], e1[usable], e2[usable], pvec[usable]
+    inv = 1.0 / det[usable]
+    hidden = np.zeros(len(points), dtype=bool)
+    for start in range(0, len(points), _OCCLUSION_CHUNK):
+        tvec = points[start : start + _OCCLUSION_CHUNK, None, :] - a[None]
+        u = np.einsum("kij,ij->ki", tvec, pvec) * inv
+        qvec = np.cross(tvec, e1)
+        v = (qvec @ d) * inv
+        t = np.einsum("kij,ij->ki", qvec, e2) * inv
+        hit = (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9) & (t > eps)
+        hidden[start : start + _OCCLUSION_CHUNK] = hit.any(axis=1)
+    return hidden
+
+
+def _on_visible_line(segment: tuple[float, ...], lines: dict[tuple[float, ...], bool]) -> bool:
+    """Whether hidden ``segment`` lies along one visible segment (a bore's
+    rim seen edge-on on the part's outline): drawing it adds nothing."""
+    import numpy as np
+
+    visible = np.array([seg for seg, vis in lines.items() if vis], dtype=float).reshape(-1, 4)
+    if not len(visible):
+        return False
+    a, ab = visible[:, :2], visible[:, 2:] - visible[:, :2]
+    length2 = np.einsum("ij,ij->i", ab, ab)
+    covered = np.ones(len(visible), dtype=bool)
+    for point in (np.array(segment[:2]), np.array(segment[2:])):
+        t = np.clip(np.einsum("ij,ij->i", point - a, ab) / np.where(length2 > 0, length2, 1.0), 0.0, 1.0)
+        covered &= np.linalg.norm(a + t[:, None] * ab - point, axis=1) < 1e-4
+    return bool(covered.any())
 
 
 def _write_mesh_projection_dxf(
     mesh_path: Path, view_names: Sequence[str], page_size_mm: tuple[float, float], dxf_path: str
-) -> None:
+) -> dict[str, dict[str, int]]:
     """What the FreeCAD branch's TechDraw page writes, from a mesh: each
-    requested view's projected edges as LINEs on layer ``View<Name>``, 1:1 in
-    page millimetres, centred on that view's page slot."""
+    requested view's visible edges as solid LINEs and its hidden edges as
+    DASHED ones, on layer ``View<Name>``, 1:1 in page millimetres, centred on
+    that view's page slot. An edge counts as hidden when its midpoint is
+    behind the part (a long edge only partly covered goes by its middle).
+    Where a hidden edge projects onto a visible one, only the visible one is
+    drawn. Returns per-view ``{"visible": n, "hidden": m}``."""
     import ezdxf
     import numpy as np
     import trimesh
@@ -580,27 +642,36 @@ def _write_mesh_projection_dxf(
     mesh = trimesh.load(mesh_path, force="mesh")
     if mesh.is_empty:
         raise ValueError(f"{mesh_path.name} has no geometry to draw")
-    edges = _feature_edges(mesh)
-    doc = ezdxf.new()
+    eps = 1e-6 * max(float(np.linalg.norm(mesh.extents)), 1.0)
+    doc = ezdxf.new(setup=True)  # setup: the standard linetypes, DASHED among them
     msp = doc.modelspace()
     width, height = page_size_mm
+    counts: dict[str, dict[str, int]] = {}
     for name in view_names:
-        layout = _VIEW_LAYOUT[name.lower()]
-        x_axis, y_axis = _view_basis(layout["direction"], layout["xdirection"])
-        flat = np.stack([edges @ x_axis, edges @ y_axis], axis=-1)  # (n, 2, 2)
+        key = name.lower()
+        right, up, toward = _view_basis(_MOCK_VIEWERS[key])
+        edges = _drawn_edges(mesh, toward)
+        ends = mesh.vertices[edges]  # (n, 2, 3)
+        hidden = _occluded(ends.mean(axis=1) + toward * (4 * eps), toward, mesh.triangles, eps)
+        flat = np.stack([ends @ right, ends @ up], axis=-1)  # (n, 2, 2)
         lo, hi = flat.reshape(-1, 2).min(axis=0), flat.reshape(-1, 2).max(axis=0)
-        centre = np.array([layout["slot"][0] * width, layout["slot"][1] * height])
-        placed = flat - (lo + hi) / 2.0 + centre
-        layer = f"View{name.lower().capitalize()}"
-        seen: set[tuple[float, ...]] = set()
-        for start, end in placed:
-            a, b = tuple(np.round(start, 6)), tuple(np.round(end, 6))
-            key = a + b if a <= b else b + a
-            if a == b or key in seen:
-                continue  # an edge seen end-on, or one drawn already
-            seen.add(key)
-            msp.add_line(a, b, dxfattribs={"layer": layer})
+        centre = np.array([_VIEW_LAYOUT[key]["slot"][0] * width, _VIEW_LAYOUT[key]["slot"][1] * height])
+        placed = np.round(flat - (lo + hi) / 2.0 + centre, 6)
+        lines: dict[tuple[float, ...], bool] = {}  # projected segment -> visible
+        for (start, end), is_hidden in zip(placed, hidden):
+            a, b = tuple(start), tuple(end)
+            if a == b:
+                continue  # an edge seen end-on
+            segment = a + b if a <= b else b + a
+            lines[segment] = lines.get(segment, False) or not is_hidden
+        lines = {seg: vis for seg, vis in lines.items() if vis or not _on_visible_line(seg, lines)}
+        layer = f"View{key.capitalize()}"
+        for segment, visible in lines.items():
+            attribs = {"layer": layer} if visible else {"layer": layer, "linetype": "DASHED", "ltscale": 0.15}
+            msp.add_line(segment[:2], segment[2:], dxfattribs=attribs)
+        counts[name] = {"visible": sum(lines.values()), "hidden": sum(not v for v in lines.values())}
     doc.saveas(dxf_path)
+    return counts
 
 
 def _blueprint_dir() -> Path:
@@ -906,7 +977,7 @@ def generate_2d_blueprint(
     try:
         if from_mesh:
             try:
-                _write_mesh_projection_dxf(target, requested, _PAGE_SIZES_MM[size_key], dxf_path)
+                edge_counts = _write_mesh_projection_dxf(target, requested, _PAGE_SIZES_MM[size_key], dxf_path)
             except Exception as exc:  # noqa: BLE001 — surface as a normal tool failure, not a crash
                 return _error(f"generate_2d_blueprint: projecting {target.name} failed: {exc}")
         else:
@@ -966,7 +1037,8 @@ def generate_2d_blueprint(
 
     extra: dict[str, Any] = {}
     if from_mesh:
-        extra["note"] = "Drawn from the mock engine's mesh: a wireframe projection, hidden edges included."
+        extra["note"] = "Projected from the mock engine's mesh: visible edges solid, hidden edges dashed."
+        extra["edge_counts"] = edge_counts
         if include_part_sheets:
             extra["note"] += " Per-part sheets need FreeCAD; only the overview sheet was drawn."
     return _ok(
