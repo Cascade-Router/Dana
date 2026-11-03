@@ -12,7 +12,7 @@ It began as a commercial product and is now published as an engineering portfoli
 |---|---|
 | **Stack** | Python 3.11 · FastAPI + WebSockets · React/TypeScript (Tauri desktop shell) · FreeCAD (headless `FreeCADCmd`) · Ollama · Jinja2 |
 | **Models** | Cloud: DeepSeek (primary), Gemini, OpenRouter, Groq · Local: `qwen2.5-coder:14b` (tools), `qwen2.5vl:7b` (vision) |
-| **Tests** | 1,608 pytest cases, blocking in CI, no live model or GPU needed · Playwright UI tests against a mock backend |
+| **Tests** | 1,638 pytest cases, blocking in CI, no live model or GPU needed · Playwright UI tests against a mock backend |
 
 ---
 
@@ -54,12 +54,12 @@ No GPU? Set `DANA_VISION_MOCK_FALLBACK=1`. When no vision model is reachable, th
 What a chat session gives you besides the conversation:
 
 - **Zero-token parametric rebuilds** ([`dana/plugins/freecad/rebuild.py`](dana/plugins/freecad/rebuild.py)). Every CAD call is recorded and replayed through the same Universal CAD IR the macro export uses. The Parameters tab lists the model's dimensions; change one and Apply & Rebuild re-runs the recorded steps with no LLM call. On FreeCAD the steps render into a scratch document that replaces the live one only on success; on the mock engine (CI, the hosted demo) the call log is replayed through the mock driver.
-- **Turn 2 knows what turn 1 built.** Every CAD turn's prompt carries a ≤200-token "Current CAD model" block: the objects with their bounding boxes and the editable parameters with their current values, including Parameters-tab edits made since. "Make the hole radius 6 mm" becomes one `update_cad_parameters` call through the same rebuild, not a new build.
+- **Turn 2 knows what turn 1 built.** Every CAD turn's prompt carries a ≤200-token "Current CAD model" block: the objects with their bounding boxes and the editable parameters with their current values, including Parameters-tab edits made since. "Make the hole radius 6 mm" becomes one `update_cad_parameters` call through the same rebuild, not a new build — checked live on OpenRouter's free tier at $0.00.
 - **Sketches stay editable.** A model built from a sketch (`analyze_reference_design`: OCR + two vision passes) is recorded like any other, so a misread dimension is fixed in the Parameters tab for 0 tokens and the macro exports the corrected value.
-- **Deliverables bar.** One-click macro (`.py`, with a provenance header listing the editable parameters and how many LLM calls vs. free rebuilds built it), STEP/STL, the 2D blueprint and a costed BOM with tip-over stability — none of them cost tokens.
+- **Deliverables bar.** One-click macro (`.py`, with a provenance header listing the editable parameters and how many LLM calls vs. free rebuilds built it), STEP/STL, the 2D blueprint (SVG view, PDF and DXF downloads) and a costed BOM with tip-over stability — none of them cost tokens.
 - **Sessions survive restarts** ([`dana/api/session_state.py`](dana/api/session_state.py)). The plan, object registry, topology, call log and token/cost totals are saved with the chat, and the FreeCAD document is snapshotted with its SHA-256; resuming restores both. Approvals, auto-approve and API keys are never written to disk.
 - **Real-time streaming.** Replies stream token by token; Stop interrupts the model's HTTP stream itself, not just the display.
-- **The hosted demo checks parts too** ([`dana/platform/mock.py`](dana/platform/mock.py)). Without FreeCAD (the Hugging Face Space, Linux CI) the trimesh mock engine still answers `query_topology` (faces, edges, bounding box, volume), `check_printability` (the same report and bed settings as on FreeCAD) and `validate_assembly_collisions` (exact mesh overlap and clearance via manifold3d), builds real pipe and helix sweeps, exports assemblies to URDF and draws dimensioned 2D blueprints (PDF, SVG and DXF, projected from the mesh). STEP export still needs FreeCAD.
+- **The hosted demo checks parts too** ([`dana/platform/mock.py`](dana/platform/mock.py)). Without FreeCAD (the Hugging Face Space, Linux CI) the trimesh mock engine still answers `query_topology` (faces, edges, bounding box, volume), `check_printability` (the same report and bed settings as on FreeCAD) and `validate_assembly_collisions` (exact mesh overlap and clearance via manifold3d), builds real pipe and helix sweeps, exports assemblies to URDF, draws dimensioned 2D blueprints (PDF, SVG and DXF, projected from the mesh with silhouettes and dashed hidden lines) and exports STEP as a faceted B-rep that FreeCAD reads back as the same solid. Only per-part drawing sheets still need FreeCAD.
 - **Deleting a chat deletes its files.** Its document, meshes, exports, BOMs and print checks go with it.
 
 ## 3. CI/CD with a blocking test pipeline
@@ -68,7 +68,7 @@ What a chat session gives you besides the conversation:
 
 **Solution** ([`.github/workflows/build.yml`](.github/workflows/build.yml)):
 
-- **Full pytest suite as a blocking job:** 1,608 tests. It runs on Python 3.12 under `xvfb`, with `--strict-markers` and a per-test timeout. Failures are parsed out of the JUnit XML into GitHub `::error` annotations, so they show on the PR without opening the log.
+- **Full pytest suite as a blocking job:** 1,638 tests. It runs on Python 3.12 under `xvfb`, with `--strict-markers` and a per-test timeout. Failures are parsed out of the JUnit XML into GitHub `::error` annotations, so they show on the PR without opening the log.
 - **Space smoke test.** It imports `app.py` from the exact payload `deploy/stage_space.sh` ships, with the pinned Gradio version.
 - **Frontend build.** It runs the same `tsc && vite build` that Vercel runs.
 - **Gated deploy.** The Hugging Face sync runs on `workflow_run` only after Build succeeds.

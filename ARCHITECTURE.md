@@ -109,10 +109,12 @@ files inside Dana's workspace.
   manifold3d for overlap volume and clearance. Pipes and helices are real
   sweeps, `position_assembly_part` moves the mesh, and
   `export_assembly_to_urdf` writes per-link meshes with exact mass
-  properties. `generate_2d_blueprint` projects the mesh's feature edges
-  into the same page layout TechDraw writes (wireframe, no hidden-line
-  removal) and renders the same PDF/SVG/DXF. STEP export and per-part
-  drawing sheets still need FreeCAD.
+  properties. `generate_2d_blueprint` projects the mesh's creases,
+  boundaries and per-view silhouettes into the same page layout TechDraw
+  writes, hidden edges dashed (each edge's midpoint ray-cast toward the
+  viewer), and renders the same PDF/SVG/DXF. `export_model(..., "step")`
+  writes an AP214 faceted B-rep (one planar FACE_SURFACE per triangle).
+  Per-part drawing sheets still need FreeCAD.
 - **GUI:** shown only when `DANA_HEADLESS` is not `true` (the default lock is
   `true`). Dana's FreeCAD window runs with a private `user.cfg` (`-u`) and only
   the PID Dana launched is ever closed or screenshotted.
@@ -142,12 +144,14 @@ geometry missing.
 The agent reaches the same rebuild through `update_cad_parameters`
 ({parameter id or label: value}); `dana.api.server` intercepts it (it needs
 the session's call log) and runs `_perform_rebuild`, so object names, the
-mesh and the Parameters tab stay in step. It is offered only once the
-session has geometry, in planning and on the wrap-up turn.
+mesh and the Parameters tab stay in step. It is offered in every CAD phase
+once the session has geometry.
 
 ### Turn 2 and later
 
-A turn starts from [system, user] only. Every CAD turn's system prompt
+A turn starts from [system, user] only. A final reply that asks the user
+nothing closes a plan still holding unfinished tasks, so an earlier
+request's leftovers never drive the next one. Every CAD turn's system prompt
 therefore carries "## Current CAD model" (`server._cad_state_block`, at most
 200 tokens): object names with bounding boxes and the editable parameters
 with their current values and ids, including any Parameters-tab rebuild

@@ -74,7 +74,7 @@ Every geometry tool is defined once in `dana/plugins/freecad/ir.py` as an IR kin
 - **Collisions.** `validate_assembly_collisions` intersects every member pair's solids (`Shape.common`) after an axis-aligned bounding-box broadphase, and reports each pair's true minimum clearance; a pair that cannot be computed fails the check instead of passing as collision-free.
 - **Stability.** The BOM computes each part's mass from its volume and material and checks whether the assembly's center of mass, dropped onto the ground plane, lies inside the convex hull of its ground-contact points, with a margin.
 - **Printability.** The part is meshed and checked for closed, manifold, consistently wound geometry, build-volume fit (a PrusaSlicer profile, `DANA_PRINTER_BED_MM`, or a Prusa MK4) and overhangs beyond 45°; the six principal orientations are scored and the best one recommended.
-- **Drawings and robotics.** TechDraw produces dimensioned orthographic and isometric sheets with a title block filled from the BOM (without FreeCAD, the same sheet is projected from the mock's mesh as a wireframe); `export_assembly_to_urdf` writes one link per part with its mesh, mass and inertia tensor, joined by the kinematic joints the agent declared.
+- **Drawings and robotics.** TechDraw produces dimensioned orthographic and isometric sheets with a title block filled from the BOM (without FreeCAD, the same sheet is projected from the mock's mesh, with silhouettes and dashed hidden lines); `export_assembly_to_urdf` writes one link per part with its mesh, mass and inertia tensor, joined by the kinematic joints the agent declared.
 - **Pipeline.** `run_full_manufacturing_pipeline` chains BOM → collisions → URDF → drawing → per-part printability → slicing, and reports `complete: false` with a reason (for example, colliding parts) rather than a partial success. It stops at G-code: sending a job to a printer is a separate call that always asks the user.
 
 ---
@@ -123,12 +123,14 @@ The mounting-plate prompt from the abstract was run through the real router, the
 
 After the fixes, three consecutive runs built the correct 11,500.57 mm³ solid in 6, 9 and 17 LLM calls (19–47 s), with no turn over 2,000 tool-schema tokens. The cleanest used 1,503 tokens to plan, 876–1,100 per executing turn and 1,957 to wrap up. Earlier free-tier runs, before the fixes, also picked a sketch-and-pocket route the model could not finish; free models remain the least reliable lane, which is why `routing_config.yaml` ranks them below DeepSeek by default.
 
+**Two turns, $0.00.** OpenRouter has since pulled that model; on `nemotron-3.5-lightning:free`, turn 1 built the plate, the user lengthened it to 60 mm in the Parameters tab, and turn 2 asked "Change the hole radius to 6 mm". The first run changed the radius but then re-ran turn 1's unfinished plan and cut a second hole. Four fixes followed: the edit tool offered in every CAD phase (it had been missing mid-plan), a final reply closing an unfinished plan, a cylinder's placement described as its centre "not a bounding-box corner", and the state block giving both corners of each box. Three consecutive runs then made the change with one `update_cad_parameters` call: 60 × 30 × 10 mm, 16,876.28 mm³ as expected, at most 1,999 tool-schema tokens per turn.
+
 ---
 
 ## 6. Limitations
 
-- The offline suite uses a scripted model: it measures Dānā's loop, gates and geometry, not a model's planning ability. Live checks so far use one prompt (one paid run, a handful of free-tier runs).
-- The mock engine approximates B-Rep topology with mesh regions and cannot export STEP; real FreeCAD is required for production output.
+- The offline suite uses a scripted model: it measures Dānā's loop, gates and geometry, not a model's planning ability. Live checks so far use one part (a paid run, single-turn and two-turn free-tier runs).
+- The mock engine approximates B-Rep topology with mesh regions; its STEP is a faceted B-rep (planar triangles, no analytic surfaces), fine for viewing and interchange but not a substitute for FreeCAD's exact geometry in production.
 - Printability is a geometric heuristic, not a slicer simulation; slicing and printing have been tested against mocks, not real hardware.
 - A task's declared tools are never dropped to meet the budget. When a task declares several of the heaviest tools, their schemas are compacted instead (descriptions cut to the first clause, then to placement conventions only; names, types, enums and required flags kept), which fits even the five heaviest into 2,000 tokens; a model sees less prose about those tools on such turns.
 
