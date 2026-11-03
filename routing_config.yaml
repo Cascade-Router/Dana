@@ -39,7 +39,7 @@ fleet:
   # Reordered 2026-09-17: the two free lanes below used to be priority 1/2
   # (tried first) but proved too unreliable for a real multi-step CAD
   # tool-calling session to depend on — confirmed live across several
-  # end-to-end rover-build runs: openrouter_free_nemotron120b rambled
+  # end-to-end rover-build runs: the free OpenRouter lane (then nemotron-3-super) rambled
   # through its own chain-of-thought without ever emitting a tool call
   # until it hit its 4096-token output cap, hallucinated wrong parameter
   # names for add_parts_to_assembly (assembly/parts instead of
@@ -88,12 +88,17 @@ fleet:
   # comment if calls start 404ing again: the PREVIOUS entry here
   # (meta-llama/llama-3.3-70b-instruct:free) was live and working when this
   # file was first written, and had already been pulled from OpenRouter's
-  # free catalog by the time this was checked again — same day.
-  - id: openrouter_free_nemotron120b
+  # free catalog by the time this was checked again — same day. Its
+  # successor, nvidia/nemotron-3-super-120b-a12b:free, went the same way on
+  # 2026-11-01 (the monthly catalog sync marked it deprecated);
+  # nemotron-3.5-lightning:free (1M context, tool calling) ran Phase 11's
+  # live two-turn checks on 2026-11-02. DANA_OPENROUTER_MODEL, when set,
+  # replaces this slug (and supplies OpenRouter's fallback list).
+  - id: openrouter_free
     provider: openrouter
-    model: nvidia/nemotron-3-super-120b-a12b:free
+    model: nvidia/nemotron-3.5-lightning:free
     api_key_env: OPENROUTER_API_KEY
-    context_window: 262144
+    context_window: 1000000
     cost_per_1m_prompt: 0.0
     cost_per_1m_completion: 0.0
     priority: 3
