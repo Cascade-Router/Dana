@@ -1610,9 +1610,9 @@ def test_dispatch_export_end_to_end_via_registry() -> None:
     assert "motor_mount_assembly" not in rd._object_registry()
 
 
-def test_dispatch_export_step_reports_mock_limitation_not_a_crash() -> None:
-    """The mock engine can't produce real STEP (B-rep) data via trimesh —
-    this must surface as a clean ok:False, not an exception."""
+def test_dispatch_export_step_on_the_mock_writes_a_faceted_brep() -> None:
+    """The mock engine has no analytic geometry, but it writes STEP as a
+    faceted B-rep (tests/test_mock_step_export.py checks the file)."""
     from dana.platform.mock import MockControlPlane, MockFreeCADEngine
 
     engine = MockFreeCADEngine()
@@ -1630,8 +1630,8 @@ def test_dispatch_export_step_reports_mock_limitation_not_a_crash() -> None:
         engine,
         control_plane,
     )
-    assert result.ok is False
-    assert "STEP" in result.message
+    assert result.ok is True, result.message
+    assert result.payload["path"].endswith(".step") and result.payload["step_faces"] == 12
 
 
 def test_parse_utterance_align_and_export_pass_through(monkeypatch: pytest.MonkeyPatch) -> None:

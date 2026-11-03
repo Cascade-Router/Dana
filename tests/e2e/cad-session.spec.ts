@@ -108,6 +108,8 @@ test("a plate session streams its reply, fills the CostBar, exports a macro and 
   }
   const meshButton = bar.getByRole("button", { name: /^(STL|GLB)$/ });
   await expect(meshButton).toBeEnabled({ timeout: 15_000 });
+  // STEP too, without FreeCAD: the mock writes a faceted B-rep.
+  await expect(bar.getByRole("button", { name: "STEP", exact: true })).toBeEnabled({ timeout: 15_000 });
   const overflow = await bar.evaluate((el) => el.scrollWidth - el.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 

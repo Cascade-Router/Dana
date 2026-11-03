@@ -2829,25 +2829,30 @@ class MockFreeCADEngine(BaseCADEngine):
         if missing:
             return {"ok": False, "error": f"export_model: target path(s) not found: {missing}"}
 
-        if fmt == "step":
-            # Honest failure rather than a fake file: trimesh has no B-rep/
-            # STEP writer (triangle-mesh formats only), so this genuinely
-            # cannot be produced without the real FreeCAD engine's
-            # Part.export — writing something mislabeled .step would be
-            # worse than a clear error for a manufacturing/CAD-interchange
-            # export a user might actually try to open elsewhere.
-            return {
-                "ok": False,
-                "error": (
-                    "export_model: STEP export isn't supported by the mock (trimesh) engine — "
-                    "trimesh has no B-rep/STEP writer, only triangle-mesh formats. Needs the "
-                    "real FreeCAD engine (Part.export)."
-                ),
-            }
-
         import trimesh
 
         meshes = [trimesh.load(p, force="mesh") for p in paths]
+        if fmt == "step":
+            # Same place and name the real engine's export_model uses.
+            from dana.plugins.freecad import engine
+
+            out_path = engine._export_dir() / f"{engine._safe_name(filename or 'export')}.step"
+            stats = write_faceted_step(
+                [(Path(p).stem.split("__")[0], m) for p, m in zip(paths, meshes)], out_path, title=filename or "export"
+            )
+            return {
+                "ok": True,
+                "format": fmt,
+                "path": str(out_path),
+                "target_count": len(paths),
+                "driver": "mock",
+                "note": (
+                    f"{_MOCK_NOTE_CAD}; STEP as a faceted B-rep (planar triangle faces, "
+                    "no analytic surfaces), read by FreeCAD and other STEP tools"
+                ),
+                **stats,
+            }
+
         combined = trimesh.util.concatenate(meshes) if len(meshes) > 1 else meshes[0]
         # A genuine .stl — this is the user-facing "download as STL" export,
         # not a live-preview mesh.
@@ -2864,6 +2869,122 @@ class MockFreeCADEngine(BaseCADEngine):
             "driver": "mock",
             "note": _MOCK_NOTE_CAD,
         }
+
+
+# --- STEP export: ISO 10303-21, AP214, faceted B-rep ---------------------------
+#
+# The mock has no analytic geometry, only triangle meshes, so its STEP file
+# is the standard faceted form: each watertight body a FACETED_BREP whose
+# CLOSED_SHELL has one FACE_SURFACE per triangle, on its PLANE and bounded by
+# a POLY_LOOP of shared CARTESIAN_POINTs; an open body (not a solid) a SHELL_BASED_SURFACE_
+# MODEL. Pure Python, written in millimetres.
+
+
+def _step_real(value: float) -> str:
+    """A STEP REAL: always with a decimal point ("10." not "10"), exponent
+    as "E" ("1.E-05")."""
+    text = f"{float(value):.10G}"
+    mantissa, _, exponent = text.partition("E")
+    if "." not in mantissa:
+        mantissa += "."
+    return f"{mantissa}E{exponent}" if exponent else mantissa
+
+
+def _step_string(text: str) -> str:
+    """A STEP STRING literal: ASCII, apostrophes doubled."""
+    ascii_text = str(text).encode("ascii", "replace").decode("ascii")
+    return "'" + ascii_text.replace("'", "''") + "'"
+
+
+def write_faceted_step(bodies: list[tuple[str, Any]], out_path: Path, *, title: str) -> dict[str, Any]:
+    """Writes ``bodies`` (``(name, trimesh.Trimesh)``) to ``out_path`` as one
+    AP214 part; returns ``{"step_bodies", "step_vertices", "step_faces"}``.
+    Each mesh's connected components become separate bodies."""
+    import datetime
+
+    import numpy as np
+
+    lines: list[str] = []
+
+    def add(entity: str) -> int:
+        lines.append(entity)
+        return len(lines)
+
+    ctx = add("APPLICATION_CONTEXT('automotive design')")
+    add(f"APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000,#{ctx})")
+    product_ctx = add(f"PRODUCT_CONTEXT('',#{ctx},'mechanical')")
+    name = _step_string(title)
+    product = add(f"PRODUCT({name},{name},'',(#{product_ctx}))")
+    add(f"PRODUCT_RELATED_PRODUCT_CATEGORY('part',$,(#{product}))")
+    formation = add(f"PRODUCT_DEFINITION_FORMATION('','',#{product})")
+    def_ctx = add(f"PRODUCT_DEFINITION_CONTEXT('part definition',#{ctx},'design')")
+    definition = add(f"PRODUCT_DEFINITION('design','',#{formation},#{def_ctx})")
+    shape = add(f"PRODUCT_DEFINITION_SHAPE('','',#{definition})")
+    length = add("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))")
+    angle = add("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))")
+    solid_angle = add("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())")
+    accuracy = add(
+        f"UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),#{length},'distance_accuracy_value','confusion accuracy')"
+    )
+    geo_ctx = add(
+        f"(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#{accuracy}))"
+        f"GLOBAL_UNIT_ASSIGNED_CONTEXT((#{length},#{angle},#{solid_angle}))"
+        "REPRESENTATION_CONTEXT('Context #1','3D Context with UNIT and UNCERTAINTY'))"
+    )
+    origin = add("CARTESIAN_POINT('',(0.,0.,0.))")
+    z_axis = add("DIRECTION('',(0.,0.,1.))")
+    x_axis = add("DIRECTION('',(1.,0.,0.))")
+    items = [add(f"AXIS2_PLACEMENT_3D('',#{origin},#{z_axis},#{x_axis})")]
+
+    vertex_total = face_total = 0
+    all_closed = True
+    for body_name, mesh in bodies:
+        parts = mesh.split(only_watertight=False) if len(mesh.faces) else []
+        for part in parts or [mesh]:
+            points = [
+                add(f"CARTESIAN_POINT('',({_step_real(x)},{_step_real(y)},{_step_real(z)}))")
+                for x, y, z in part.vertices
+            ]
+            faces = []
+            # A poly-loop face is built on its plane: FACE_SURFACE + PLANE,
+            # not a bare FACE (which OpenCASCADE reads as an empty shell).
+            for (a, b, c), normal in zip(part.faces, part.face_normals):
+                loop = add(f"POLY_LOOP('',(#{points[a]},#{points[b]},#{points[c]}))")
+                bound = add(f"FACE_OUTER_BOUND('',#{loop},.T.)")
+                edge = part.vertices[b] - part.vertices[a]
+                ref = edge / max(float(np.linalg.norm(edge)), 1e-12)
+                axis = add(f"DIRECTION('',({','.join(_step_real(v) for v in normal)}))")
+                ref_dir = add(f"DIRECTION('',({','.join(_step_real(v) for v in ref)}))")
+                placement = add(f"AXIS2_PLACEMENT_3D('',#{points[a]},#{axis},#{ref_dir})")
+                plane = add(f"PLANE('',#{placement})")
+                faces.append(add(f"FACE_SURFACE('',(#{bound}),#{plane},.T.)"))
+            face_list = ",".join(f"#{f}" for f in faces)
+            if part.is_watertight:
+                shell = add(f"CLOSED_SHELL('',({face_list}))")
+                items.append(add(f"FACETED_BREP({_step_string(body_name)},#{shell})"))
+            else:
+                all_closed = False
+                shell = add(f"OPEN_SHELL('',({face_list}))")
+                items.append(add(f"SHELL_BASED_SURFACE_MODEL({_step_string(body_name)},(#{shell}))"))
+            vertex_total += len(points)
+            face_total += len(faces)
+    kind = "FACETED_BREP_SHAPE_REPRESENTATION" if all_closed else "SHAPE_REPRESENTATION"
+    representation = add(f"{kind}('',({','.join(f'#{i}' for i in items)}),#{geo_ctx})")
+    add(f"SHAPE_DEFINITION_REPRESENTATION(#{shape},#{representation})")
+
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    header = [
+        "ISO-10303-21;",
+        "HEADER;",
+        "FILE_DESCRIPTION(('Dana mock engine: faceted B-rep'),'2;1');",
+        f"FILE_NAME({_step_string(out_path.name)},'{stamp}',('Dana'),(''),'Dana mock CAD engine','Dana','');",
+        "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));",
+        "ENDSEC;",
+        "DATA;",
+    ]
+    body = [f"#{i}={entity};" for i, entity in enumerate(lines, start=1)]
+    out_path.write_text("\n".join([*header, *body, "ENDSEC;", "END-ISO-10303-21;", ""]), encoding="ascii")
+    return {"step_bodies": len(items) - 1, "step_vertices": vertex_total, "step_faces": face_total}
 
 
 # Session persistence (dana.api.session_state): the mock driver's per-session
