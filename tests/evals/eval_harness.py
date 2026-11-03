@@ -672,7 +672,7 @@ def _task6_checks(run: Run) -> list[Check]:
         Check("turn 2 sees the hole radius (4) and its id", params.get("Hole.radius", (None,))[0] == 4.0,
               str(params.get("Hole.radius"))),
         Check("CAD state block lists the objects", "Objects:" in section and "Bracket" in section, section[:80]),
-        Check("its boxes follow the UI rebuild (Bracket 60×30×10)", "Bracket 60×30×10 at (0, 0, 0)" in section,
+        Check("its boxes follow the UI rebuild (Bracket 60×30×10)", "Bracket 60×30×10 from (0, 0, 0) to (60, 30, 10)" in section,
               section.split("Objects:", 1)[-1][:120]),
         Check("CAD state block <= 200 tokens", 0 < rd._count_tokens(section) <= 200, str(rd._count_tokens(section))),
         Check("update_cad_parameters offered without loading it",

@@ -8924,20 +8924,21 @@ async def next_react_turn(
             fsm_state = _get_fsm_state(session_id)
             active_task = _active_task(session_id) if fsm_state == "executing" else None
             other_core = _CORE_TOOL_IDS - _PLAN_CORE_TOOL_IDS - {"compile_plan_as_skill"}
+            # Changing an existing dimension is never out of phase: a live
+            # free-tier run, mid-plan in VALIDATING, called it blind (it was
+            # named in the state block but not offered) and fumbled its args.
+            edit_tools = _parameter_edit_tool_ids(session_id)
             if active_task is not None:
                 narrowing_query = active_task.get("description") or raw_text
                 task_tool_ids = active_task.get("expected_tool_ids") or frozenset()
             if fsm_state == "done":
                 # Plan finished: the wrap-up turn. Core tools minus the ones
                 # that need an unfinished plan, then the read-only checks.
-                capped_tools = (
-                    (_CORE_TOOL_IDS - _ACTIVE_PLAN_TOOL_IDS) | _parameter_edit_tool_ids(session_id),
-                    _POST_PLAN_TOOL_IDS,
-                )
+                capped_tools = ((_CORE_TOOL_IDS - _ACTIVE_PLAN_TOOL_IDS) | edit_tools, _POST_PLAN_TOOL_IDS)
             elif fsm_state == "validating":
                 # A task parked for a manual mark_task_completed: plan
                 # management, then checks/screenshots/exports.
-                capped_tools = (_PLAN_CORE_TOOL_IDS, _VALIDATION_TOOL_IDS | other_core)
+                capped_tools = (_PLAN_CORE_TOOL_IDS | edit_tools, _VALIDATION_TOOL_IDS | other_core)
             elif task_tool_ids and active_task.get("tool_escape_hatch"):
                 # Wrong-Tool Escape Hatch: the Planner's declared tool keeps
                 # failing (see _advance_fsm_on_dispatch), so the essential
@@ -8945,7 +8946,10 @@ async def next_react_turn(
                 # 39-tool, ~7.9k-token allow-list it used to be.
                 # _fsm_out_of_order_check still enforces the same widened set
                 # at dispatch time.
-                capped_tools = (_PLAN_CORE_TOOL_IDS | task_tool_ids, _FREECAD_ESSENTIAL_TOOL_IDS | other_core)
+                capped_tools = (
+                    _PLAN_CORE_TOOL_IDS | task_tool_ids | edit_tools,
+                    _FREECAD_ESSENTIAL_TOOL_IDS | other_core,
+                )
             elif task_tool_ids:
                 # EXECUTING, tool-mapped task: a hard allow-list, not just a
                 # narrowing bias -- a model that gets an out-of-order
@@ -8955,14 +8959,14 @@ async def next_react_turn(
                 # only discovery and plan management: a plan step needs no
                 # create_plan, memory, skill or capability tool, and those
                 # were ~1,270 tokens of every executing turn.
-                hard_restrict_to = task_tool_ids | _PLAN_CORE_TOOL_IDS
+                hard_restrict_to = task_tool_ids | _PLAN_CORE_TOOL_IDS | edit_tools
             else:
                 # EXECUTING a task with no declared tools (or no active task
                 # at all): the loaded domain's tools ranked by the hash
                 # retriever against the task and the user's message.
                 if active_task is not None:
                     narrowing_query = f"{active_task.get('description') or ''} {raw_text}".strip()
-                capped_tools = (_PLAN_CORE_TOOL_IDS, _tool_ids_for_plugins(effective_plugins) | other_core)
+                capped_tools = (_PLAN_CORE_TOOL_IDS | edit_tools, _tool_ids_for_plugins(effective_plugins) | other_core)
 
     # Context-Footprint Ground Truth: a plain, dependency-free stand-in for
     # a real tokenizer count (~4 chars/token is the usual rough-order-of-

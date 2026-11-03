@@ -916,27 +916,52 @@ async def _run_rebuild(websocket: WebSocket, session: dict[str, Any], overrides:
     await websocket.send_json(_parameters_event(session))
 
 
-def _resolve_parameter_overrides(session: dict[str, Any], raw: Any) -> tuple[dict[str, float], str | None]:
+def _parameter_value(raw: Any) -> Any:
+    """A number from "6", "6 mm" or 6; anything else is passed on for the
+    rebuild to reject."""
+    if isinstance(raw, str):
+        text = raw.strip().lower()
+        for unit in ("mm", "deg", "°"):
+            text = text.removesuffix(unit).strip()
+        try:
+            return float(text)
+        except ValueError:
+            return raw
+    return raw
+
+
+def _resolve_parameter_overrides(session: dict[str, Any], arguments: Any) -> tuple[dict[str, float], str | None]:
     """``update_cad_parameters``' overrides keyed by parameter id
-    ("0.length"), with labels ("Plate.length", any case) translated to ids.
-    ``(overrides, error)``; the error lists what can be changed."""
+    ("0.length"), with labels ("Plate.length", any case) translated to ids
+    and "6 mm" read as 6. Also takes the modify_freecad_parameter shape a
+    live free-tier model sent ({"object_name", "parameter_name",
+    "new_value"}). ``(overrides, error)``; every error shows the expected
+    shape and what can be changed."""
     from dana.plugins.freecad.rebuild import parameter_table
 
     call_log = session.get("call_log")
     params = parameter_table(call_log.records if call_log else [], _REBUILD_GEOMETRY_TOOLS)["params"]
     if not params:
         return {}, "This session has no editable parameters yet; build the model first."
+    known = ", ".join(f"{p['label']} [{p['id']}]" for p in params)
+    arguments = arguments if isinstance(arguments, dict) else {}
+    raw = arguments.get("overrides")
+    target = arguments.get("object_name") or arguments.get("target_object")
+    if raw is None and target and arguments.get("parameter_name") and "new_value" in arguments:
+        raw = {f"{target}.{arguments['parameter_name']}": arguments["new_value"]}
     if not isinstance(raw, dict) or not raw:
-        return {}, 'overrides must be a non-empty object, e.g. {"0.length": 120}.'
+        return {}, (
+            'Call it as update_cad_parameters(overrides={"<id or label>": <number>}), '
+            f'e.g. {{"{params[0]["id"]}": {params[0]["value"]:g}}}. Editable: {known}'
+        )
     by_label = {str(p["label"]).lower(): p["id"] for p in params}
     ids = {p["id"] for p in params}
     resolved: dict[str, float] = {}
     for key, value in raw.items():
         param_id = key if key in ids else by_label.get(str(key).strip().lower())
         if param_id is None:
-            known = ", ".join(f"{p['label']} [{p['id']}]" for p in params)
             return {}, f"unknown parameter {key!r}; editable: {known}"
-        resolved[param_id] = value
+        resolved[param_id] = _parameter_value(value)
     return resolved, None
 
 
@@ -951,7 +976,7 @@ async def _agent_parameter_update(websocket: WebSocket, session: dict[str, Any],
     if session.get("call_log") is None:
         overrides, error = {}, "Nothing to update yet: no CAD model has been built in this session."
     else:
-        overrides, error = _resolve_parameter_overrides(session, (call.arguments or {}).get("overrides"))
+        overrides, error = _resolve_parameter_overrides(session, call.arguments)
     mesh_url: str | None = None
     if error is None:
         result, mesh_url = await _perform_rebuild(session, overrides, zero_token=False)
@@ -983,8 +1008,10 @@ _CAD_STATE_MAX_TOKENS = 200
 
 
 def _bbox_text(bbox: Any) -> str:
-    """"40×30×10 at (0, 0, 0)" from a [xmin, ymin, zmin, xmax, ymax, zmax]
-    list (the mock) or a FreeCAD-style {"xmin", ..., "xlen", ...} dict."""
+    """"40×30×10 from (0, 0, 0) to (40, 30, 10)" from a [xmin, ymin, zmin,
+    xmax, ymax, zmax] list (the mock) or a FreeCAD-style {"xmin", ...,
+    "xlen", ...} dict. Both corners, not "at <min corner>": a live model
+    read "a hole's box at (16, 11, 0)" as the hole's position."""
 
     def num(v: float) -> str:
         return f"{float(v):g}"
@@ -997,7 +1024,8 @@ def _bbox_text(bbox: Any) -> str:
         size = [bbox["xlen"], bbox["ylen"], bbox["zlen"]]
     else:
         return ""
-    return f"{'×'.join(num(v) for v in size)} at ({', '.join(num(v) for v in lo)})"
+    hi = [a + b for a, b in zip(lo, size)]
+    return f"{'×'.join(num(v) for v in size)} from ({', '.join(num(v) for v in lo)}) to ({', '.join(num(v) for v in hi)})"
 
 
 def _cad_state_block(session: dict[str, Any]) -> str:
@@ -2203,6 +2231,27 @@ def _save_session_record(session: dict[str, Any]) -> None:
     session["session_created_at"] = record["created_at"]
 
 
+async def _close_unfinished_plan(websocket: WebSocket, session: dict[str, Any], reply: str) -> None:
+    """A final reply that asks the user nothing ends the request, so a plan
+    still holding unfinished tasks then is stale (often a task with no fixed
+    tool the model never marked). Carried into the next turn it drives that
+    turn instead of the new request: a live run asked to change a hole's
+    radius did it, then re-ran the old plan's "cut the hole" task and cut a
+    second one. A reply with a question keeps the plan, so a clarifying
+    question mid-plan still continues it."""
+    from dana.core import react_dispatch as rd
+    from dana.plugins.planning.task_board import forget_plan
+
+    sid = session["session_id"]
+    tasks = _tb_get_active_plan(session_id=sid).get("tasks") or []
+    if "?" in reply or not any(t.get("status") not in ("completed", "cancelled") for t in tasks):
+        return
+    forget_plan(sid)
+    rd._PLAN_STATE_REGISTRY.pop(sid, None)
+    telemetry.log_error(stage="unfinished_plan_closed", session_id=sid, open_tasks=len(tasks))
+    await _broadcast_plan_update(websocket, _tb_get_active_plan(session_id=sid))
+
+
 async def _finish_turn(websocket: WebSocket, session: dict[str, Any], messages: list[dict[str, Any]], content: str) -> None:
     """Sends the turn-ending "assistant_message" AND persists the exchange
     to disk — the single choke point every terminal branch of the ReAct
@@ -2588,6 +2637,7 @@ async def _run_react_loop(
 
         await _dag_complete(websocket, node_id, "success", {"final": True}, parse_ms)
         messages.append({"role": "assistant", "content": content})
+        await _close_unfinished_plan(websocket, session, content)
         await _finish_turn(websocket, session, messages, content)
         await _speak_reply(websocket, content)
         return

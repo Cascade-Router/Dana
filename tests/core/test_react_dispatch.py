@@ -3476,7 +3476,8 @@ def test_compaction_keeps_where_a_box_and_a_cylinder_are_placed(monkeypatch: pyt
     box, cylinder = _descriptions(tools, "create_freecad_box"), _descriptions(tools, "create_freecad_cylinder")
     assert all("corner" in box[axis] for axis in ("placement_x", "placement_y"))
     assert "bottom face" in box["placement_z"]
-    assert all("base" in cylinder[axis] for axis in ("placement_x", "placement_y", "placement_z"))
+    assert all("center" in cylinder[axis] for axis in ("placement_x", "placement_y"))
+    assert "base" in cylinder["placement_z"]
 
 
 def test_a_task_that_fits_is_sent_uncompacted(monkeypatch: pytest.MonkeyPatch) -> None:

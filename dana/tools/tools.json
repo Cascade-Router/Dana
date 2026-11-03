@@ -103,13 +103,13 @@
           "name": "placement_x",
           "type": "number",
           "required": false,
-          "description_en": "X of the cylinder's base center in mm (the cylinder is centered on x, y)."
+          "description_en": "X of the cylinder's center (its axis) in mm, not a bounding-box corner: a hole centered at x, y takes x, y as is."
         },
         {
           "name": "placement_y",
           "type": "number",
           "required": false,
-          "description_en": "Y of the cylinder's base center in mm (the cylinder is centered on x, y)."
+          "description_en": "Y of the cylinder's center (its axis) in mm, not a bounding-box corner: a hole centered at x, y takes x, y as is."
         },
         {
           "name": "placement_z",
